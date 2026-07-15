@@ -126,7 +126,9 @@ function ProjectCommonAttributes(props: Props) {
           className="text-13"
           position="right-start"
         >
-          <InfoIcon className="absolute top-2.5 right-2 h-3 w-3 text-placeholder" />
+          <span className="absolute top-2.5 right-2 inline-flex">
+            <InfoIcon className="h-3 w-3 text-placeholder" />
+          </span>
         </Tooltip>
         <span className="text-11 text-danger-primary">{errors?.identifier?.message}</span>
       </div>
