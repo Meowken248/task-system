@@ -18,6 +18,18 @@ catalogs:
     '@bprogress/core':
       specifier: ^1.3.4
       version: 1.3.4
+    '@metanodejs/event-log':
+      specifier: 0.2.1
+      version: 0.2.1
+    '@metanodejs/fiai-sdk':
+      specifier: 1.0.0
+      version: 1.0.0
+    '@metanodejs/mtn-contract':
+      specifier: 1.0.4
+      version: 1.0.4
+    '@metanodejs/system-core':
+      specifier: 1.0.9
+      version: 1.0.9
     '@react-router/dev':
       specifier: 7.13.1
       version: 7.13.1
@@ -576,6 +588,18 @@ importers:
       '@headlessui/react':
         specifier: ^1.7.19
         version: 1.7.19(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@metanodejs/event-log':
+        specifier: 'catalog:'
+        version: 0.2.1
+      '@metanodejs/fiai-sdk':
+        specifier: 'catalog:'
+        version: 1.0.0
+      '@metanodejs/mtn-contract':
+        specifier: 'catalog:'
+        version: 1.0.4
+      '@metanodejs/system-core':
+        specifier: 'catalog:'
+        version: 1.0.9
       '@plane/constants':
         specifier: workspace:*
         version: link:../../packages/constants
@@ -2363,6 +2387,21 @@ packages:
     peerDependencies:
       '@types/react': '>=16'
       react: '>=16'
+
+  '@metanodejs/event-log@0.2.1':
+    resolution: {integrity: sha512-9CNMQs/9z2xiJ16jE04T820b9NGaAoHoM/iHq6dqv3+M3LetblRXdDEv2PF5yaTzWs80XlUsYDhoOaOgz6w9Og==}
+
+  '@metanodejs/fiai-sdk@1.0.0':
+    resolution: {integrity: sha512-FkBrfxTYzqxNxJKIbV4Pgr7J7+IW/02HQM2iFaPReajbnsCfmsihnUy9VV3e7m8UINN90rR0rgHfN419sWg9xQ==}
+
+  '@metanodejs/mtn-contract@1.0.4':
+    resolution: {integrity: sha512-YClP7bV9DA2YxiMqTPrMI80hHmK8GtyZB0bpGN1zrscjTFV3ALGucnDrYwF9pa9R+eWJh5EV47mhOqJJO/ybsg==}
+
+  '@metanodejs/system-core@1.0.7':
+    resolution: {integrity: sha512-FI989W0I6sSjxJAOgY7IOG6+83Sm8JwgdxcwqWFoEZwCGCRE2dSoQD+d+44tks+mz0ecOtfQJ8MDfdum9t6ELQ==}
+
+  '@metanodejs/system-core@1.0.9':
+    resolution: {integrity: sha512-GDgLST9y/czPtxPM0dy/rcctRoLiGYzDluHeJvbiRuuImDOn6HXP5iSeLhsyrOb0vONWF1oDVNO84sMp4W1YLw==}
 
   '@mjackson/node-fetch-server@0.2.0':
     resolution: {integrity: sha512-EMlH1e30yzmTpGLQjlFmaDAjyOeZhng1/XCd7DExR8PNAnG/G1tyruZxEoUe11ClnwGhGrtsdnyyUx1frSzjng==}
@@ -9656,6 +9695,26 @@ snapshots:
       '@types/mdx': 2.0.13
       '@types/react': 18.3.11
       react: 18.3.1
+
+  '@metanodejs/event-log@0.2.1':
+    dependencies:
+      '@metanodejs/system-core': 1.0.7
+
+  '@metanodejs/fiai-sdk@1.0.0':
+    dependencies:
+      nanoid: 3.3.8
+
+  '@metanodejs/mtn-contract@1.0.4':
+    dependencies:
+      '@metanodejs/system-core': 1.0.7
+
+  '@metanodejs/system-core@1.0.7':
+    dependencies:
+      nanoid: 3.3.8
+
+  '@metanodejs/system-core@1.0.9':
+    dependencies:
+      nanoid: 3.3.8
 
   '@mjackson/node-fetch-server@0.2.0': {}
 
