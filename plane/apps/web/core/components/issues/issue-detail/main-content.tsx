@@ -192,8 +192,10 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
 
       <OnChainTaskPanel
         issueId={issueId}
-        canManage={
-          isEditable && getProjectRoleByWorkspaceSlugAndProjectId(workspaceSlug, projectId) === EUserPermissions.ADMIN
+        canReport={
+          isEditable &&
+          getProjectRoleByWorkspaceSlugAndProjectId(workspaceSlug, projectId) !== EUserPermissions.ADMIN &&
+          Boolean(currentUser?.id && issue.assignee_ids.includes(currentUser.id))
         }
       />
 

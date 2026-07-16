@@ -1,17 +1,13 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "@plane/propel/button";
-import {
-  assignIssueOnChain,
-  getIssueTaskId,
-  isOnChainTaskSyncEnabled,
-  submitIssueDailyReportOnChain,
-} from "@/services/blockchain/plane-task-chain.service";
+import { isOnChainTaskSyncEnabled, submitIssueDailyReportOnChain } from "@/services/blockchain/plane-task-chain.service";
 
-type Props = { issueId: string; canManage: boolean };
+type Props = { issueId: string; canReport: boolean };
 
-export function OnChainTaskPanel({ issueId, canManage }: Props) {
-  const [modal, setModal] = useState<"assign" | "report" | null>(null);
-  const [wallet, setWallet] = useState("");
+export function OnChainTaskPanel({ issueId, canReport }: Props) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [isReportOpen, setIsReportOpen] = useState(false);
   const [work, setWork] = useState("");
   const [difficulty, setDifficulty] = useState("");
   const [evidence, setEvidence] = useState("");
@@ -19,15 +15,30 @@ export function OnChainTaskPanel({ issueId, canManage }: Props) {
   const [status, setStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  if (!isOnChainTaskSyncEnabled()) return null;
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (isReportOpen && !dialog.open) dialog.showModal();
+    if (!isReportOpen && dialog.open) dialog.close();
+  }, [isReportOpen]);
 
-  const run = async (operation: () => Promise<string>) => {
+  if (!isOnChainTaskSyncEnabled() || !canReport) return null;
+
+  const closeReport = () => {
+    if (!submitting) setIsReportOpen(false);
+  };
+
+  const submitReport = async () => {
     setSubmitting(true);
     setStatus("Đang chờ xác nhận ví...");
     try {
-      const result = await operation();
-      setStatus(`Đã gửi on-chain: ${result}`);
-      setModal(null);
+      const result = await submitIssueDailyReportOnChain(
+        issueId,
+        { progress, work, difficulty, evidence },
+        setStatus
+      );
+      setStatus(`Đã gửi báo cáo on-chain: ${result}`);
+      setIsReportOpen(false);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Giao dịch thất bại");
     } finally {
@@ -35,110 +46,93 @@ export function OnChainTaskPanel({ issueId, canManage }: Props) {
     }
   };
 
-  return (
-    <div className="shadow-sm rounded-xl border border-subtle bg-layer-1/70 p-4 backdrop-blur-md">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-13 font-semibold text-primary">MetaNode on-chain</div>
-          <div className="text-11 text-tertiary">Assignment, daily report và tiến độ được xác thực bởi contract.</div>
-        </div>
-        <div className="flex gap-2">
-          {canManage && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                setStatus("");
-                setModal("assign");
-              }}
-            >
-              Gán ví
-            </Button>
-          )}
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              setStatus("");
-              setModal("report");
+  const reportDialog =
+    typeof document !== "undefined"
+      ? createPortal(
+          <dialog
+            ref={dialogRef}
+            className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-subtle bg-surface-1 p-0 text-primary shadow-raised-200 backdrop:bg-black/80 backdrop:backdrop-blur-sm"
+            onCancel={(event) => {
+              event.preventDefault();
+              closeReport();
             }}
+            onClose={() => setIsReportOpen(false)}
           >
-            Báo cáo ngày
-          </Button>
-        </div>
-      </div>
-      {status && <div className="mt-3 rounded-md bg-layer-2 px-3 py-2 text-11 break-all text-secondary">{status}</div>}
-
-      {modal && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-backdrop/70 p-4 backdrop-blur-md">
-          <div className="shadow-2xl w-full max-w-lg rounded-2xl border border-subtle bg-surface-1/95 p-5 backdrop-blur-xl">
-            <div className="mb-4 text-16 font-semibold text-primary">
-              {modal === "assign" ? "Gán ví nhân viên" : "Báo cáo cuối ngày"}
-            </div>
-            {modal === "assign" ? (
-              <input
-                className="focus:border-accent w-full rounded-md border border-subtle bg-layer-1 px-3 py-2 text-13 text-primary outline-none"
-                placeholder="0x..."
-                value={wallet}
-                onChange={(event) => setWallet(event.target.value)}
-              />
-            ) : (
-              <div className="space-y-3">
+            <div className="relative isolate bg-surface-1 p-5 pointer-events-auto">
+              <div className="mb-4 text-16 font-semibold text-primary">Báo cáo cuối ngày</div>
+              <div className="space-y-4">
                 <textarea
-                  className="min-h-20 w-full rounded-md border border-subtle bg-layer-1 p-3 text-13 text-primary outline-none"
+                  className="min-h-24 w-full resize-y rounded-md border border-subtle bg-layer-1 p-3 text-13 text-primary outline-none focus:border-accent"
                   placeholder="Hôm nay làm gì?"
                   value={work}
                   onChange={(event) => setWork(event.target.value)}
                 />
                 <textarea
-                  className="min-h-16 w-full rounded-md border border-subtle bg-layer-1 p-3 text-13 text-primary outline-none"
+                  className="min-h-20 w-full resize-y rounded-md border border-subtle bg-layer-1 p-3 text-13 text-primary outline-none focus:border-accent"
                   placeholder="Khó khăn"
                   value={difficulty}
                   onChange={(event) => setDifficulty(event.target.value)}
                 />
                 <input
-                  className="w-full rounded-md border border-subtle bg-layer-1 px-3 py-2 text-13 text-primary outline-none"
+                  className="w-full rounded-md border border-subtle bg-layer-1 px-3 py-2 text-13 text-primary outline-none focus:border-accent"
                   placeholder="Evidence URL / mã file"
                   value={evidence}
                   onChange={(event) => setEvidence(event.target.value)}
                 />
-                <label className="block text-12 text-secondary">Tiến độ: {progress}%</label>
-                <input
-                  className="w-full"
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={progress}
-                  onChange={(event) => setProgress(Number(event.target.value))}
-                />
+                <div className="rounded-md border border-subtle bg-layer-1 p-3">
+                  <label htmlFor="daily-report-progress" className="block text-12 font-medium text-secondary">
+                    Tiến độ: {progress}%
+                  </label>
+                  <input
+                    id="daily-report-progress"
+                    className="mt-3 block h-6 w-full cursor-pointer accent-blue-500 pointer-events-auto"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={progress}
+                    onInput={(event) => setProgress(Number(event.currentTarget.value))}
+                    onChange={(event) => setProgress(Number(event.currentTarget.value))}
+                  />
+                </div>
               </div>
-            )}
-            {status && (
-              <div className="mt-4 rounded-md bg-layer-2 px-3 py-2 text-11 break-all text-secondary">{status}</div>
-            )}
-            <div className="mt-5 flex justify-end gap-2">
-              <Button variant="secondary" size="sm" disabled={submitting} onClick={() => setModal(null)}>
+              {status && (
+                <div className="mt-4 rounded-md bg-layer-2 px-3 py-2 text-11 break-all text-secondary">{status}</div>
+              )}
+            </div>
+            <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t border-subtle bg-surface-1 px-5 py-4 pointer-events-auto">
+              <Button variant="secondary" size="sm" disabled={submitting} onClick={closeReport}>
                 Hủy
               </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                loading={submitting}
-                onClick={() =>
-                  void run(async () => {
-                    const taskId = await getIssueTaskId(issueId);
-                    return modal === "assign"
-                      ? assignIssueOnChain(taskId, wallet)
-                      : submitIssueDailyReportOnChain(issueId, { progress, work, difficulty, evidence });
-                  })
-                }
-              >
+              <Button variant="primary" size="sm" loading={submitting} onClick={() => void submitReport()}>
                 Xác nhận
               </Button>
             </div>
-          </div>
+          </dialog>,
+          document.body
+        )
+      : null;
+
+  return (
+    <div className="shadow-sm rounded-xl border border-subtle bg-layer-1/70 p-4 backdrop-blur-md">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-13 font-semibold text-primary">MetaNode on-chain</div>
+          <div className="text-11 text-tertiary">Báo cáo ngày và tiến độ được xác thực bởi contract.</div>
         </div>
-      )}
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => {
+            setStatus("");
+            setIsReportOpen(true);
+          }}
+        >
+          Báo cáo ngày
+        </Button>
+      </div>
+      {status && <div className="mt-3 rounded-md bg-layer-2 px-3 py-2 text-11 break-all text-secondary">{status}</div>}
+      {reportDialog}
     </div>
   );
 }

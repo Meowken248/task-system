@@ -1,6 +1,17 @@
 [
   {
     "chain_id": "991",
+    "transaction_hash": "0xdf38d59b842d736119c1eadbfca3f189bd51321dae5767673912d546812c2a88",
+    "issue_id": "aa9ab3db-f338-400e-b6ff-2e832a6292f6",
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "contract_address": "0xAC2a3af10D9a7c1F7dE47568C2665F33298f1E58",
+    "issue_name": "ss",
+    "workspace_slug": "fiai",
+    "project_id": "7b39ca6c-1af8-49e6-99d0-13898683cfa0",
+    "recorded_at": "2026-07-16T03:34:23.968736+00:00"
+  },
+  {
+    "chain_id": "991",
     "transaction_hash": "0x6c2c50779df4196debb18bf1de53d06da7eccdbcfc5cd1eabaefc8289a9228f2",
     "issue_id": "be35de2a-4a31-42e1-a70f-7e1dba861f9f",
     "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",

@@ -26,6 +26,21 @@ type HashLike = {
   returnValue?: HashLike;
 };
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      }
+    );
+  });
+}
 function transactionHash(value: unknown): string | null {
   if (typeof value === "string" && value) return value;
   if (!value || typeof value !== "object") return null;
@@ -187,22 +202,28 @@ async function readContract(functionName: string, values: Record<string, InputVa
   if (!abi) throw new Error(`Contract function ${functionName} is missing from the ABI.`);
   const contractAddress = process.env.VITE_CONTRACT_ADDRESS?.trim() || "";
   if (!isWalletAddress(contractAddress)) throw new Error("VITE_CONTRACT_ADDRESS is invalid.");
-  let bridge = (await initFiaiSDK()) ?? getFiaiSDK();
-  if (!bridge) throw new Error("FiaiSDK is not available.");
-  return bridge.request("sendTransaction", {
-    from: await resolveMetanodeWalletAddress(),
-    to: contractAddress,
-    abiData: [abi],
-    functionName,
-    feeType: "read",
-    amount: "0",
-    value: "0",
-    gas: process.env.VITE_CONTRACT_GAS || "3000000",
-    type: "transaction",
-    inputArray: abi.inputs.map((input) => ({ ...input, value: values[input.name ?? ""] ?? "" })),
-    isReadOnly: true,
-    bundleId: "",
-  });
+  await initFiaiSDK();
+  const from = await resolveMetanodeWalletAddress();
+  const { MtnContract } = await import("@metanodejs/mtn-contract");
+  const contract = new MtnContract({ from, to: contractAddress });
+  return withTimeout(
+    contract.sendTransaction({
+      from,
+      to: contractAddress,
+      abiData: [abi],
+      functionName,
+      feeType: "read",
+      amount: "0",
+      value: "0",
+      gas: process.env.VITE_CONTRACT_GAS || "3000000",
+      type: "transaction",
+      inputArray: abi.inputs.map((input) => ({ ...input, value: values[input.name ?? ""] ?? "" })),
+      isReadOnly: true,
+      bundleId: "",
+    }),
+    20_000,
+    "Không đọc được task on-chain sau 20 giây. Vui lòng thử lại."
+  );
 }
 
 export async function getIssueTaskId(issueId: string): Promise<number> {
@@ -214,16 +235,19 @@ export async function getIssueTaskId(issueId: string): Promise<number> {
 
 export async function submitIssueDailyReportOnChain(
   issueId: string,
-  report: { progress: number; work: string; difficulty: string; evidence: string }
+  report: { progress: number; work: string; difficulty: string; evidence: string },
+  onStatus?: (message: string) => void
 ): Promise<string> {
+  onStatus?.("Đang đọc task từ blockchain...");
   const taskId = await getIssueTaskId(issueId);
-  return sendContractTransaction("submitDailyReport", {
+  onStatus?.("Đang chờ mở ví và xác nhận giao dịch...");
+  return withTimeout(sendContractTransaction("submitDailyReport", {
     taskId,
     progress: report.progress,
     workHash: await hashTaskValue(report.work),
     difficultyHash: await hashTaskValue(report.difficulty),
     evidenceHash: await hashTaskValue(report.evidence),
-  });
+  }), 90_000, "Giao dịch báo cáo quá thời gian 90 giây. Hãy kiểm tra cửa sổ ví và thử lại.");
 }
 
 export async function recordIssueContentOnChain(issueId: string, kind: 0 | 1 | 2, content: string): Promise<string> {
@@ -274,8 +298,9 @@ function findKpiValues(value: unknown): number[] | null {
   return null;
 }
 
-export async function getWalletKPI(): Promise<{ wallet: string; kpi: OnChainKPI }> {
-  const wallet = await resolveMetanodeWalletAddress();
+export async function getWalletKPI(walletAddress?: string): Promise<{ wallet: string; kpi: OnChainKPI }> {
+  const wallet = walletAddress?.trim() || (await resolveMetanodeWalletAddress());
+  if (!isWalletAddress(wallet)) throw new Error("Địa chỉ ví nhân viên không hợp lệ.");
   const values = findKpiValues(await readContract("getKPI", { assignee: wallet }));
   if (!values) throw new Error("Could not parse KPI returned by the contract.");
   const [total, todo, completed, inProgress, cancelled, onSchedule, delayed, overdue, progressSum, averageProgress] =

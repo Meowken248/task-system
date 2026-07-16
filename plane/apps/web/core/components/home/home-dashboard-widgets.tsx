@@ -6,6 +6,8 @@
 
 import { observer } from "mobx-react";
 import { useParams } from "next/navigation";
+import { EUserPermissions } from "@plane/constants";
+import { useUserPermissions } from "@/hooks/store/user";
 import { RecentActivityWidget } from "./widgets";
 import { OnChainKpiWidget } from "./on-chain-kpi-widget";
 
@@ -18,12 +20,14 @@ export const HOME_WIDGETS_LIST: Record<string, { title: string }> = {
 };
 export const DashboardWidgets = observer(function DashboardWidgets() {
   const { workspaceSlug } = useParams();
+  const { getWorkspaceRoleByWorkspaceSlug } = useUserPermissions();
   if (!workspaceSlug) return null;
+  const isAdmin = getWorkspaceRoleByWorkspaceSlug(workspaceSlug.toString()) === EUserPermissions.ADMIN;
 
   return (
     <div className="relative flex h-full w-full flex-col gap-7 py-4">
       <RecentActivityWidget workspaceSlug={workspaceSlug.toString()} />
-      <OnChainKpiWidget />
+      {isAdmin && <OnChainKpiWidget />}
     </div>
   );
 });
