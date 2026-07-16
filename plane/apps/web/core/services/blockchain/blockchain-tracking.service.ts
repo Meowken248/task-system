@@ -1,11 +1,34 @@
 import { API_BASE_URL } from "@plane/constants";
 import { APIService } from "@/services/api.service";
 
+export type TBlockchainTrackingRecord = {
+  event_type?: "create_task" | "assign_task" | "daily_report";
+  issue_id?: string;
+  issue_name?: string;
+  project_id?: string;
+  workspace_slug?: string;
+  wallet_address?: string;
+  assignee_wallet?: string;
+  assignee_id?: string;
+  assignee_name?: string;
+  contract_address?: string;
+  chain_id?: string;
+  transaction_hash?: string;
+  progress?: number;
+  work?: string;
+  difficulty?: string;
+  evidence?: string;
+  recorded_at?: string;
+};
 class BlockchainTrackingService extends APIService {
   constructor() {
     super(API_BASE_URL);
   }
 
+  async getTransactions(workspaceSlug: string, projectId: string): Promise<TBlockchainTrackingRecord[]> {
+    const response = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`);
+    return Array.isArray(response?.data) ? response.data : [];
+  }
   async recordDailyReport(
     workspaceSlug: string,
     projectId: string,
@@ -34,8 +57,7 @@ class BlockchainTrackingService extends APIService {
     });
   }
   async getStoredAssigneeWallet(workspaceSlug: string, projectId: string, assigneeId: string): Promise<string> {
-    const response = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`);
-    const records = Array.isArray(response?.data) ? response.data : [];
+    const records = await this.getTransactions(workspaceSlug, projectId);
     const assignment = records.find(
       (record: Record<string, unknown>) =>
         record.event_type === "assign_task" &&

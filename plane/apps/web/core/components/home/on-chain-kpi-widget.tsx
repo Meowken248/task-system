@@ -1,64 +1,315 @@
-import { useState } from "react";
-import { Button } from "@plane/propel/button";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronRight, ClipboardList, FileText, FolderKanban, UserRound } from "lucide-react";
+import {
+  blockchainTrackingService,
+  type TBlockchainTrackingRecord,
+} from "@/services/blockchain/blockchain-tracking.service";
 import { getWalletKPI, type OnChainKPI } from "@/services/blockchain/plane-task-chain.service";
+import { ProjectService } from "@/services/project";
 
-export function OnChainKpiWidget() {
-  const [wallet, setWallet] = useState("");
-  const [data, setData] = useState<{ wallet: string; kpi: OnChainKPI }>();
+type Props = { workspaceSlug: string };
+type ProjectOption = { id: string; name: string; identifier?: string };
+type TaskOption = { id: string; name: string; records: TBlockchainTrackingRecord[] };
+
+const projectService = new ProjectService();
+
+function formatDateTime(value?: string): string {
+  if (!value) return "Chưa có thời gian";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Ho_Chi_Minh",
+  }).format(date);
+}
+
+function shortHash(value?: string): string {
+  if (!value) return "Chưa có";
+  return value.length > 22 ? `${value.slice(0, 12)}...${value.slice(-8)}` : value;
+}
+
+function taskProgress(task?: TaskOption): number {
+  const report = task?.records.find((record) => record.event_type === "daily_report");
+  return typeof report?.progress === "number" ? report.progress : 0;
+}
+
+export function OnChainKpiWidget({ workspaceSlug }: Props) {
+  const [projects, setProjects] = useState<ProjectOption[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [records, setRecords] = useState<TBlockchainTrackingRecord[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [kpi, setKpi] = useState<OnChainKPI>();
+  const [loadingProjects, setLoadingProjects] = useState(true);
+  const [loadingTasks, setLoadingTasks] = useState(false);
+  const [loadingKpi, setLoadingKpi] = useState(false);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const load = async () => {
-    setLoading(true);
+
+  useEffect(() => {
+    let active = true;
+    const loadProjects = async () => {
+      setLoadingProjects(true);
+      try {
+        const items = await projectService.getProjectsLite(workspaceSlug);
+        if (active) {
+          setProjects(
+            items.map((project) => ({ id: project.id, name: project.name, identifier: project.identifier }))
+          );
+        }
+      } catch {
+        if (active) setError("Không tải được danh sách dự án.");
+      } finally {
+        if (active) setLoadingProjects(false);
+      }
+    };
+    void loadProjects();
+    return () => {
+      active = false;
+    };
+  }, [workspaceSlug]);
+
+  const tasks = useMemo<TaskOption[]>(() => {
+    const grouped = new Map<string, TBlockchainTrackingRecord[]>();
+    records.forEach((record) => {
+      if (!record.issue_id) return;
+      grouped.set(record.issue_id, [...(grouped.get(record.issue_id) ?? []), record]);
+    });
+    return Array.from(grouped, ([id, taskRecords]) => ({
+      id,
+      name: taskRecords.find((record) => record.issue_name)?.issue_name || id,
+      records: taskRecords,
+    }));
+  }, [records]);
+
+  const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId);
+  const assignment = selectedTask?.records.find((record) => record.event_type === "assign_task");
+  const creation = selectedTask?.records.find((record) => record.event_type === "create_task");
+  const reports = selectedTask?.records.filter((record) => record.event_type === "daily_report") ?? [];
+  const progress = taskProgress(selectedTask);
+
+  const selectProject = async (projectId: string) => {
+    setSelectedProjectId(projectId);
+    setSelectedTaskId("");
+    setRecords([]);
+    setKpi(undefined);
     setError("");
+    setLoadingTasks(true);
     try {
-      setData(await getWalletKPI(wallet));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Không đọc được KPI");
+      setRecords(await blockchainTrackingService.getTransactions(workspaceSlug, projectId));
+    } catch {
+      setError("Không tải được task và dữ liệu on-chain của dự án.");
     } finally {
-      setLoading(false);
+      setLoadingTasks(false);
     }
   };
-  const cards = data
+
+  const selectTask = async (task: TaskOption) => {
+    setSelectedTaskId(task.id);
+    setKpi(undefined);
+    setError("");
+    const latestAssignment = task.records.find((record) => record.event_type === "assign_task");
+    if (!latestAssignment?.assignee_wallet) return;
+    setLoadingKpi(true);
+    try {
+      const result = await getWalletKPI(latestAssignment.assignee_wallet);
+      setKpi(result.kpi);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không đọc được KPI nhân viên từ contract.");
+    } finally {
+      setLoadingKpi(false);
+    }
+  };
+
+  const kpiItems = kpi
     ? [
-        ["Tổng task", data.kpi.total],
-        ["Hoàn thành", data.kpi.completed],
-        ["Đang làm", data.kpi.inProgress],
-        ["Đúng tiến độ", data.kpi.onSchedule],
-        ["Chậm", data.kpi.delayed],
-        ["Quá hạn", data.kpi.overdue],
-        ["Tiến độ TB", `${data.kpi.averageProgress}%`],
+        ["Tổng task", kpi.total],
+        ["Đang làm", kpi.inProgress],
+        ["Hoàn thành", kpi.completed],
+        ["Đúng tiến độ", kpi.onSchedule],
+        ["Chậm", kpi.delayed],
+        ["Quá hạn", kpi.overdue],
+        ["Tiến độ TB", `${kpi.averageProgress}%`],
       ]
     : [];
+
   return (
-    <section className="shadow-sm rounded-2xl border border-subtle bg-layer-1/70 p-5 backdrop-blur-md">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-14 font-semibold text-primary">Dashboard KPI on-chain</div>
-          <div className="text-11 text-tertiary">Admin tra cứu KPI theo ví MetaNode của nhân viên</div>
-        </div>
-        <Button size="sm" variant="secondary" loading={loading} disabled={!wallet.trim()} onClick={() => void load()}>
-          Tải KPI
-        </Button>
-      </div>
-      <input
-        className="mt-4 w-full rounded-md border border-subtle bg-surface-1/70 px-3 py-2 text-13 text-primary outline-none"
-        placeholder="Nhập ví MetaNode của nhân viên (0x...)"
-        value={wallet}
-        onChange={(event) => setWallet(event.target.value)}
-      />      {data && (
-        <>
-          <div className="mt-2 truncate text-11 text-tertiary">{data.wallet}</div>
-          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {cards.map(([label, value]) => (
-              <div key={label} className="rounded-xl border border-subtle bg-surface-1/70 p-3 backdrop-blur-lg">
-                <div className="text-11 text-tertiary">{label}</div>
-                <div className="mt-1 text-20 font-semibold text-primary">{value}</div>
-              </div>
-            ))}
+    <section className="overflow-hidden rounded-2xl border border-subtle bg-layer-1/75 shadow-sm backdrop-blur-xl">
+      <header className="border-b border-subtle px-5 py-4">
+        <h2 className="text-14 font-semibold text-primary">Dashboard KPI on-chain</h2>
+        <p className="mt-1 text-11 text-tertiary">Chọn dự án, chọn task để xem báo cáo và KPI của nhân viên.</p>
+      </header>
+
+      <div className="grid min-h-[420px] grid-cols-1 divide-y divide-subtle lg:grid-cols-[240px_280px_minmax(0,1fr)] lg:divide-x lg:divide-y-0">
+        <div className="p-3">
+          <div className="flex items-center gap-2 px-2 py-2 text-11 font-medium text-secondary">
+            <FolderKanban className="h-4 w-4" aria-hidden="true" />
+            Dự án
           </div>
-        </>
-      )}
-      {error && <div className="mt-3 rounded-md bg-danger-subtle px-3 py-2 text-11 text-danger-primary">{error}</div>}
+          {loadingProjects ? (
+            <div className="space-y-2 px-2 py-3" aria-label="Đang tải dự án">
+              {[0, 1, 2].map((item) => (
+                <div key={item} className="h-10 animate-pulse rounded-lg bg-surface-2/70" />
+              ))}
+            </div>
+          ) : projects.length === 0 ? (
+            <p className="px-2 py-4 text-11 text-tertiary">Chưa có dự án nào.</p>
+          ) : (
+            <div className="space-y-1">
+              {projects.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  onClick={() => void selectProject(project.id)}
+                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${
+                    selectedProjectId === project.id
+                      ? "bg-accent-primary/10 text-accent-primary"
+                      : "text-secondary hover:bg-surface-2"
+                  }`}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-12 font-medium">{project.name}</span>
+                    {project.identifier && <span className="block text-10 text-tertiary">{project.identifier}</span>}
+                  </span>
+                  <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="p-3">
+          <div className="flex items-center gap-2 px-2 py-2 text-11 font-medium text-secondary">
+            <ClipboardList className="h-4 w-4" aria-hidden="true" />
+            Task {selectedProject ? `trong ${selectedProject.name}` : ""}
+          </div>
+          {!selectedProjectId ? (
+            <p className="px-2 py-4 text-11 text-tertiary">Chọn một dự án để xem task.</p>
+          ) : loadingTasks ? (
+            <div className="space-y-2 px-2 py-3" aria-label="Đang tải task">
+              {[0, 1, 2].map((item) => (
+                <div key={item} className="h-12 animate-pulse rounded-lg bg-surface-2/70" />
+              ))}
+            </div>
+          ) : tasks.length === 0 ? (
+            <p className="px-2 py-4 text-11 text-tertiary">Dự án chưa có task on-chain.</p>
+          ) : (
+            <div className="space-y-1">
+              {tasks.map((task) => {
+                const taskValue = taskProgress(task);
+                return (
+                  <button
+                    key={task.id}
+                    type="button"
+                    onClick={() => void selectTask(task)}
+                    className={`w-full rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${
+                      selectedTaskId === task.id ? "bg-accent-primary/10" : "hover:bg-surface-2"
+                    }`}
+                  >
+                    <span className="block truncate text-12 font-medium text-primary">{task.name}</span>
+                    <span className="mt-1 flex items-center justify-between text-10 text-tertiary">
+                      <span>{task.records.filter((record) => record.event_type === "daily_report").length} báo cáo</span>
+                      <span>{taskValue}%</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0 p-5">
+          {!selectedTask ? (
+            <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
+              <FileText className="h-8 w-8 text-tertiary" aria-hidden="true" />
+              <p className="mt-3 text-12 font-medium text-secondary">Chọn một task để xem chi tiết</p>
+              <p className="mt-1 max-w-xs text-11 text-tertiary">Báo cáo ngày và KPI on-chain sẽ hiển thị tại đây.</p>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-10 text-tertiary">{selectedProject?.identifier || "TASK"}</p>
+                  <h3 className="mt-1 truncate text-16 font-semibold text-primary">{selectedTask.name}</h3>
+                  <p className="mt-1 text-11 text-tertiary">Tạo on-chain: {formatDateTime(creation?.recorded_at)}</p>
+                </div>
+                <div className="rounded-lg border border-subtle bg-surface-1/70 px-3 py-2 text-right backdrop-blur-md">
+                  <p className="text-10 text-tertiary">Tiến độ mới nhất</p>
+                  <p className="text-18 font-semibold text-primary">{progress}%</p>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-subtle bg-surface-1/60 p-4 backdrop-blur-md">
+                <div className="flex items-center gap-2 text-11 font-medium text-secondary">
+                  <UserRound className="h-4 w-4" aria-hidden="true" />
+                  Nhân viên được giao
+                </div>
+                {assignment ? (
+                  <div className="mt-3 grid gap-2 text-11 sm:grid-cols-2">
+                    <div><span className="text-tertiary">Tên:</span> <span className="text-primary">{assignment.assignee_name || assignment.assignee_id}</span></div>
+                    <div><span className="text-tertiary">Thời gian giao:</span> <span className="text-primary">{formatDateTime(assignment.recorded_at)}</span></div>
+                    <div className="sm:col-span-2"><span className="text-tertiary">Ví:</span> <span className="break-all font-mono text-primary">{assignment.assignee_wallet}</span></div>
+                    <div className="sm:col-span-2"><span className="text-tertiary">Hash giao task:</span> <span className="font-mono text-primary" title={assignment.transaction_hash}>{shortHash(assignment.transaction_hash)}</span></div>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-11 text-tertiary">Task chưa có bản ghi giao nhân viên on-chain.</p>
+                )}
+              </div>
+
+              <div>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h4 className="text-12 font-semibold text-primary">KPI nhân viên</h4>
+                  {loadingKpi && <span className="text-10 text-tertiary">Đang đọc contract...</span>}
+                </div>
+                {kpi ? (
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {kpiItems.map(([label, value]) => (
+                      <div key={label} className="rounded-lg border border-subtle bg-surface-1/65 p-3 backdrop-blur-md">
+                        <p className="text-10 text-tertiary">{label}</p>
+                        <p className="mt-1 text-16 font-semibold text-primary">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : !loadingKpi && (
+                  <p className="rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">
+                    {assignment?.assignee_wallet ? "Chưa đọc được KPI từ contract." : "Cần giao task on-chain để tự động tra KPI."}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <h4 className="text-12 font-semibold text-primary">Báo cáo cuối ngày ({reports.length})</h4>
+                {reports.length === 0 ? (
+                  <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">Nhân viên chưa gửi báo cáo cho task này.</p>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    {reports.map((report) => (
+                      <article key={report.transaction_hash || report.recorded_at} className="rounded-xl border border-subtle bg-surface-1/60 p-4 backdrop-blur-md">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <time className="text-11 font-medium text-secondary">{formatDateTime(report.recorded_at)}</time>
+                          <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">Tiến độ {report.progress ?? 0}%</span>
+                        </div>
+                        <dl className="mt-3 space-y-2 text-11">
+                          <div><dt className="text-tertiary">Hôm nay làm gì?</dt><dd className="mt-0.5 whitespace-pre-wrap text-primary">{report.work || "Không có nội dung"}</dd></div>
+                          <div><dt className="text-tertiary">Khó khăn</dt><dd className="mt-0.5 whitespace-pre-wrap text-primary">{report.difficulty || "Không có"}</dd></div>
+                          <div><dt className="text-tertiary">Evidence</dt><dd className="mt-0.5 break-all text-primary">{report.evidence || "Không có"}</dd></div>
+                          <div><dt className="text-tertiary">Transaction hash</dt><dd className="mt-0.5 font-mono text-primary" title={report.transaction_hash}>{shortHash(report.transaction_hash)}</dd></div>
+                        </dl>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {error && <div className="mt-4 rounded-lg bg-danger-subtle px-3 py-2 text-11 text-danger-primary">{error}</div>}
+        </div>
+      </div>
     </section>
   );
 }
