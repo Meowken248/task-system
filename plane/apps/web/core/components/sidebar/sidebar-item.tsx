@@ -22,7 +22,7 @@ interface AppSidebarItemData {
 }
 
 interface AppSidebarItemProps {
-  variant?: "link" | "button";
+  variant?: "link" | "button" | "content";
   item?: AppSidebarItemData;
 }
 
@@ -140,6 +140,10 @@ function AppSidebarItem({ variant = "link", item }: AppSidebarItemProps) {
 
   if (variant === "link") {
     return <AppSidebarLinkItem href={href}>{commonItems}</AppSidebarLinkItem>;
+  }
+
+  if (variant === "content") {
+    return <div className={styles.base}>{commonItems}</div>;
   }
 
   return (

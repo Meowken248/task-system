@@ -20,6 +20,7 @@ import type {
 } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
+import { createIssueOnChain, isOnChainTaskSyncEnabled } from "@/services/blockchain/plane-task-chain.service";
 
 export class IssueService extends APIService {
   private serviceType: TIssueServiceType;
@@ -30,11 +31,53 @@ export class IssueService extends APIService {
   }
 
   async createIssue(workspaceSlug: string, projectId: string, data: Partial<TIssue>): Promise<TIssue> {
-    return this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/`, data)
-      .then((response) => response?.data)
-      .catch((error) => {
-        throw error?.response?.data;
+    let issue: TIssue;
+    try {
+      const response = await this.post(
+        `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/`,
+        data
+      );
+      issue = response?.data;
+    } catch (error: any) {
+      throw error?.response?.data ?? error;
+    }
+
+    if (!isOnChainTaskSyncEnabled()) return issue;
+
+    let transactionHash: string;
+    try {
+      transactionHash = await createIssueOnChain(issue);
+    } catch (chainError) {
+      console.error("On-chain task creation failed. Rolling back the Plane task:", chainError);
+      try {
+        await this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issue.id}/`);
+      } catch (rollbackError) {
+        console.error("Failed to roll back the Plane task after the blockchain error:", rollbackError);
+        throw {
+          error: "Giao dịch blockchain thất bại và không thể tự xóa task tạm. Hãy xóa task này thủ công.",
+          cause: chainError,
+        };
+      }
+
+      const message =
+        chainError instanceof Error ? chainError.message : "Giao dịch blockchain đã bị hủy hoặc thất bại.";
+      throw { error: `Không tạo task: ${message}`, cause: chainError };
+    }
+
+    try {
+      await this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+        issue_id: issue.id,
+        issue_name: issue.name,
+        wallet_address: process.env.VITE_METANODE_WALLET_ADDRESS,
+        contract_address: process.env.VITE_CONTRACT_ADDRESS,
+        chain_id: process.env.VITE_CHAIN_ID,
+        transaction_hash: transactionHash,
       });
+    } catch (trackingError) {
+      console.error("Task đã được tạo on-chain nhưng không thể ghi file blockchain-data.json:", trackingError);
+    }
+
+    return issue;
   }
 
   async getIssuesFromServer(

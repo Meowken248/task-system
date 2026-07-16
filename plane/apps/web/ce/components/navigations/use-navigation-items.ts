@@ -7,7 +7,7 @@
 import { useMemo, useCallback } from "react";
 // plane imports
 import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
-import { CycleIcon, IntakeIcon, ModuleIcon, PageIcon, ViewsIcon, WorkItemsIcon } from "@plane/propel/icons";
+import { WorkItemsIcon } from "@plane/propel/icons";
 import type { EUserProjectRoles, IPartialProject } from "@plane/types";
 import type { TNavigationItem } from "@/components/navigation/tab-navigation-root";
 
@@ -41,56 +41,6 @@ export const useNavigationItems = ({
         access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
         shouldRender: true,
         sortOrder: 1,
-      },
-      {
-        i18n_key: "sidebar.cycles",
-        key: "cycles",
-        name: "Cycles",
-        href: `/${workspaceSlug}/projects/${projectId}/cycles`,
-        icon: CycleIcon,
-        access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER],
-        shouldRender: !!project?.cycle_view,
-        sortOrder: 2,
-      },
-      {
-        i18n_key: "sidebar.modules",
-        key: "modules",
-        name: "Modules",
-        href: `/${workspaceSlug}/projects/${projectId}/modules`,
-        icon: ModuleIcon,
-        access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER],
-        shouldRender: !!project?.module_view,
-        sortOrder: 3,
-      },
-      {
-        i18n_key: "sidebar.views",
-        key: "views",
-        name: "Views",
-        href: `/${workspaceSlug}/projects/${projectId}/views`,
-        icon: ViewsIcon,
-        access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-        shouldRender: !!project?.issue_views_view,
-        sortOrder: 4,
-      },
-      {
-        i18n_key: "sidebar.pages",
-        key: "pages",
-        name: "Pages",
-        href: `/${workspaceSlug}/projects/${projectId}/pages`,
-        icon: PageIcon,
-        access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-        shouldRender: !!project?.page_view,
-        sortOrder: 5,
-      },
-      {
-        i18n_key: "sidebar.intake",
-        key: "intake",
-        name: "Intake",
-        href: `/${workspaceSlug}/projects/${projectId}/intake`,
-        icon: IntakeIcon,
-        access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-        shouldRender: !!project?.inbox_view,
-        sortOrder: 6,
       },
     ],
     [project]

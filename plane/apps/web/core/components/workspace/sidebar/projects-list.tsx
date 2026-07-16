@@ -5,8 +5,6 @@
  */
 
 import { useState, useRef, useEffect } from "react";
-import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
-import { autoScrollForElements } from "@atlaskit/pragmatic-drag-and-drop-auto-scroll/element";
 import { observer } from "mobx-react";
 import { useParams, usePathname } from "next/navigation";
 import { Ellipsis } from "lucide-react";
@@ -127,20 +125,6 @@ export const SidebarProjectsList = observer(function SidebarProjectsList() {
         currentContainerRef.removeEventListener("scroll", handleScroll);
       }
     };
-  }, [containerRef]);
-
-  useEffect(() => {
-    const element = containerRef.current;
-
-    if (!element) return;
-
-    return combine(
-      autoScrollForElements({
-        element,
-        canScroll: ({ source }) => source?.data?.dragInstanceId === "PROJECTS",
-        getAllowedAxis: () => "vertical",
-      })
-    );
   }, [containerRef]);
 
   const toggleListDisclosure = (isOpen: boolean) => {

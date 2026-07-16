@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # See the LICENSE file for details.
 
+from plane.api.urls.blockchain_tracking import urlpatterns as blockchain_tracking_urls
+
 from .analytic import urlpatterns as analytic_urls
 from .api import urlpatterns as api_urls
 from .asset import urlpatterns as asset_urls
@@ -24,6 +26,7 @@ from .timezone import urlpatterns as timezone_urls
 from .exporter import urlpatterns as exporter_urls
 
 urlpatterns = [
+    *blockchain_tracking_urls,
     *analytic_urls,
     *asset_urls,
     *cycle_urls,

@@ -49,6 +49,11 @@ import { DuplicateModalRoot } from "@/plane-web/components/de-dupe/duplicate-mod
 import { IssueTypeSelect, WorkItemTemplateSelect } from "@/plane-web/components/issues/issue-modal";
 import { WorkItemModalAdditionalProperties } from "@/plane-web/components/issues/issue-modal/modal-additional-properties";
 import { useDebouncedDuplicateIssues } from "@/plane-web/hooks/use-debounced-duplicate-issues";
+import {
+  isOnChainTaskSyncEnabled,
+  setPendingCreateAssigneeWallet,
+} from "@/services/blockchain/plane-task-chain.service";
+import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
 
 export interface IssueFormProps {
   data?: Partial<TIssue>;
@@ -105,6 +110,7 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
   // states
   const [gptAssistantModal, setGptAssistantModal] = useState(false);
   const [isMoving, setIsMoving] = useState<boolean>(false);
+  const [assigneeWallet, setAssigneeWallet] = useState(process.env.VITE_METANODE_WALLET_ADDRESS || "");
 
   // refs
   const editorRef = useRef<EditorRefApi>(null);
@@ -238,6 +244,17 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
     )
       return;
 
+    if (!data?.id && !is_draft_issue && isOnChainTaskSyncEnabled()) {
+      if (!isWalletAddress(assigneeWallet)) {
+        setToast({
+          type: TOAST_TYPE.ERROR,
+          title: "Ví MetaNode không hợp lệ",
+          message: "Nhập địa chỉ ví 0x... của nhân viên trước khi tạo task.",
+        });
+        return;
+      }
+      setPendingCreateAssigneeWallet(assigneeWallet);
+    }
     const submitData = !data?.id
       ? formData
       : {
@@ -269,6 +286,7 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
             description_html: data?.description_html ?? "<p></p>",
           });
           editorRef?.current?.clearEditor();
+          setAssigneeWallet(process.env.VITE_METANODE_WALLET_ADDRESS || "");
         }
       })
       .catch((error) => {
@@ -479,6 +497,24 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
                   onClose={onClose}
                 />
               </div>
+              {!data?.id && !isDraft && isOnChainTaskSyncEnabled() && (
+                <div className="px-5">
+                  <label className="mb-1.5 block text-12 font-medium text-secondary">
+                    Ví MetaNode của nhân viên <span className="text-danger-primary">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={assigneeWallet}
+                    readOnly
+                    placeholder="Ví MetaNode cấu hình"
+                    className="focus:border-accent w-full rounded-md border border-subtle bg-layer-1/70 px-3 py-2 text-13 text-primary backdrop-blur-md outline-none"
+                    autoComplete="off"
+                  />
+                  <p className="mt-1 text-11 text-tertiary">
+                    Task sẽ được gán cho ví này ngay trong giao dịch createTask.
+                  </p>
+                </div>
+              )}{" "}
               <WorkItemModalAdditionalProperties
                 isDraft={isDraft}
                 workItemId={data?.id ?? data?.sourceIssueId}
@@ -554,7 +590,11 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
                         loading={isSubmitting}
                         disabled={isDisabled}
                       >
-                        {isSubmitting ? primaryButtonText.loading : primaryButtonText.default}
+                        {isSubmitting && !data?.id && isOnChainTaskSyncEnabled()
+                          ? "Đang chờ xác nhận ví và hash on-chain..."
+                          : isSubmitting
+                            ? primaryButtonText.loading
+                            : primaryButtonText.default}
                       </Button>
                     </div>
 

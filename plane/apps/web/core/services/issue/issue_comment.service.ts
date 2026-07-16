@@ -10,6 +10,7 @@ import type { TIssueComment, TIssueServiceType } from "@plane/types";
 import { EIssueServiceType } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
+import { isOnChainTaskSyncEnabled, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
 import { FileUploadService } from "@/services/file-upload.service";
 
 export class IssueCommentService extends APIService {
@@ -56,6 +57,14 @@ export class IssueCommentService extends APIService {
       data
     )
       .then((response) => response?.data)
+      .then((comment: TIssueComment) => {
+        if (isOnChainTaskSyncEnabled()) {
+          void recordIssueContentOnChain(issueId, 0, comment.comment_stripped || comment.comment_html).catch(
+            (error: unknown) => console.error("Failed to anchor comment on-chain:", error)
+          );
+        }
+        return comment;
+      })
       .catch((error) => {
         throw error?.response?.data;
       });

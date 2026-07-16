@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { observer } from "mobx-react";
 // plane imports
 import type { EditorRefApi } from "@plane/editor";
+import { EUserPermissions } from "@plane/constants";
 import type { TNameDescriptionLoader } from "@plane/types";
 import { EFileAssetType, EIssueServiceType } from "@plane/types";
 import { getTextContent } from "@plane/utils";
@@ -18,7 +19,7 @@ import { DescriptionInput } from "@/components/editor/rich-text/description-inpu
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useMember } from "@/hooks/store/use-member";
 import { useProject } from "@/hooks/store/use-project";
-import { useUser } from "@/hooks/store/user";
+import { useUser, useUserPermissions } from "@/hooks/store/user";
 import useReloadConfirmations from "@/hooks/use-reload-confirmation";
 import useSize from "@/hooks/use-window-size";
 // plane web components
@@ -33,6 +34,7 @@ import { NameDescriptionUpdateStatus } from "../issue-update-status";
 import { PeekOverviewProperties } from "../peek-overview/properties";
 import { IssueTitleInput } from "../title-input";
 import { IssueActivity } from "./issue-activity";
+import { OnChainTaskPanel } from "./on-chain-task-panel";
 import { IssueParentDetail } from "./parent";
 import { IssueReaction } from "./reactions";
 import type { TIssueOperations } from "./root";
@@ -57,6 +59,7 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
   // hooks
   const windowSize = useSize();
   const { data: currentUser } = useUser();
+  const { getProjectRoleByWorkspaceSlugAndProjectId } = useUserPermissions();
   const { getUserDetails } = useMember();
   const {
     issue: { getIssueById },
@@ -186,6 +189,13 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
           )}
         </div>
       </div>
+
+      <OnChainTaskPanel
+        issueId={issueId}
+        canManage={
+          isEditable && getProjectRoleByWorkspaceSlugAndProjectId(workspaceSlug, projectId) === EUserPermissions.ADMIN
+        }
+      />
 
       <IssueDetailWidgets
         workspaceSlug={workspaceSlug}

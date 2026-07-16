@@ -12,6 +12,7 @@ import type { TIssueAttachment, TIssueAttachmentUploadResponse, TIssueServiceTyp
 import { EIssueServiceType } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
+import { isOnChainTaskSyncEnabled, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
 import { FileUploadService } from "@/services/file-upload.service";
 
 export class IssueAttachmentService extends APIService {
@@ -61,6 +62,12 @@ export class IssueAttachmentService extends APIService {
           uploadProgressHandler
         );
         await this.updateIssueAttachmentUploadStatus(workspaceSlug, projectId, issueId, signedURLResponse.asset_id);
+        if (isOnChainTaskSyncEnabled()) {
+          const evidenceReference = `${signedURLResponse.asset_id}:${file.name}:${file.size}:${file.lastModified}`;
+          void recordIssueContentOnChain(issueId, 2, evidenceReference).catch((error: unknown) =>
+            console.error("Failed to anchor evidence on-chain:", error)
+          );
+        }
         return signedURLResponse.attachment;
       })
       .catch((error) => {

@@ -1,0 +1,101 @@
+export const planeTaskManagerAbi = [
+  {
+    type: "function",
+    name: "createTask",
+    inputs: [
+      { name: "externalId", type: "bytes32", internalType: "bytes32" },
+      { name: "metadataHash", type: "bytes32", internalType: "bytes32" },
+      { name: "assignee", type: "address", internalType: "address" },
+      { name: "dueAt", type: "uint64", internalType: "uint64" },
+      { name: "priority", type: "uint8", internalType: "enum PlaneTaskManager.Priority" },
+    ],
+    outputs: [{ name: "taskId", type: "uint256", internalType: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "assignTask",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "assignee", type: "address", internalType: "address" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "updateProgress",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "progress", type: "uint8", internalType: "uint8" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "updateTaskMetadata",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "metadataHash", type: "bytes32", internalType: "bytes32" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "submitDailyReport",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "progress", type: "uint8", internalType: "uint8" },
+      { name: "workHash", type: "bytes32", internalType: "bytes32" },
+      { name: "difficultyHash", type: "bytes32", internalType: "bytes32" },
+      { name: "evidenceHash", type: "bytes32", internalType: "bytes32" },
+    ],
+    outputs: [{ name: "reportId", type: "uint256", internalType: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "recordTaskContent",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "kind", type: "uint8", internalType: "enum PlaneTaskManager.ContentKind" },
+      { name: "contentHash", type: "bytes32", internalType: "bytes32" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getTaskId",
+    inputs: [{ name: "externalId", type: "bytes32", internalType: "bytes32" }],
+    outputs: [{ name: "taskId", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getKPI",
+    inputs: [{ name: "assignee", type: "address", internalType: "address" }],
+    outputs: [
+      {
+        name: "result",
+        type: "tuple",
+        internalType: "struct PlaneTaskManager.KPI",
+        components: [
+          { name: "total", type: "uint256" },
+          { name: "todo", type: "uint256" },
+          { name: "completed", type: "uint256" },
+          { name: "inProgress", type: "uint256" },
+          { name: "cancelled", type: "uint256" },
+          { name: "onSchedule", type: "uint256" },
+          { name: "delayed", type: "uint256" },
+          { name: "overdue", type: "uint256" },
+          { name: "progressSum", type: "uint256" },
+          { name: "averageProgress", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+] as const;

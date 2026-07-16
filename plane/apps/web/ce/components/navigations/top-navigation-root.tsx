@@ -18,8 +18,6 @@ import { AppSidebarItem } from "@/components/sidebar/sidebar-item";
 import { InboxIcon } from "@plane/propel/icons";
 import useSWR from "swr";
 import { useWorkspaceNotifications } from "@/hooks/store/notifications";
-// local imports
-import { StarUsOnGitHubLink } from "@/app/(all)/[workspaceSlug]/(projects)/star-us-link";
 
 export const TopNavigationRoot = observer(function TopNavigationRoot() {
   // router
@@ -61,24 +59,25 @@ export const TopNavigationRoot = observer(function TopNavigationRoot() {
       {/* Additional Actions */}
       <div className="flex flex-1 shrink-0 items-center justify-end gap-1">
         <Tooltip tooltipContent="Inbox" position="bottom">
-          <AppSidebarItem
-            variant="link"
-            item={{
-              href: `/${workspaceSlug?.toString()}/notifications/`,
-              icon: (
-                <div className="relative">
-                  <InboxIcon className="size-5" />
-                  {totalNotifications > 0 && (
-                    <span className="absolute top-0 right-0 size-2 rounded-full bg-danger-primary" />
-                  )}
-                </div>
-              ),
-              isActive: pathname?.includes("/notifications/"),
-            }}
-          />
+          <span className="inline-flex">
+            <AppSidebarItem
+              variant="link"
+              item={{
+                href: `/${workspaceSlug?.toString()}/notifications/`,
+                icon: (
+                  <div className="relative">
+                    <InboxIcon className="size-5" />
+                    {totalNotifications > 0 && (
+                      <span className="absolute top-0 right-0 size-2 rounded-full bg-danger-primary" />
+                    )}
+                  </div>
+                ),
+                isActive: pathname?.includes("/notifications/"),
+              }}
+            />
+          </span>
         </Tooltip>
         <HelpMenuRoot />
-        <StarUsOnGitHubLink />
         <div className="flex size-8 items-center justify-center rounded-md hover:bg-layer-1-hover">
           <UserMenuRoot />
         </div>
