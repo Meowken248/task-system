@@ -93,13 +93,32 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
   const pendingAssignee = pendingAssigneeId ? getUserDetails(pendingAssigneeId) : undefined;
 
   const handleAssigneeChange = async (assigneeIds: string[]) => {
-    if (!isOnChainTaskSyncEnabled() || assigneeIds.length === 0) {
-      await issueOperations.update(workspaceSlug, projectId, issueId, { assignee_ids: assigneeIds });
+    if (!isOnChainTaskSyncEnabled()) {
+      setToast({
+        type: TOAST_TYPE.ERROR,
+        title: "On-chain chưa được cấu hình",
+        message: "Không thể giao task khi kết nối hợp đồng MetaNode chưa sẵn sàng.",
+      });
+      return;
+    }
+    if (assigneeIds.length === 0) {
+      setToast({
+        type: TOAST_TYPE.ERROR,
+        title: "Task cần một nhân viên",
+        message: "Hãy chọn nhân viên thay thế; không thể bỏ trống người được giao task.",
+      });
       return;
     }
     const selectedAssigneeId = assigneeIds.at(-1);
     setPendingAssigneeIds(selectedAssigneeId ? [selectedAssigneeId] : []);
-    setAssigneeWallet(process.env.VITE_METANODE_WALLET_ADDRESS || "");
+    if (!selectedAssigneeId) {
+      setAssigneeWallet("");
+      return;
+    }
+    const storedWallet = await blockchainTrackingService
+      .getStoredAssigneeWallet(workspaceSlug, projectId, selectedAssigneeId)
+      .catch(() => "");
+    setAssigneeWallet(storedWallet || process.env.VITE_METANODE_WALLET_ADDRESS || "");
   };
 
   const confirmOnChainAssignment = async () => {
@@ -122,7 +141,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
         assigneeId: pendingAssigneeId,
         assigneeName: pendingAssignee?.display_name || pendingAssignee?.email || pendingAssigneeId,
       });
-      await issueOperations.update(workspaceSlug, projectId, issueId, { assignee_ids: pendingAssigneeIds });
+      await issueOperations.fetch(workspaceSlug, projectId, issueId, false);
       setPendingAssigneeIds(null);
       setToast({
         type: TOAST_TYPE.SUCCESS,

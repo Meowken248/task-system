@@ -19,7 +19,6 @@ import { DescriptionInput } from "@/components/editor/rich-text/description-inpu
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useMember } from "@/hooks/store/use-member";
 import { useProject } from "@/hooks/store/use-project";
-import { useProjectState } from "@/hooks/store/use-project-state";
 import { useUser, useUserPermissions } from "@/hooks/store/user";
 import useReloadConfirmations from "@/hooks/use-reload-confirmation";
 import useSize from "@/hooks/use-window-size";
@@ -68,7 +67,6 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
     peekIssue,
   } = useIssueDetail();
   const { getProjectById } = useProject();
-  const { getProjectStates } = useProjectState();
   const { setShowAlert } = useReloadConfirmations(isSubmitting === "submitting");
   // derived values
   const projectDetails = getProjectById(projectId);
@@ -205,12 +203,6 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
         issueId={issueId}
         issueName={issue.name}
         onReportRecorded={async ({ progress, transactionHash, recordedAt }) => {
-          const targetStateGroups =
-            progress === 100 ? ["completed"] : progress > 0 ? ["started"] : ["unstarted", "backlog"];
-          const targetState = getProjectStates(projectId)?.find((state) => targetStateGroups.includes(state.group));
-          if (targetState && targetState.id !== issue.state_id) {
-            await issueOperations.update(workspaceSlug, projectId, issueId, { state_id: targetState.id });
-          }
           const date = new Intl.DateTimeFormat("vi-VN", {
             day: "2-digit",
             month: "2-digit",

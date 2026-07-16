@@ -19,7 +19,7 @@ type Props = {
 };
 
 export const SpreadsheetAssigneeColumn = observer(function SpreadsheetAssigneeColumn(props: Props) {
-  const { issue, onChange, disabled, onClose } = props;
+  const { issue, onChange, onClose } = props;
 
   return (
     <div className="h-11 border-b-[0.5px] border-subtle">
@@ -36,7 +36,7 @@ export const SpreadsheetAssigneeColumn = observer(function SpreadsheetAssigneeCo
           );
         }}
         projectId={issue?.project_id ?? undefined}
-        disabled={disabled}
+        disabled
         multiple
         placeholder="Assignees"
         buttonVariant={

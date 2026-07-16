@@ -141,3 +141,60 @@ class ProjectLitePermission(BasePermission):
             project_id=view.project_id,
             is_active=True,
         ).exists()
+
+
+class FiaiTaskPermission(BasePermission):
+    """Restrict task mutations to the FIAI Admin/Employee workflow."""
+
+    employee_update_fields = {
+        "name",
+        "description_html",
+        "description_json",
+        "description_stripped",
+        "description_binary",
+        "skip_activity",
+    }
+
+    def has_permission(self, request, view):
+        if request.user.is_anonymous:
+            return False
+
+        slug = view.workspace_slug
+        project_id = view.project_id
+        membership = ProjectMember.objects.filter(
+            workspace__slug=slug,
+            member=request.user,
+            project_id=project_id,
+            is_active=True,
+        )
+        if request.method in SAFE_METHODS:
+            return membership.exists()
+
+        is_admin = membership.filter(role=ROLE.ADMIN.value).exists() or (
+            membership.exists()
+            and WorkspaceMember.objects.filter(
+                workspace__slug=slug,
+                member=request.user,
+                role=ROLE.ADMIN.value,
+                is_active=True,
+            ).exists()
+        )
+        if is_admin:
+            return request.method != "PATCH" or "assignee_ids" not in request.data
+
+        if request.method != "PATCH":
+            return False
+        if not set(request.data.keys()).issubset(self.employee_update_fields):
+            return False
+
+        issue_id = view.kwargs.get("pk")
+        if not issue_id:
+            return False
+        from plane.db.models import Issue
+
+        return Issue.objects.filter(
+            id=issue_id,
+            project_id=project_id,
+            workspace__slug=slug,
+            assignees=request.user,
+        ).exists()

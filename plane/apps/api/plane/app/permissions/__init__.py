@@ -16,6 +16,7 @@ from .project import (
     ProjectMemberPermission,
     ProjectLitePermission,
     ProjectAdminPermission,
+    FiaiTaskPermission,
 )
 from .base import allow_permission, ROLE
 from .page import ProjectPagePermission

@@ -63,6 +63,7 @@ from plane.app.permissions import (
     ProjectEntityPermission,
     ProjectLitePermission,
     ProjectMemberPermission,
+    FiaiTaskPermission,
 )
 from plane.bgtasks.issue_activities_task import issue_activity
 from plane.db.models import (
@@ -255,7 +256,7 @@ class IssueListCreateAPIEndpoint(BaseAPIView):
 
     model = Issue
     webhook_event = "issue"
-    permission_classes = [ProjectEntityPermission]
+    permission_classes = [FiaiTaskPermission]
     serializer_class = IssueSerializer
     use_read_replica = True
 
@@ -499,7 +500,7 @@ class IssueDetailAPIEndpoint(BaseAPIView):
 
     model = Issue
     webhook_event = "issue"
-    permission_classes = [ProjectEntityPermission]
+    permission_classes = [FiaiTaskPermission]
     serializer_class = IssueSerializer
     use_read_replica = True
 

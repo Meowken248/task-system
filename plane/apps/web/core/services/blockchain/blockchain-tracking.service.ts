@@ -33,6 +33,17 @@ class BlockchainTrackingService extends APIService {
       evidence: payload.evidence,
     });
   }
+  async getStoredAssigneeWallet(workspaceSlug: string, projectId: string, assigneeId: string): Promise<string> {
+    const response = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`);
+    const records = Array.isArray(response?.data) ? response.data : [];
+    const assignment = records.find(
+      (record: Record<string, unknown>) =>
+        record.event_type === "assign_task" &&
+        record.assignee_id === assigneeId &&
+        typeof record.assignee_wallet === "string"
+    );
+    return typeof assignment?.assignee_wallet === "string" ? assignment.assignee_wallet : "";
+  }
   async recordTaskAssignment(
     workspaceSlug: string,
     projectId: string,
