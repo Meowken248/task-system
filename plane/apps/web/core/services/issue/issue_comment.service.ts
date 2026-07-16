@@ -58,7 +58,7 @@ export class IssueCommentService extends APIService {
     )
       .then((response) => response?.data)
       .then((comment: TIssueComment) => {
-        if (isOnChainTaskSyncEnabled()) {
+        if (isOnChainTaskSyncEnabled() && data.external_source !== "blockchain-daily-report") {
           void recordIssueContentOnChain(issueId, 0, comment.comment_stripped || comment.comment_html).catch(
             (error: unknown) => console.error("Failed to anchor comment on-chain:", error)
           );

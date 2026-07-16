@@ -181,6 +181,11 @@ export async function assignIssueOnChain(taskId: number, walletAddress: string):
   return sendContractTransaction("assignTask", { taskId, assignee: walletAddress });
 }
 
+export async function assignIssueByIssueIdOnChain(issueId: string, walletAddress: string): Promise<string> {
+  const taskId = await getIssueTaskId(issueId);
+  return assignIssueOnChain(taskId, walletAddress);
+}
+
 export async function updateIssueProgressOnChain(taskId: number, progress: number): Promise<string> {
   if (!Number.isInteger(progress) || progress < 0 || progress > 100) throw new Error("Progress must be 0-100.");
   return sendContractTransaction("updateProgress", { taskId, progress });
@@ -241,13 +246,17 @@ export async function submitIssueDailyReportOnChain(
   onStatus?.("Đang đọc task từ blockchain...");
   const taskId = await getIssueTaskId(issueId);
   onStatus?.("Đang chờ mở ví và xác nhận giao dịch...");
-  return withTimeout(sendContractTransaction("submitDailyReport", {
-    taskId,
-    progress: report.progress,
-    workHash: await hashTaskValue(report.work),
-    difficultyHash: await hashTaskValue(report.difficulty),
-    evidenceHash: await hashTaskValue(report.evidence),
-  }), 90_000, "Giao dịch báo cáo quá thời gian 90 giây. Hãy kiểm tra cửa sổ ví và thử lại.");
+  return withTimeout(
+    sendContractTransaction("submitDailyReport", {
+      taskId,
+      progress: report.progress,
+      workHash: await hashTaskValue(report.work),
+      difficultyHash: await hashTaskValue(report.difficulty),
+      evidenceHash: await hashTaskValue(report.evidence),
+    }),
+    90_000,
+    "Giao dịch báo cáo quá thời gian 90 giây. Hãy kiểm tra cửa sổ ví và thử lại."
+  );
 }
 
 export async function recordIssueContentOnChain(issueId: string, kind: 0 | 1 | 2, content: string): Promise<string> {

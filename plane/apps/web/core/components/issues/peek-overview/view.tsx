@@ -8,12 +8,14 @@ import { useRef, useState } from "react";
 import { observer } from "mobx-react";
 import { createPortal } from "react-dom";
 // plane imports
+import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
 import type { EditorRefApi } from "@plane/editor";
 import type { TNameDescriptionLoader } from "@plane/types";
 import { EIssueServiceType } from "@plane/types";
 import { cn } from "@plane/utils";
 // hooks
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
+import { useUserPermissions } from "@/hooks/store/user";
 import useKeypress from "@/hooks/use-keypress";
 import usePeekOverviewOutsideClickDetector from "@/hooks/use-peek-overview-outside-click";
 // local imports
@@ -70,7 +72,9 @@ export const IssueView = observer(function IssueView(props: IIssueView) {
     issue: { getIssueById },
   } = useIssueDetail();
   const { isAnyModalOpen: isAnyEpicModalOpen } = useIssueDetail(EIssueServiceType.EPICS);
+  const { allowPermissions } = useUserPermissions();
   const issue = getIssueById(issueId);
+  const isAdmin = allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.PROJECT, workspaceSlug, projectId);
   // remove peek id
   const removeRoutePeekId = () => {
     setPeekIssue(undefined);
@@ -168,7 +172,7 @@ export const IssueView = observer(function IssueView(props: IIssueView) {
                 workspaceSlug={workspaceSlug}
                 projectId={projectId}
                 isSubmitting={isSubmitting}
-                disabled={disabled}
+                disabled={disabled || !isAdmin}
                 embedIssue={embedIssue}
               />
               {/* content */}
@@ -194,6 +198,7 @@ export const IssueView = observer(function IssueView(props: IIssueView) {
                         issueId={issueId}
                         disabled={disabled || is_archived}
                         issueServiceType={EIssueServiceType.ISSUES}
+                        hideWidgets={isAdmin ? undefined : ["sub-work-items", "relations", "links"]}
                       />
                     </div>
 
@@ -233,8 +238,9 @@ export const IssueView = observer(function IssueView(props: IIssueView) {
                             workspaceSlug={workspaceSlug}
                             projectId={projectId}
                             issueId={issueId}
-                            disabled={disabled}
+                            disabled={disabled || is_archived}
                             issueServiceType={EIssueServiceType.ISSUES}
+                            hideWidgets={isAdmin ? undefined : ["sub-work-items", "relations", "links"]}
                           />
                         </div>
 

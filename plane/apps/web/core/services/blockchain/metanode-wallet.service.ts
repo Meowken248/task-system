@@ -13,6 +13,9 @@ export function isMetanodeWalletRuntimeSupported(): boolean {
 function openConnectWalletPage(): void {
   const connectWalletUrl = process.env.VITE_URL_CONNECT_WALLET?.trim();
   if (!connectWalletUrl) throw new Error("VITE_URL_CONNECT_WALLET is missing.");
+  if (!/^https:\/\//i.test(connectWalletUrl)) {
+    throw new Error("VITE_URL_CONNECT_WALLET must start with https://.");
+  }
   connectWalletPopup = window.open(connectWalletUrl, "metanode-connect-wallet", "popup,width=480,height=760");
   if (!connectWalletPopup) throw new Error("Connect Wallet popup was blocked by the browser.");
   connectWalletPopup.focus();
@@ -114,16 +117,26 @@ async function hasWallet(address: string): Promise<boolean> {
 
 export async function promptForMetanodeWalletImport(address: string): Promise<boolean> {
   if (typeof window === "undefined" || !isWalletAddress(address)) return false;
-  if (await hasWallet(address)) return true;
+  if (await hasWallet(address)) return activateMetanodeWallet(address);
 
-  void openMetanodeWallet().catch(() => null);
+  // fiai-sdk@1.0.0 never resolves connectWallet when the selected wallet is
+  // already active, so keep polling Crypto Vault instead of awaiting it.
+  void openMetanodeWallet().catch((error) => {
+    console.warn("MetaNode runtime could not open the wallet. Opening Connect Wallet instead.", error);
+    try {
+      openConnectWalletPage();
+    } catch (popupError) {
+      console.error("Connect Wallet fallback failed:", popupError);
+    }
+  });
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     if (await hasWallet(address)) {
+      const activated = await activateMetanodeWallet(address);
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
       connectWalletPopup?.close();
       connectWalletPopup = null;
-      return true;
+      return activated;
     }
     await new Promise((resolve) => window.setTimeout(resolve, 500));
   }

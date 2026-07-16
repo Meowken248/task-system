@@ -23,18 +23,34 @@ _ALLOWED_FIELDS = {
     "project_id",
     "workspace_slug",
     "wallet_address",
+    "assignee_wallet",
+    "assignee_id",
+    "assignee_name",
     "contract_address",
     "chain_id",
     "transaction_hash",
+    "event_type",
+    "progress",
+    "work",
+    "difficulty",
+    "evidence",
 }
 _REQUIRED_FIELDS = {"issue_id", "transaction_hash"}
 
 
-def _tracking_file_path() -> Path:
-    configured_path = os.environ.get("BLOCKCHAIN_TRACKING_FILE")
+def _tracking_file_path(event_type: str | None = None) -> Path:
+    file_config = {
+        "daily_report": ("DAILY_REPORTS_FILE", "daily-reports.json"),
+        "assign_task": ("TASK_ASSIGNMENTS_FILE", "task-assignments.json"),
+    }
+    environment_key, filename = file_config.get(
+        event_type,
+        ("BLOCKCHAIN_TRACKING_FILE", "blockchain-data.json"),
+    )
+    configured_path = os.environ.get(environment_key)
     if configured_path:
         return Path(configured_path).expanduser().resolve()
-    return Path(settings.BASE_DIR).parent / "blockchain-data.json"
+    return Path(settings.BASE_DIR).parent / filename
 
 
 def _read_records(path: Path) -> list[dict]:
@@ -77,9 +93,12 @@ class BlockchainTrackingEndpoint(BaseAPIView):
     permission_classes = [ProjectEntityPermission]
 
     def get(self, request, slug, project_id):
-        path = _tracking_file_path()
         with _tracking_file_lock:
-            records = _read_records(path)
+            records = (
+                _read_records(_tracking_file_path())
+                + _read_records(_tracking_file_path("daily_report"))
+                + _read_records(_tracking_file_path("assign_task"))
+            )
         filtered = [
             record
             for record in records
@@ -100,7 +119,7 @@ class BlockchainTrackingEndpoint(BaseAPIView):
         payload["project_id"] = str(project_id)
         payload["recorded_at"] = timezone.now().isoformat()
 
-        path = _tracking_file_path()
+        path = _tracking_file_path(payload.get("event_type"))
         with _tracking_file_lock:
             records = _read_records(path)
             records = _upsert_record(records, payload)

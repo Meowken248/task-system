@@ -1,0 +1,18 @@
+[
+  {
+    "difficulty": "ssss",
+    "work": "viết contract",
+    "evidence": "ssss",
+    "issue_id": "aa9ab3db-f338-400e-b6ff-2e832a6292f6",
+    "transaction_hash": "0x43c0101e7b237233754a516d5d99c269c6e1932266f9908c4104a169b5b6638e",
+    "progress": 50,
+    "issue_name": "ss",
+    "chain_id": "991",
+    "event_type": "daily_report",
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "contract_address": "0xAC2a3af10D9a7c1F7dE47568C2665F33298f1E58",
+    "workspace_slug": "fiai",
+    "project_id": "7b39ca6c-1af8-49e6-99d0-13898683cfa0",
+    "recorded_at": "2026-07-16T07:15:54.966048+00:00"
+  }
+]

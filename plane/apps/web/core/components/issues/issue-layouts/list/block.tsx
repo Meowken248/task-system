@@ -10,6 +10,7 @@ import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { observer } from "mobx-react";
 import { useParams } from "next/navigation";
+import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
 import { ChevronRightIcon } from "@plane/propel/icons";
 // types
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
@@ -27,6 +28,7 @@ import { IssueProperties } from "@/components/issues/issue-layouts/properties";
 import { useAppTheme } from "@/hooks/store/use-app-theme";
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useProject } from "@/hooks/store/use-project";
+import { useUserPermissions } from "@/hooks/store/user";
 import type { TSelectionHelper } from "@/hooks/use-multiple-select";
 import { usePlatformOS } from "@/hooks/use-platform-os";
 // plane web components
@@ -84,6 +86,7 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
   // hooks
   const { sidebarCollapsed: isSidebarCollapsed } = useAppTheme();
   const { getProjectIdentifierById, currentProjectNextSequenceId } = useProject();
+  const { allowPermissions } = useUserPermissions();
   const {
     getIsIssuePeeked,
     peekIssue,
@@ -107,8 +110,14 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
 
   // derived values
   const issue = issuesMap[issueId];
+  const isAdmin = allowPermissions(
+    [EUserPermissions.ADMIN],
+    EUserPermissionsLevel.PROJECT,
+    workspaceSlug ?? undefined,
+    issue?.project_id ?? undefined
+  );
   const subIssuesCount = issue?.sub_issues_count ?? 0;
-  const canEditIssueProperties = canEditProperties(issue?.project_id ?? undefined);
+  const canEditIssueProperties = canEditProperties(issue?.project_id ?? undefined) && isAdmin;
   const isDraggingAllowed = canDrag && canEditIssueProperties;
 
   const { isMobile } = usePlatformOS();
@@ -294,7 +303,7 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
               </WithDisplayPropertiesHOC>
             )}
           </div>
-          {!issue?.tempId && (
+          {!issue?.tempId && isAdmin && (
             <div
               className={cn("block rounded-sm border border-strong", {
                 "md:hidden": isSidebarCollapsed,
@@ -320,21 +329,28 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
                 activeLayout="List"
                 isEpic={isEpic}
               />
-              <div
-                className={cn("hidden", {
-                  "md:flex": isSidebarCollapsed,
-                  "lg:flex": !isSidebarCollapsed,
-                })}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-              >
-                {quickActions({
-                  issue,
-                  parentRef: issueRef,
-                })}
-              </div>
+              {isAdmin && (
+                <div
+                  role="presentation"
+                  className={cn("hidden", {
+                    "md:flex": isSidebarCollapsed,
+                    "lg:flex": !isSidebarCollapsed,
+                  })}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onKeyDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                >
+                  {quickActions({
+                    issue,
+                    parentRef: issueRef,
+                  })}
+                </div>
+              )}
             </>
           ) : (
             <div className="h-4 w-4">

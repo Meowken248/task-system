@@ -19,6 +19,7 @@ import { DescriptionInput } from "@/components/editor/rich-text/description-inpu
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useMember } from "@/hooks/store/use-member";
 import { useProject } from "@/hooks/store/use-project";
+import { useProjectState } from "@/hooks/store/use-project-state";
 import { useUser, useUserPermissions } from "@/hooks/store/user";
 import useReloadConfirmations from "@/hooks/use-reload-confirmation";
 import useSize from "@/hooks/use-window-size";
@@ -63,13 +64,16 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
   const { getUserDetails } = useMember();
   const {
     issue: { getIssueById },
+    createComment,
     peekIssue,
   } = useIssueDetail();
   const { getProjectById } = useProject();
+  const { getProjectStates } = useProjectState();
   const { setShowAlert } = useReloadConfirmations(isSubmitting === "submitting");
   // derived values
   const projectDetails = getProjectById(projectId);
   const issue = issueId ? getIssueById(issueId) : undefined;
+  const isAdmin = getProjectRoleByWorkspaceSlugAndProjectId(workspaceSlug, projectId) === EUserPermissions.ADMIN;
   // debounced duplicate issues swr
   const { duplicateIssues } = useDebouncedDuplicateIssues(
     workspaceSlug,
@@ -177,10 +181,15 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
                 isRestoreDisabled: !isEditable || isArchived,
               }}
               fetchHandlers={{
-                listDescriptionVersions: (issueId) =>
-                  workItemVersionService.listDescriptionVersions(workspaceSlug, projectId, issueId),
-                retrieveDescriptionVersion: (issueId, versionId) =>
-                  workItemVersionService.retrieveDescriptionVersion(workspaceSlug, projectId, issueId, versionId),
+                listDescriptionVersions: (versionIssueId) =>
+                  workItemVersionService.listDescriptionVersions(workspaceSlug, projectId, versionIssueId),
+                retrieveDescriptionVersion: (versionIssueId, versionId) =>
+                  workItemVersionService.retrieveDescriptionVersion(
+                    workspaceSlug,
+                    projectId,
+                    versionIssueId,
+                    versionId
+                  ),
               }}
               handleRestore={(descriptionHTML) => editorRef.current?.setEditorValue(descriptionHTML, true)}
               projectId={projectId}
@@ -191,12 +200,36 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
       </div>
 
       <OnChainTaskPanel
+        workspaceSlug={workspaceSlug}
+        projectId={projectId}
         issueId={issueId}
-        canReport={
-          isEditable &&
-          getProjectRoleByWorkspaceSlugAndProjectId(workspaceSlug, projectId) !== EUserPermissions.ADMIN &&
-          Boolean(currentUser?.id && issue.assignee_ids.includes(currentUser.id))
-        }
+        issueName={issue.name}
+        onReportRecorded={async ({ progress, transactionHash, recordedAt }) => {
+          const targetStateGroups =
+            progress === 100 ? ["completed"] : progress > 0 ? ["started"] : ["unstarted", "backlog"];
+          const targetState = getProjectStates(projectId)?.find((state) => targetStateGroups.includes(state.group));
+          if (targetState && targetState.id !== issue.state_id) {
+            await issueOperations.update(workspaceSlug, projectId, issueId, { state_id: targetState.id });
+          }
+          const date = new Intl.DateTimeFormat("vi-VN", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            timeZone: "Asia/Ho_Chi_Minh",
+          }).format(recordedAt);
+          const time = new Intl.DateTimeFormat("vi-VN", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+            timeZone: "Asia/Ho_Chi_Minh",
+          }).format(recordedAt);
+          await createComment(workspaceSlug, projectId, issueId, {
+            comment_html: `<p>Báo cáo ngày thành công lúc <strong>${time}</strong>, ngày <strong>${date}</strong>. Tiến độ: <strong>${progress}%</strong>. Transaction: <code>${transactionHash}</code></p>`,
+            external_source: "blockchain-daily-report",
+          });
+        }}
+        canReport={isEditable && !isAdmin && Boolean(currentUser?.id && issue.assignee_ids.includes(currentUser.id))}
       />
 
       <IssueDetailWidgets
@@ -204,6 +237,7 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
         projectId={projectId}
         issueId={issueId}
         disabled={!isEditable || isArchived}
+        hideWidgets={isAdmin ? undefined : ["sub-work-items", "relations", "links"]}
         renderWidgetModals={!isPeekModeActive}
         issueServiceType={EIssueServiceType.ISSUES}
       />

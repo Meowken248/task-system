@@ -1,0 +1,47 @@
+[
+  {
+    "contract_address": "0xAC2a3af10D9a7c1F7dE47568C2665F33298f1E58",
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "transaction_hash": "0xf8128cf3b1eee6fd8441806de027f09b2187b24c5c886b7023ea61d17389ac77",
+    "assignee_id": "94d6575f-a677-4c0e-b9d2-5cd208bf8fc0",
+    "event_type": "assign_task",
+    "issue_name": "BlockChain",
+    "assignee_name": "tuh225095",
+    "chain_id": "991",
+    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "issue_id": "12196c83-e148-4277-ae10-8b06564cdbcc",
+    "workspace_slug": "fiai",
+    "project_id": "7b39ca6c-1af8-49e6-99d0-13898683cfa0",
+    "recorded_at": "2026-07-16T07:46:17.966902+00:00"
+  },
+  {
+    "contract_address": "0xAC2a3af10D9a7c1F7dE47568C2665F33298f1E58",
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "transaction_hash": "0x589d2ccc828fd18793d8d59433e41088d2eb8e3860c44872eeb3a3640302675a",
+    "assignee_id": "031a98a3-a08f-48a7-9017-389e05b65647",
+    "event_type": "assign_task",
+    "issue_name": "BlockChain",
+    "assignee_name": "anh2482006",
+    "chain_id": "991",
+    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "issue_id": "12196c83-e148-4277-ae10-8b06564cdbcc",
+    "workspace_slug": "fiai",
+    "project_id": "7b39ca6c-1af8-49e6-99d0-13898683cfa0",
+    "recorded_at": "2026-07-16T07:40:32.279795+00:00"
+  },
+  {
+    "contract_address": "0xAC2a3af10D9a7c1F7dE47568C2665F33298f1E58",
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "transaction_hash": "0x236c148e28db61073841bdc496463227f7d63cddf7beb74ccb108e85a7e1d552",
+    "assignee_id": "94d6575f-a677-4c0e-b9d2-5cd208bf8fc0",
+    "event_type": "assign_task",
+    "issue_name": "BlockChain",
+    "assignee_name": "tuh225095",
+    "chain_id": "991",
+    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "issue_id": "12196c83-e148-4277-ae10-8b06564cdbcc",
+    "workspace_slug": "fiai",
+    "project_id": "7b39ca6c-1af8-49e6-99d0-13898683cfa0",
+    "recorded_at": "2026-07-16T07:40:24.957190+00:00"
+  }
+]

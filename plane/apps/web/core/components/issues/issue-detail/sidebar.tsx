@@ -4,8 +4,11 @@
  * See the LICENSE file for details.
  */
 
+import { useState } from "react";
+import { createPortal } from "react-dom";
 import { observer } from "mobx-react";
 // i18n
+import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
 // ui
 import {
@@ -35,6 +38,11 @@ import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useMember } from "@/hooks/store/use-member";
 import { useProject } from "@/hooks/store/use-project";
 import { useProjectState } from "@/hooks/store/use-project-state";
+import { useUserPermissions } from "@/hooks/store/user";
+import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
+import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
+import { assignIssueByIssueIdOnChain, isOnChainTaskSyncEnabled } from "@/services/blockchain/plane-task-chain.service";
+import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 // plane web components
 // components
 import { WorkItemAdditionalSidebarProperties } from "@/plane-web/components/issues/issue-details/additional-properties";
@@ -67,6 +75,10 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
   } = useIssueDetail();
   const { getUserDetails } = useMember();
   const { getStateById } = useProjectState();
+  const { allowPermissions } = useUserPermissions();
+  const [pendingAssigneeIds, setPendingAssigneeIds] = useState<string[] | null>(null);
+  const [assigneeWallet, setAssigneeWallet] = useState(process.env.VITE_METANODE_WALLET_ADDRESS || "");
+  const [isAssigningOnChain, setIsAssigningOnChain] = useState(false);
   const issue = getIssueById(issueId);
   if (!issue) return <></>;
 
@@ -75,6 +87,58 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
   // derived values
   const projectDetails = getProjectById(issue.project_id);
   const stateDetails = getStateById(issue.state_id);
+  const isAdmin = allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.PROJECT, workspaceSlug, projectId);
+
+  const pendingAssigneeId = pendingAssigneeIds?.at(-1) ?? "";
+  const pendingAssignee = pendingAssigneeId ? getUserDetails(pendingAssigneeId) : undefined;
+
+  const handleAssigneeChange = async (assigneeIds: string[]) => {
+    if (!isOnChainTaskSyncEnabled() || assigneeIds.length === 0) {
+      await issueOperations.update(workspaceSlug, projectId, issueId, { assignee_ids: assigneeIds });
+      return;
+    }
+    const selectedAssigneeId = assigneeIds.at(-1);
+    setPendingAssigneeIds(selectedAssigneeId ? [selectedAssigneeId] : []);
+    setAssigneeWallet(process.env.VITE_METANODE_WALLET_ADDRESS || "");
+  };
+
+  const confirmOnChainAssignment = async () => {
+    if (!pendingAssigneeIds || !pendingAssigneeId || !isWalletAddress(assigneeWallet)) {
+      setToast({
+        type: TOAST_TYPE.ERROR,
+        title: "Ví MetaNode không hợp lệ",
+        message: "Hãy nhập địa chỉ ví 0x gồm 40 ký tự của nhân viên.",
+      });
+      return;
+    }
+    setIsAssigningOnChain(true);
+    try {
+      const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet.trim());
+      await blockchainTrackingService.recordTaskAssignment(workspaceSlug, projectId, {
+        issueId,
+        issueName: issue.name,
+        transactionHash,
+        assigneeWallet: assigneeWallet.trim(),
+        assigneeId: pendingAssigneeId,
+        assigneeName: pendingAssignee?.display_name || pendingAssignee?.email || pendingAssigneeId,
+      });
+      await issueOperations.update(workspaceSlug, projectId, issueId, { assignee_ids: pendingAssigneeIds });
+      setPendingAssigneeIds(null);
+      setToast({
+        type: TOAST_TYPE.SUCCESS,
+        title: "Giao task thành công",
+        message: `Đã xác nhận on-chain. Hash: ${transactionHash.slice(0, 10)}...${transactionHash.slice(-8)}`,
+      });
+    } catch (error) {
+      setToast({
+        type: TOAST_TYPE.ERROR,
+        title: "Không thể giao task",
+        message: error instanceof Error ? error.message : "Giao dịch on-chain thất bại.",
+      });
+    } finally {
+      setIsAssigningOnChain(false);
+    }
+  };
 
   const minDate = issue.start_date ? getDate(issue.start_date) : null;
   minDate?.setDate(minDate.getDate());
@@ -93,7 +157,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                 value={issue?.state_id}
                 onChange={(val) => issueOperations.update(workspaceSlug, projectId, issueId, { state_id: val })}
                 projectId={projectId?.toString() ?? ""}
-                disabled={!isEditable}
+                disabled={!isEditable || !isAdmin}
                 buttonVariant="transparent-with-text"
                 className="group w-full grow"
                 buttonContainerClassName="w-full text-left h-7.5"
@@ -103,11 +167,11 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
               />
             </SidebarPropertyListItem>
 
-            <SidebarPropertyListItem icon={MembersPropertyIcon} label={t("common.assignees")}>
+            <SidebarPropertyListItem icon={MembersPropertyIcon} label="Nhân viên">
               <MemberDropdown
                 value={issue?.assignee_ids ?? undefined}
-                onChange={(val) => issueOperations.update(workspaceSlug, projectId, issueId, { assignee_ids: val })}
-                disabled={!isEditable}
+                onChange={handleAssigneeChange}
+                disabled={!isEditable || !isAdmin}
                 projectId={projectId?.toString() ?? ""}
                 placeholder={t("issue.add.assignee")}
                 multiple
@@ -125,7 +189,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
               <PriorityDropdown
                 value={issue?.priority}
                 onChange={(val) => issueOperations.update(workspaceSlug, projectId, issueId, { priority: val })}
-                disabled={!isEditable}
+                disabled={!isEditable || !isAdmin}
                 buttonVariant="transparent-with-text"
                 className="h-7.5 w-full grow rounded-sm"
                 buttonContainerClassName="size-full text-left"
@@ -152,7 +216,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                   })
                 }
                 maxDate={maxDate ?? undefined}
-                disabled={!isEditable}
+                disabled={!isEditable || !isAdmin}
                 buttonVariant="transparent-with-text"
                 className="group w-full grow"
                 buttonContainerClassName="w-full text-left h-7.5"
@@ -173,7 +237,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                     })
                   }
                   minDate={minDate ?? undefined}
-                  disabled={!isEditable}
+                  disabled={!isEditable || !isAdmin}
                   buttonVariant="transparent-with-text"
                   className="group w-full grow"
                   buttonContainerClassName="w-full text-left h-7.5"
@@ -196,7 +260,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                     issueOperations.update(workspaceSlug, projectId, issueId, { estimate_point: val })
                   }
                   projectId={projectId}
-                  disabled={!isEditable}
+                  disabled={!isEditable || !isAdmin}
                   buttonVariant="transparent-with-text"
                   className="group w-full grow"
                   buttonContainerClassName="w-full text-left h-7.5"
@@ -217,7 +281,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                   projectId={projectId}
                   issueId={issueId}
                   issueOperations={issueOperations}
-                  disabled={!isEditable}
+                  disabled={!isEditable || !isAdmin}
                 />
               </SidebarPropertyListItem>
             )}
@@ -234,7 +298,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                   projectId={projectId}
                   issueId={issueId}
                   issueOperations={issueOperations}
-                  disabled={!isEditable}
+                  disabled={!isEditable || !isAdmin}
                 />
               </SidebarPropertyListItem>
             )}
@@ -246,7 +310,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                 projectId={projectId}
                 issueId={issueId}
                 issueOperations={issueOperations}
-                disabled={!isEditable}
+                disabled={!isEditable || !isAdmin}
               />
             </SidebarPropertyListItem>
 
@@ -255,7 +319,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                 workspaceSlug={workspaceSlug}
                 projectId={projectId}
                 issueId={issueId}
-                disabled={!isEditable}
+                disabled={!isEditable || !isAdmin}
               />
             </SidebarPropertyListItem>
 
@@ -263,7 +327,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
               workspaceSlug={workspaceSlug}
               projectId={projectId}
               issueId={issueId}
-              disabled={!isEditable}
+              disabled={!isEditable || !isAdmin}
             />
 
             <WorkItemAdditionalSidebarProperties
@@ -271,11 +335,59 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
               workItemTypeId={issue.type_id}
               projectId={projectId}
               workspaceSlug={workspaceSlug}
-              isEditable={isEditable}
+              isEditable={isEditable && isAdmin}
             />
           </div>
         </div>
       </div>
+      {pendingAssigneeIds &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-md">
+            <div className="shadow-2xl w-full max-w-md rounded-xl border border-subtle-1 bg-surface-1 p-5">
+              <h3 className="text-lg font-semibold text-primary">Giao task on-chain</h3>
+              <p className="text-sm mt-1 text-secondary">
+                Nhập ví MetaNode của {pendingAssignee?.display_name || pendingAssignee?.email || "nhân viên"}. Task chỉ
+                được giao sau khi giao dịch thành công.
+              </p>
+              <label htmlFor="on-chain-assignee-wallet" className="text-sm mt-5 block font-medium text-primary">
+                Ví MetaNode của nhân viên
+              </label>
+              <input
+                id="on-chain-assignee-wallet"
+                value={assigneeWallet}
+                onChange={(event) => setAssigneeWallet(event.target.value)}
+                disabled={isAssigningOnChain}
+                placeholder="0x..."
+                className="text-sm focus:border-accent-primary mt-2 h-10 w-full rounded-md border border-subtle-1 bg-surface-2 px-3 text-primary outline-none"
+              />
+              {isAssigningOnChain && (
+                <div className="text-sm mt-4 rounded-md bg-surface-2 p-3 text-secondary">
+                  Đang chờ mở ví, ký giao dịch và nhận transaction hash...
+                </div>
+              )}
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={isAssigningOnChain}
+                  onClick={() => setPendingAssigneeIds(null)}
+                  className="text-sm rounded-md border border-subtle-1 px-3 py-2 text-secondary hover:bg-surface-2 disabled:opacity-50"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  disabled={isAssigningOnChain || !isWalletAddress(assigneeWallet)}
+                  onClick={confirmOnChainAssignment}
+                  className="text-sm rounded-md bg-accent-primary px-3 py-2 font-medium text-on-color disabled:opacity-50"
+                >
+                  {isAssigningOnChain ? "Đang xác nhận..." : "Ký và giao task"}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </>
   );
 });

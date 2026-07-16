@@ -66,6 +66,7 @@ export class IssueService extends APIService {
 
     try {
       await this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+        event_type: "create_task",
         issue_id: issue.id,
         issue_name: issue.name,
         wallet_address: process.env.VITE_METANODE_WALLET_ADDRESS,

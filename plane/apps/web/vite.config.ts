@@ -14,6 +14,19 @@ const viteEnv = Object.keys(process.env)
     return a;
   }, {});
 
+// fiai-sdk@1.0.0 was published with a scheme-less Connect Wallet URL.
+// Keep the workaround at the bundler boundary until the upstream package is fixed.
+const fixFiaiConnectWalletUrl = () => ({
+  name: "fix-fiai-connect-wallet-url",
+  enforce: "pre" as const,
+  transform(code: string, id: string) {
+    if (!id.includes("@metanodejs/fiai-sdk")) return null;
+    return code.replaceAll(
+      'urlConnectWallet:"connect-wallet-web.fi.ai"',
+      'urlConnectWallet:"https://connect-wallet-web.fi.ai"'
+    );
+  },
+});
 export default defineConfig(() => ({
   define: {
     "process.env": JSON.stringify(viteEnv),
@@ -21,7 +34,14 @@ export default defineConfig(() => ({
   build: {
     assetsInlineLimit: 0,
   },
-  plugins: [reactRouter(), tsconfigPaths({ projects: [path.resolve(__dirname, "tsconfig.json")] })],
+  plugins: [
+    fixFiaiConnectWalletUrl(),
+    reactRouter(),
+    tsconfigPaths({ projects: [path.resolve(__dirname, "tsconfig.json")] }),
+  ],
+  optimizeDeps: {
+    exclude: ["@metanodejs/fiai-sdk"],
+  },
   resolve: {
     alias: {
       // Next.js compatibility shims used within web
