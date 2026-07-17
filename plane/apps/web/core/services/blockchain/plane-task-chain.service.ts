@@ -33,10 +33,12 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       (value) => {
         window.clearTimeout(timeout);
         resolve(value);
+        return undefined;
       },
       (error) => {
         window.clearTimeout(timeout);
         reject(error);
+        return undefined;
       }
     );
   });
@@ -114,7 +116,7 @@ async function sendContractTransaction(functionName: string, values: Record<stri
       value: "0",
       gas: process.env.VITE_CONTRACT_GAS || "3000000",
       type: "transaction",
-      inputArray: abi.inputs.map((input) => ({ ...input, value: values[input.name ?? ""] ?? "" })),
+      inputArray: abi.inputs.map((input) => Object.assign({}, input, { value: values[input.name ?? ""] ?? "" })),
       isReadOnly: false,
       bundleId: "",
     });
@@ -126,7 +128,7 @@ async function sendContractTransaction(functionName: string, values: Record<stri
       const message = blockchainErrorMessage(error);
       if (!/wallet not found/i.test(message)) throw error;
       const imported = await promptForMetanodeWalletImport(from);
-      if (!imported) throw new Error("Không tìm thấy ví trong Crypto Vault hoặc thao tác kết nối đã hết hạn.");
+      if (!imported) throw new Error("Không tìm thấy ví trong Crypto Vault hoặc thao tác kết nối đã hết hạn.", { cause: error });
       return send();
     }
   };
@@ -136,9 +138,9 @@ async function sendContractTransaction(functionName: string, values: Record<stri
     result = await sendWithWalletRecovery();
   } catch (error) {
     const message = blockchainErrorMessage(error);
-    if (!/failed to decrypt payload/i.test(message)) throw new Error(message);
+    if (!/failed to decrypt payload/i.test(message)) throw new Error(message, { cause: error });
     bridge = await resetFiaiSDK();
-    if (!bridge) throw new Error("Không thể tạo lại phiên bảo mật với Crypto Vault.");
+    if (!bridge) throw new Error("Không thể tạo lại phiên bảo mật với Crypto Vault.", { cause: error });
     result = await sendWithWalletRecovery();
   }
   let hash = transactionHash(result);
@@ -156,10 +158,10 @@ export function isOnChainTaskSyncEnabled(): boolean {
   return process.env.VITE_ONCHAIN_TASKS_ENABLED === "true" && isWalletAddress(process.env.VITE_CONTRACT_ADDRESS || "");
 }
 
-export async function createIssueOnChain(issue: TIssue): Promise<string> {
+export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHash: string; assigneeWallet: string }> {
   const assignee = pendingCreateAssigneeWallet;
   pendingCreateAssigneeWallet = ZERO_ADDRESS;
-  return sendContractTransaction("createTask", {
+  const createdTransactionHash = await sendContractTransaction("createTask", {
     externalId: await hashTaskValue(`plane-issue:${issue.id}`),
     metadataHash: await hashTaskValue({
       id: issue.id,
@@ -174,6 +176,7 @@ export async function createIssueOnChain(issue: TIssue): Promise<string> {
     dueAt: dueTimestamp(issue.target_date),
     priority: priorityValue(issue.priority),
   });
+  return { transactionHash: createdTransactionHash, assigneeWallet: assignee };
 }
 
 export async function assignIssueOnChain(taskId: number, walletAddress: string): Promise<string> {
@@ -222,7 +225,7 @@ async function readContract(functionName: string, values: Record<string, InputVa
       value: "0",
       gas: process.env.VITE_CONTRACT_GAS || "3000000",
       type: "transaction",
-      inputArray: abi.inputs.map((input) => ({ ...input, value: values[input.name ?? ""] ?? "" })),
+      inputArray: abi.inputs.map((input) => Object.assign({}, input, { value: values[input.name ?? ""] ?? "" })),
       isReadOnly: true,
       bundleId: "",
     }),
@@ -238,18 +241,105 @@ export async function getIssueTaskId(issueId: string): Promise<number> {
   return taskId;
 }
 
+export type OnChainSubTaskStats = {
+  activeCount: number;
+  completedCount: number;
+  progress: number;
+};
+
+function findSubTaskStats(value: unknown): OnChainSubTaskStats | null {
+  if (Array.isArray(value) && value.length >= 3) {
+    const numbers = value.slice(0, 3).map((item) => Number(item));
+    if (numbers.every(Number.isFinite)) {
+      return { activeCount: numbers[0], completedCount: numbers[1], progress: numbers[2] };
+    }
+  }
+  if (!value || typeof value !== "object") return null;
+  const object = value as Record<string, unknown>;
+  if ("activeCount" in object && "completedCount" in object && "progress" in object) {
+    const result = {
+      activeCount: Number(object.activeCount),
+      completedCount: Number(object.completedCount),
+      progress: Number(object.progress),
+    };
+    if (Object.values(result).every(Number.isFinite)) return result;
+  }
+  for (const nested of Object.values(object)) {
+    const result = findSubTaskStats(nested);
+    if (result) return result;
+  }
+  return null;
+}
+
+export async function getIssueSubTaskStats(issueId: string): Promise<OnChainSubTaskStats> {
+  const taskId = await getIssueTaskId(issueId);
+  const stats = findSubTaskStats(await readContract("getSubTaskStats", { taskId }));
+  if (!stats) throw new Error("Không đọc được thống kê sub-task từ contract.");
+  return stats;
+}
+
+export async function createIssueSubTaskOnChain(
+  parentIssueId: string,
+  subIssue: { id: string; name: string; description_html?: string | null }
+): Promise<string> {
+  const taskId = await getIssueTaskId(parentIssueId);
+  return sendContractTransaction("createSubTask", {
+    taskId,
+    externalId: await hashTaskValue(`plane-sub-issue:${subIssue.id}`),
+    metadataHash: await hashTaskValue({ id: subIssue.id, name: subIssue.name, description: subIssue.description_html }),
+  });
+}
+
+export async function deleteIssueSubTaskOnChain(parentIssueId: string, subIssueId: string): Promise<string> {
+  const taskId = await getIssueTaskId(parentIssueId);
+  const subTaskIdResult = await readContract("getSubTaskId", {
+    taskId,
+    externalId: await hashTaskValue(`plane-sub-issue:${subIssueId}`),
+  });
+  const subTaskId = readNumericResult(subTaskIdResult);
+  if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
+  return sendContractTransaction("deleteSubTask", { taskId, subTaskId });
+}
+export async function updateIssueSubTaskStatusOnChain(
+  parentIssueId: string,
+  subIssueId: string,
+  status: 0 | 1 | 2 | 3
+): Promise<string> {
+  const taskId = await getIssueTaskId(parentIssueId);
+  const subTaskIdResult = await readContract("getSubTaskId", {
+    taskId,
+    externalId: await hashTaskValue(`plane-sub-issue:${subIssueId}`),
+  });
+  const subTaskId = readNumericResult(subTaskIdResult);
+  if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
+  return sendContractTransaction("updateSubTaskStatus", { taskId, subTaskId, status });
+}
 export async function submitIssueDailyReportOnChain(
   issueId: string,
   report: { progress: number; work: string; difficulty: string; evidence: string },
-  onStatus?: (message: string) => void
-): Promise<string> {
+  onStatus?: (message: string) => void,
+  ancestorIssueIds: string[] = []
+): Promise<{
+  transactionHash: string;
+  progress: number;
+  subTaskStats: OnChainSubTaskStats;
+  parentSyncTransactionHashes: string[];
+  parentSyncError?: string;
+}> {
   onStatus?.("Đang đọc task từ blockchain...");
   const taskId = await getIssueTaskId(issueId);
+  const subTaskStatsResult = await readContract("getSubTaskStats", { taskId }).catch(() => null);
+  const subTaskStats = findSubTaskStats(subTaskStatsResult) ?? {
+    activeCount: 0,
+    completedCount: 0,
+    progress: report.progress,
+  };
+  const effectiveProgress = subTaskStats.activeCount > 0 ? subTaskStats.progress : report.progress;
   onStatus?.("Đang chờ mở ví và xác nhận giao dịch...");
-  return withTimeout(
+  const reportTransactionHash = await withTimeout(
     sendContractTransaction("submitDailyReport", {
       taskId,
-      progress: report.progress,
+      progress: effectiveProgress,
       workHash: await hashTaskValue(report.work),
       difficultyHash: await hashTaskValue(report.difficulty),
       evidenceHash: await hashTaskValue(report.evidence),
@@ -257,6 +347,33 @@ export async function submitIssueDailyReportOnChain(
     90_000,
     "Giao dịch báo cáo quá thời gian 90 giây. Hãy kiểm tra cửa sổ ví và thử lại."
   );
+  const parentSyncTransactionHashes: string[] = [];
+  let parentSyncError: string | undefined;
+  let childIssueId = issueId;
+  let childProgress = effectiveProgress;
+  for (const [index, parentIssueId] of ancestorIssueIds.entries()) {
+    onStatus?.(`Báo cáo đã thành công. Đang đồng bộ tiến độ lên cấp ${index + 1}/${ancestorIssueIds.length}...`);
+    const subTaskStatus = childProgress === 100 ? 2 : childProgress > 0 ? 1 : 0;
+    try {
+      // Wallet confirmations are intentionally sequential from the nearest parent to the root.
+      // eslint-disable-next-line no-await-in-loop
+      parentSyncTransactionHashes.push(await updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus));
+      // eslint-disable-next-line no-await-in-loop
+      const parentStats = await getIssueSubTaskStats(parentIssueId);
+      childIssueId = parentIssueId;
+      childProgress = parentStats.progress;
+    } catch (error) {
+      parentSyncError = `Không đồng bộ được cấp ${index + 1}: ${blockchainErrorMessage(error)}`;
+      break;
+    }
+  }
+  return {
+    transactionHash: reportTransactionHash,
+    progress: effectiveProgress,
+    subTaskStats,
+    parentSyncTransactionHashes,
+    parentSyncError,
+  };
 }
 
 export async function recordIssueContentOnChain(issueId: string, kind: 0 | 1 | 2, content: string): Promise<string> {

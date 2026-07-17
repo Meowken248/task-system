@@ -45,8 +45,11 @@ export class IssueService extends APIService {
     if (!isOnChainTaskSyncEnabled()) return issue;
 
     let transactionHash: string;
+    let assigneeWallet: string;
     try {
-      transactionHash = await createIssueOnChain(issue);
+      const chainResult = await createIssueOnChain(issue);
+      transactionHash = chainResult.transactionHash;
+      assigneeWallet = chainResult.assigneeWallet;
     } catch (chainError) {
       console.error("On-chain task creation failed. Rolling back the Plane task:", chainError);
       try {
@@ -69,6 +72,11 @@ export class IssueService extends APIService {
         event_type: "create_task",
         issue_id: issue.id,
         issue_name: issue.name,
+        parent_issue_id: issue.parent_id,
+        target_date: issue.target_date,
+        priority: issue.priority,
+        assignee_wallet: assigneeWallet,
+        assignee_id: issue.assignee_ids?.[0],
         wallet_address: process.env.VITE_METANODE_WALLET_ADDRESS,
         contract_address: process.env.VITE_CONTRACT_ADDRESS,
         chain_id: process.env.VITE_CHAIN_ID,

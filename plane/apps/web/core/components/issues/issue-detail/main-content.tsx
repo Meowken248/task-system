@@ -72,6 +72,12 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
   const projectDetails = getProjectById(projectId);
   const issue = issueId ? getIssueById(issueId) : undefined;
   const isAdmin = getProjectRoleByWorkspaceSlugAndProjectId(workspaceSlug, projectId) === EUserPermissions.ADMIN;
+  const ancestorIssueIds: string[] = [];
+  let ancestor = issue;
+  while (ancestor?.parent_id && ancestorIssueIds.length < 20) {
+    ancestorIssueIds.push(ancestor.parent_id);
+    ancestor = getIssueById(ancestor.parent_id);
+  }
   // debounced duplicate issues swr
   const { duplicateIssues } = useDebouncedDuplicateIssues(
     workspaceSlug,
@@ -202,6 +208,7 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
         projectId={projectId}
         issueId={issueId}
         issueName={issue.name}
+        ancestorIssueIds={ancestorIssueIds}
         onReportRecorded={async ({ progress, transactionHash, recordedAt }) => {
           const date = new Intl.DateTimeFormat("vi-VN", {
             day: "2-digit",

@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@plane/propel/button";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
-import { isOnChainTaskSyncEnabled, submitIssueDailyReportOnChain } from "@/services/blockchain/plane-task-chain.service";
+import { getIssueSubTaskStats, isOnChainTaskSyncEnabled, submitIssueDailyReportOnChain, type OnChainSubTaskStats } from "@/services/blockchain/plane-task-chain.service";
 
 type Props = {
   workspaceSlug: string;
   projectId: string;
   issueId: string;
   issueName: string;
+  ancestorIssueIds: string[];
   canReport: boolean;
   onReportRecorded: (data: { progress: number; transactionHash: string; recordedAt: Date }) => Promise<void>;
 };
@@ -18,6 +19,7 @@ export function OnChainTaskPanel({
   projectId,
   issueId,
   issueName,
+  ancestorIssueIds,
   canReport,
   onReportRecorded,
 }: Props) {
@@ -27,6 +29,7 @@ export function OnChainTaskPanel({
   const [difficulty, setDifficulty] = useState("");
   const [evidence, setEvidence] = useState("");
   const [progress, setProgress] = useState(0);
+  const [subTaskStats, setSubTaskStats] = useState<OnChainSubTaskStats>();
   const [status, setStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -37,6 +40,27 @@ export function OnChainTaskPanel({
     if (!isReportOpen && dialog.open) dialog.close();
   }, [isReportOpen]);
 
+  useEffect(() => {
+    if (!isReportOpen || ancestorIssueIds.length > 0) {
+      setSubTaskStats(undefined);
+      return;
+    }
+    let active = true;
+    const loadSubTaskStats = async () => {
+      try {
+        const stats = await getIssueSubTaskStats(issueId);
+        if (!active) return;
+        setSubTaskStats(stats);
+        if (stats.activeCount > 0) setProgress(stats.progress);
+      } catch {
+        if (active) setSubTaskStats(undefined);
+      }
+    };
+    void loadSubTaskStats();
+    return () => {
+      active = false;
+    };
+  }, [isReportOpen, issueId, ancestorIssueIds.length]);
   if (!isOnChainTaskSyncEnabled() || !canReport) return null;
 
   const closeReport = () => {
@@ -54,25 +78,30 @@ export function OnChainTaskPanel({
       const result = await submitIssueDailyReportOnChain(
         issueId,
         { progress, work, difficulty, evidence },
-        setStatus
+        setStatus,
+        ancestorIssueIds
       );
       try {
         await blockchainTrackingService.recordDailyReport(workspaceSlug, projectId, {
           issueId,
           issueName,
-          transactionHash: result,
-          progress,
+          transactionHash: result.transactionHash,
+          progress: result.progress,
           work,
           difficulty,
           evidence,
         });
       } catch (trackingError) {
         console.error("Báo cáo đã lên blockchain nhưng không ghi được blockchain-data.json:", trackingError);
-        setStatus(`Đã gửi on-chain: ${result}. Không ghi được file JSON.`);
+        setStatus(`Đã gửi on-chain: ${result.transactionHash}. Không ghi được file JSON.`);
         return;
       }
-      await onReportRecorded({ progress, transactionHash: result, recordedAt: new Date() });
-      setStatus(`Đã gửi báo cáo on-chain: ${result}`);
+      await onReportRecorded({ progress: result.progress, transactionHash: result.transactionHash, recordedAt: new Date() });
+      setStatus(
+        result.parentSyncError
+          ? `Báo cáo đã thành công (${result.transactionHash}), nhưng chưa đồng bộ được task cha: ${result.parentSyncError}`
+          : `Đã gửi báo cáo on-chain: ${result.transactionHash}`
+      );
       setWork("");
       setDifficulty("");
       setEvidence("");
@@ -118,19 +147,30 @@ export function OnChainTaskPanel({
               />
               <div className="rounded-md border border-subtle bg-layer-1 p-3">
                 <label htmlFor="daily-report-progress" className="block text-12 font-medium text-secondary">
-                  Tiến độ: {progress}%
+                  Tiến độ: {progress}%{subTaskStats?.activeCount ? ` · ${subTaskStats.completedCount}/${subTaskStats.activeCount} sub-task hoàn thành` : ""}
                 </label>
-                <input
-                  id="daily-report-progress"
-                  className="mt-3 block h-6 w-full cursor-pointer accent-blue-500 pointer-events-auto"
-                  type="range"
-                  min="0"
-                  max="100"
-                  step="1"
-                  value={progress}
-                  onInput={(event) => setProgress(Number(event.currentTarget.value))}
-                  onChange={(event) => setProgress(Number(event.currentTarget.value))}
-                />
+                {subTaskStats?.activeCount ? (
+                  <div className="mt-3">
+                    <div className="h-2 overflow-hidden rounded-full bg-layer-3">
+                      <div className="h-full rounded-full bg-accent-primary transition-[width]" style={{ width: `${progress}%` }} />
+                    </div>
+                    <p className="mt-2 text-11 text-tertiary">
+                      Tiến độ task cha được tự động tính từ các task con và không thể kéo thủ công.
+                    </p>
+                  </div>
+                ) : (
+                  <input
+                    id="daily-report-progress"
+                    className="mt-3 block h-6 w-full cursor-pointer accent-blue-500 pointer-events-auto"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={progress}
+                    onInput={(event) => setProgress(Number(event.currentTarget.value))}
+                    onChange={(event) => setProgress(Number(event.currentTarget.value))}
+                  />
+                )}
               </div>
             </div>
             {status && (

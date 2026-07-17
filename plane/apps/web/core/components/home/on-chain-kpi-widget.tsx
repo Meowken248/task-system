@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, ClipboardList, FileText, FolderKanban, UserRound } from "lucide-react";
+import { ChevronDown, ChevronRight, ClipboardList, FileText, FolderKanban, UserRound } from "lucide-react";
 import {
   blockchainTrackingService,
   type TBlockchainTrackingRecord,
@@ -9,7 +9,18 @@ import { ProjectService } from "@/services/project";
 
 type Props = { workspaceSlug: string };
 type ProjectOption = { id: string; name: string; identifier?: string };
-type TaskOption = { id: string; name: string; records: TBlockchainTrackingRecord[] };
+type TaskOption = { id: string; name: string; parentId?: string; records: TBlockchainTrackingRecord[] };
+type AggregateKpi = {
+  total: number;
+  todo: number;
+  inProgress: number;
+  completed: number;
+  onSchedule: number;
+  delayed: number;
+  overdue: number;
+  averageProgress: number;
+  reports: number;
+};
 
 const projectService = new ProjectService();
 
@@ -39,11 +50,72 @@ function taskProgress(task?: TaskOption): number {
   return typeof report?.progress === "number" ? report.progress : 0;
 }
 
+function aggregateKpi(tasks: TaskOption[]): AggregateKpi {
+  const result: AggregateKpi = {
+    total: tasks.length,
+    todo: 0,
+    inProgress: 0,
+    completed: 0,
+    onSchedule: 0,
+    delayed: 0,
+    overdue: 0,
+    averageProgress: 0,
+    reports: 0,
+  };
+  let progressSum = 0;
+  const now = Date.now();
+  tasks.forEach((task) => {
+    const progress = taskProgress(task);
+    progressSum += progress;
+    result.reports += task.records.filter((record) => record.event_type === "daily_report").length;
+    if (progress === 100) result.completed += 1;
+    else if (progress > 0) result.inProgress += 1;
+    else result.todo += 1;
+
+    const creation = task.records.find((record) => record.event_type === "create_task");
+    const dueAt = creation?.target_date ? Date.parse(`${creation.target_date}T23:59:59`) : Number.NaN;
+    const createdAt = creation?.recorded_at ? Date.parse(creation.recorded_at) : Number.NaN;
+    if (progress < 100 && Number.isFinite(dueAt) && now > dueAt) result.overdue += 1;
+    else if (progress < 100 && Number.isFinite(dueAt) && Number.isFinite(createdAt) && dueAt > createdAt) {
+      const expected = Math.min(100, Math.max(0, ((now - createdAt) * 100) / (dueAt - createdAt)));
+      if (progress < expected) result.delayed += 1;
+      else result.onSchedule += 1;
+    } else if (progress < 100) result.onSchedule += 1;
+  });
+  result.averageProgress = result.total ? Math.round(progressSum / result.total) : 0;
+  return result;
+}
+
+function KpiGrid({ value }: { value: AggregateKpi }) {
+  const items: Array<[string, number | string]> = [
+    ["Tổng task", value.total],
+    ["Chưa làm", value.todo],
+    ["Đang làm", value.inProgress],
+    ["Hoàn thành", value.completed],
+    ["Đúng tiến độ", value.onSchedule],
+    ["Chậm", value.delayed],
+    ["Quá hạn", value.overdue],
+    ["Tiến độ TB", `${value.averageProgress}%`],
+    ["Báo cáo", value.reports],
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
+      {items.map(([label, metric]) => (
+        <div key={label} className="rounded-lg border border-subtle bg-surface-1/65 p-3 backdrop-blur-md">
+          <p className="text-10 text-tertiary">{label}</p>
+          <p className="mt-1 text-16 font-semibold text-primary">{metric}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function OnChainKpiWidget({ workspaceSlug }: Props) {
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [records, setRecords] = useState<TBlockchainTrackingRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(new Set());
   const [kpi, setKpi] = useState<OnChainKPI>();
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [loadingTasks, setLoadingTasks] = useState(false);
@@ -79,19 +151,47 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
       if (!record.issue_id) return;
       grouped.set(record.issue_id, [...(grouped.get(record.issue_id) ?? []), record]);
     });
-    return Array.from(grouped, ([id, taskRecords]) => ({
-      id,
-      name: taskRecords.find((record) => record.issue_name)?.issue_name || id,
-      records: taskRecords,
-    }));
+    return Array.from(grouped, ([id, taskRecords]) => {
+      const creation = taskRecords.find((record) => record.event_type === "create_task");
+      return {
+        id,
+        name: taskRecords.find((record) => record.issue_name)?.issue_name || id,
+        parentId: creation?.parent_issue_id,
+        records: taskRecords,
+      };
+    });
   }, [records]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
+  const childrenByParent = useMemo(() => {
+    const grouped = new Map<string, TaskOption[]>();
+    tasks.forEach((task) => {
+      if (!task.parentId) return;
+      grouped.set(task.parentId, [...(grouped.get(task.parentId) ?? []), task]);
+    });
+    return grouped;
+  }, [tasks]);
+  const rootTasks = tasks.filter((task) => !task.parentId || !tasks.some((candidate) => candidate.id === task.parentId));
+  const selectedTaskChildren = selectedTask ? childrenByParent.get(selectedTask.id) ?? [] : [];
+  const collectLeafTasks = (task: TaskOption, visited = new Set<string>()): TaskOption[] => {
+    if (visited.has(task.id)) return [];
+    const nextVisited = new Set(visited).add(task.id);
+    const children = childrenByParent.get(task.id) ?? [];
+    return children.length ? children.flatMap((child) => collectLeafTasks(child, nextVisited)) : [task];
+  };
+  const displayTaskProgress = (task: TaskOption): number => {
+    const leaves = collectLeafTasks(task);
+    return leaves.length ? aggregateKpi(leaves).averageProgress : taskProgress(task);
+  };
+  const projectLeafTasks = rootTasks.flatMap((task) => collectLeafTasks(task));
+  const selectedTaskLeafTasks = selectedTask ? collectLeafTasks(selectedTask) : [];
+  const projectKpi = aggregateKpi(projectLeafTasks);
+  const selectedTaskKpi = aggregateKpi(selectedTaskLeafTasks);
   const assignment = selectedTask?.records.find((record) => record.event_type === "assign_task");
   const creation = selectedTask?.records.find((record) => record.event_type === "create_task");
   const reports = selectedTask?.records.filter((record) => record.event_type === "daily_report") ?? [];
-  const progress = taskProgress(selectedTask);
+  const progress = selectedTask ? displayTaskProgress(selectedTask) : 0;
 
   const selectProject = async (projectId: string) => {
     setSelectedProjectId(projectId);
@@ -138,6 +238,62 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
       ]
     : [];
 
+  const toggleTask = (taskId: string) => {
+    setExpandedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
+
+  const renderTaskRow = (task: TaskOption, depth = 0) => {
+    const children = childrenByParent.get(task.id) ?? [];
+    const expanded = expandedTaskIds.has(task.id);
+    const taskValue = displayTaskProgress(task);
+    return (
+      <div key={task.id}>
+        <div
+          className={`flex rounded-lg transition-colors ${
+            selectedTaskId === task.id ? "bg-accent-primary/10" : "hover:bg-surface-2"
+          }`}
+          style={{ marginLeft: `${depth * 14}px` }}
+        >
+          {children.length ? (
+            <button
+              type="button"
+              aria-label={expanded ? "Thu gọn task con" : "Mở danh sách task con"}
+              aria-expanded={expanded}
+              onClick={() => toggleTask(task.id)}
+              className="flex w-8 shrink-0 items-center justify-center text-tertiary hover:text-primary"
+            >
+              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            </button>
+          ) : (
+            <span className="w-8 shrink-0" />
+          )}
+          <button
+            type="button"
+            onClick={() => void selectTask(task)}
+            className="min-w-0 flex-1 px-1 py-2.5 pr-3 text-left active:scale-[0.99]"
+          >
+            <span className="flex items-center gap-2">
+              <span className="truncate text-12 font-medium text-primary">{task.name}</span>
+              {children.length > 0 && <span className="text-10 text-tertiary">{children.length} task con</span>}
+            </span>
+            <span className="mt-1 flex items-center justify-between text-10 text-tertiary">
+              <span>{task.records.filter((record) => record.event_type === "daily_report").length} báo cáo</span>
+              <span>{taskValue}%</span>
+            </span>
+            <span className="mt-2 block h-1 overflow-hidden rounded-full bg-surface-3" aria-hidden="true">
+              <span className="block h-full rounded-full bg-accent-primary" style={{ width: `${taskValue}%` }} />
+            </span>
+          </button>
+        </div>
+        {expanded && children.map((child) => renderTaskRow(child, depth + 1))}
+      </div>
+    );
+  };
   return (
     <section className="overflow-hidden rounded-2xl border border-subtle bg-layer-1/75 shadow-sm backdrop-blur-xl">
       <header className="border-b border-subtle px-5 py-4">
@@ -145,7 +301,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
         <p className="mt-1 text-11 text-tertiary">Chọn dự án, chọn task để xem báo cáo và KPI của nhân viên.</p>
       </header>
 
-      <div className="grid min-h-[420px] grid-cols-1 divide-y divide-subtle lg:grid-cols-[240px_280px_minmax(0,1fr)] lg:divide-x lg:divide-y-0">
+      <div className="grid min-h-[520px] grid-cols-1 divide-y divide-subtle lg:grid-cols-[220px_300px_minmax(0,1fr)] lg:divide-x lg:divide-y-0 xl:grid-cols-[260px_360px_minmax(560px,1fr)]">
         <div className="p-3">
           <div className="flex items-center gap-2 px-2 py-2 text-11 font-medium text-secondary">
             <FolderKanban className="h-4 w-4" aria-hidden="true" />
@@ -199,37 +355,57 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
           ) : tasks.length === 0 ? (
             <p className="px-2 py-4 text-11 text-tertiary">Dự án chưa có task on-chain.</p>
           ) : (
-            <div className="space-y-1">
-              {tasks.map((task) => {
-                const taskValue = taskProgress(task);
-                return (
-                  <button
-                    key={task.id}
-                    type="button"
-                    onClick={() => void selectTask(task)}
-                    className={`w-full rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${
-                      selectedTaskId === task.id ? "bg-accent-primary/10" : "hover:bg-surface-2"
-                    }`}
-                  >
-                    <span className="block truncate text-12 font-medium text-primary">{task.name}</span>
-                    <span className="mt-1 flex items-center justify-between text-10 text-tertiary">
-                      <span>{task.records.filter((record) => record.event_type === "daily_report").length} báo cáo</span>
-                      <span>{taskValue}%</span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            <div className="space-y-1">{rootTasks.map((task) => renderTaskRow(task))}</div>
           )}
         </div>
 
         <div className="min-w-0 p-5">
           {!selectedTask ? (
-            <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
-              <FileText className="h-8 w-8 text-tertiary" aria-hidden="true" />
-              <p className="mt-3 text-12 font-medium text-secondary">Chọn một task để xem chi tiết</p>
-              <p className="mt-1 max-w-xs text-11 text-tertiary">Báo cáo ngày và KPI on-chain sẽ hiển thị tại đây.</p>
-            </div>
+            selectedProject ? (
+              <div className="space-y-5">
+                <div>
+                  <p className="text-10 text-tertiary">{selectedProject.identifier || "PROJECT"}</p>
+                  <h3 className="mt-1 text-16 font-semibold text-primary">Tổng quan {selectedProject.name}</h3>
+                  <p className="mt-1 text-11 text-tertiary">
+                    KPI tổng hợp từ toàn bộ task cha, task con và báo cáo cuối ngày trong dự án.
+                  </p>
+                </div>
+                <KpiGrid value={projectKpi} />
+                <div>
+                  <h4 className="text-12 font-semibold text-primary">Tiến độ task trong dự án</h4>
+                  <div className="mt-3 space-y-2">
+                    {rootTasks.map((task) => {
+                      const children = childrenByParent.get(task.id) ?? [];
+                      const summary = aggregateKpi(collectLeafTasks(task));
+                      return (
+                        <button
+                          key={task.id}
+                          type="button"
+                          onClick={() => void selectTask(task)}
+                          className="w-full rounded-lg border border-subtle bg-surface-1/60 p-3 text-left hover:bg-surface-2"
+                        >
+                          <span className="flex items-center justify-between gap-3">
+                            <span className="truncate text-11 font-medium text-primary">{task.name}</span>
+                            <span className="text-10 text-tertiary">{summary.averageProgress}%</span>
+                          </span>
+                          <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-surface-3">
+                            <span className="block h-full rounded-full bg-accent-primary" style={{ width: `${summary.averageProgress}%` }} />
+                          </span>
+                          <span className="mt-2 block text-10 text-tertiary">
+                            {children.length ? `${children.length} task con · ` : ""}{summary.completed}/{summary.total} hoàn thành · {summary.reports} báo cáo
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
+                <FileText className="h-8 w-8 text-tertiary" aria-hidden="true" />
+                <p className="mt-3 text-12 font-medium text-secondary">Chọn một dự án để xem KPI tổng hợp</p>
+              </div>
+            )
           ) : (
             <div className="space-y-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -241,9 +417,57 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                 <div className="rounded-lg border border-subtle bg-surface-1/70 px-3 py-2 text-right backdrop-blur-md">
                   <p className="text-10 text-tertiary">Tiến độ mới nhất</p>
                   <p className="text-18 font-semibold text-primary">{progress}%</p>
+                  <div
+                    className="mt-2 h-1.5 w-28 overflow-hidden rounded-full bg-surface-3"
+                    role="progressbar"
+                    aria-label="Tiến độ task"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={progress}
+                  >
+                    <div
+                      className="h-full rounded-full bg-accent-primary transition-[width]"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
                 </div>
               </div>
 
+              <div>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h4 className="text-12 font-semibold text-primary">
+                    {selectedTaskChildren.length ? "KPI tổng hợp task cha" : "KPI của task"}
+                  </h4>
+                  {selectedTaskChildren.length > 0 && (
+                    <span className="text-10 text-tertiary">Tổng hợp từ {selectedTaskChildren.length} task con</span>
+                  )}
+                </div>
+                <KpiGrid value={selectedTaskKpi} />
+              </div>
+
+              {selectedTaskChildren.length > 0 && (
+                <div>
+                  <h4 className="text-12 font-semibold text-primary">Task con</h4>
+                  <div className="mt-3 space-y-2">
+                    {selectedTaskChildren.map((child) => (
+                      <button
+                        key={child.id}
+                        type="button"
+                        onClick={() => void selectTask(child)}
+                        className="flex w-full items-center justify-between rounded-lg border border-subtle bg-surface-1/60 px-3 py-2.5 text-left hover:bg-surface-2"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-11 font-medium text-primary">{child.name}</span>
+                          <span className="mt-0.5 block text-10 text-tertiary">
+                            {child.records.filter((record) => record.event_type === "daily_report").length} báo cáo
+                          </span>
+                        </span>
+                        <span className="ml-3 text-11 font-medium text-primary">{taskProgress(child)}%</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="rounded-xl border border-subtle bg-surface-1/60 p-4 backdrop-blur-md">
                 <div className="flex items-center gap-2 text-11 font-medium text-secondary">
                   <UserRound className="h-4 w-4" aria-hidden="true" />

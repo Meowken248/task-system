@@ -35,6 +35,13 @@ contract PlaneTaskManager {
         Cancelled
     }
 
+    enum SubTaskStatus {
+        Todo,
+        InProgress,
+        Completed,
+        Cancelled
+    }
+
     struct Task {
         bytes32 externalId;
         bytes32 metadataHash;
@@ -55,6 +62,15 @@ contract PlaneTaskManager {
         bytes32 workHash;
         bytes32 difficultyHash;
         bytes32 evidenceHash;
+    }
+
+    struct SubTask {
+        bytes32 externalId;
+        bytes32 metadataHash;
+        uint64 createdAt;
+        uint64 updatedAt;
+        SubTaskStatus status;
+        bool deleted;
     }
 
     struct ContentRecord {
@@ -85,6 +101,8 @@ contract PlaneTaskManager {
     mapping(bytes32 => uint256) private taskIdByExternalIdPlusOne;
     mapping(uint256 => DailyReport[]) private reports;
     mapping(uint256 => ContentRecord[]) private contentRecords;
+    mapping(uint256 => SubTask[]) private subTasks;
+    mapping(uint256 => mapping(bytes32 => uint256)) private subTaskIdByExternalIdPlusOne;
     mapping(address => uint256[]) private assignedTaskIds;
     mapping(address => mapping(uint256 => bool)) private taskIndexedForAssignee;
 
@@ -116,6 +134,19 @@ contract PlaneTaskManager {
         bytes32 difficultyHash,
         bytes32 evidenceHash
     );
+    event SubTaskCreated(
+        uint256 indexed taskId,
+        uint256 indexed subTaskId,
+        bytes32 indexed externalId,
+        bytes32 metadataHash
+    );
+    event SubTaskStatusUpdated(
+        uint256 indexed taskId,
+        uint256 indexed subTaskId,
+        SubTaskStatus status,
+        address indexed updatedBy
+    );
+    event SubTaskDeleted(uint256 indexed taskId, uint256 indexed subTaskId);
 
     error Unauthorized();
     error InvalidAddress();
@@ -124,6 +155,8 @@ contract PlaneTaskManager {
     error InvalidTask();
     error DuplicateExternalId();
     error InvalidStatusTransition();
+    error InvalidSubTask();
+    error DuplicateSubTask();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -194,6 +227,61 @@ contract PlaneTaskManager {
         emit TaskCreated(taskId, externalId, msg.sender, assignee, dueAt, priority, metadataHash);
     }
 
+    function createSubTask(
+        uint256 taskId,
+        bytes32 externalId,
+        bytes32 metadataHash
+    ) external onlyAdmin taskExists(taskId) returns (uint256 subTaskId) {
+        if (externalId == bytes32(0)) revert InvalidExternalId();
+        if (subTaskIdByExternalIdPlusOne[taskId][externalId] != 0) revert DuplicateSubTask();
+        subTaskId = subTasks[taskId].length;
+        uint64 timestamp = uint64(block.timestamp);
+        subTasks[taskId].push(SubTask({
+            externalId: externalId,
+            metadataHash: metadataHash,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            status: SubTaskStatus.Todo,
+            deleted: false
+        }));
+        subTaskIdByExternalIdPlusOne[taskId][externalId] = subTaskId + 1;
+        _recalculateProgressFromSubTasks(taskId, tasks[taskId]);
+        emit SubTaskCreated(taskId, subTaskId, externalId, metadataHash);
+    }
+
+    function updateSubTaskMetadata(
+        uint256 taskId,
+        uint256 subTaskId,
+        bytes32 metadataHash
+    ) external onlyAdmin taskExists(taskId) {
+        SubTask storage subTask = _getSubTask(taskId, subTaskId);
+        subTask.metadataHash = metadataHash;
+        subTask.updatedAt = uint64(block.timestamp);
+    }
+
+    function updateSubTaskStatus(
+        uint256 taskId,
+        uint256 subTaskId,
+        SubTaskStatus status
+    ) external taskExists(taskId) {
+        Task storage task = tasks[taskId];
+        if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
+        if (task.status == Status.Cancelled) revert InvalidStatusTransition();
+        SubTask storage subTask = _getSubTask(taskId, subTaskId);
+        subTask.status = status;
+        subTask.updatedAt = uint64(block.timestamp);
+        _recalculateProgressFromSubTasks(taskId, task);
+        emit SubTaskStatusUpdated(taskId, subTaskId, status, msg.sender);
+    }
+
+    function deleteSubTask(uint256 taskId, uint256 subTaskId) external onlyAdmin taskExists(taskId) {
+        SubTask storage subTask = _getSubTask(taskId, subTaskId);
+        subTask.deleted = true;
+        subTask.updatedAt = uint64(block.timestamp);
+        _recalculateProgressFromSubTasks(taskId, tasks[taskId]);
+        emit SubTaskDeleted(taskId, subTaskId);
+    }
+
     function updateTaskMetadata(uint256 taskId, bytes32 metadataHash) external onlyAdmin taskExists(taskId) {
         Task storage task = tasks[taskId];
         task.metadataHash = metadataHash;
@@ -225,6 +313,8 @@ contract PlaneTaskManager {
     function updateProgress(uint256 taskId, uint8 progress) external taskExists(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
+        (uint256 activeCount,,) = _subTaskStats(taskId);
+        if (activeCount != 0) revert InvalidProgress();
         _setProgress(taskId, task, progress);
     }
 
@@ -254,12 +344,15 @@ contract PlaneTaskManager {
         if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
         if (task.status == Status.Cancelled) revert InvalidStatusTransition();
 
-        _setProgress(taskId, task, progress);
+        (uint256 activeCount,, uint8 calculatedProgress) = _subTaskStats(taskId);
+        uint8 reportProgress = activeCount == 0 ? progress : calculatedProgress;
+        if (activeCount != 0 && progress != calculatedProgress) revert InvalidProgress();
+        _setProgress(taskId, task, reportProgress);
         reportId = reports[taskId].length;
         reports[taskId].push(
             DailyReport({
                 reportedAt: uint64(block.timestamp),
-                progress: progress,
+                progress: reportProgress,
                 workHash: workHash,
                 difficultyHash: difficultyHash,
                 evidenceHash: evidenceHash
@@ -269,7 +362,7 @@ contract PlaneTaskManager {
             taskId,
             reportId,
             msg.sender,
-            progress,
+            reportProgress,
             workHash,
             difficultyHash,
             evidenceHash
@@ -305,6 +398,40 @@ contract PlaneTaskManager {
         return encodedId - 1;
     }
 
+    function getSubTaskCount(uint256 taskId) external view taskExists(taskId) returns (uint256) {
+        return subTasks[taskId].length;
+    }
+
+    function getSubTaskId(uint256 taskId, bytes32 externalId)
+        external view taskExists(taskId) returns (uint256 subTaskId)
+    {
+        uint256 encodedId = subTaskIdByExternalIdPlusOne[taskId][externalId];
+        if (encodedId == 0 || subTasks[taskId][encodedId - 1].deleted) revert InvalidSubTask();
+        return encodedId - 1;
+    }
+
+    function getSubTask(uint256 taskId, uint256 subTaskId)
+        external view taskExists(taskId) returns (SubTask memory)
+    {
+        return _getSubTask(taskId, subTaskId);
+    }
+
+    function getSubTasks(uint256 taskId, uint256 offset, uint256 limit)
+        external view taskExists(taskId) returns (SubTask[] memory result)
+    {
+        uint256 length = subTasks[taskId].length;
+        if (offset > length) revert InvalidSubTask();
+        uint256 end = offset + limit < length ? offset + limit : length;
+        result = new SubTask[](end - offset);
+        for (uint256 i = offset; i < end; ++i) result[i - offset] = subTasks[taskId][i];
+    }
+
+    function getSubTaskStats(uint256 taskId)
+        external view taskExists(taskId)
+        returns (uint256 activeCount, uint256 completedCount, uint8 progress)
+    {
+        return _subTaskStats(taskId);
+    }
     function getAssignedTaskCount(address assignee) external view returns (uint256) {
         uint256 count;
         uint256[] storage ids = assignedTaskIds[assignee];
@@ -385,6 +512,28 @@ contract PlaneTaskManager {
         if (result.total != 0) result.averageProgress = result.progressSum / result.total;
     }
 
+    function _getSubTask(uint256 taskId, uint256 subTaskId) private view returns (SubTask storage subTask) {
+        if (subTaskId >= subTasks[taskId].length || subTasks[taskId][subTaskId].deleted) revert InvalidSubTask();
+        return subTasks[taskId][subTaskId];
+    }
+
+    function _subTaskStats(uint256 taskId)
+        private view returns (uint256 activeCount, uint256 completedCount, uint8 progress)
+    {
+        SubTask[] storage items = subTasks[taskId];
+        for (uint256 i = 0; i < items.length; ++i) {
+            SubTask storage subTask = items[i];
+            if (subTask.deleted || subTask.status == SubTaskStatus.Cancelled) continue;
+            ++activeCount;
+            if (subTask.status == SubTaskStatus.Completed) ++completedCount;
+        }
+        if (activeCount != 0) progress = uint8((completedCount * 100) / activeCount);
+    }
+
+    function _recalculateProgressFromSubTasks(uint256 taskId, Task storage task) private {
+        (, , uint8 progress) = _subTaskStats(taskId);
+        _setProgress(taskId, task, progress);
+    }
     function _scheduleStatus(Task storage task) private view returns (ScheduleStatus) {
         if (task.status == Status.Completed) return ScheduleStatus.Completed;
         if (task.status == Status.Cancelled) return ScheduleStatus.Cancelled;
@@ -396,6 +545,7 @@ contract PlaneTaskManager {
         uint256 expectedProgress = ((block.timestamp - task.createdAt) * 100) / duration;
         return task.progress < expectedProgress ? ScheduleStatus.Delayed : ScheduleStatus.OnSchedule;
     }
+
     function _setProgress(uint256 taskId, Task storage task, uint8 progress) private {
         if (progress > 100) revert InvalidProgress();
         if (task.status == Status.Cancelled) revert InvalidStatusTransition();
@@ -405,6 +555,7 @@ contract PlaneTaskManager {
         task.updatedAt = uint64(block.timestamp);
         emit TaskProgressUpdated(taskId, progress, task.status, msg.sender);
     }
+
     function _indexTaskForAssignee(address assignee, uint256 taskId) private {
         if (assignee == address(0) || taskIndexedForAssignee[assignee][taskId]) return;
         taskIndexedForAssignee[assignee][taskId] = true;

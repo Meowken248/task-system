@@ -14,6 +14,69 @@ export const planeTaskManagerAbi = [
   },
   {
     type: "function",
+    name: "createSubTask",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "externalId", type: "bytes32", internalType: "bytes32" },
+      { name: "metadataHash", type: "bytes32", internalType: "bytes32" },
+    ],
+    outputs: [{ name: "subTaskId", type: "uint256", internalType: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "updateSubTaskMetadata",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "subTaskId", type: "uint256", internalType: "uint256" },
+      { name: "metadataHash", type: "bytes32", internalType: "bytes32" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "updateSubTaskStatus",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "subTaskId", type: "uint256", internalType: "uint256" },
+      { name: "status", type: "uint8", internalType: "enum PlaneTaskManager.SubTaskStatus" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "deleteSubTask",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "subTaskId", type: "uint256", internalType: "uint256" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getSubTaskId",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "externalId", type: "bytes32", internalType: "bytes32" },
+    ],
+    outputs: [{ name: "subTaskId", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getSubTaskStats",
+    inputs: [{ name: "taskId", type: "uint256", internalType: "uint256" }],
+    outputs: [
+      { name: "activeCount", type: "uint256", internalType: "uint256" },
+      { name: "completedCount", type: "uint256", internalType: "uint256" },
+      { name: "progress", type: "uint8", internalType: "uint8" },
+    ],
+    stateMutability: "view",
+  },  {
+    type: "function",
     name: "assignTask",
     inputs: [
       { name: "taskId", type: "uint256", internalType: "uint256" },

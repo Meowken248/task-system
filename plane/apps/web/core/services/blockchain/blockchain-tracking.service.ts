@@ -5,6 +5,9 @@ export type TBlockchainTrackingRecord = {
   event_type?: "create_task" | "assign_task" | "daily_report";
   issue_id?: string;
   issue_name?: string;
+  parent_issue_id?: string;
+  target_date?: string;
+  priority?: string;
   project_id?: string;
   workspace_slug?: string;
   wallet_address?: string;

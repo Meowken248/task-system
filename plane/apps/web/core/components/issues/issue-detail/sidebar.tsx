@@ -133,6 +133,9 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
     setIsAssigningOnChain(true);
     try {
       const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet.trim());
+      await issueOperations.update(workspaceSlug, projectId, issueId, {
+        assignee_ids: [pendingAssigneeId],
+      });
       await blockchainTrackingService.recordTaskAssignment(workspaceSlug, projectId, {
         issueId,
         issueName: issue.name,
@@ -141,7 +144,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
         assigneeId: pendingAssigneeId,
         assigneeName: pendingAssignee?.display_name || pendingAssignee?.email || pendingAssigneeId,
       });
-      await issueOperations.fetch(workspaceSlug, projectId, issueId, false);
+      await issueOperations.fetch(workspaceSlug, projectId, issueId, true);
       setPendingAssigneeIds(null);
       setToast({
         type: TOAST_TYPE.SUCCESS,
@@ -188,12 +191,12 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
 
             <SidebarPropertyListItem icon={MembersPropertyIcon} label="Nhân viên">
               <MemberDropdown
-                value={issue?.assignee_ids ?? undefined}
-                onChange={handleAssigneeChange}
+                value={issue?.assignee_ids?.[0] ?? null}
+                onChange={(assigneeId) => void handleAssigneeChange(assigneeId ? [assigneeId] : [])}
                 disabled={!isEditable || !isAdmin}
                 projectId={projectId?.toString() ?? ""}
                 placeholder={t("issue.add.assignee")}
-                multiple
+                multiple={false}
                 buttonVariant={issue?.assignee_ids?.length > 1 ? "transparent-without-text" : "transparent-with-text"}
                 className="group w-full grow"
                 buttonContainerClassName="w-full text-left h-7.5"

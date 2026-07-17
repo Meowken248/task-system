@@ -26,7 +26,9 @@ export const DashboardWidgets = observer(function DashboardWidgets() {
 
   return (
     <div className="relative flex h-full w-full flex-col gap-7 py-4">
-      <RecentActivityWidget workspaceSlug={workspaceSlug.toString()} />
+      <div className="mx-auto w-full max-w-[800px]">
+        <RecentActivityWidget workspaceSlug={workspaceSlug.toString()} />
+      </div>
       {isAdmin && <OnChainKpiWidget workspaceSlug={workspaceSlug.toString()} />}
     </div>
   );

@@ -12,6 +12,7 @@ import type { ISearchIssueResponse, TIssue, TIssueServiceType, TWorkItemWidgets 
 import { ExistingIssuesListModal } from "@/components/core/modals/existing-issues-list-modal";
 // hooks
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
+import { createIssueSubTaskOnChain, isOnChainTaskSyncEnabled } from "@/services/blockchain/plane-task-chain.service";
 // plane web imports
 import { WorkItemAdditionalWidgetModals } from "@/plane-web/components/issues/issue-detail-widgets/modals";
 // local imports
@@ -76,13 +77,21 @@ export const IssueDetailWidgetModals = observer(function IssueDetailWidgetModals
     toggleSubIssuesModal(null);
   };
 
-  const handleExistingIssuesModalOnSubmit = async (_issue: ISearchIssueResponse[]) =>
-    subIssueOperations.addSubIssue(
+  const handleExistingIssuesModalOnSubmit = async (_issue: ISearchIssueResponse[]) => {
+    if (isOnChainTaskSyncEnabled()) {
+      for (const subIssue of _issue) {
+        // Wallet confirmations must be sequential so dialogs do not overlap.
+        // eslint-disable-next-line no-await-in-loop
+        await createIssueSubTaskOnChain(issueId, { id: subIssue.id, name: subIssue.name });
+      }
+    }
+    await subIssueOperations.addSubIssue(
       workspaceSlug,
       projectId,
       issueId,
       _issue.map((issue) => issue.id)
     );
+  };
 
   const handleCreateUpdateModalClose = () => {
     handleIssueCrudState("create", null, null);
@@ -92,6 +101,7 @@ export const IssueDetailWidgetModals = observer(function IssueDetailWidgetModals
 
   const handleCreateUpdateModalOnSubmit = async (_issue: TIssue) => {
     if (_issue.parent_id) {
+      if (isOnChainTaskSyncEnabled()) await createIssueSubTaskOnChain(_issue.parent_id, _issue);
       await subIssueOperations.addSubIssue(workspaceSlug, projectId, _issue.parent_id, [_issue.id]);
     }
   };

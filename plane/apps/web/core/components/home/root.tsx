@@ -18,8 +18,12 @@ export const WorkspaceHomeView = observer(function WorkspaceHomeView() {
     <>
       <HomePeekOverviewsRoot />
       <ContentWrapper className="mx-auto scrollbar-hide gap-6 bg-surface-1 px-page-x">
-        <div className="mx-auto w-full max-w-[800px]">
-          {currentUser && <UserGreetingsView user={currentUser} />}
+        <div className="mx-auto w-full max-w-[1440px]">
+          {currentUser && (
+            <div className="mx-auto w-full max-w-[800px]">
+              <UserGreetingsView user={currentUser} />
+            </div>
+          )}
           <DashboardWidgets />
         </div>
       </ContentWrapper>

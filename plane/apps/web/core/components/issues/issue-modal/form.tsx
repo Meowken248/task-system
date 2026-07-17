@@ -245,6 +245,14 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
       return;
 
     if (!data?.id && !is_draft_issue && isOnChainTaskSyncEnabled()) {
+      if (!formData.assignee_ids || formData.assignee_ids.length !== 1) {
+        setToast({
+          type: TOAST_TYPE.ERROR,
+          title: "Task cần đúng một nhân viên",
+          message: "Hãy chọn một nhân viên duy nhất trước khi tạo task on-chain.",
+        });
+        return;
+      }
       if (!isWalletAddress(assigneeWallet)) {
         setToast({
           type: TOAST_TYPE.ERROR,

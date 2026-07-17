@@ -22,6 +22,9 @@ _tracking_file_lock = Lock()
 _ALLOWED_FIELDS = {
     "issue_id",
     "issue_name",
+    "parent_issue_id",
+    "target_date",
+    "priority",
     "project_id",
     "workspace_slug",
     "wallet_address",

@@ -13,10 +13,17 @@ import { EIssueServiceType } from "@plane/types";
 import { copyUrlToClipboard } from "@plane/utils";
 // hooks
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
+import { useProjectState } from "@/hooks/store/use-project-state";
+import {
+  deleteIssueSubTaskOnChain,
+  isOnChainTaskSyncEnabled,
+  updateIssueSubTaskStatusOnChain,
+} from "@/services/blockchain/plane-task-chain.service";
 
 export const useSubIssueOperations = (issueServiceType: TIssueServiceType): TSubIssueOperations => {
   // translation
   const { t } = useTranslation();
+  const { getStateById } = useProjectState();
   // store hooks
   const {
     subIssues: { setSubIssueHelpers },
@@ -95,6 +102,16 @@ export const useSubIssueOperations = (issueServiceType: TIssueServiceType): TSub
       ) => {
         try {
           setSubIssueHelpers(parentIssueId, "issue_loader", issueId);
+          if (
+            issueServiceType === EIssueServiceType.ISSUES &&
+            isOnChainTaskSyncEnabled() &&
+            issueData.state_id &&
+            issueData.state_id !== oldIssue.state_id
+          ) {
+            const stateGroup = getStateById(issueData.state_id)?.group;
+            const status = stateGroup === "completed" ? 2 : stateGroup === "started" ? 1 : stateGroup === "cancelled" ? 3 : 0;
+            await updateIssueSubTaskStatusOnChain(parentIssueId, issueId, status);
+          }
           await updateSubIssue(workspaceSlug, projectId, parentIssueId, issueId, issueData, oldIssue, fromModal);
           setToast({
             type: TOAST_TYPE.SUCCESS,
@@ -113,6 +130,9 @@ export const useSubIssueOperations = (issueServiceType: TIssueServiceType): TSub
       removeSubIssue: async (workspaceSlug, projectId, parentIssueId, issueId) => {
         try {
           setSubIssueHelpers(parentIssueId, "issue_loader", issueId);
+          if (issueServiceType === EIssueServiceType.ISSUES && isOnChainTaskSyncEnabled()) {
+            await deleteIssueSubTaskOnChain(parentIssueId, issueId);
+          }
           await removeSubIssue(workspaceSlug, projectId, parentIssueId, issueId);
           setToast({
             type: TOAST_TYPE.SUCCESS,
@@ -141,6 +161,9 @@ export const useSubIssueOperations = (issueServiceType: TIssueServiceType): TSub
       deleteSubIssue: async (workspaceSlug, projectId, parentIssueId, issueId) => {
         try {
           setSubIssueHelpers(parentIssueId, "issue_loader", issueId);
+          if (issueServiceType === EIssueServiceType.ISSUES && isOnChainTaskSyncEnabled()) {
+            await deleteIssueSubTaskOnChain(parentIssueId, issueId);
+          }
           await deleteSubIssue(workspaceSlug, projectId, parentIssueId, issueId);
           setSubIssueHelpers(parentIssueId, "issue_loader", issueId);
         } catch (_error) {
@@ -161,6 +184,7 @@ export const useSubIssueOperations = (issueServiceType: TIssueServiceType): TSub
       createSubIssues,
       deleteSubIssue,
       fetchSubIssues,
+      getStateById,
       issueServiceType,
       removeSubIssue,
       setSubIssueHelpers,
