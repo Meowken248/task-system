@@ -167,7 +167,8 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
     try {
       if (isOnChainTaskSyncEnabled()) {
         let childProgress = nextState.group === "completed" ? 100 : nextState.group === "started" ? 50 : 0;
-        let childStatus = nextState.group === "cancelled" ? 3 : childProgress === 100 ? 2 : childProgress > 0 ? 1 : 0;
+        let childStatus: 0 | 1 | 2 | 3 =
+          nextState.group === "cancelled" ? 3 : childProgress === 100 ? 2 : childProgress > 0 ? 1 : 0;
         if (nextState.group === "cancelled") await cancelIssueByIssueIdOnChain(issueId);
         else await updateIssueProgressByIssueIdOnChain(issueId, childProgress);
 

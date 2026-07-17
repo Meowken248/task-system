@@ -1,1 +1,20 @@
-[]
+[
+  {
+    "issue_name": "A1",
+    "event_type": "create_task",
+    "transaction_hash": "0x38fc01aebb4e02e5e07c12dafe77b26991d9edc3c0f73d7d0b2e3d4c9ebc05ba",
+    "priority": "none",
+    "parent_issue_id": null,
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "chain_id": "991",
+    "assignee_id": "5bf6146b-cf00-453c-9580-7e9bd5535318",
+    "issue_id": "b6bcff66-cb5f-4558-9f1e-0cc368db49ec",
+    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "target_date": "2026-07-18",
+    "contract_address": "0x14dCE3620Cefb503BA69864062c7F4F02ccdcF0D",
+    "assignee_name": "anh2482006",
+    "workspace_slug": "fiai",
+    "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
+    "recorded_at": "2026-07-17T04:20:23.954956+00:00"
+  }
+]

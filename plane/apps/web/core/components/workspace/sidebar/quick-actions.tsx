@@ -43,6 +43,8 @@ export const SidebarQuickActions = observer(function SidebarQuickActions() {
   const disabled = joinedProjectIds.length === 0 || !canCreateIssue;
   const workspaceDraftIssue = workspaceSlug ? (storedValue?.[workspaceSlug] ?? undefined) : undefined;
 
+  if (!canCreateIssue) return null;
+
   const handleMouseEnter = () => {
     // if enter before time out clear the timeout
     if (timeoutRef?.current) {

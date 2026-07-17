@@ -15,7 +15,6 @@ import { copyUrlToClipboard } from "@plane/utils";
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useProjectState } from "@/hooks/store/use-project-state";
 import {
-  deleteIssueSubTaskOnChain,
   isOnChainTaskSyncEnabled,
   updateIssueSubTaskStatusOnChain,
 } from "@/services/blockchain/plane-task-chain.service";
@@ -130,9 +129,6 @@ export const useSubIssueOperations = (issueServiceType: TIssueServiceType): TSub
       removeSubIssue: async (workspaceSlug, projectId, parentIssueId, issueId) => {
         try {
           setSubIssueHelpers(parentIssueId, "issue_loader", issueId);
-          if (issueServiceType === EIssueServiceType.ISSUES && isOnChainTaskSyncEnabled()) {
-            await deleteIssueSubTaskOnChain(parentIssueId, issueId);
-          }
           await removeSubIssue(workspaceSlug, projectId, parentIssueId, issueId);
           setToast({
             type: TOAST_TYPE.SUCCESS,

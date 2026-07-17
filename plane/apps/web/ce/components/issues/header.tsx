@@ -60,7 +60,7 @@ export const IssuesHeader = observer(function IssuesHeader() {
 
   const issuesCount = getGroupIssueCount(undefined, undefined, false);
   const canUserCreateIssue = allowPermissions(
-    [EUserPermissions.ADMIN, EUserPermissions.MEMBER],
+    [EUserPermissions.ADMIN],
     EUserPermissionsLevel.PROJECT
   );
 

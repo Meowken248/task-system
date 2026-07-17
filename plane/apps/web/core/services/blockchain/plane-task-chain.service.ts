@@ -38,6 +38,8 @@ type HashLike = {
   returnValue?: HashLike;
 };
 
+const TRANSACTION_HASH_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs);
@@ -55,13 +57,15 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
     );
   });
 }
-function transactionHash(value: unknown): string | null {
-  if (typeof value === "string" && value) return value;
+function transactionHash(value: unknown, includeLastHash = false): string | null {
+  if (typeof value === "string") return TRANSACTION_HASH_PATTERN.test(value) ? value : null;
   if (!value || typeof value !== "object") return null;
   const result = value as HashLike;
-  const hash = result.hash ?? result.txHash ?? result.transactionHash ?? result.lastHash;
-  if (typeof hash === "string" && hash) return hash;
-  return transactionHash(result.data) ?? transactionHash(result.returnValue);
+  const candidates = [result.hash, result.txHash, result.transactionHash, ...(includeLastHash ? [result.lastHash] : [])];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && TRANSACTION_HASH_PATTERN.test(candidate)) return candidate;
+  }
+  return transactionHash(result.data, includeLastHash) ?? transactionHash(result.returnValue, includeLastHash);
 }
 
 function blockchainErrorMessage(error: unknown): string {
@@ -100,7 +104,24 @@ function dueTimestamp(targetDate: string | null | undefined): number {
   return Number.isNaN(timestamp) ? 0 : Math.floor(timestamp / 1000);
 }
 
-async function sendContractTransaction(functionName: string, values: Record<string, InputValue>): Promise<string> {
+let transactionQueue: Promise<void> = Promise.resolve();
+
+function enqueueTransaction<T>(operation: () => Promise<T>): Promise<T> {
+  const result = transactionQueue.then(operation, operation);
+  transactionQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
+function isNonceError(error: unknown): boolean {
+  return /invalid nonce|nonce too low|nonce has already been used|replacement transaction underpriced/i.test(
+    blockchainErrorMessage(error)
+  );
+}
+
+async function sendContractTransactionNow(functionName: string, values: Record<string, InputValue>): Promise<string> {
   if (
     typeof window !== "undefined" &&
     window.location.protocol !== "https:" &&
@@ -117,6 +138,8 @@ async function sendContractTransaction(functionName: string, values: Record<stri
   let bridge = (await initFiaiSDK()) ?? getFiaiSDK();
   if (!bridge) throw new Error("FiaiSDK is not available.");
   const from = await resolveMetanodeWalletAddress();
+  const walletInfoBeforeSend = await bridge.request("getPublicWalletInfo", { address: from }).catch(() => null);
+  const hashBeforeSend = transactionHash(walletInfoBeforeSend, true);
   const send = () =>
     bridge!.request("sendTransaction", {
       from,
@@ -156,16 +179,43 @@ async function sendContractTransaction(functionName: string, values: Record<stri
     result = await sendWithWalletRecovery();
   }
   let hash = transactionHash(result);
-  if (!hash) {
+  if (hash === hashBeforeSend) hash = null;
+
+  // Some bridge versions acknowledge the transaction before returning its
+  // hash. In that case, wait until Crypto Vault exposes a new lastHash. Never
+  // accept the value that was already present before this transaction.
+  for (let attempt = 0; !hash && attempt < 20; attempt += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+    // eslint-disable-next-line no-await-in-loop
     const walletInfo = await bridge.request("getPublicWalletInfo", { address: from }).catch(() => null);
-    hash = transactionHash(walletInfo);
+    const walletHash = transactionHash(walletInfo, true);
+    if (walletHash && walletHash !== hashBeforeSend) hash = walletHash;
   }
   if (!hash) {
-    throw new Error("Giao dịch chưa hoàn tất hoặc không đọc được transaction hash từ Crypto Vault.");
+    throw new Error(
+      "Giao dịch đã được gửi nhưng Crypto Vault chưa trả transaction hash mới. Dữ liệu chưa được ghi để tránh dùng nhầm hash cũ."
+    );
   }
   return hash;
 }
 
+async function sendContractTransaction(functionName: string, values: Record<string, InputValue>): Promise<string> {
+  return enqueueTransaction(async () => {
+    try {
+      return await sendContractTransactionNow(functionName, values);
+    } catch (error) {
+      if (!isNonceError(error)) throw error;
+
+      // MetaNode may briefly retain a stale account nonce after the previous
+      // signed transaction. Recreate the secure bridge session, wait for the
+      // RPC mempool to advance, then ask the wallet to sign exactly once more.
+      await resetFiaiSDK().catch(() => null);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 1_500));
+      return sendContractTransactionNow(functionName, values);
+    }
+  });
+}
 export function isOnChainTaskSyncEnabled(): boolean {
   return process.env.VITE_ONCHAIN_TASKS_ENABLED === "true" && isWalletAddress(process.env.VITE_CONTRACT_ADDRESS || "");
 }

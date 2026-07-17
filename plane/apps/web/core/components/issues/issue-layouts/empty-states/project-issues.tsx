@@ -29,7 +29,7 @@ export const ProjectEmptyState = observer(function ProjectEmptyState() {
   const projectWorkItemFilter = useWorkItemFilterInstance(EIssuesStoreType.PROJECT, projectId);
 
   const canPerformEmptyStateActions = allowPermissions(
-    [EUserProjectRoles.ADMIN, EUserProjectRoles.MEMBER],
+    [EUserProjectRoles.ADMIN],
     EUserPermissionsLevel.PROJECT
   );
 

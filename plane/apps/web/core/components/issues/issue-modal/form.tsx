@@ -306,7 +306,6 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
             description_html: data?.description_html ?? "<p></p>",
           });
           editorRef?.current?.clearEditor();
-          setAssigneeWallet(process.env.VITE_METANODE_WALLET_ADDRESS || "");
         }
       })
       .catch((error) => {

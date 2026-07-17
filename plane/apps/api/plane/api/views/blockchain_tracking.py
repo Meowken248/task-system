@@ -1,13 +1,13 @@
 # Copyright (c) 2023-present Plane Software, Inc. and contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 # See the LICENSE file for details.
-
+import re
 import json
 import os
 import uuid
 from pathlib import Path
 from threading import Lock
-
+from re import fullmatch
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
@@ -246,6 +246,11 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 {"error": f"Missing required fields: {', '.join(sorted(missing))}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if not re.fullmatch(r"0x[a-fA-F0-9]{64}", str(payload["transaction_hash"])):
+            return Response(
+                {"error": "Transaction hash must be a 32-byte 0x-prefixed hexadecimal value."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         payload["workspace_slug"] = slug
         payload["project_id"] = str(project_id)
@@ -255,9 +260,40 @@ class BlockchainTrackingEndpoint(BaseAPIView):
 
         path = _tracking_file_path(event_type)
         with _tracking_file_lock:
-            records = _read_records(path)
-            records = [payload, *records] if event_type == "daily_report" else _upsert_record(records, payload)
-            _write_records(path, records)
+            transaction_hash = str(payload["transaction_hash"]).lower()
+            tracking_paths = {
+                _tracking_file_path(),
+                _tracking_file_path("daily_report"),
+                _tracking_file_path("assign_task"),
+                _tracking_file_path("task_content"),
+            }
+            existing_record = next(
+                (
+                    record
+                    for tracking_path in tracking_paths
+                    for record in _read_records(tracking_path)
+                    if str(record.get("transaction_hash", "")).lower() == transaction_hash
+                ),
+                None,
+            )
+            is_idempotent = False
+            if existing_record is not None:
+                is_idempotent = (
+                    existing_record.get("event_type") == event_type
+                    and str(existing_record.get("issue_id")) == str(payload.get("issue_id"))
+                    and existing_record.get("workspace_slug") == slug
+                    and str(existing_record.get("project_id")) == str(project_id)
+                )
+                if not is_idempotent:
+                    return Response(
+                        {"error": "Transaction hash is already linked to another blockchain event."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                payload = existing_record
+            else:
+                records = _read_records(path)
+                records = [payload, *records] if event_type == "daily_report" else _upsert_record(records, payload)
+                _write_records(path, records)
 
         if event_type == "assign_task" and assignment_member is not None and assigned_issue is not None:
             assigned_issue.assignees.set([assignment_member.member_id])
@@ -282,4 +318,4 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 issue.state = target_state
                 issue.save(update_fields=["state", "updated_at"])
 
-        return Response(payload, status=status.HTTP_201_CREATED)
+        return Response(payload, status=status.HTTP_200_OK if is_idempotent else status.HTTP_201_CREATED)
