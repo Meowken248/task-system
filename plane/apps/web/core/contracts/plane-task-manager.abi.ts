@@ -114,6 +114,17 @@ export const planeTaskManagerAbi = [
   },
   {
     type: "function",
+    name: "updateSchedule",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "dueAt", type: "uint64", internalType: "uint64" },
+      { name: "priority", type: "uint8", internalType: "enum PlaneTaskManager.Priority" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
     name: "submitDailyReport",
     inputs: [
       { name: "taskId", type: "uint256", internalType: "uint256" },

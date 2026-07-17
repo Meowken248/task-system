@@ -42,12 +42,8 @@ import { useUserPermissions } from "@/hooks/store/user";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
 import {
-  cancelIssueByIssueIdOnChain,
-  getIssueSubTaskStats,
   isOnChainTaskSyncEnabled,
   setPendingAssignmentWallet,
-  updateIssueProgressByIssueIdOnChain,
-  updateIssueSubTaskStatusOnChain,
 } from "@/services/blockchain/plane-task-chain.service";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 // plane web components
@@ -162,40 +158,8 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
   };
 
   const handleStateChange = async (stateId: string) => {
-    const nextState = getStateById(stateId);
-    if (!nextState) return;
-    try {
-      if (isOnChainTaskSyncEnabled()) {
-        let childProgress = nextState.group === "completed" ? 100 : nextState.group === "started" ? 50 : 0;
-        let childStatus: 0 | 1 | 2 | 3 =
-          nextState.group === "cancelled" ? 3 : childProgress === 100 ? 2 : childProgress > 0 ? 1 : 0;
-        if (nextState.group === "cancelled") await cancelIssueByIssueIdOnChain(issueId);
-        else await updateIssueProgressByIssueIdOnChain(issueId, childProgress);
-
-        let childIssueId = issueId;
-        let parentIssueId = issue.parent_id;
-        while (parentIssueId) {
-          // Wallet confirmations are intentionally sequential from the nearest parent to the root.
-          // eslint-disable-next-line no-await-in-loop
-          await updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, childStatus);
-          // eslint-disable-next-line no-await-in-loop
-          const parentStats = await getIssueSubTaskStats(parentIssueId);
-          childProgress = parentStats.progress;
-          childStatus = childProgress === 100 ? 2 : childProgress > 0 ? 1 : 0;
-          childIssueId = parentIssueId;
-          parentIssueId = getIssueById(parentIssueId)?.parent_id ?? null;
-        }
-      }
-      await issueOperations.update(workspaceSlug, projectId, issueId, { state_id: stateId });
-    } catch (error) {
-      setToast({
-        type: TOAST_TYPE.ERROR,
-        title: "Không thể cập nhật trạng thái",
-        message: error instanceof Error ? error.message : "Giao dịch on-chain thất bại.",
-      });
-    }
+    await issueOperations.update(workspaceSlug, projectId, issueId, { state_id: stateId });
   };
-
   const minDate = issue.start_date ? getDate(issue.start_date) : null;
   minDate?.setDate(minDate.getDate());
 

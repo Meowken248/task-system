@@ -7,7 +7,6 @@ import os
 import uuid
 from pathlib import Path
 from threading import Lock
-from re import fullmatch
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status

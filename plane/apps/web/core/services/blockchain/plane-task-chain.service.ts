@@ -32,13 +32,29 @@ type InputValue = string | number;
 type HashLike = {
   hash?: unknown;
   txHash?: unknown;
+  tx_hash?: unknown;
   transactionHash?: unknown;
+  transaction_hash?: unknown;
   lastHash?: unknown;
+  last_hash?: unknown;
+  lastTransactionHash?: unknown;
   data?: HashLike;
   returnValue?: HashLike;
+  result?: HashLike;
+  response?: HashLike;
+  payload?: HashLike;
+  output?: HashLike;
+  receipt?: HashLike;
 };
 
-const TRANSACTION_HASH_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+const DEFAULT_TRANSACTION_TIMEOUT_MS = 60_000;
+const TRANSACTION_HASH_POLL_INTERVAL_MS = 500;
+
+function transactionWaitTimeoutMs(): number {
+  const configured = Number(process.env.VITE_FIAI_TIMEOUT || DEFAULT_TRANSACTION_TIMEOUT_MS);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_TRANSACTION_TIMEOUT_MS;
+  return Math.min(Math.max(configured, 10_000), 300_000);
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -57,15 +73,60 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
     );
   });
 }
-function transactionHash(value: unknown, includeLastHash = false): string | null {
-  if (typeof value === "string") return TRANSACTION_HASH_PATTERN.test(value) ? value : null;
-  if (!value || typeof value !== "object") return null;
-  const result = value as HashLike;
-  const candidates = [result.hash, result.txHash, result.transactionHash, ...(includeLastHash ? [result.lastHash] : [])];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && TRANSACTION_HASH_PATTERN.test(candidate)) return candidate;
+function normalizeTransactionHash(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim();
+  const normalized = candidate.startsWith("0x") || candidate.startsWith("0X") ? candidate.slice(2) : candidate;
+  return /^[a-fA-F0-9]{64}$/.test(normalized) ? `0x${normalized}` : null;
+}
+
+function transactionHash(value: unknown, includeLastHash = false, visited = new WeakSet<object>()): string | null {
+  const directHash = normalizeTransactionHash(value);
+  if (directHash) return directHash;
+  if (typeof value === "string") {
+    try {
+      return transactionHash(JSON.parse(value), includeLastHash, visited);
+    } catch {
+      return null;
+    }
   }
-  return transactionHash(result.data, includeLastHash) ?? transactionHash(result.returnValue, includeLastHash);
+  if (!value || typeof value !== "object" || visited.has(value)) return null;
+  visited.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hash = transactionHash(item, includeLastHash, visited);
+      if (hash) return hash;
+    }
+    return null;
+  }
+
+  const result = value as HashLike;
+  const candidates = [
+    result.hash,
+    result.txHash,
+    result.tx_hash,
+    result.transactionHash,
+    result.transaction_hash,
+    ...(includeLastHash ? [result.lastHash, result.last_hash, result.lastTransactionHash] : []),
+  ];
+  for (const candidate of candidates) {
+    const hash = normalizeTransactionHash(candidate);
+    if (hash) return hash;
+  }
+
+  for (const nested of [
+    result.data,
+    result.returnValue,
+    result.result,
+    result.response,
+    result.payload,
+    result.output,
+    result.receipt,
+  ]) {
+    const hash = transactionHash(nested, includeLastHash, visited);
+    if (hash) return hash;
+  }
+  return null;
 }
 
 function blockchainErrorMessage(error: unknown): string {
@@ -182,19 +243,25 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
   if (hash === hashBeforeSend) hash = null;
 
   // Some bridge versions acknowledge the transaction before returning its
-  // hash. In that case, wait until Crypto Vault exposes a new lastHash. Never
-  // accept the value that was already present before this transaction.
-  for (let attempt = 0; !hash && attempt < 20; attempt += 1) {
+  // hash. Wait through temporary WebSocket reconnects until Crypto Vault
+  // exposes a new lastHash. Never accept the value from before this send.
+  const hashWaitTimeout = transactionWaitTimeoutMs();
+  const hashWaitDeadline = Date.now() + hashWaitTimeout;
+  while (!hash && Date.now() < hashWaitDeadline) {
     // eslint-disable-next-line no-await-in-loop
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+    await new Promise<void>((resolve) => window.setTimeout(resolve, TRANSACTION_HASH_POLL_INTERVAL_MS));
+    if (Date.now() >= hashWaitDeadline) break;
+    const remaining = hashWaitDeadline - Date.now();
     // eslint-disable-next-line no-await-in-loop
-    const walletInfo = await bridge.request("getPublicWalletInfo", { address: from }).catch(() => null);
+    const walletInfo = await bridge
+      .request("getPublicWalletInfo", { address: from }, { timeout: Math.min(5_000, remaining) })
+      .catch(() => null);
     const walletHash = transactionHash(walletInfo, true);
     if (walletHash && walletHash !== hashBeforeSend) hash = walletHash;
   }
   if (!hash) {
     throw new Error(
-      "Giao dịch đã được gửi nhưng Crypto Vault chưa trả transaction hash mới. Dữ liệu chưa được ghi để tránh dùng nhầm hash cũ."
+      `Giao dịch đã được gửi nhưng Crypto Vault chưa trả transaction hash mới sau ${Math.round(hashWaitTimeout / 1000)} giây. Dữ liệu chưa được ghi để tránh dùng nhầm hash cũ.`
     );
   }
   return hash;
@@ -230,8 +297,6 @@ export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHa
       projectId: issue.project_id,
       name: issue.name,
       description: issue.description_html,
-      priority: issue.priority,
-      targetDate: issue.target_date,
     }),
     assignee,
 
@@ -266,6 +331,31 @@ export async function updateIssueProgressByIssueIdOnChain(issueId: string, progr
 export async function cancelIssueByIssueIdOnChain(issueId: string): Promise<string> {
   return sendContractTransaction("cancelTask", { taskId: await getIssueTaskId(issueId) });
 }
+
+export async function updateIssueScheduleByIssueIdOnChain(
+  issueId: string,
+  targetDate: string | null | undefined,
+  priority: TIssuePriorities | null | undefined
+): Promise<string> {
+  return sendContractTransaction("updateSchedule", {
+    taskId: await getIssueTaskId(issueId),
+    dueAt: dueTimestamp(targetDate),
+    priority: priorityValue(priority),
+  });
+}
+
+export async function updateIssueMetadataByIssueIdOnChain(issue: TIssue): Promise<string> {
+  return sendContractTransaction("updateTaskMetadata", {
+    taskId: await getIssueTaskId(issue.id),
+    metadataHash: await hashTaskValue({
+      id: issue.id,
+      projectId: issue.project_id,
+      name: issue.name,
+      description: issue.description_html,
+    }),
+  });
+}
+
 function readNumericResult(value: unknown): number | null {
   if (typeof value === "number" && Number.isSafeInteger(value)) return value;
   if (typeof value === "bigint") return Number(value);

@@ -24,11 +24,17 @@ import { blockchainTrackingService } from "@/services/blockchain/blockchain-trac
 import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
 import {
   assignIssueByIssueIdOnChain,
+  cancelIssueByIssueIdOnChain,
   consumePendingAssignmentWallet,
   createIssueOnChain,
   deleteIssueByIssueIdOnChain,
   deleteIssueSubTaskOnChain,
+  getIssueSubTaskStats,
   isOnChainTaskSyncEnabled,
+  updateIssueMetadataByIssueIdOnChain,
+  updateIssueProgressByIssueIdOnChain,
+  updateIssueScheduleByIssueIdOnChain,
+  updateIssueSubTaskStatusOnChain,
 } from "@/services/blockchain/plane-task-chain.service";
 
 export class IssueService extends APIService {
@@ -37,6 +43,51 @@ export class IssueService extends APIService {
   constructor(serviceType: TIssueServiceType = EIssueServiceType.ISSUES) {
     super(API_BASE_URL);
     this.serviceType = serviceType;
+  }
+
+  private async syncIssueStateOnChain(
+    workspaceSlug: string,
+    projectId: string,
+    issueId: string,
+    stateId: string,
+    currentIssue: TIssue
+  ): Promise<void> {
+    const state = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/states/${stateId}/`).then(
+      (response) => response?.data
+    );
+    const group = state?.group as string | undefined;
+    if (!group) throw new Error("Không thể xác định trạng thái để đồng bộ on-chain.");
+
+    let progress = group === "completed" ? 100 : group === "started" ? 50 : 0;
+    let subTaskStatus: 0 | 1 | 2 | 3 =
+      group === "cancelled" ? 3 : progress === 100 ? 2 : progress > 0 ? 1 : 0;
+
+    if (group === "cancelled") {
+      await cancelIssueByIssueIdOnChain(issueId);
+    } else {
+      const stats = await getIssueSubTaskStats(issueId);
+      if (stats.activeCount === 0) {
+        await updateIssueProgressByIssueIdOnChain(issueId, progress);
+      } else if (progress !== stats.progress) {
+        throw new Error("Task cha có task con nên tiến độ phải được tính tự động từ các task con.");
+      }
+    }
+
+    let childIssueId = issueId;
+    let parentIssueId = currentIssue.parent_id;
+    while (parentIssueId) {
+      // Each parent update is a separate wallet-confirmed transaction.
+      // eslint-disable-next-line no-await-in-loop
+      await updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus);
+      // eslint-disable-next-line no-await-in-loop
+      const parentStats = await getIssueSubTaskStats(parentIssueId);
+      progress = parentStats.progress;
+      subTaskStatus = progress === 100 ? 2 : progress > 0 ? 1 : 0;
+      childIssueId = parentIssueId;
+      // eslint-disable-next-line no-await-in-loop
+      const parentIssue = await this.retrieve(workspaceSlug, projectId, parentIssueId);
+      parentIssueId = parentIssue.parent_id;
+    }
   }
 
   async createIssue(workspaceSlug: string, projectId: string, data: Partial<TIssue>): Promise<TIssue> {
@@ -285,6 +336,35 @@ export class IssueService extends APIService {
   }
 
   async patchIssue(workspaceSlug: string, projectId: string, issueId: string, data: Partial<TIssue>): Promise<any> {
+    if (isOnChainTaskSyncEnabled()) {
+      const metadataFields = [
+        "name",
+        "description_html",
+        "description_json",
+        "description_stripped",
+        "description_binary",
+      ];
+      const needsCurrentIssue =
+        Boolean(data.state_id) ||
+        "priority" in data ||
+        "target_date" in data ||
+        metadataFields.some((field) => field in data);
+      const currentIssue = needsCurrentIssue ? await this.retrieve(workspaceSlug, projectId, issueId) : undefined;
+
+      if (data.state_id && currentIssue) {
+        await this.syncIssueStateOnChain(workspaceSlug, projectId, issueId, data.state_id, currentIssue);
+      }
+
+      if (("priority" in data || "target_date" in data) && currentIssue) {
+        const updatedIssue = { ...currentIssue, ...data } as TIssue;
+        await updateIssueScheduleByIssueIdOnChain(issueId, updatedIssue.target_date, updatedIssue.priority);
+      }
+
+      if (metadataFields.some((field) => field in data) && currentIssue) {
+        await updateIssueMetadataByIssueIdOnChain({ ...currentIssue, ...data } as TIssue);
+      }
+    }
+
     if (isOnChainTaskSyncEnabled() && data.assignee_ids) {
       const assigneeId = data.assignee_ids.at(-1);
       if (!assigneeId) throw { error: "Task phải có một nhân viên phụ trách." };
@@ -316,7 +396,6 @@ export class IssueService extends APIService {
         throw error?.response?.data;
       });
   }
-
   async deleteIssue(workspaceSlug: string, projectId: string, issuesId: string): Promise<any> {
     if (!isOnChainTaskSyncEnabled()) {
       return this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`)
@@ -328,16 +407,19 @@ export class IssueService extends APIService {
 
     const issue = await this.retrieve(workspaceSlug, projectId, issuesId);
     const currentContract = process.env.VITE_CONTRACT_ADDRESS?.trim().toLowerCase() || "";
-    const issueRecords = (await blockchainTrackingService.getTransactions(workspaceSlug, projectId)).filter(
-      (record) => record.issue_id === issuesId && Boolean(record.contract_address)
+    const creationRecords = (await blockchainTrackingService.getTransactions(workspaceSlug, projectId)).filter(
+      (record) =>
+        record.issue_id === issuesId && record.event_type === "create_task" && Boolean(record.contract_address)
     );
-    const belongsToLegacyContract =
-      issueRecords.length > 0 &&
-      !issueRecords.some((record) => record.contract_address?.trim().toLowerCase() === currentContract);
+    const existsOnCurrentContract = creationRecords.some(
+      (record) => record.contract_address?.trim().toLowerCase() === currentContract
+    );
 
-    if (belongsToLegacyContract) {
+    if (!existsOnCurrentContract) {
       console.warn(
-        `Task ${issuesId} thuộc contract cũ; chỉ xóa dữ liệu Plane vì contract hiện tại không có task này.`
+        creationRecords.length > 0
+          ? `Task ${issuesId} thuộc contract cũ; chỉ xóa dữ liệu Plane vì contract hiện tại không có task này.`
+          : `Task ${issuesId} không có bản ghi tạo on-chain; chỉ xóa dữ liệu Plane.`
       );
       return this.delete(
         `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`

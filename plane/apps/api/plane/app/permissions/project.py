@@ -152,6 +152,7 @@ class FiaiTaskPermission(BasePermission):
         "description_json",
         "description_stripped",
         "description_binary",
+        "state_id",
         "skip_activity",
     }
 
@@ -180,7 +181,7 @@ class FiaiTaskPermission(BasePermission):
             ).exists()
         )
         if is_admin:
-            return request.method != "PATCH" or "assignee_ids" not in request.data
+            return True
 
         if request.method != "PATCH":
             return False

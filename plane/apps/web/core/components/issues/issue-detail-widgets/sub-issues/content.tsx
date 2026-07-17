@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { observer } from "mobx-react";
 import type { TIssue, TIssueServiceType } from "@plane/types";
 import { EIssueServiceType, EIssuesStoreType } from "@plane/types";
@@ -57,6 +57,7 @@ export const SubIssuesCollapsibleContent = observer(function SubIssuesCollapsibl
       issue: undefined,
     },
   });
+  const fetchInFlightRef = useRef(new Set<string>());
   // store hooks
   const {
     toggleCreateIssueModal,
@@ -84,8 +85,10 @@ export const SubIssuesCollapsibleContent = observer(function SubIssuesCollapsibl
   );
 
   const handleFetchSubIssues = useCallback(async () => {
+    if (fetchInFlightRef.current.has(parentIssueId)) return;
     const currentSubIssueHelpers = subIssueHelpersByIssueId(`${parentIssueId}_root`);
     if (!currentSubIssueHelpers.issue_visibility.includes(parentIssueId)) {
+      fetchInFlightRef.current.add(parentIssueId);
       try {
         setSubIssueHelpers(`${parentIssueId}_root`, "preview_loader", parentIssueId);
         await subIssueOperations.fetchSubIssues(workspaceSlug, projectId, parentIssueId);
@@ -94,6 +97,7 @@ export const SubIssuesCollapsibleContent = observer(function SubIssuesCollapsibl
         console.error("Error fetching sub-work items:", error);
       } finally {
         setSubIssueHelpers(`${parentIssueId}_root`, "preview_loader", "");
+        fetchInFlightRef.current.delete(parentIssueId);
       }
     }
   }, [parentIssueId, projectId, setSubIssueHelpers, subIssueHelpersByIssueId, subIssueOperations, workspaceSlug]);
