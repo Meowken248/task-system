@@ -34,6 +34,7 @@ import {
   updateIssueMetadataByIssueIdOnChain,
   updateIssueProgressByIssueIdOnChain,
   updateIssueScheduleByIssueIdOnChain,
+  updateIssueSubTaskProgressOnChain,
   updateIssueSubTaskStatusOnChain,
 } from "@/services/blockchain/plane-task-chain.service";
 
@@ -77,8 +78,12 @@ export class IssueService extends APIService {
     let parentIssueId = currentIssue.parent_id;
     while (parentIssueId) {
       // Each parent update is a separate wallet-confirmed transaction.
+      const syncTransaction =
+        subTaskStatus === 3
+          ? updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus)
+          : updateIssueSubTaskProgressOnChain(parentIssueId, childIssueId, progress);
       // eslint-disable-next-line no-await-in-loop
-      await updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus);
+      await syncTransaction;
       // eslint-disable-next-line no-await-in-loop
       const parentStats = await getIssueSubTaskStats(parentIssueId);
       progress = parentStats.progress;

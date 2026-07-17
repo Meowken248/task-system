@@ -69,6 +69,7 @@ contract PlaneTaskManager {
         bytes32 metadataHash;
         uint64 createdAt;
         uint64 updatedAt;
+        uint8 progress;
         SubTaskStatus status;
         bool deleted;
     }
@@ -143,6 +144,13 @@ contract PlaneTaskManager {
     event SubTaskStatusUpdated(
         uint256 indexed taskId,
         uint256 indexed subTaskId,
+        SubTaskStatus status,
+        address indexed updatedBy
+    );
+    event SubTaskProgressUpdated(
+        uint256 indexed taskId,
+        uint256 indexed subTaskId,
+        uint8 progress,
         SubTaskStatus status,
         address indexed updatedBy
     );
@@ -241,6 +249,7 @@ contract PlaneTaskManager {
             metadataHash: metadataHash,
             createdAt: timestamp,
             updatedAt: timestamp,
+            progress: 0,
             status: SubTaskStatus.Todo,
             deleted: false
         }));
@@ -269,9 +278,35 @@ contract PlaneTaskManager {
         if (task.status == Status.Cancelled) revert InvalidStatusTransition();
         SubTask storage subTask = _getSubTask(taskId, subTaskId);
         subTask.status = status;
+        if (status == SubTaskStatus.Todo || status == SubTaskStatus.Cancelled) subTask.progress = 0;
+        else if (status == SubTaskStatus.Completed) subTask.progress = 100;
+        else if (subTask.progress == 0) subTask.progress = 50;
         subTask.updatedAt = uint64(block.timestamp);
         _recalculateProgressFromSubTasks(taskId, task);
         emit SubTaskStatusUpdated(taskId, subTaskId, status, msg.sender);
+        emit SubTaskProgressUpdated(taskId, subTaskId, subTask.progress, status, msg.sender);
+    }
+
+    function updateSubTaskProgress(
+        uint256 taskId,
+        uint256 subTaskId,
+        uint8 progress
+    ) external taskExists(taskId) {
+        Task storage task = tasks[taskId];
+        if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
+        if (task.status == Status.Cancelled) revert InvalidStatusTransition();
+        if (progress > 100) revert InvalidProgress();
+        SubTask storage subTask = _getSubTask(taskId, subTaskId);
+        subTask.progress = progress;
+        subTask.status = progress == 100
+            ? SubTaskStatus.Completed
+            : progress == 0
+                ? SubTaskStatus.Todo
+                : SubTaskStatus.InProgress;
+        subTask.updatedAt = uint64(block.timestamp);
+        _recalculateProgressFromSubTasks(taskId, task);
+        emit SubTaskProgressUpdated(taskId, subTaskId, progress, subTask.status, msg.sender);
+        emit SubTaskStatusUpdated(taskId, subTaskId, subTask.status, msg.sender);
     }
 
     function deleteSubTask(uint256 taskId, uint256 subTaskId) external onlyAdmin taskExists(taskId) {
@@ -521,13 +556,15 @@ contract PlaneTaskManager {
         private view returns (uint256 activeCount, uint256 completedCount, uint8 progress)
     {
         SubTask[] storage items = subTasks[taskId];
+        uint256 progressSum;
         for (uint256 i = 0; i < items.length; ++i) {
             SubTask storage subTask = items[i];
             if (subTask.deleted || subTask.status == SubTaskStatus.Cancelled) continue;
             ++activeCount;
             if (subTask.status == SubTaskStatus.Completed) ++completedCount;
+            progressSum += subTask.progress;
         }
-        if (activeCount != 0) progress = uint8((completedCount * 100) / activeCount);
+        if (activeCount != 0) progress = uint8(progressSum / activeCount);
     }
 
     function _recalculateProgressFromSubTasks(uint256 taskId, Task storage task) private {

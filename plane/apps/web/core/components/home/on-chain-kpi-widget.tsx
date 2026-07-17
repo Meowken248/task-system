@@ -4,7 +4,11 @@ import {
   blockchainTrackingService,
   type TBlockchainTrackingRecord,
 } from "@/services/blockchain/blockchain-tracking.service";
-import { getWalletKPI, type OnChainKPI } from "@/services/blockchain/plane-task-chain.service";
+import {
+  getIssueOnChainProgress,
+  getWalletKPI,
+  type OnChainKPI,
+} from "@/services/blockchain/plane-task-chain.service";
 import { ProjectService } from "@/services/project";
 
 type Props = { workspaceSlug: string };
@@ -45,12 +49,13 @@ function shortHash(value?: string): string {
   return value.length > 22 ? `${value.slice(0, 12)}...${value.slice(-8)}` : value;
 }
 
-function taskProgress(task?: TaskOption): number {
+function taskProgress(task?: TaskOption, onChainProgress?: Readonly<Record<string, number>>): number {
+  if (task && typeof onChainProgress?.[task.id] === "number") return onChainProgress[task.id];
   const report = task?.records.find((record) => record.event_type === "daily_report");
   return typeof report?.progress === "number" ? report.progress : 0;
 }
 
-function aggregateKpi(tasks: TaskOption[]): AggregateKpi {
+function aggregateKpi(tasks: TaskOption[], onChainProgress?: Readonly<Record<string, number>>): AggregateKpi {
   const result: AggregateKpi = {
     total: tasks.length,
     todo: 0,
@@ -65,7 +70,7 @@ function aggregateKpi(tasks: TaskOption[]): AggregateKpi {
   let progressSum = 0;
   const now = Date.now();
   tasks.forEach((task) => {
-    const progress = taskProgress(task);
+    const progress = taskProgress(task, onChainProgress);
     progressSum += progress;
     result.reports += task.records.filter((record) => record.event_type === "daily_report").length;
     if (progress === 100) result.completed += 1;
@@ -116,6 +121,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
   const [records, setRecords] = useState<TBlockchainTrackingRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(new Set());
+  const [onChainProgress, setOnChainProgress] = useState<Record<string, number>>({});
   const [kpi, setKpi] = useState<OnChainKPI>();
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [loadingTasks, setLoadingTasks] = useState(false);
@@ -162,6 +168,32 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     }).filter((task) => !task.records.some((record) => record.event_type === "delete_task"));
   }, [records]);
 
+  useEffect(() => {
+    let active = true;
+    if (!tasks.length) {
+      setOnChainProgress({});
+      return () => {
+        active = false;
+      };
+    }
+    const loadOnChainProgress = async () => {
+      const entries = await Promise.all(
+        tasks.map(async (task): Promise<readonly [string, number] | null> => {
+          try {
+            return [task.id, await getIssueOnChainProgress(task.id)] as const;
+          } catch {
+            return null;
+          }
+        })
+      );
+      if (active) setOnChainProgress(Object.fromEntries(entries.filter((entry) => entry !== null)));
+    };
+    void loadOnChainProgress();
+    return () => {
+      active = false;
+    };
+  }, [tasks]);
+
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
   const childrenByParent = useMemo(() => {
@@ -181,13 +213,17 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     return children.length ? children.flatMap((child) => collectLeafTasks(child, nextVisited)) : [task];
   };
   const displayTaskProgress = (task: TaskOption): number => {
+    const contractProgress = onChainProgress[task.id];
+    if (typeof contractProgress === "number") return contractProgress;
     const leaves = collectLeafTasks(task);
-    return leaves.length ? aggregateKpi(leaves).averageProgress : taskProgress(task);
+    return leaves.length
+      ? aggregateKpi(leaves, onChainProgress).averageProgress
+      : taskProgress(task, onChainProgress);
   };
   const projectLeafTasks = rootTasks.flatMap((task) => collectLeafTasks(task));
   const selectedTaskLeafTasks = selectedTask ? collectLeafTasks(selectedTask) : [];
-  const projectKpi = aggregateKpi(projectLeafTasks);
-  const selectedTaskKpi = aggregateKpi(selectedTaskLeafTasks);
+  const projectKpi = aggregateKpi(projectLeafTasks, onChainProgress);
+  const selectedTaskKpi = aggregateKpi(selectedTaskLeafTasks, onChainProgress);
   const creation = selectedTask?.records.find((record) => record.event_type === "create_task");
   const assignment =
     selectedTask?.records.find((record) => record.event_type === "assign_task") ??
@@ -381,7 +417,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   <div className="mt-3 space-y-2">
                     {rootTasks.map((task) => {
                       const children = childrenByParent.get(task.id) ?? [];
-                      const summary = aggregateKpi(collectLeafTasks(task));
+                      const summary = aggregateKpi(collectLeafTasks(task), onChainProgress);
                       return (
                         <button
                           key={task.id}
@@ -467,7 +503,9 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                             {child.records.filter((record) => record.event_type === "daily_report").length} báo cáo
                           </span>
                         </span>
-                        <span className="ml-3 text-11 font-medium text-primary">{taskProgress(child)}%</span>
+                        <span className="ml-3 text-11 font-medium text-primary">
+                          {taskProgress(child, onChainProgress)}%
+                        </span>
                       </button>
                     ))}
                   </div>

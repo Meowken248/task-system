@@ -54,6 +54,17 @@ export const planeTaskManagerAbi = [
   },
   {
     type: "function",
+    name: "updateSubTaskProgress",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "subTaskId", type: "uint256", internalType: "uint256" },
+      { name: "progress", type: "uint8", internalType: "uint8" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
     name: "deleteSubTask",
     inputs: [
       { name: "taskId", type: "uint256", internalType: "uint256" },
@@ -146,6 +157,32 @@ export const planeTaskManagerAbi = [
     ],
     outputs: [],
     stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getTask",
+    inputs: [{ name: "taskId", type: "uint256", internalType: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        internalType: "struct PlaneTaskManager.Task",
+        components: [
+          { name: "externalId", type: "bytes32" },
+          { name: "metadataHash", type: "bytes32" },
+          { name: "creator", type: "address" },
+          { name: "assignee", type: "address" },
+          { name: "createdAt", type: "uint64" },
+          { name: "updatedAt", type: "uint64" },
+          { name: "dueAt", type: "uint64" },
+          { name: "progress", type: "uint8" },
+          { name: "priority", type: "uint8" },
+          { name: "status", type: "uint8" },
+          { name: "deleted", type: "bool" },
+        ],
+      },
+    ],
+    stateMutability: "view",
   },
   {
     type: "function",

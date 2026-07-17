@@ -404,6 +404,38 @@ export async function getIssueTaskId(issueId: string): Promise<number> {
   return taskId;
 }
 
+function findTaskProgress(value: unknown): number | null {
+  if (Array.isArray(value)) {
+    if (value.length >= 11) {
+      const progress = Number(value[7]);
+      if (Number.isFinite(progress) && progress >= 0 && progress <= 100) return progress;
+    }
+    for (const nested of value) {
+      const progress = findTaskProgress(nested);
+      if (progress !== null) return progress;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const object = value as Record<string, unknown>;
+  if ("progress" in object) {
+    const progress = Number(object.progress);
+    if (Number.isFinite(progress) && progress >= 0 && progress <= 100) return progress;
+  }
+  for (const nested of Object.values(object)) {
+    const progress = findTaskProgress(nested);
+    if (progress !== null) return progress;
+  }
+  return null;
+}
+
+export async function getIssueOnChainProgress(issueId: string): Promise<number> {
+  const taskId = await getIssueTaskId(issueId);
+  const progress = findTaskProgress(await readContract("getTask", { taskId }));
+  if (progress === null) throw new Error("Không đọc được tiến độ task từ contract.");
+  return progress;
+}
+
 export type OnChainSubTaskStats = {
   activeCount: number;
   completedCount: number;
@@ -477,6 +509,23 @@ export async function updateIssueSubTaskStatusOnChain(
   if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
   return sendContractTransaction("updateSubTaskStatus", { taskId, subTaskId, status });
 }
+export async function updateIssueSubTaskProgressOnChain(
+  parentIssueId: string,
+  subIssueId: string,
+  progress: number
+): Promise<string> {
+  if (!Number.isInteger(progress) || progress < 0 || progress > 100) {
+    throw new Error("Progress must be 0-100.");
+  }
+  const taskId = await getIssueTaskId(parentIssueId);
+  const subTaskIdResult = await readContract("getSubTaskId", {
+    taskId,
+    externalId: await hashTaskValue(`plane-sub-issue:${subIssueId}`),
+  });
+  const subTaskId = readNumericResult(subTaskIdResult);
+  if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
+  return sendContractTransaction("updateSubTaskProgress", { taskId, subTaskId, progress });
+}
 export async function submitIssueDailyReportOnChain(
   issueId: string,
   report: { progress: number; work: string; difficulty: string; evidence: string },
@@ -516,11 +565,15 @@ export async function submitIssueDailyReportOnChain(
   let childProgress = effectiveProgress;
   for (const [index, parentIssueId] of ancestorIssueIds.entries()) {
     onStatus?.(`Báo cáo đã thành công. Đang đồng bộ tiến độ lên cấp ${index + 1}/${ancestorIssueIds.length}...`);
-    const subTaskStatus = childProgress === 100 ? 2 : childProgress > 0 ? 1 : 0;
     try {
       // Wallet confirmations are intentionally sequential from the nearest parent to the root.
       // eslint-disable-next-line no-await-in-loop
-      parentSyncTransactionHashes.push(await updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus));
+      const syncTransactionHash = await updateIssueSubTaskProgressOnChain(
+        parentIssueId,
+        childIssueId,
+        childProgress
+      );
+      parentSyncTransactionHashes.push(syncTransactionHash);
       // eslint-disable-next-line no-await-in-loop
       const parentStats = await getIssueSubTaskStats(parentIssueId);
       childIssueId = parentIssueId;
