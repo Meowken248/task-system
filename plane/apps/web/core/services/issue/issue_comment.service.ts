@@ -10,6 +10,7 @@ import type { TIssueComment, TIssueServiceType } from "@plane/types";
 import { EIssueServiceType } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
+import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isOnChainTaskSyncEnabled, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
 import { FileUploadService } from "@/services/file-upload.service";
 
@@ -52,22 +53,35 @@ export class IssueCommentService extends APIService {
     issueId: string,
     data: Partial<TIssueComment>
   ): Promise<TIssueComment> {
-    return this.post(
+    const comment = await this.post(
       `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/comments/`,
       data
     )
-      .then((response) => response?.data)
-      .then((comment: TIssueComment) => {
-        if (isOnChainTaskSyncEnabled() && data.external_source !== "blockchain-daily-report") {
-          void recordIssueContentOnChain(issueId, 0, comment.comment_stripped || comment.comment_html).catch(
-            (error: unknown) => console.error("Failed to anchor comment on-chain:", error)
-          );
-        }
-        return comment;
-      })
+      .then((response) => response?.data as TIssueComment)
       .catch((error) => {
-        throw error?.response?.data;
+        throw error?.response?.data ?? error;
       });
+    if (!isOnChainTaskSyncEnabled() || data.external_source === "blockchain-daily-report") return comment;
+
+    try {
+      const transactionHash = await recordIssueContentOnChain(
+        issueId,
+        0,
+        comment.comment_stripped || comment.comment_html
+      );
+      await blockchainTrackingService.recordTaskContent(workspaceSlug, projectId, {
+        issueId,
+        transactionHash,
+        kind: "comment",
+        reference: comment.id,
+      });
+      return comment;
+    } catch (error) {
+      await this.delete(
+        `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/comments/${comment.id}/`
+      ).catch((rollbackError) => console.error("Failed to roll back comment after on-chain failure:", rollbackError));
+      throw error;
+    }
   }
 
   async patchIssueComment(

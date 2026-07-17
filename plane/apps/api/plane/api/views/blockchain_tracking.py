@@ -42,6 +42,8 @@ _ALLOWED_FIELDS = {
     "work",
     "difficulty",
     "evidence",
+    "content_kind",
+    "content_reference",
 }
 _REQUIRED_FIELDS = {"issue_id", "transaction_hash"}
 
@@ -50,6 +52,7 @@ def _tracking_file_path(event_type: str | None = None) -> Path:
     file_config = {
         "daily_report": ("DAILY_REPORTS_FILE", "daily-reports.json"),
         "assign_task": ("TASK_ASSIGNMENTS_FILE", "task-assignments.json"),
+        "task_content": ("TASK_CONTENT_FILE", "task-content.json"),
     }
     environment_key, filename = file_config.get(
         event_type,
@@ -106,6 +109,7 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 _read_records(_tracking_file_path())
                 + _read_records(_tracking_file_path("daily_report"))
                 + _read_records(_tracking_file_path("assign_task"))
+                + _read_records(_tracking_file_path("task_content"))
             )
         filtered = [
             record
@@ -212,6 +216,17 @@ class BlockchainTrackingEndpoint(BaseAPIView):
             payload["progress"] = progress
             payload["reporter_id"] = str(request.user.id)
             payload["reporter_name"] = request.user.display_name or request.user.email or str(request.user.id)
+
+        if event_type == "task_content":
+            content_issue = Issue.objects.filter(
+                id=payload.get("issue_id"),
+                workspace__slug=slug,
+                project_id=project_id,
+            ).first()
+            if content_issue is None or (not is_admin and not content_issue.assignees.filter(id=request.user.id).exists()):
+                return Response({"error": "Only admin or the assigned employee can anchor task content."}, status=status.HTTP_403_FORBIDDEN)
+            if payload.get("content_kind") not in {"comment", "attachment", "evidence"}:
+                return Response({"error": "Invalid content kind."}, status=status.HTTP_400_BAD_REQUEST)
 
         if payload.get("assignee_id") and not payload.get("assignee_name"):
             member = assignment_member or ProjectMember.objects.filter(

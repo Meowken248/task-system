@@ -3,7 +3,7 @@ import { APIService } from "@/services/api.service";
 
 export type TBlockchainTrackingRecord = {
   report_id?: string;
-  event_type?: "create_task" | "assign_task" | "daily_report" | "delete_task";
+  event_type?: "create_task" | "assign_task" | "daily_report" | "delete_task" | "task_content";
   issue_id?: string;
   issue_name?: string;
   parent_issue_id?: string;
@@ -24,6 +24,8 @@ export type TBlockchainTrackingRecord = {
   work?: string;
   difficulty?: string;
   evidence?: string;
+  content_kind?: "comment" | "attachment" | "evidence";
+  content_reference?: string;
   recorded_at?: string;
 };
 class BlockchainTrackingService extends APIService {
@@ -62,6 +64,24 @@ class BlockchainTrackingService extends APIService {
       evidence: payload.evidence,
     });
   }
+  async recordTaskContent(
+    workspaceSlug: string,
+    projectId: string,
+    payload: { issueId: string; issueName?: string; transactionHash: string; kind: "comment" | "attachment" | "evidence"; reference: string }
+  ): Promise<void> {
+    await this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+      event_type: "task_content",
+      issue_id: payload.issueId,
+      issue_name: payload.issueName,
+      wallet_address: process.env.VITE_METANODE_WALLET_ADDRESS,
+      contract_address: process.env.VITE_CONTRACT_ADDRESS,
+      chain_id: process.env.VITE_CHAIN_ID,
+      transaction_hash: payload.transactionHash,
+      content_kind: payload.kind,
+      content_reference: payload.reference,
+    });
+  }
+
   async getStoredAssigneeWallet(workspaceSlug: string, projectId: string, assigneeId: string): Promise<string> {
     const records = await this.getTransactions(workspaceSlug, projectId);
     const assignment = records.find(

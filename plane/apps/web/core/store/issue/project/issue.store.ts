@@ -196,6 +196,16 @@ export class ProjectIssues extends BaseIssuesStore implements IProjectIssues {
     return response;
   };
 
+  /**
+   * Keep the current project list in sync after deletion. A delete can also
+   * change the visible hierarchy (for example, children becoming root items),
+   * which cannot be represented by only removing one id from the local list.
+   */
+  override async removeIssue(workspaceSlug: string, projectId: string, issueId: string) {
+    await super.removeIssue(workspaceSlug, projectId, issueId);
+    await this.fetchIssuesWithExistingPagination(workspaceSlug, projectId, "mutation");
+  }
+
   // Using aliased names as they cannot be overridden in other stores
   archiveBulkIssues = this.bulkArchiveIssues;
   quickAddIssue = this.issueQuickAdd;

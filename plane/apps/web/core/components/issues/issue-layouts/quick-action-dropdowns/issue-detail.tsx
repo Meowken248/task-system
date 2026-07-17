@@ -88,7 +88,13 @@ export const WorkItemDetailQuickActions = observer(function WorkItemDetailQuickA
   const isInArchivableGroup = !!stateDetails && ARCHIVABLE_STATE_GROUPS.includes(stateDetails?.group);
   const isRestoringAllowed = !!issue.archived_at && isEditingAllowed;
 
-  const isDeletingAllowed = isEditingAllowed;
+  const isDeletingAllowed =
+    allowPermissions(
+      [EUserPermissions.ADMIN],
+      EUserPermissionsLevel.PROJECT,
+      workspaceSlug?.toString(),
+      issue.project_id ?? undefined
+    ) && !readOnly;
 
   const duplicateIssuePayload = omit(
     {

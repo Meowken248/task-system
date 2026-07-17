@@ -193,6 +193,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     selectedTask?.records.find((record) => record.event_type === "assign_task") ??
     (creation?.assignee_wallet ? creation : undefined);
   const reports = selectedTask?.records.filter((record) => record.event_type === "daily_report") ?? [];
+  const contentRecords = selectedTask?.records.filter((record) => record.event_type === "task_content") ?? [];
   const progress = selectedTask ? displayTaskProgress(selectedTask) : 0;
 
   const selectProject = async (projectId: string) => {
@@ -530,6 +531,26 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                           <div><dt className="text-tertiary">Transaction hash</dt><dd className="mt-0.5 font-mono text-primary" title={report.transaction_hash}>{shortHash(report.transaction_hash)}</dd></div>
                         </dl>
                       </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <h4 className="text-12 font-semibold text-primary">Nội dung xác thực on-chain ({contentRecords.length})</h4>
+                {contentRecords.length === 0 ? (
+                  <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">Chưa có comment hoặc evidence được xác thực.</p>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    {contentRecords.map((record, index) => (
+                      <div key={`${record.transaction_hash || "content"}-${record.recorded_at || index}`} className="rounded-lg border border-subtle bg-surface-1/60 p-3 text-11 backdrop-blur-md">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-primary">{record.content_kind === "comment" ? "Bình luận" : "Evidence"}</span>
+                          <time className="text-tertiary">{formatDateTime(record.recorded_at)}</time>
+                        </div>
+                        <p className="mt-2 text-tertiary">Tham chiếu: <span className="break-all text-primary">{record.content_reference || "Không có"}</span></p>
+                        <p className="mt-1 text-tertiary">Transaction: <span className="font-mono text-primary" title={record.transaction_hash}>{shortHash(record.transaction_hash)}</span></p>
+                      </div>
                     ))}
                   </div>
                 )}

@@ -41,7 +41,7 @@ export function OnChainTaskPanel({
   }, [isReportOpen]);
 
   useEffect(() => {
-    if (!isReportOpen || ancestorIssueIds.length > 0) {
+    if (!canReport) {
       setSubTaskStats(undefined);
       return;
     }
@@ -60,7 +60,7 @@ export function OnChainTaskPanel({
     return () => {
       active = false;
     };
-  }, [isReportOpen, issueId, ancestorIssueIds.length]);
+  }, [canReport, issueId]);
   if (!isOnChainTaskSyncEnabled() || !canReport) return null;
 
   const closeReport = () => {
@@ -68,6 +68,10 @@ export function OnChainTaskPanel({
   };
 
   const submitReport = async () => {
+    if (subTaskStats?.activeCount) {
+      setStatus("Task cha không gửi báo cáo trực tiếp; tiến độ được tổng hợp từ các task lá.");
+      return;
+    }
     // Close the native top-layer dialog before FIAI opens its wallet UI.
     dialogRef.current?.close();
     setIsReportOpen(false);
@@ -200,13 +204,13 @@ export function OnChainTaskPanel({
         <Button
           variant="primary"
           size="sm"
-          disabled={submitting}
+          disabled={submitting || Boolean(subTaskStats?.activeCount)}
           onClick={() => {
             setStatus("");
             setIsReportOpen(true);
           }}
         >
-          Báo cáo ngày
+          {subTaskStats?.activeCount ? "Tổng hợp từ task con" : "Báo cáo ngày"}
         </Button>
       </div>
       {status && <div className="mt-3 rounded-md bg-layer-2 px-3 py-2 text-11 break-all text-secondary">{status}</div>}

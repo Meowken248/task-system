@@ -12,6 +12,7 @@ import type { TIssueAttachment, TIssueAttachmentUploadResponse, TIssueServiceTyp
 import { EIssueServiceType } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
+import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isOnChainTaskSyncEnabled, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
 import { FileUploadService } from "@/services/file-upload.service";
 
@@ -64,9 +65,20 @@ export class IssueAttachmentService extends APIService {
         await this.updateIssueAttachmentUploadStatus(workspaceSlug, projectId, issueId, signedURLResponse.asset_id);
         if (isOnChainTaskSyncEnabled()) {
           const evidenceReference = `${signedURLResponse.asset_id}:${file.name}:${file.size}:${file.lastModified}`;
-          void recordIssueContentOnChain(issueId, 2, evidenceReference).catch((error: unknown) =>
-            console.error("Failed to anchor evidence on-chain:", error)
-          );
+          try {
+            const transactionHash = await recordIssueContentOnChain(issueId, 2, evidenceReference);
+            await blockchainTrackingService.recordTaskContent(workspaceSlug, projectId, {
+              issueId,
+              transactionHash,
+              kind: "evidence",
+              reference: signedURLResponse.asset_id,
+            });
+          } catch (error) {
+            await this.delete(
+              `/api/assets/v2/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/attachments/${signedURLResponse.asset_id}/`
+            ).catch((rollbackError) => console.error("Failed to roll back evidence after on-chain failure:", rollbackError));
+            throw error;
+          }
         }
         return signedURLResponse.attachment;
       })

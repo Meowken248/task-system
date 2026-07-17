@@ -210,6 +210,12 @@ export async function updateIssueProgressOnChain(taskId: number, progress: numbe
   if (!Number.isInteger(progress) || progress < 0 || progress > 100) throw new Error("Progress must be 0-100.");
   return sendContractTransaction("updateProgress", { taskId, progress });
 }
+export async function updateIssueProgressByIssueIdOnChain(issueId: string, progress: number): Promise<string> {
+  return updateIssueProgressOnChain(await getIssueTaskId(issueId), progress);
+}
+export async function cancelIssueByIssueIdOnChain(issueId: string): Promise<string> {
+  return sendContractTransaction("cancelTask", { taskId: await getIssueTaskId(issueId) });
+}
 function readNumericResult(value: unknown): number | null {
   if (typeof value === "number" && Number.isSafeInteger(value)) return value;
   if (typeof value === "bigint") return Number(value);

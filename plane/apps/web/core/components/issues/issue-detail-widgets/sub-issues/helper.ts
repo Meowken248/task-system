@@ -161,9 +161,6 @@ export const useSubIssueOperations = (issueServiceType: TIssueServiceType): TSub
       deleteSubIssue: async (workspaceSlug, projectId, parentIssueId, issueId) => {
         try {
           setSubIssueHelpers(parentIssueId, "issue_loader", issueId);
-          if (issueServiceType === EIssueServiceType.ISSUES && isOnChainTaskSyncEnabled()) {
-            await deleteIssueSubTaskOnChain(parentIssueId, issueId);
-          }
           await deleteSubIssue(workspaceSlug, projectId, parentIssueId, issueId);
           setSubIssueHelpers(parentIssueId, "issue_loader", issueId);
         } catch (_error) {

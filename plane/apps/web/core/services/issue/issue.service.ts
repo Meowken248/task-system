@@ -27,6 +27,7 @@ import {
   consumePendingAssignmentWallet,
   createIssueOnChain,
   deleteIssueByIssueIdOnChain,
+  deleteIssueSubTaskOnChain,
   isOnChainTaskSyncEnabled,
 } from "@/services/blockchain/plane-task-chain.service";
 
@@ -343,6 +344,9 @@ export class IssueService extends APIService {
       ).then((result) => result?.data);
     }
 
+    if (issue.parent_id) {
+      await deleteIssueSubTaskOnChain(issue.parent_id, issuesId);
+    }
     const transactionHash = await deleteIssueByIssueIdOnChain(issuesId);
     const response = await this.delete(
       `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`
