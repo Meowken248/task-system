@@ -2,7 +2,8 @@ import { API_BASE_URL } from "@plane/constants";
 import { APIService } from "@/services/api.service";
 
 export type TBlockchainTrackingRecord = {
-  event_type?: "create_task" | "assign_task" | "daily_report";
+  report_id?: string;
+  event_type?: "create_task" | "assign_task" | "daily_report" | "delete_task";
   issue_id?: string;
   issue_name?: string;
   parent_issue_id?: string;
@@ -14,6 +15,8 @@ export type TBlockchainTrackingRecord = {
   assignee_wallet?: string;
   assignee_id?: string;
   assignee_name?: string;
+  reporter_id?: string;
+  reporter_name?: string;
   contract_address?: string;
   chain_id?: string;
   transaction_hash?: string;
@@ -69,6 +72,22 @@ class BlockchainTrackingService extends APIService {
     );
     return typeof assignment?.assignee_wallet === "string" ? assignment.assignee_wallet : "";
   }
+  async recordTaskDeletion(
+    workspaceSlug: string,
+    projectId: string,
+    payload: { issueId: string; issueName: string; transactionHash: string }
+  ): Promise<void> {
+    await this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+      event_type: "delete_task",
+      issue_id: payload.issueId,
+      issue_name: payload.issueName,
+      wallet_address: process.env.VITE_METANODE_WALLET_ADDRESS,
+      contract_address: process.env.VITE_CONTRACT_ADDRESS,
+      chain_id: process.env.VITE_CHAIN_ID,
+      transaction_hash: payload.transactionHash,
+    });
+  }
+
   async recordTaskAssignment(
     workspaceSlug: string,
     projectId: string,

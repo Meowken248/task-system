@@ -10,10 +10,22 @@ import {
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 let pendingCreateAssigneeWallet = ZERO_ADDRESS;
+const pendingAssignmentWallets = new Map<string, string>();
 
 export function setPendingCreateAssigneeWallet(walletAddress: string): void {
   if (!isWalletAddress(walletAddress)) throw new Error("Địa chỉ ví nhân viên không hợp lệ.");
   pendingCreateAssigneeWallet = walletAddress;
+}
+
+export function setPendingAssignmentWallet(issueId: string, walletAddress: string): void {
+  if (!isWalletAddress(walletAddress)) throw new Error("Địa chỉ ví nhân viên không hợp lệ.");
+  pendingAssignmentWallets.set(issueId, walletAddress);
+}
+
+export function consumePendingAssignmentWallet(issueId: string): string | undefined {
+  const walletAddress = pendingAssignmentWallets.get(issueId);
+  pendingAssignmentWallets.delete(issueId);
+  return walletAddress;
 }
 const contractFunctions = planeTaskManagerAbi as unknown as AbiItem[];
 type InputValue = string | number;
@@ -187,6 +199,11 @@ export async function assignIssueOnChain(taskId: number, walletAddress: string):
 export async function assignIssueByIssueIdOnChain(issueId: string, walletAddress: string): Promise<string> {
   const taskId = await getIssueTaskId(issueId);
   return assignIssueOnChain(taskId, walletAddress);
+}
+
+export async function deleteIssueByIssueIdOnChain(issueId: string): Promise<string> {
+  const taskId = await getIssueTaskId(issueId);
+  return sendContractTransaction("deleteTask", { taskId });
 }
 
 export async function updateIssueProgressOnChain(taskId: number, progress: number): Promise<string> {

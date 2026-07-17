@@ -20,7 +20,15 @@ import type {
 } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
-import { createIssueOnChain, isOnChainTaskSyncEnabled } from "@/services/blockchain/plane-task-chain.service";
+import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
+import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
+import {
+  assignIssueByIssueIdOnChain,
+  consumePendingAssignmentWallet,
+  createIssueOnChain,
+  deleteIssueByIssueIdOnChain,
+  isOnChainTaskSyncEnabled,
+} from "@/services/blockchain/plane-task-chain.service";
 
 export class IssueService extends APIService {
   private serviceType: TIssueServiceType;
@@ -276,6 +284,31 @@ export class IssueService extends APIService {
   }
 
   async patchIssue(workspaceSlug: string, projectId: string, issueId: string, data: Partial<TIssue>): Promise<any> {
+    if (isOnChainTaskSyncEnabled() && data.assignee_ids) {
+      const assigneeId = data.assignee_ids.at(-1);
+      if (!assigneeId) throw { error: "Task phải có một nhân viên phụ trách." };
+      const storedWallet = await blockchainTrackingService
+        .getStoredAssigneeWallet(workspaceSlug, projectId, assigneeId)
+        .catch(() => "");
+      const assigneeWallet =
+        consumePendingAssignmentWallet(issueId) || storedWallet || process.env.VITE_METANODE_WALLET_ADDRESS || "";
+      if (!isWalletAddress(assigneeWallet)) throw { error: "Chưa có địa chỉ ví MetaNode hợp lệ của nhân viên." };
+
+      const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet);
+      const response = await this.patch(
+        `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/`,
+        { ...data, assignee_ids: [assigneeId] }
+      ).then((result) => result?.data);
+      await blockchainTrackingService.recordTaskAssignment(workspaceSlug, projectId, {
+        issueId,
+        issueName: response?.name || issueId,
+        transactionHash,
+        assigneeWallet,
+        assigneeId,
+        assigneeName: "",
+      });
+      return response;
+    }
     return this.patch(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/`, data)
       .then((response) => response?.data)
       .catch((error) => {
@@ -284,11 +317,42 @@ export class IssueService extends APIService {
   }
 
   async deleteIssue(workspaceSlug: string, projectId: string, issuesId: string): Promise<any> {
-    return this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`)
-      .then((response) => response?.data)
-      .catch((error) => {
-        throw error?.response?.data;
-      });
+    if (!isOnChainTaskSyncEnabled()) {
+      return this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`)
+        .then((response) => response?.data)
+        .catch((error) => {
+          throw error?.response?.data;
+        });
+    }
+
+    const issue = await this.retrieve(workspaceSlug, projectId, issuesId);
+    const currentContract = process.env.VITE_CONTRACT_ADDRESS?.trim().toLowerCase() || "";
+    const issueRecords = (await blockchainTrackingService.getTransactions(workspaceSlug, projectId)).filter(
+      (record) => record.issue_id === issuesId && Boolean(record.contract_address)
+    );
+    const belongsToLegacyContract =
+      issueRecords.length > 0 &&
+      !issueRecords.some((record) => record.contract_address?.trim().toLowerCase() === currentContract);
+
+    if (belongsToLegacyContract) {
+      console.warn(
+        `Task ${issuesId} thuộc contract cũ; chỉ xóa dữ liệu Plane vì contract hiện tại không có task này.`
+      );
+      return this.delete(
+        `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`
+      ).then((result) => result?.data);
+    }
+
+    const transactionHash = await deleteIssueByIssueIdOnChain(issuesId);
+    const response = await this.delete(
+      `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`
+    ).then((result) => result?.data);
+    await blockchainTrackingService.recordTaskDeletion(workspaceSlug, projectId, {
+      issueId: issuesId,
+      issueName: issue.name,
+      transactionHash,
+    });
+    return response;
   }
 
   async updateIssueDates(

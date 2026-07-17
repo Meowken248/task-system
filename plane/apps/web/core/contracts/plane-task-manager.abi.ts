@@ -1,6 +1,13 @@
 export const planeTaskManagerAbi = [
   {
     type: "function",
+    name: "deleteTask",
+    inputs: [{ name: "taskId", type: "uint256", internalType: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
     name: "createTask",
     inputs: [
       { name: "externalId", type: "bytes32", internalType: "bytes32" },

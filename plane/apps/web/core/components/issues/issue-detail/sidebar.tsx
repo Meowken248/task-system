@@ -41,7 +41,7 @@ import { useProjectState } from "@/hooks/store/use-project-state";
 import { useUserPermissions } from "@/hooks/store/user";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
-import { assignIssueByIssueIdOnChain, isOnChainTaskSyncEnabled } from "@/services/blockchain/plane-task-chain.service";
+import { isOnChainTaskSyncEnabled, setPendingAssignmentWallet } from "@/services/blockchain/plane-task-chain.service";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 // plane web components
 // components
@@ -132,24 +132,16 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
     }
     setIsAssigningOnChain(true);
     try {
-      const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet.trim());
+      setPendingAssignmentWallet(issueId, assigneeWallet.trim());
       await issueOperations.update(workspaceSlug, projectId, issueId, {
         assignee_ids: [pendingAssigneeId],
-      });
-      await blockchainTrackingService.recordTaskAssignment(workspaceSlug, projectId, {
-        issueId,
-        issueName: issue.name,
-        transactionHash,
-        assigneeWallet: assigneeWallet.trim(),
-        assigneeId: pendingAssigneeId,
-        assigneeName: pendingAssignee?.display_name || pendingAssignee?.email || pendingAssigneeId,
       });
       await issueOperations.fetch(workspaceSlug, projectId, issueId, true);
       setPendingAssigneeIds(null);
       setToast({
         type: TOAST_TYPE.SUCCESS,
         title: "Giao task thành công",
-        message: `Đã xác nhận on-chain. Hash: ${transactionHash.slice(0, 10)}...${transactionHash.slice(-8)}`,
+        message: `Đã cập nhật nhân viên trên Plane và hợp đồng on-chain.`,
       });
     } catch (error) {
       setToast({

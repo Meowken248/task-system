@@ -159,7 +159,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
         parentId: creation?.parent_issue_id,
         records: taskRecords,
       };
-    });
+    }).filter((task) => !task.records.some((record) => record.event_type === "delete_task"));
   }, [records]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
@@ -188,8 +188,10 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
   const selectedTaskLeafTasks = selectedTask ? collectLeafTasks(selectedTask) : [];
   const projectKpi = aggregateKpi(projectLeafTasks);
   const selectedTaskKpi = aggregateKpi(selectedTaskLeafTasks);
-  const assignment = selectedTask?.records.find((record) => record.event_type === "assign_task");
   const creation = selectedTask?.records.find((record) => record.event_type === "create_task");
+  const assignment =
+    selectedTask?.records.find((record) => record.event_type === "assign_task") ??
+    (creation?.assignee_wallet ? creation : undefined);
   const reports = selectedTask?.records.filter((record) => record.event_type === "daily_report") ?? [];
   const progress = selectedTask ? displayTaskProgress(selectedTask) : 0;
 
@@ -213,7 +215,9 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     setSelectedTaskId(task.id);
     setKpi(undefined);
     setError("");
-    const latestAssignment = task.records.find((record) => record.event_type === "assign_task");
+    const latestAssignment =
+      task.records.find((record) => record.event_type === "assign_task") ??
+      task.records.find((record) => record.event_type === "create_task" && record.assignee_wallet);
     if (!latestAssignment?.assignee_wallet) return;
     setLoadingKpi(true);
     try {
@@ -512,13 +516,14 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">Nhân viên chưa gửi báo cáo cho task này.</p>
                 ) : (
                   <div className="mt-3 space-y-3">
-                    {reports.map((report) => (
-                      <article key={report.transaction_hash || report.recorded_at} className="rounded-xl border border-subtle bg-surface-1/60 p-4 backdrop-blur-md">
+                    {reports.map((report, index) => (
+                      <article key={report.report_id || `${report.transaction_hash || "report"}-${report.recorded_at || index}`} className="rounded-xl border border-subtle bg-surface-1/60 p-4 backdrop-blur-md">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <time className="text-11 font-medium text-secondary">{formatDateTime(report.recorded_at)}</time>
                           <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">Tiến độ {report.progress ?? 0}%</span>
                         </div>
                         <dl className="mt-3 space-y-2 text-11">
+                          <div><dt className="text-tertiary">Nhân viên báo cáo</dt><dd className="mt-0.5 text-primary">{report.reporter_name || report.reporter_id || assignment?.assignee_name || assignment?.assignee_id || "Chưa xác định"}</dd></div>
                           <div><dt className="text-tertiary">Hôm nay làm gì?</dt><dd className="mt-0.5 whitespace-pre-wrap text-primary">{report.work || "Không có nội dung"}</dd></div>
                           <div><dt className="text-tertiary">Khó khăn</dt><dd className="mt-0.5 whitespace-pre-wrap text-primary">{report.difficulty || "Không có"}</dd></div>
                           <div><dt className="text-tertiary">Evidence</dt><dd className="mt-0.5 break-all text-primary">{report.evidence || "Không có"}</dd></div>

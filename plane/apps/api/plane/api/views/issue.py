@@ -10,7 +10,7 @@ import re
 # Django imports
 from django.core.serializers.json import DjangoJSONEncoder
 from django.http import HttpResponseRedirect
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import (
     Case,
     CharField,
@@ -829,7 +829,12 @@ class IssueDetailAPIEndpoint(BaseAPIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
         current_instance = json.dumps(IssueSerializer(issue).data, cls=DjangoJSONEncoder)
-        issue.delete()
+        # Preserve the hierarchy when deleting one node. `Issue.parent` uses
+        # CASCADE, so direct children must become root tasks before deletion.
+        # Grandchildren remain attached to their immediate parent.
+        with transaction.atomic():
+            Issue.objects.filter(parent_id=issue.id).update(parent_id=None)
+            issue.delete()
         issue_activity.delay(
             type="issue.activity.deleted",
             requested_data=json.dumps({"issue_id": str(pk)}),

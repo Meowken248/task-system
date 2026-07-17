@@ -4,6 +4,7 @@
 
 import json
 import os
+import uuid
 from pathlib import Path
 from threading import Lock
 
@@ -31,6 +32,8 @@ _ALLOWED_FIELDS = {
     "assignee_wallet",
     "assignee_id",
     "assignee_name",
+    "reporter_id",
+    "reporter_name",
     "contract_address",
     "chain_id",
     "transaction_hash",
@@ -109,6 +112,41 @@ class BlockchainTrackingEndpoint(BaseAPIView):
             for record in records
             if record.get("workspace_slug") == slug and record.get("project_id") == str(project_id)
         ]
+        active_issue_ids = {
+            str(issue_id)
+            for issue_id in Issue.objects.filter(
+                workspace__slug=slug,
+                project_id=project_id,
+                deleted_at__isnull=True,
+                id__in=[record.get("issue_id") for record in filtered if record.get("issue_id")],
+            ).values_list("id", flat=True)
+        }
+        filtered = [record for record in filtered if str(record.get("issue_id")) in active_issue_ids]
+        member_names = {
+            str(member.member_id): member.member.display_name or member.member.email or str(member.member_id)
+            for member in ProjectMember.objects.filter(
+                workspace__slug=slug,
+                project_id=project_id,
+                is_active=True,
+            ).select_related("member")
+        }
+        issue_assignees = {
+            str(issue.id): next(iter(issue.assignees.values_list("id", flat=True)), None)
+            for issue in Issue.objects.filter(
+                workspace__slug=slug,
+                project_id=project_id,
+                id__in=[record.get("issue_id") for record in filtered if record.get("issue_id")],
+            ).prefetch_related("assignees")
+        }
+        for record in filtered:
+            assignee_id = record.get("assignee_id")
+            if assignee_id and not record.get("assignee_name"):
+                record["assignee_name"] = member_names.get(str(assignee_id), str(assignee_id))
+            if record.get("event_type") == "daily_report" and not record.get("reporter_name"):
+                reporter_id = issue_assignees.get(str(record.get("issue_id")))
+                if reporter_id:
+                    record["reporter_id"] = str(reporter_id)
+                    record["reporter_name"] = member_names.get(str(reporter_id), str(reporter_id))
         return Response(filtered, status=status.HTTP_200_OK)
 
     def post(self, request, slug, project_id):
@@ -129,7 +167,7 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 is_active=True,
             ).exists()
         )
-        if event_type in {"create_task", "assign_task"} and not is_admin:
+        if event_type in {"create_task", "assign_task", "delete_task"} and not is_admin:
             return Response({"error": "Admin permission required."}, status=status.HTTP_403_FORBIDDEN)
 
         issue = None
@@ -172,6 +210,20 @@ class BlockchainTrackingEndpoint(BaseAPIView):
             if progress < 0 or progress > 100:
                 return Response({"error": "Progress must be between 0 and 100."}, status=status.HTTP_400_BAD_REQUEST)
             payload["progress"] = progress
+            payload["reporter_id"] = str(request.user.id)
+            payload["reporter_name"] = request.user.display_name or request.user.email or str(request.user.id)
+
+        if payload.get("assignee_id") and not payload.get("assignee_name"):
+            member = assignment_member or ProjectMember.objects.filter(
+                workspace__slug=slug,
+                project_id=project_id,
+                member_id=payload["assignee_id"],
+                is_active=True,
+            ).select_related("member").first()
+            if member is not None:
+                payload["assignee_name"] = (
+                    member.member.display_name or member.member.email or str(member.member_id)
+                )
 
         missing = [key for key in _REQUIRED_FIELDS if not payload.get(key)]
         if missing:
@@ -183,11 +235,13 @@ class BlockchainTrackingEndpoint(BaseAPIView):
         payload["workspace_slug"] = slug
         payload["project_id"] = str(project_id)
         payload["recorded_at"] = timezone.now().isoformat()
+        if event_type == "daily_report":
+            payload["report_id"] = str(uuid.uuid4())
 
         path = _tracking_file_path(event_type)
         with _tracking_file_lock:
             records = _read_records(path)
-            records = _upsert_record(records, payload)
+            records = [payload, *records] if event_type == "daily_report" else _upsert_record(records, payload)
             _write_records(path, records)
 
         if event_type == "assign_task" and assignment_member is not None and assigned_issue is not None:

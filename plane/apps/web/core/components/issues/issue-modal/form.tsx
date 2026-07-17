@@ -41,6 +41,7 @@ import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useProject } from "@/hooks/store/use-project";
 import { useProjectState } from "@/hooks/store/use-project-state";
 import { useWorkspaceDraftIssues } from "@/hooks/store/workspace-draft";
+import { useUser } from "@/hooks/store/user";
 import { usePlatformOS } from "@/hooks/use-platform-os";
 import { useProjectIssueProperties } from "@/hooks/use-project-issue-properties";
 // plane web imports
@@ -110,7 +111,6 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
   // states
   const [gptAssistantModal, setGptAssistantModal] = useState(false);
   const [isMoving, setIsMoving] = useState<boolean>(false);
-  const [assigneeWallet, setAssigneeWallet] = useState(process.env.VITE_METANODE_WALLET_ADDRESS || "");
 
   // refs
   const editorRef = useRef<EditorRefApi>(null);
@@ -137,6 +137,7 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
   } = useIssueModal();
   const { isMobile } = usePlatformOS();
   const { moveIssue } = useWorkspaceDraftIssues();
+  const { data: currentUser } = useUser();
 
   const {
     issue: { getIssueById },
@@ -198,6 +199,12 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...dataResetProperties]);
 
+  useEffect(() => {
+    if (!data?.id && currentUser?.id) {
+      setValue("assignee_ids", [currentUser.id], { shouldValidate: true });
+    }
+  }, [currentUser?.id, data?.id, projectId, setValue]);
+
   // Update the issue type id when the project id changes
   useEffect(() => {
     const issueTypeId = watch("type_id");
@@ -244,24 +251,29 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
     )
       return;
 
+    if (!data?.id && !is_draft_issue) {
+      if (!currentUser?.id) {
+        setToast({
+          type: TOAST_TYPE.ERROR,
+          title: "Không xác định được admin",
+          message: "Hãy đăng nhập lại trước khi tạo task.",
+        });
+        return;
+      }
+      formData = { ...formData, assignee_ids: [currentUser.id] };
+    }
+
     if (!data?.id && !is_draft_issue && isOnChainTaskSyncEnabled()) {
-      if (!formData.assignee_ids || formData.assignee_ids.length !== 1) {
+      const adminWallet = process.env.VITE_METANODE_WALLET_ADDRESS || "";
+      if (!isWalletAddress(adminWallet)) {
         setToast({
           type: TOAST_TYPE.ERROR,
-          title: "Task cần đúng một nhân viên",
-          message: "Hãy chọn một nhân viên duy nhất trước khi tạo task on-chain.",
+          title: "Ví MetaNode của admin không hợp lệ",
+          message: "Hãy cấu hình VITE_METANODE_WALLET_ADDRESS trước khi tạo task.",
         });
         return;
       }
-      if (!isWalletAddress(assigneeWallet)) {
-        setToast({
-          type: TOAST_TYPE.ERROR,
-          title: "Ví MetaNode không hợp lệ",
-          message: "Nhập địa chỉ ví 0x... của nhân viên trước khi tạo task.",
-        });
-        return;
-      }
-      setPendingCreateAssigneeWallet(assigneeWallet);
+      setPendingCreateAssigneeWallet(adminWallet);
     }
     const submitData = !data?.id
       ? formData
@@ -505,24 +517,7 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
                   onClose={onClose}
                 />
               </div>
-              {!data?.id && !isDraft && isOnChainTaskSyncEnabled() && (
-                <div className="px-5">
-                  <label className="mb-1.5 block text-12 font-medium text-secondary">
-                    Ví MetaNode của nhân viên <span className="text-danger-primary">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={assigneeWallet}
-                    readOnly
-                    placeholder="Ví MetaNode cấu hình"
-                    className="focus:border-accent w-full rounded-md border border-subtle bg-layer-1/70 px-3 py-2 text-13 text-primary backdrop-blur-md outline-none"
-                    autoComplete="off"
-                  />
-                  <p className="mt-1 text-11 text-tertiary">
-                    Task sẽ được gán cho ví này ngay trong giao dịch createTask.
-                  </p>
-                </div>
-              )}{" "}
+
               <WorkItemModalAdditionalProperties
                 isDraft={isDraft}
                 workItemId={data?.id ?? data?.sourceIssueId}
