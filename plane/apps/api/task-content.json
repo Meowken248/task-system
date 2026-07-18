@@ -1,28 +1,15 @@
 [
   {
+    "issue_id": "04988877-cd7e-43c6-a219-4f12c0a1419b",
     "content_kind": "comment",
     "event_type": "task_content",
-    "transaction_hash": "0x880f42788d46f9bc3e18e756bd74fa1ba16615a2cb174c60e9321dd69a13f9a5",
-    "content_reference": "844c3654-d500-4dd0-bf03-207b0efb748b",
-    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "transaction_hash": "0x344828cb4fe1eef679ba92abca33391654c8a37986d8959b11e396ff6c367720",
     "chain_id": "991",
-    "issue_id": "b6bcff66-cb5f-4558-9f1e-0cc368db49ec",
-    "contract_address": "0x14dCE3620Cefb503BA69864062c7F4F02ccdcF0D",
+    "content_reference": "097695dc-5da9-465e-90f8-f17c6f4d0e0e",
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "contract_address": "0x4666c9F3C96a22c343366573De361659994dA136",
     "workspace_slug": "fiai",
     "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
-    "recorded_at": "2026-07-17T04:28:47.958565+00:00"
-  },
-  {
-    "content_kind": "evidence",
-    "event_type": "task_content",
-    "transaction_hash": "0xdd504473ffc2322c62c94bdf249b8b98c3fe589fdcee47675fc2f170e0145091",
-    "content_reference": "ef9d23e4-9b71-4a79-8338-fc476755ff16",
-    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
-    "chain_id": "991",
-    "issue_id": "b6bcff66-cb5f-4558-9f1e-0cc368db49ec",
-    "contract_address": "0x14dCE3620Cefb503BA69864062c7F4F02ccdcF0D",
-    "workspace_slug": "fiai",
-    "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
-    "recorded_at": "2026-07-17T04:24:40.965412+00:00"
+    "recorded_at": "2026-07-18T01:48:56.675765+00:00"
   }
 ]

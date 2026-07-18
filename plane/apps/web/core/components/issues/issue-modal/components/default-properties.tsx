@@ -78,6 +78,9 @@ export const IssueDefaultProperties = observer(function IssueDefaultProperties(p
   const canCreateLabel =
     projectId && allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.PROJECT, workspaceSlug, projectId);
 
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
   const minDate = getDate(startDate);
   minDate?.setDate(minDate.getDate());
 
@@ -152,6 +155,7 @@ export const IssueDefaultProperties = observer(function IssueDefaultProperties(p
                 handleFormChange();
               }}
               buttonVariant="border-with-text"
+              minDate={today}
               maxDate={maxDate ?? undefined}
               placeholder={t("start_date")}
               tabIndex={getIndex("start_date")}

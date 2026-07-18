@@ -131,13 +131,16 @@ export async function promptForMetanodeWalletImport(address: string): Promise<bo
   });
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
+    // oxlint-disable-next-line no-await-in-loop -- wallet availability must be polled sequentially.
     if (await hasWallet(address)) {
+      // oxlint-disable-next-line no-await-in-loop -- activation must finish before closing the wallet window.
       const activated = await activateMetanodeWallet(address);
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
       connectWalletPopup?.close();
       connectWalletPopup = null;
       return activated;
     }
+    // oxlint-disable-next-line no-await-in-loop -- this delay intentionally throttles the polling loop.
     await new Promise((resolve) => window.setTimeout(resolve, 500));
   }
   return false;

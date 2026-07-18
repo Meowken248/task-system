@@ -41,10 +41,7 @@ import { useProjectState } from "@/hooks/store/use-project-state";
 import { useUserPermissions } from "@/hooks/store/user";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
-import {
-  isOnChainTaskSyncEnabled,
-  setPendingAssignmentWallet,
-} from "@/services/blockchain/plane-task-chain.service";
+import { isOnChainTaskSyncEnabled, setPendingAssignmentWallet } from "@/services/blockchain/plane-task-chain.service";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 // plane web components
 // components
@@ -160,6 +157,9 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
   const handleStateChange = async (stateId: string) => {
     await issueOperations.update(workspaceSlug, projectId, issueId, { state_id: stateId });
   };
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
   const minDate = issue.start_date ? getDate(issue.start_date) : null;
   minDate?.setDate(minDate.getDate());
 
@@ -235,6 +235,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                     start_date: val ? renderFormattedPayloadDate(val) : null,
                   })
                 }
+                minDate={today}
                 maxDate={maxDate ?? undefined}
                 disabled={!isEditable || !isAdmin}
                 buttonVariant="transparent-with-text"

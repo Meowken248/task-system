@@ -4,7 +4,9 @@
 import re
 import json
 import os
+import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
 from django.conf import settings
@@ -44,7 +46,25 @@ _ALLOWED_FIELDS = {
     "content_kind",
     "content_reference",
 }
-_REQUIRED_FIELDS = {"issue_id", "transaction_hash"}
+_ALLOWED_EVENT_TYPES = {
+    "create_task",
+    "assign_task",
+    "daily_report",
+    "delete_task",
+    "task_content",
+}
+_REQUIRED_FIELDS = {
+    "event_type",
+    "issue_id",
+    "transaction_hash",
+    "contract_address",
+    "chain_id",
+}
+_EVENT_REQUIRED_FIELDS = {
+    "assign_task": {"assignee_id", "assignee_wallet"},
+    "daily_report": {"progress"},
+    "task_content": {"content_kind", "content_reference"},
+}
 
 
 def _tracking_file_path(event_type: str | None = None) -> Path:
@@ -63,6 +83,35 @@ def _tracking_file_path(event_type: str | None = None) -> Path:
     return Path(settings.BASE_DIR).parent / filename
 
 
+@contextmanager
+def _tracking_storage_lock(timeout_seconds: float = 10.0):
+    """Serialize JSON updates across threads and API worker processes."""
+
+    lock_path = _tracking_file_path().with_name(".blockchain-tracking.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _tracking_file_lock:
+        deadline = time.monotonic() + timeout_seconds
+        lock_fd = None
+        while lock_fd is None:
+            try:
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    if time.time() - lock_path.stat().st_mtime > 60:
+                        lock_path.unlink(missing_ok=True)
+                        continue
+                except FileNotFoundError:
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting for the blockchain tracking file lock.")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            os.close(lock_fd)
+            lock_path.unlink(missing_ok=True)
+
+
 def _read_records(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -75,12 +124,17 @@ def _read_records(path: Path) -> list[dict]:
 
 def _write_records(path: Path, records: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
-    temporary_path.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    temporary_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )
-    temporary_path.replace(path)
+    try:
+        temporary_path.write_text(
+            json.dumps(records, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _upsert_record(records: list[dict], payload: dict) -> list[dict]:
@@ -103,7 +157,7 @@ class BlockchainTrackingEndpoint(BaseAPIView):
     permission_classes = [ProjectEntityPermission]
 
     def get(self, request, slug, project_id):
-        with _tracking_file_lock:
+        with _tracking_storage_lock():
             records = (
                 _read_records(_tracking_file_path())
                 + _read_records(_tracking_file_path("daily_report"))
@@ -115,16 +169,33 @@ class BlockchainTrackingEndpoint(BaseAPIView):
             for record in records
             if record.get("workspace_slug") == slug and record.get("project_id") == str(project_id)
         ]
-        active_issue_ids = {
-            str(issue_id)
-            for issue_id in Issue.objects.filter(
-                workspace__slug=slug,
-                project_id=project_id,
-                deleted_at__isnull=True,
-                id__in=[record.get("issue_id") for record in filtered if record.get("issue_id")],
-            ).values_list("id", flat=True)
-        }
-        filtered = [record for record in filtered if str(record.get("issue_id")) in active_issue_ids]
+        requested_assignee_id = request.query_params.get("assignee_id")
+        if requested_assignee_id:
+            filtered = [
+                record
+                for record in filtered
+                if record.get("event_type") == "assign_task"
+                and str(record.get("assignee_id")) == requested_assignee_id
+            ]
+        else:
+            active_issue_ids = {
+                str(issue_id)
+                for issue_id in Issue.objects.filter(
+                    workspace__slug=slug,
+                    project_id=project_id,
+                    deleted_at__isnull=True,
+                    id__in=[
+                        record.get("issue_id")
+                        for record in filtered
+                        if record.get("issue_id")
+                    ],
+                ).values_list("id", flat=True)
+            }
+            filtered = [
+                record
+                for record in filtered
+                if str(record.get("issue_id")) in active_issue_ids
+            ]
         member_names = {
             str(member.member_id): member.member.display_name or member.member.email or str(member.member_id)
             for member in ProjectMember.objects.filter(
@@ -155,6 +226,36 @@ class BlockchainTrackingEndpoint(BaseAPIView):
     def post(self, request, slug, project_id):
         payload = {key: request.data.get(key) for key in _ALLOWED_FIELDS if key in request.data}
         event_type = payload.get("event_type")
+        if event_type not in _ALLOWED_EVENT_TYPES:
+            return Response(
+                {"error": "Invalid or missing blockchain event type."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        required_fields = _REQUIRED_FIELDS | _EVENT_REQUIRED_FIELDS.get(event_type, set())
+        missing = [
+            key
+            for key in required_fields
+            if key not in payload or payload[key] is None or payload[key] == ""
+        ]
+        if missing:
+            return Response(
+                {"error": f"Missing required fields: {', '.join(sorted(missing))}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not re.fullmatch(r"0x[a-fA-F0-9]{64}", str(payload["transaction_hash"])):
+            return Response(
+                {"error": "Transaction hash must be a 32-byte 0x-prefixed hexadecimal value."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for address_field in ("contract_address", "assignee_wallet"):
+            address = payload.get(address_field)
+            if address is not None and not re.fullmatch(r"0x[a-fA-F0-9]{40}", str(address)):
+                return Response(
+                    {"error": f"{address_field} must be a 20-byte 0x-prefixed hexadecimal address."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         project_membership = ProjectMember.objects.filter(
             workspace__slug=slug,
             project_id=project_id,
@@ -222,8 +323,14 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 workspace__slug=slug,
                 project_id=project_id,
             ).first()
-            if content_issue is None or (not is_admin and not content_issue.assignees.filter(id=request.user.id).exists()):
-                return Response({"error": "Only admin or the assigned employee can anchor task content."}, status=status.HTTP_403_FORBIDDEN)
+            if content_issue is None or (
+                not is_admin
+                and not content_issue.assignees.filter(id=request.user.id).exists()
+            ):
+                return Response(
+                    {"error": "Only admin or the assigned employee can anchor task content."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             if payload.get("content_kind") not in {"comment", "attachment", "evidence"}:
                 return Response({"error": "Invalid content kind."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -239,17 +346,6 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                     member.member.display_name or member.member.email or str(member.member_id)
                 )
 
-        missing = [key for key in _REQUIRED_FIELDS if not payload.get(key)]
-        if missing:
-            return Response(
-                {"error": f"Missing required fields: {', '.join(sorted(missing))}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if not re.fullmatch(r"0x[a-fA-F0-9]{64}", str(payload["transaction_hash"])):
-            return Response(
-                {"error": "Transaction hash must be a 32-byte 0x-prefixed hexadecimal value."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         payload["workspace_slug"] = slug
         payload["project_id"] = str(project_id)
@@ -258,7 +354,7 @@ class BlockchainTrackingEndpoint(BaseAPIView):
             payload["report_id"] = str(uuid.uuid4())
 
         path = _tracking_file_path(event_type)
-        with _tracking_file_lock:
+        with _tracking_storage_lock():
             transaction_hash = str(payload["transaction_hash"]).lower()
             tracking_paths = {
                 _tracking_file_path(),
@@ -294,6 +390,9 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 records = [payload, *records] if event_type == "daily_report" else _upsert_record(records, payload)
                 _write_records(path, records)
 
+        if is_idempotent:
+            return Response(payload, status=status.HTTP_200_OK)
+
         if event_type == "assign_task" and assignment_member is not None and assigned_issue is not None:
             assigned_issue.assignees.set([assignment_member.member_id])
 
@@ -317,4 +416,4 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 issue.state = target_state
                 issue.save(update_fields=["state", "updated_at"])
 
-        return Response(payload, status=status.HTTP_200_OK if is_idempotent else status.HTTP_201_CREATED)
+        return Response(payload, status=status.HTTP_201_CREATED)

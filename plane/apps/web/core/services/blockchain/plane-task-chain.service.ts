@@ -224,7 +224,8 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
       const message = blockchainErrorMessage(error);
       if (!/wallet not found/i.test(message)) throw error;
       const imported = await promptForMetanodeWalletImport(from);
-      if (!imported) throw new Error("Không tìm thấy ví trong Crypto Vault hoặc thao tác kết nối đã hết hạn.", { cause: error });
+      if (!imported)
+        throw new Error("Không tìm thấy ví trong Crypto Vault hoặc thao tác kết nối đã hết hạn.", { cause: error });
       return send();
     }
   };
@@ -404,6 +405,22 @@ export async function getIssueTaskId(issueId: string): Promise<number> {
   return taskId;
 }
 
+export function isMissingOnChainRecordError(error: unknown): boolean {
+  return /execution reverted|invalid task|invalid subtask|could not read the on-chain task id/i.test(
+    blockchainErrorMessage(error)
+  );
+}
+
+export async function issueExistsOnChain(issueId: string): Promise<boolean> {
+  try {
+    await getIssueTaskId(issueId);
+    return true;
+  } catch (error) {
+    if (isMissingOnChainRecordError(error)) return false;
+    throw error;
+  }
+}
+
 function findTaskProgress(value: unknown): number | null {
   if (Array.isArray(value)) {
     if (value.length >= 11) {
@@ -568,11 +585,7 @@ export async function submitIssueDailyReportOnChain(
     try {
       // Wallet confirmations are intentionally sequential from the nearest parent to the root.
       // eslint-disable-next-line no-await-in-loop
-      const syncTransactionHash = await updateIssueSubTaskProgressOnChain(
-        parentIssueId,
-        childIssueId,
-        childProgress
-      );
+      const syncTransactionHash = await updateIssueSubTaskProgressOnChain(parentIssueId, childIssueId, childProgress);
       parentSyncTransactionHashes.push(syncTransactionHash);
       // eslint-disable-next-line no-await-in-loop
       const parentStats = await getIssueSubTaskStats(parentIssueId);

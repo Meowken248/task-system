@@ -4,11 +4,7 @@ import {
   blockchainTrackingService,
   type TBlockchainTrackingRecord,
 } from "@/services/blockchain/blockchain-tracking.service";
-import {
-  getIssueOnChainProgress,
-  getWalletKPI,
-  type OnChainKPI,
-} from "@/services/blockchain/plane-task-chain.service";
+import { getIssueOnChainProgress, getWalletKPI, type OnChainKPI } from "@/services/blockchain/plane-task-chain.service";
 import { ProjectService } from "@/services/project";
 
 type Props = { workspaceSlug: string };
@@ -135,9 +131,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
       try {
         const items = await projectService.getProjectsLite(workspaceSlug);
         if (active) {
-          setProjects(
-            items.map((project) => ({ id: project.id, name: project.name, identifier: project.identifier }))
-          );
+          setProjects(items.map((project) => ({ id: project.id, name: project.name, identifier: project.identifier })));
         }
       } catch {
         if (active) setError("Không tải được danh sách dự án.");
@@ -204,8 +198,10 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     });
     return grouped;
   }, [tasks]);
-  const rootTasks = tasks.filter((task) => !task.parentId || !tasks.some((candidate) => candidate.id === task.parentId));
-  const selectedTaskChildren = selectedTask ? childrenByParent.get(selectedTask.id) ?? [] : [];
+  const rootTasks = tasks.filter(
+    (task) => !task.parentId || !tasks.some((candidate) => candidate.id === task.parentId)
+  );
+  const selectedTaskChildren = selectedTask ? (childrenByParent.get(selectedTask.id) ?? []) : [];
   const collectLeafTasks = (task: TaskOption, visited = new Set<string>()): TaskOption[] => {
     if (visited.has(task.id)) return [];
     const nextVisited = new Set(visited).add(task.id);
@@ -216,9 +212,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     const contractProgress = onChainProgress[task.id];
     if (typeof contractProgress === "number") return contractProgress;
     const leaves = collectLeafTasks(task);
-    return leaves.length
-      ? aggregateKpi(leaves, onChainProgress).averageProgress
-      : taskProgress(task, onChainProgress);
+    return leaves.length ? aggregateKpi(leaves, onChainProgress).averageProgress : taskProgress(task, onChainProgress);
   };
   const projectLeafTasks = rootTasks.flatMap((task) => collectLeafTasks(task));
   const selectedTaskLeafTasks = selectedTask ? collectLeafTasks(selectedTask) : [];
@@ -326,7 +320,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
               <span>{task.records.filter((record) => record.event_type === "daily_report").length} báo cáo</span>
               <span>{taskValue}%</span>
             </span>
-            <span className="mt-2 block h-1 overflow-hidden rounded-full bg-surface-3" aria-hidden="true">
+            <span className="bg-surface-3 mt-2 block h-1 overflow-hidden rounded-full" aria-hidden="true">
               <span className="block h-full rounded-full bg-accent-primary" style={{ width: `${taskValue}%` }} />
             </span>
           </button>
@@ -336,7 +330,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     );
   };
   return (
-    <section className="overflow-hidden rounded-2xl border border-subtle bg-layer-1/75 shadow-sm backdrop-blur-xl">
+    <section className="shadow-sm overflow-hidden rounded-2xl border border-subtle bg-layer-1/75 backdrop-blur-xl">
       <header className="border-b border-subtle px-5 py-4">
         <h2 className="text-14 font-semibold text-primary">Dashboard KPI on-chain</h2>
         <p className="mt-1 text-11 text-tertiary">Chọn dự án, chọn task để xem báo cáo và KPI của nhân viên.</p>
@@ -429,11 +423,15 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                             <span className="truncate text-11 font-medium text-primary">{task.name}</span>
                             <span className="text-10 text-tertiary">{summary.averageProgress}%</span>
                           </span>
-                          <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-surface-3">
-                            <span className="block h-full rounded-full bg-accent-primary" style={{ width: `${summary.averageProgress}%` }} />
+                          <span className="bg-surface-3 mt-2 block h-1.5 overflow-hidden rounded-full">
+                            <span
+                              className="block h-full rounded-full bg-accent-primary"
+                              style={{ width: `${summary.averageProgress}%` }}
+                            />
                           </span>
                           <span className="mt-2 block text-10 text-tertiary">
-                            {children.length ? `${children.length} task con · ` : ""}{summary.completed}/{summary.total} hoàn thành · {summary.reports} báo cáo
+                            {children.length ? `${children.length} task con · ` : ""}
+                            {summary.completed}/{summary.total} hoàn thành · {summary.reports} báo cáo
                           </span>
                         </button>
                       );
@@ -459,7 +457,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   <p className="text-10 text-tertiary">Tiến độ mới nhất</p>
                   <p className="text-18 font-semibold text-primary">{progress}%</p>
                   <div
-                    className="mt-2 h-1.5 w-28 overflow-hidden rounded-full bg-surface-3"
+                    className="bg-surface-3 mt-2 h-1.5 w-28 overflow-hidden rounded-full"
                     role="progressbar"
                     aria-label="Tiến độ task"
                     aria-valuemin={0}
@@ -518,10 +516,24 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                 </div>
                 {assignment ? (
                   <div className="mt-3 grid gap-2 text-11 sm:grid-cols-2">
-                    <div><span className="text-tertiary">Tên:</span> <span className="text-primary">{assignment.assignee_name || assignment.assignee_id}</span></div>
-                    <div><span className="text-tertiary">Thời gian giao:</span> <span className="text-primary">{formatDateTime(assignment.recorded_at)}</span></div>
-                    <div className="sm:col-span-2"><span className="text-tertiary">Ví:</span> <span className="break-all font-mono text-primary">{assignment.assignee_wallet}</span></div>
-                    <div className="sm:col-span-2"><span className="text-tertiary">Hash giao task:</span> <span className="font-mono text-primary" title={assignment.transaction_hash}>{shortHash(assignment.transaction_hash)}</span></div>
+                    <div>
+                      <span className="text-tertiary">Tên:</span>{" "}
+                      <span className="text-primary">{assignment.assignee_name || assignment.assignee_id}</span>
+                    </div>
+                    <div>
+                      <span className="text-tertiary">Thời gian giao:</span>{" "}
+                      <span className="text-primary">{formatDateTime(assignment.recorded_at)}</span>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <span className="text-tertiary">Ví:</span>{" "}
+                      <span className="font-mono break-all text-primary">{assignment.assignee_wallet}</span>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <span className="text-tertiary">Hash giao task:</span>{" "}
+                      <span className="font-mono text-primary" title={assignment.transaction_hash}>
+                        {shortHash(assignment.transaction_hash)}
+                      </span>
+                    </div>
                   </div>
                 ) : (
                   <p className="mt-3 text-11 text-tertiary">Task chưa có bản ghi giao nhân viên on-chain.</p>
@@ -542,31 +554,75 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                       </div>
                     ))}
                   </div>
-                ) : !loadingKpi && (
-                  <p className="rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">
-                    {assignment?.assignee_wallet ? "Chưa đọc được KPI từ contract." : "Cần giao task on-chain để tự động tra KPI."}
-                  </p>
+                ) : (
+                  !loadingKpi && (
+                    <p className="rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">
+                      {assignment?.assignee_wallet
+                        ? "Chưa đọc được KPI từ contract."
+                        : "Cần giao task on-chain để tự động tra KPI."}
+                    </p>
+                  )
                 )}
               </div>
 
               <div>
                 <h4 className="text-12 font-semibold text-primary">Báo cáo cuối ngày ({reports.length})</h4>
                 {reports.length === 0 ? (
-                  <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">Nhân viên chưa gửi báo cáo cho task này.</p>
+                  <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">
+                    Nhân viên chưa gửi báo cáo cho task này.
+                  </p>
                 ) : (
                   <div className="mt-3 space-y-3">
-                    {reports.map((report, index) => (
-                      <article key={report.report_id || `${report.transaction_hash || "report"}-${report.recorded_at || index}`} className="rounded-xl border border-subtle bg-surface-1/60 p-4 backdrop-blur-md">
+                    {reports.map((report) => (
+                      <article
+                        key={
+                          report.report_id ||
+                          report.transaction_hash ||
+                          `${report.issue_id}-${report.recorded_at}-${report.progress}`
+                        }
+                        className="rounded-xl border border-subtle bg-surface-1/60 p-4 backdrop-blur-md"
+                      >
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <time className="text-11 font-medium text-secondary">{formatDateTime(report.recorded_at)}</time>
-                          <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">Tiến độ {report.progress ?? 0}%</span>
+                          <time className="text-11 font-medium text-secondary">
+                            {formatDateTime(report.recorded_at)}
+                          </time>
+                          <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">
+                            Tiến độ {report.progress ?? 0}%
+                          </span>
                         </div>
                         <dl className="mt-3 space-y-2 text-11">
-                          <div><dt className="text-tertiary">Nhân viên báo cáo</dt><dd className="mt-0.5 text-primary">{report.reporter_name || report.reporter_id || assignment?.assignee_name || assignment?.assignee_id || "Chưa xác định"}</dd></div>
-                          <div><dt className="text-tertiary">Hôm nay làm gì?</dt><dd className="mt-0.5 whitespace-pre-wrap text-primary">{report.work || "Không có nội dung"}</dd></div>
-                          <div><dt className="text-tertiary">Khó khăn</dt><dd className="mt-0.5 whitespace-pre-wrap text-primary">{report.difficulty || "Không có"}</dd></div>
-                          <div><dt className="text-tertiary">Evidence</dt><dd className="mt-0.5 break-all text-primary">{report.evidence || "Không có"}</dd></div>
-                          <div><dt className="text-tertiary">Transaction hash</dt><dd className="mt-0.5 font-mono text-primary" title={report.transaction_hash}>{shortHash(report.transaction_hash)}</dd></div>
+                          <div>
+                            <dt className="text-tertiary">Nhân viên báo cáo</dt>
+                            <dd className="mt-0.5 text-primary">
+                              {report.reporter_name ||
+                                report.reporter_id ||
+                                assignment?.assignee_name ||
+                                assignment?.assignee_id ||
+                                "Chưa xác định"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-tertiary">Hôm nay làm gì?</dt>
+                            <dd className="mt-0.5 whitespace-pre-wrap text-primary">
+                              {report.work || "Không có nội dung"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-tertiary">Khó khăn</dt>
+                            <dd className="mt-0.5 whitespace-pre-wrap text-primary">
+                              {report.difficulty || "Không có"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-tertiary">Evidence</dt>
+                            <dd className="mt-0.5 break-all text-primary">{report.evidence || "Không có"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-tertiary">Transaction hash</dt>
+                            <dd className="font-mono mt-0.5 text-primary" title={report.transaction_hash}>
+                              {shortHash(report.transaction_hash)}
+                            </dd>
+                          </div>
                         </dl>
                       </article>
                     ))}
@@ -575,19 +631,39 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
               </div>
 
               <div>
-                <h4 className="text-12 font-semibold text-primary">Nội dung xác thực on-chain ({contentRecords.length})</h4>
+                <h4 className="text-12 font-semibold text-primary">
+                  Nội dung xác thực on-chain ({contentRecords.length})
+                </h4>
                 {contentRecords.length === 0 ? (
-                  <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">Chưa có comment hoặc evidence được xác thực.</p>
+                  <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">
+                    Chưa có comment hoặc evidence được xác thực.
+                  </p>
                 ) : (
                   <div className="mt-3 space-y-2">
-                    {contentRecords.map((record, index) => (
-                      <div key={`${record.transaction_hash || "content"}-${record.recorded_at || index}`} className="rounded-lg border border-subtle bg-surface-1/60 p-3 text-11 backdrop-blur-md">
+                    {contentRecords.map((record) => (
+                      <div
+                        key={
+                          record.transaction_hash ||
+                          `${record.issue_id}-${record.recorded_at}-${record.content_kind}-${record.content_reference}`
+                        }
+                        className="rounded-lg border border-subtle bg-surface-1/60 p-3 text-11 backdrop-blur-md"
+                      >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium text-primary">{record.content_kind === "comment" ? "Bình luận" : "Evidence"}</span>
+                          <span className="font-medium text-primary">
+                            {record.content_kind === "comment" ? "Bình luận" : "Evidence"}
+                          </span>
                           <time className="text-tertiary">{formatDateTime(record.recorded_at)}</time>
                         </div>
-                        <p className="mt-2 text-tertiary">Tham chiếu: <span className="break-all text-primary">{record.content_reference || "Không có"}</span></p>
-                        <p className="mt-1 text-tertiary">Transaction: <span className="font-mono text-primary" title={record.transaction_hash}>{shortHash(record.transaction_hash)}</span></p>
+                        <p className="mt-2 text-tertiary">
+                          Tham chiếu:{" "}
+                          <span className="break-all text-primary">{record.content_reference || "Không có"}</span>
+                        </p>
+                        <p className="mt-1 text-tertiary">
+                          Transaction:{" "}
+                          <span className="font-mono text-primary" title={record.transaction_hash}>
+                            {shortHash(record.transaction_hash)}
+                          </span>
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -595,7 +671,9 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
               </div>
             </div>
           )}
-          {error && <div className="mt-4 rounded-lg bg-danger-subtle px-3 py-2 text-11 text-danger-primary">{error}</div>}
+          {error && (
+            <div className="mt-4 rounded-lg bg-danger-subtle px-3 py-2 text-11 text-danger-primary">{error}</div>
+          )}
         </div>
       </div>
     </section>

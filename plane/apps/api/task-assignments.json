@@ -1,5 +1,35 @@
 [
   {
+    "issue_id": "04988877-cd7e-43c6-a219-4f12c0a1419b",
+    "event_type": "assign_task",
+    "transaction_hash": "0xa6c6163b4357b81d4a288617f81b0f943361195b061942945a788b9dff2e7682",
+    "issue_name": "A1",
+    "chain_id": "991",
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "assignee_id": "438c69bd-4e54-4a94-aaf5-c674753df9cb",
+    "contract_address": "0x4666c9F3C96a22c343366573De361659994dA136",
+    "assignee_name": "tuh225095",
+    "workspace_slug": "fiai",
+    "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
+    "recorded_at": "2026-07-18T01:45:27.145765+00:00"
+  },
+  {
+    "issue_name": "7e0fe660-ce5f-4c9d-8c4c-cf4061dc4633",
+    "contract_address": "0x4666c9F3C96a22c343366573De361659994dA136",
+    "issue_id": "7e0fe660-ce5f-4c9d-8c4c-cf4061dc4633",
+    "assignee_name": "tuh225095",
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "transaction_hash": "0x0c0e33f18ea0064900e49a1bf4e8a09dfb51c24fae1aa9c22aa10ea0d07430b2",
+    "assignee_id": "438c69bd-4e54-4a94-aaf5-c674753df9cb",
+    "chain_id": "991",
+    "event_type": "assign_task",
+    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "workspace_slug": "fiai",
+    "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
+    "recorded_at": "2026-07-17T10:03:54.065035+00:00"
+  },
+  {
     "issue_name": "9c3ba713-812f-44bb-b052-b9cf261a8328",
     "contract_address": "0x4666c9F3C96a22c343366573De361659994dA136",
     "issue_id": "9c3ba713-812f-44bb-b052-b9cf261a8328",
@@ -13,50 +43,5 @@
     "workspace_slug": "fiai",
     "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
     "recorded_at": "2026-07-17T09:43:21.290483+00:00"
-  },
-  {
-    "issue_name": "c3580e10-7238-4eeb-8a74-a1781f84b1c5",
-    "contract_address": "0x14dCE3620Cefb503BA69864062c7F4F02ccdcF0D",
-    "issue_id": "c3580e10-7238-4eeb-8a74-a1781f84b1c5",
-    "assignee_name": "tuh225095",
-    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
-    "transaction_hash": "0x775889618aef2c95827c46670bc77dc99a25565993ef4a2fda796087b311442e",
-    "assignee_id": "438c69bd-4e54-4a94-aaf5-c674753df9cb",
-    "chain_id": "991",
-    "event_type": "assign_task",
-    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
-    "workspace_slug": "fiai",
-    "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
-    "recorded_at": "2026-07-17T08:54:45.484452+00:00"
-  },
-  {
-    "issue_name": "303c7b77-f315-476c-a6bd-d92593bc2f68",
-    "contract_address": "0x14dCE3620Cefb503BA69864062c7F4F02ccdcF0D",
-    "issue_id": "303c7b77-f315-476c-a6bd-d92593bc2f68",
-    "assignee_name": "tuh225095",
-    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
-    "transaction_hash": "0xbca4b26de12872021c77c6a121fbaef9cd3dbe43e71b78ec742070e9ccc8afe8",
-    "assignee_id": "438c69bd-4e54-4a94-aaf5-c674753df9cb",
-    "chain_id": "991",
-    "event_type": "assign_task",
-    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
-    "workspace_slug": "fiai",
-    "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
-    "recorded_at": "2026-07-17T08:33:05.455273+00:00"
-  },
-  {
-    "issue_name": "b6bcff66-cb5f-4558-9f1e-0cc368db49ec",
-    "assignee_name": "tuh225095",
-    "event_type": "assign_task",
-    "transaction_hash": "0xc613f679ddfb3f1baa4ce928d6a27c6d2a0e4d6230de88b44b7d2f106e4fafdb",
-    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
-    "chain_id": "991",
-    "assignee_id": "438c69bd-4e54-4a94-aaf5-c674753df9cb",
-    "issue_id": "b6bcff66-cb5f-4558-9f1e-0cc368db49ec",
-    "assignee_wallet": "0x665993f448b0552e842a81f89343ff70457539d7",
-    "contract_address": "0x14dCE3620Cefb503BA69864062c7F4F02ccdcF0D",
-    "workspace_slug": "fiai",
-    "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
-    "recorded_at": "2026-07-17T04:21:16.047261+00:00"
   }
 ]

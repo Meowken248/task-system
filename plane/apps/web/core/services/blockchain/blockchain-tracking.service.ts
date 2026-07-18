@@ -33,9 +33,56 @@ class BlockchainTrackingService extends APIService {
     super(API_BASE_URL);
   }
 
+  private currentContractRecords(records: TBlockchainTrackingRecord[]): TBlockchainTrackingRecord[] {
+    const currentContractAddress = process.env.VITE_CONTRACT_ADDRESS?.trim().toLowerCase();
+    if (!currentContractAddress) return records;
+    return records.filter((record) => record.contract_address?.trim().toLowerCase() === currentContractAddress);
+  }
+
+  private async postTracking(path: string, payload: Record<string, unknown>, attempt = 0): Promise<void> {
+    try {
+      await this.post(path, payload);
+    } catch (error) {
+      if (attempt >= 2) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+      return this.postTracking(path, payload, attempt + 1);
+    }
+  }
+
   async getTransactions(workspaceSlug: string, projectId: string): Promise<TBlockchainTrackingRecord[]> {
     const response = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`);
-    return Array.isArray(response?.data) ? response.data : [];
+    const records: TBlockchainTrackingRecord[] = Array.isArray(response?.data) ? response.data : [];
+    return this.currentContractRecords(records);
+  }
+
+  async recordTaskCreation(
+    workspaceSlug: string,
+    projectId: string,
+    payload: {
+      issueId: string;
+      issueName: string;
+      parentIssueId?: string | null;
+      targetDate?: string | null;
+      priority?: string | null;
+      transactionHash: string;
+      assigneeWallet: string;
+      assigneeId?: string;
+    }
+  ): Promise<void> {
+    await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+      event_type: "create_task",
+      issue_id: payload.issueId,
+      issue_name: payload.issueName,
+      parent_issue_id: payload.parentIssueId,
+      target_date: payload.targetDate,
+      priority: payload.priority,
+      assignee_wallet: payload.assigneeWallet,
+      assignee_id: payload.assigneeId,
+      wallet_address: process.env.VITE_METANODE_WALLET_ADDRESS,
+      contract_address: process.env.VITE_CONTRACT_ADDRESS,
+      chain_id: process.env.VITE_CHAIN_ID,
+      transaction_hash: payload.transactionHash,
+    });
   }
   async recordDailyReport(
     workspaceSlug: string,
@@ -50,7 +97,7 @@ class BlockchainTrackingService extends APIService {
       evidence: string;
     }
   ): Promise<void> {
-    await this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+    await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
       event_type: "daily_report",
       issue_id: payload.issueId,
       issue_name: payload.issueName,
@@ -67,9 +114,15 @@ class BlockchainTrackingService extends APIService {
   async recordTaskContent(
     workspaceSlug: string,
     projectId: string,
-    payload: { issueId: string; issueName?: string; transactionHash: string; kind: "comment" | "attachment" | "evidence"; reference: string }
+    payload: {
+      issueId: string;
+      issueName?: string;
+      transactionHash: string;
+      kind: "comment" | "attachment" | "evidence";
+      reference: string;
+    }
   ): Promise<void> {
-    await this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+    await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
       event_type: "task_content",
       issue_id: payload.issueId,
       issue_name: payload.issueName,
@@ -83,9 +136,12 @@ class BlockchainTrackingService extends APIService {
   }
 
   async getStoredAssigneeWallet(workspaceSlug: string, projectId: string, assigneeId: string): Promise<string> {
-    const records = await this.getTransactions(workspaceSlug, projectId);
-    const assignment = records.find(
-      (record: Record<string, unknown>) =>
+    const response = await this.get(
+      `/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/?assignee_id=${encodeURIComponent(assigneeId)}`
+    );
+    const records: TBlockchainTrackingRecord[] = Array.isArray(response?.data) ? response.data : [];
+    const assignment = this.currentContractRecords(records).find(
+      (record) =>
         record.event_type === "assign_task" &&
         record.assignee_id === assigneeId &&
         typeof record.assignee_wallet === "string"
@@ -97,7 +153,7 @@ class BlockchainTrackingService extends APIService {
     projectId: string,
     payload: { issueId: string; issueName: string; transactionHash: string }
   ): Promise<void> {
-    await this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+    await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
       event_type: "delete_task",
       issue_id: payload.issueId,
       issue_name: payload.issueName,
@@ -120,7 +176,7 @@ class BlockchainTrackingService extends APIService {
       assigneeName: string;
     }
   ): Promise<void> {
-    await this.post(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+    await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
       event_type: "assign_task",
       issue_id: payload.issueId,
       issue_name: payload.issueName,
