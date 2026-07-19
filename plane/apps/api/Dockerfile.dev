@@ -7,6 +7,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV INSTANCE_CHANGELOG_URL https://sites.plane.so/pages/691ef037bcfe416a902e48cb55f59891/
 
 RUN apk --no-cache add \
+    "ca-certificates" \
     "bash~=5.2" \
     "libpq" \
     "libxslt" \
@@ -34,6 +35,12 @@ RUN pip install -r requirements/local.txt --compile --no-cache-dir
 
 COPY . .
 
+# The MetaNode RPC currently omits its GlobalSign intermediate certificate.
+# Install the pinned public intermediate without disabling TLS verification.
+RUN cp /code/certs/globalsign-gcc-r6-alphassl-ca-2025.pem \
+        /usr/local/share/ca-certificates/globalsign-gcc-r6-alphassl-ca-2025.crt \
+    && update-ca-certificates
+
 RUN mkdir -p /code/plane/logs
 RUN chmod -R +x /code/bin
 RUN chmod -R 777 /code
@@ -43,4 +50,3 @@ RUN chmod -R 777 /code
 EXPOSE 8000
 
 CMD [ "./bin/docker-entrypoint-api-local.sh" ]
-
