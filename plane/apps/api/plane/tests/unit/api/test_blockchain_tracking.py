@@ -9,11 +9,37 @@ from plane.api.views import blockchain_tracking
 from plane.api.views.blockchain_tracking import (
     BlockchainTrackingEndpoint,
     TrackingStorageError,
+    _apply_event_side_effects,
     _has_same_identity,
     _read_records,
     _upsert_record,
     _write_records,
 )
+
+
+class _FirstResult:
+    def __init__(self, value):
+        self.value = value
+
+    def filter(self, **_kwargs):
+        return self
+
+    def first(self):
+        return self.value
+
+
+class _AssigneeRows:
+    def __init__(self):
+        self.deleted = False
+
+    def exclude(self, **_kwargs):
+        return self
+
+    def delete(self):
+        self.deleted = True
+
+    def exists(self):
+        return False
 
 
 class _AdminMembership:
@@ -92,6 +118,41 @@ def test_idempotency_rejects_same_hash_with_different_semantics():
 
     assert _has_same_identity(existing, dict(existing))
     assert not _has_same_identity(existing, {**existing, "progress": 80})
+
+
+@pytest.mark.unit
+def test_assignment_sync_populates_issue_assignee_scope(monkeypatch):
+    member = SimpleNamespace(member_id="employee-1")
+    issue = SimpleNamespace(
+        id="issue-1",
+        project_id="project-1",
+        workspace_id="workspace-1",
+        created_by_id="admin-1",
+        updated_by_id=None,
+    )
+    rows = _AssigneeRows()
+    created = {}
+
+    monkeypatch.setattr(blockchain_tracking.ProjectMember.objects, "filter", lambda **_kwargs: _FirstResult(member))
+    monkeypatch.setattr(
+        blockchain_tracking.Issue.objects,
+        "select_for_update",
+        lambda: _FirstResult(issue),
+    )
+    monkeypatch.setattr(blockchain_tracking.IssueAssignee.objects, "filter", lambda **_kwargs: rows)
+    monkeypatch.setattr(blockchain_tracking.IssueAssignee.objects, "create", lambda **kwargs: created.update(kwargs))
+
+    _apply_event_side_effects(
+        event_type="assign_task",
+        payload={"issue_id": "issue-1", "assignee_id": "employee-1"},
+        slug="workspace",
+        project_id="project-1",
+    )
+
+    assert rows.deleted is True
+    assert created["assignee_id"] == "employee-1"
+    assert created["project_id"] == "project-1"
+    assert created["workspace_id"] == "workspace-1"
 
 
 @pytest.mark.unit

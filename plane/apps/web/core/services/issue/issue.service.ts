@@ -412,10 +412,10 @@ export class IssueService extends APIService {
         assigneeId,
         assigneeName: "",
       });
-      return this.patch(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/`, {
-        ...data,
-        assignee_ids: [assigneeId],
-      }).then((result) => result?.data);
+      // The verified tracking endpoint applies the assignment to Plane in the
+      // same synchronization workflow. Fetch that committed state instead of
+      // PATCHing the assignee a second time and producing duplicate activity.
+      return this.retrieve(workspaceSlug, projectId, issueId);
     }
     return this.patch(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/`, data)
       .then((response) => response?.data)

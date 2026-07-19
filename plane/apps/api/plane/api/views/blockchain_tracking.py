@@ -23,7 +23,7 @@ from plane.api.views.blockchain_verification import (
 )
 from plane.app.views.base import BaseAPIView
 from plane.app.permissions import ProjectEntityPermission
-from plane.db.models import Issue, ProjectMember, State, WorkspaceMember
+from plane.db.models import Issue, IssueAssignee, ProjectMember, State, WorkspaceMember
 from plane.db.models.project import ROLE
 
 
@@ -240,7 +240,21 @@ def _apply_event_side_effects(*, event_type: str, payload: dict, slug: str, proj
         ).first()
         if member is None or issue is None:
             raise ValueError("Task or employee was not found.")
-        issue.assignees.set([member.member_id])
+        # Issue.assignees uses the custom IssueAssignee through model. Django's
+        # generic ManyToMany ``set`` does not populate the required Plane
+        # project/workspace columns and therefore raises a NOT NULL violation.
+        # Keep this mirror idempotent and create the through row explicitly.
+        IssueAssignee.objects.filter(issue=issue).exclude(assignee_id=member.member_id).delete()
+        if not IssueAssignee.objects.filter(issue=issue, assignee_id=member.member_id).exists():
+            audit_user_id = issue.updated_by_id or issue.created_by_id
+            IssueAssignee.objects.create(
+                issue=issue,
+                assignee_id=member.member_id,
+                project_id=issue.project_id,
+                workspace_id=issue.workspace_id,
+                created_by_id=audit_user_id,
+                updated_by_id=audit_user_id,
+            )
         return
     if event_type == "delete_task":
         issue = Issue.objects.select_for_update().filter(
