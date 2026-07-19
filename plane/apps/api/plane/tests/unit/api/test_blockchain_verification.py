@@ -122,6 +122,56 @@ def test_unmined_receipt_is_retryable(monkeypatch):
 
 
 @pytest.mark.unit
+def test_verifies_task_content_hash_independently_from_plane_reference(monkeypatch):
+    task_id = 3
+    content_hash = "0x" + "55" * 32
+    receipt = {
+        "transactionHash": TX_HASH,
+        "status": "0x1",
+        "to": CONTRACT,
+        "from": SENDER,
+        "blockNumber": "0x10",
+        "logs": [
+            {
+                "address": CONTRACT,
+                "topics": [
+                    verification._EVENTS["task_content"][1],
+                    "0x" + f"{task_id:064x}",
+                    "0x" + f"{0:064x}",
+                    content_hash,
+                ],
+                "data": "0x" + _word_address(SENDER),
+                "logIndex": "0x0",
+            }
+        ],
+    }
+
+    def rpc_call(_url, method, _params, _timeout):
+        if method == "eth_chainId":
+            return "0x3df"
+        if method == "eth_getTransactionReceipt":
+            return receipt
+        return "0x" + f"{task_id:064x}"
+
+    monkeypatch.setattr(verification, "_rpc_call", rpc_call)
+    result = verification.verify_blockchain_transaction(
+        {
+            "event_type": "task_content",
+            "issue_id": "issue-1",
+            "transaction_hash": TX_HASH,
+            "contract_address": CONTRACT,
+            "chain_id": 991,
+            "content_kind": "comment",
+            "content_reference": "plane-comment-id",
+            "content_hash": content_hash,
+        }
+    )
+
+    assert result["on_chain_task_id"] == task_id
+    assert result["transaction_from"] == SENDER
+
+
+@pytest.mark.unit
 def test_delete_resolves_task_binding_at_block_before_deletion(monkeypatch):
     issue_id = "issue-to-delete"
     task_id = 7

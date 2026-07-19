@@ -166,7 +166,7 @@ def _validate_event_payload(event_type: str, payload: dict, receipt: dict, log: 
         expected_kind = {"comment": 0, "attachment": 1, "evidence": 2}[payload["content_kind"]]
         if int(_topic_word(topics, 2, "content kind"), 16) != expected_kind:
             raise BlockchainVerificationError("TaskContent kind does not match the submitted content.")
-        if _topic_word(topics, 3, "content hash") != _hash_task_value(str(payload["content_reference"])):
+        if _topic_word(topics, 3, "content hash") != str(payload["content_hash"]).lower():
             raise BlockchainVerificationError("TaskContent hash does not match the submitted content.")
         if _word_address(_data_words(log), 0, "recorded by") != transaction_from:
             raise BlockchainVerificationError("TaskContent actor does not match the transaction sender.")

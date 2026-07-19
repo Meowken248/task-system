@@ -64,7 +64,7 @@ export class IssueCommentService extends APIService {
     if (!isOnChainTaskSyncEnabled() || data.external_source === "blockchain-daily-report") return comment;
 
     try {
-      const transactionHash = await recordIssueContentOnChain(
+      const { transactionHash, contentHash } = await recordIssueContentOnChain(
         issueId,
         0,
         comment.comment_stripped || comment.comment_html
@@ -74,6 +74,7 @@ export class IssueCommentService extends APIService {
         transactionHash,
         kind: "comment",
         reference: comment.id,
+        contentHash,
       });
       return comment;
     } catch (error) {

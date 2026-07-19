@@ -102,6 +102,11 @@ class BlockchainTrackingService extends APIService {
       await this.post(path, payload);
       this.removeQueuedTracking(payload);
     } catch (error) {
+      const responseStatus = (error as { response?: { status?: number } })?.response?.status;
+      if (responseStatus && responseStatus >= 400 && responseStatus < 500) {
+        this.removeQueuedTracking(payload);
+        throw error;
+      }
       if (attempt >= 2) throw error;
       await new Promise<void>((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
       return this.postTracking(path, payload, attempt + 1);
@@ -180,6 +185,7 @@ class BlockchainTrackingService extends APIService {
       transactionHash: string;
       kind: "comment" | "attachment" | "evidence";
       reference: string;
+      contentHash: string;
     }
   ): Promise<void> {
     await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
@@ -192,6 +198,7 @@ class BlockchainTrackingService extends APIService {
       transaction_hash: payload.transactionHash,
       content_kind: payload.kind,
       content_reference: payload.reference,
+      content_hash: payload.contentHash,
     });
   }
 

@@ -66,12 +66,13 @@ export class IssueAttachmentService extends APIService {
         if (isOnChainTaskSyncEnabled()) {
           const evidenceReference = `${signedURLResponse.asset_id}:${file.name}:${file.size}:${file.lastModified}`;
           try {
-            const transactionHash = await recordIssueContentOnChain(issueId, 2, evidenceReference);
+            const { transactionHash, contentHash } = await recordIssueContentOnChain(issueId, 2, evidenceReference);
             await blockchainTrackingService.recordTaskContent(workspaceSlug, projectId, {
               issueId,
               transactionHash,
               kind: "evidence",
               reference: signedURLResponse.asset_id,
+              contentHash,
             });
           } catch (error) {
             await this.delete(

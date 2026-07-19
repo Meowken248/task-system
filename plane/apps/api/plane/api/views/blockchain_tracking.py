@@ -53,6 +53,7 @@ _ALLOWED_FIELDS = {
     "evidence",
     "content_kind",
     "content_reference",
+    "content_hash",
 }
 _ALLOWED_EVENT_TYPES = {
     "create_task",
@@ -71,12 +72,12 @@ _REQUIRED_FIELDS = {
 _EVENT_REQUIRED_FIELDS = {
     "assign_task": {"assignee_id", "assignee_wallet"},
     "daily_report": {"progress"},
-    "task_content": {"content_kind", "content_reference"},
+    "task_content": {"content_kind", "content_reference", "content_hash"},
 }
 _IDEMPOTENCY_FIELDS = {
     "assign_task": {"assignee_id", "assignee_wallet"},
     "daily_report": {"progress", "work", "difficulty", "evidence"},
-    "task_content": {"content_kind", "content_reference"},
+    "task_content": {"content_kind", "content_reference", "content_hash"},
 }
 
 
@@ -511,6 +512,12 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 )
             if payload.get("content_kind") not in {"comment", "attachment", "evidence"}:
                 return Response({"error": "Invalid content kind."}, status=status.HTTP_400_BAD_REQUEST)
+            if not re.fullmatch(r"0x[a-fA-F0-9]{64}", str(payload.get("content_hash", ""))):
+                return Response(
+                    {"error": "Content hash must be a 32-byte 0x-prefixed hexadecimal value."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            payload["content_hash"] = str(payload["content_hash"]).lower()
 
         if payload.get("assignee_id") and not payload.get("assignee_name"):
             member = assignment_member or ProjectMember.objects.filter(

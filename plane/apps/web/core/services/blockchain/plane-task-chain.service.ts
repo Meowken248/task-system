@@ -677,13 +677,19 @@ export async function submitIssueDailyReportOnChain(
   };
 }
 
-export async function recordIssueContentOnChain(issueId: string, kind: 0 | 1 | 2, content: string): Promise<string> {
+export async function recordIssueContentOnChain(
+  issueId: string,
+  kind: 0 | 1 | 2,
+  content: string
+): Promise<{ transactionHash: string; contentHash: string }> {
   const taskId = await getIssueTaskId(issueId);
-  return sendContractTransaction("recordTaskContent", {
+  const contentHash = await hashTaskValue(content);
+  const transactionHash = await sendContractTransaction("recordTaskContent", {
     taskId,
     kind,
-    contentHash: await hashTaskValue(content),
+    contentHash,
   });
+  return { transactionHash, contentHash };
 }
 export type OnChainKPI = {
   total: number;
