@@ -28,6 +28,14 @@ export type TBlockchainTrackingRecord = {
   content_reference?: string;
   recorded_at?: string;
 };
+
+type TTrackingOutboxEntry = {
+  path: string;
+  payload: Record<string, unknown>;
+};
+
+const TRACKING_OUTBOX_KEY = "plane:blockchain-tracking-outbox:v1";
+
 class BlockchainTrackingService extends APIService {
   constructor() {
     super(API_BASE_URL);
@@ -39,9 +47,60 @@ class BlockchainTrackingService extends APIService {
     return records.filter((record) => record.contract_address?.trim().toLowerCase() === currentContractAddress);
   }
 
+  private readOutbox(): Record<string, TTrackingOutboxEntry> {
+    if (typeof window === "undefined") return {};
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(TRACKING_OUTBOX_KEY) ?? "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private writeOutbox(entries: Record<string, TTrackingOutboxEntry>): void {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(TRACKING_OUTBOX_KEY, JSON.stringify(entries));
+    } catch (error) {
+      console.warn("Không thể lưu blockchain outbox vào trình duyệt.", error);
+    }
+  }
+
+  private queueTracking(path: string, payload: Record<string, unknown>): void {
+    const id = String(payload.transaction_hash ?? "")
+      .trim()
+      .toLowerCase();
+    if (!id) return;
+    this.writeOutbox({ ...this.readOutbox(), [id]: { path, payload } });
+  }
+
+  private removeQueuedTracking(payload: Record<string, unknown>): void {
+    const id = String(payload.transaction_hash ?? "")
+      .trim()
+      .toLowerCase();
+    if (!id) return;
+    const entries = this.readOutbox();
+    delete entries[id];
+    this.writeOutbox(entries);
+  }
+
+  private async flushTrackingOutbox(): Promise<void> {
+    await Promise.all(
+      Object.values(this.readOutbox()).map(async (entry) => {
+        try {
+          await this.postTracking(entry.path, entry.payload);
+        } catch (error) {
+          console.warn("Blockchain tracking vẫn đang chờ tự đồng bộ.", error);
+        }
+      })
+    );
+  }
+
   private async postTracking(path: string, payload: Record<string, unknown>, attempt = 0): Promise<void> {
+    this.queueTracking(path, payload);
     try {
       await this.post(path, payload);
+      this.removeQueuedTracking(payload);
     } catch (error) {
       if (attempt >= 2) throw error;
       await new Promise<void>((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
@@ -50,6 +109,7 @@ class BlockchainTrackingService extends APIService {
   }
 
   async getTransactions(workspaceSlug: string, projectId: string): Promise<TBlockchainTrackingRecord[]> {
+    await this.flushTrackingOutbox();
     const response = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`);
     const records: TBlockchainTrackingRecord[] = Array.isArray(response?.data) ? response.data : [];
     return this.currentContractRecords(records);

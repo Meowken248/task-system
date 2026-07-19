@@ -1,15 +1,1 @@
-[
-  {
-    "issue_id": "04988877-cd7e-43c6-a219-4f12c0a1419b",
-    "content_kind": "comment",
-    "event_type": "task_content",
-    "transaction_hash": "0x344828cb4fe1eef679ba92abca33391654c8a37986d8959b11e396ff6c367720",
-    "chain_id": "991",
-    "content_reference": "097695dc-5da9-465e-90f8-f17c6f4d0e0e",
-    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
-    "contract_address": "0x4666c9F3C96a22c343366573De361659994dA136",
-    "workspace_slug": "fiai",
-    "project_id": "3502d07b-0c5f-446c-a808-01091d487066",
-    "recorded_at": "2026-07-18T01:48:56.675765+00:00"
-  }
-]
+[]

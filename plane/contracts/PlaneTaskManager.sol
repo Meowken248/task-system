@@ -104,6 +104,7 @@ contract PlaneTaskManager {
     mapping(uint256 => ContentRecord[]) private contentRecords;
     mapping(uint256 => SubTask[]) private subTasks;
     mapping(uint256 => mapping(bytes32 => uint256)) private subTaskIdByExternalIdPlusOne;
+    mapping(uint256 => mapping(uint256 => uint256)) private childTaskIdBySubTaskPlusOne;
     mapping(address => uint256[]) private assignedTaskIds;
     mapping(address => mapping(uint256 => bool)) private taskIndexedForAssignee;
 
@@ -165,6 +166,7 @@ contract PlaneTaskManager {
     error InvalidStatusTransition();
     error InvalidSubTask();
     error DuplicateSubTask();
+    error InvalidHierarchy();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -186,6 +188,10 @@ contract PlaneTaskManager {
         admins[msg.sender] = true;
         emit OwnershipTransferred(address(0), msg.sender);
         emit AdminUpdated(msg.sender, true);
+    }
+
+    function contractVersion() external pure returns (uint256) {
+        return 2;
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
@@ -211,6 +217,16 @@ contract PlaneTaskManager {
         uint64 dueAt,
         Priority priority
     ) external onlyAdmin returns (uint256 taskId) {
+        return _createTask(externalId, metadataHash, assignee, dueAt, priority);
+    }
+
+    function _createTask(
+        bytes32 externalId,
+        bytes32 metadataHash,
+        address assignee,
+        uint64 dueAt,
+        Priority priority
+    ) private returns (uint256 taskId) {
         if (externalId == bytes32(0)) revert InvalidExternalId();
         if (taskIdByExternalIdPlusOne[externalId] != 0) revert DuplicateExternalId();
 
@@ -240,6 +256,14 @@ contract PlaneTaskManager {
         bytes32 externalId,
         bytes32 metadataHash
     ) external onlyAdmin taskExists(taskId) returns (uint256 subTaskId) {
+        return _createSubTask(taskId, externalId, metadataHash);
+    }
+
+    function _createSubTask(
+        uint256 taskId,
+        bytes32 externalId,
+        bytes32 metadataHash
+    ) private returns (uint256 subTaskId) {
         if (externalId == bytes32(0)) revert InvalidExternalId();
         if (subTaskIdByExternalIdPlusOne[taskId][externalId] != 0) revert DuplicateSubTask();
         subTaskId = subTasks[taskId].length;
@@ -256,6 +280,21 @@ contract PlaneTaskManager {
         subTaskIdByExternalIdPlusOne[taskId][externalId] = subTaskId + 1;
         _recalculateProgressFromSubTasks(taskId, tasks[taskId]);
         emit SubTaskCreated(taskId, subTaskId, externalId, metadataHash);
+    }
+
+    function createChildTask(
+        uint256 parentTaskId,
+        bytes32 childExternalId,
+        bytes32 childMetadataHash,
+        address assignee,
+        uint64 dueAt,
+        Priority priority,
+        bytes32 relationshipExternalId,
+        bytes32 relationshipMetadataHash
+    ) external onlyAdmin taskExists(parentTaskId) returns (uint256 childTaskId, uint256 subTaskId) {
+        childTaskId = _createTask(childExternalId, childMetadataHash, assignee, dueAt, priority);
+        subTaskId = _createSubTask(parentTaskId, relationshipExternalId, relationshipMetadataHash);
+        childTaskIdBySubTaskPlusOne[parentTaskId][subTaskId] = childTaskId + 1;
     }
 
     function updateSubTaskMetadata(
@@ -310,6 +349,10 @@ contract PlaneTaskManager {
     }
 
     function deleteSubTask(uint256 taskId, uint256 subTaskId) external onlyAdmin taskExists(taskId) {
+        _deleteSubTask(taskId, subTaskId);
+    }
+
+    function _deleteSubTask(uint256 taskId, uint256 subTaskId) private {
         SubTask storage subTask = _getSubTask(taskId, subTaskId);
         subTask.deleted = true;
         subTask.updatedAt = uint64(block.timestamp);
@@ -362,10 +405,24 @@ contract PlaneTaskManager {
     }
 
     function deleteTask(uint256 taskId) external onlyAdmin taskExists(taskId) {
+        _deleteTask(taskId);
+    }
+
+    function _deleteTask(uint256 taskId) private {
         Task storage task = tasks[taskId];
         task.deleted = true;
         task.updatedAt = uint64(block.timestamp);
         emit TaskDeleted(taskId, msg.sender);
+    }
+
+    function deleteChildTask(
+        uint256 childTaskId,
+        uint256 parentTaskId,
+        uint256 subTaskId
+    ) external onlyAdmin taskExists(childTaskId) taskExists(parentTaskId) {
+        if (childTaskIdBySubTaskPlusOne[parentTaskId][subTaskId] != childTaskId + 1) revert InvalidHierarchy();
+        _deleteSubTask(parentTaskId, subTaskId);
+        _deleteTask(childTaskId);
     }
 
     function submitDailyReport(
@@ -375,6 +432,16 @@ contract PlaneTaskManager {
         bytes32 difficultyHash,
         bytes32 evidenceHash
     ) external taskExists(taskId) returns (uint256 reportId) {
+        return _submitDailyReport(taskId, progress, workHash, difficultyHash, evidenceHash);
+    }
+
+    function _submitDailyReport(
+        uint256 taskId,
+        uint8 progress,
+        bytes32 workHash,
+        bytes32 difficultyHash,
+        bytes32 evidenceHash
+    ) private returns (uint256 reportId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
         if (task.status == Status.Cancelled) revert InvalidStatusTransition();
@@ -402,6 +469,41 @@ contract PlaneTaskManager {
             difficultyHash,
             evidenceHash
         );
+    }
+
+    function submitDailyReportAndSyncAncestors(
+        uint256 taskId,
+        uint8 progress,
+        bytes32 workHash,
+        bytes32 difficultyHash,
+        bytes32 evidenceHash,
+        uint256[] calldata parentTaskIds,
+        uint256[] calldata subTaskIds
+    ) external taskExists(taskId) returns (uint256 reportId) {
+        if (parentTaskIds.length != subTaskIds.length) revert InvalidHierarchy();
+        reportId = _submitDailyReport(taskId, progress, workHash, difficultyHash, evidenceHash);
+        uint256 childTaskId = taskId;
+        uint8 childProgress = tasks[taskId].progress;
+        for (uint256 i = 0; i < parentTaskIds.length; ++i) {
+            uint256 parentTaskId = parentTaskIds[i];
+            if (parentTaskId >= taskCount || tasks[parentTaskId].deleted) revert InvalidHierarchy();
+            if (childTaskIdBySubTaskPlusOne[parentTaskId][subTaskIds[i]] != childTaskId + 1) {
+                revert InvalidHierarchy();
+            }
+            SubTask storage subTask = _getSubTask(parentTaskId, subTaskIds[i]);
+            subTask.progress = childProgress;
+            subTask.status = childProgress == 100
+                ? SubTaskStatus.Completed
+                : childProgress == 0
+                    ? SubTaskStatus.Todo
+                    : SubTaskStatus.InProgress;
+            subTask.updatedAt = uint64(block.timestamp);
+            _recalculateProgressFromSubTasks(parentTaskId, tasks[parentTaskId]);
+            emit SubTaskProgressUpdated(parentTaskId, subTaskIds[i], childProgress, subTask.status, msg.sender);
+            emit SubTaskStatusUpdated(parentTaskId, subTaskIds[i], subTask.status, msg.sender);
+            childTaskId = parentTaskId;
+            childProgress = tasks[parentTaskId].progress;
+        }
     }
 
     /// @notice Anchors a Plane comment, attachment, or evidence record without

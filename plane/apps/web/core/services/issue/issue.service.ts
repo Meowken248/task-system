@@ -28,9 +28,7 @@ import {
   consumePendingAssignmentWallet,
   createIssueOnChain,
   deleteIssueByIssueIdOnChain,
-  deleteIssueSubTaskOnChain,
   getIssueSubTaskStats,
-  isMissingOnChainRecordError,
   isOnChainTaskSyncEnabled,
   issueExistsOnChain,
   updateIssueMetadataByIssueIdOnChain,
@@ -438,16 +436,7 @@ export class IssueService extends APIService {
     const existsOnCurrentContract = await issueExistsOnChain(issuesId);
 
     if (existsOnCurrentContract) {
-      if (issue.parent_id) {
-        try {
-          await deleteIssueSubTaskOnChain(issue.parent_id, issuesId);
-        } catch (error) {
-          if (!isMissingOnChainRecordError(error)) throw error;
-          console.warn(`Sub-task ${issuesId} was not registered under parent ${issue.parent_id}; continuing deletion.`);
-        }
-      }
-
-      const transactionHash = await deleteIssueByIssueIdOnChain(issuesId);
+      const transactionHash = await deleteIssueByIssueIdOnChain(issuesId, issue.parent_id);
       try {
         await blockchainTrackingService.recordTaskDeletion(workspaceSlug, projectId, {
           issueId: issuesId,
@@ -456,7 +445,17 @@ export class IssueService extends APIService {
         });
       } catch (trackingError) {
         console.error("Task đã xóa on-chain nhưng chưa ghi được bản theo dõi xóa:", trackingError);
+        throw {
+          error:
+            "Task đã xóa on-chain nhưng đang chờ backend đồng bộ. Hãy tải lại trang để hệ thống tự thử lại, không ký thêm giao dịch.",
+          cause: trackingError,
+        };
       }
+
+      // The verified tracking endpoint deletes the Plane issue inside its database
+      // transaction. Calling the regular delete endpoint again would turn a
+      // successful deletion into a misleading 404/error in the UI.
+      return { id: issuesId, deleted: true };
     }
 
     return this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`).then(

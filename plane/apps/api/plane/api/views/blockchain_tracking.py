@@ -1,25 +1,33 @@
 # Copyright (c) 2023-present Plane Software, Inc. and contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 # See the LICENSE file for details.
-import re
 import json
+import logging
 import os
+import re
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
+
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 
+from plane.api.views.blockchain_verification import (
+    BlockchainVerificationError,
+    verify_blockchain_transaction as _verify_blockchain_transaction,
+)
 from plane.app.views.base import BaseAPIView
 from plane.app.permissions import ProjectEntityPermission
 from plane.db.models import Issue, ProjectMember, State, WorkspaceMember
 from plane.db.models.project import ROLE
 
 
+logger = logging.getLogger(__name__)
 _tracking_file_lock = Lock()
 _ALLOWED_FIELDS = {
     "issue_id",
@@ -65,6 +73,15 @@ _EVENT_REQUIRED_FIELDS = {
     "daily_report": {"progress"},
     "task_content": {"content_kind", "content_reference"},
 }
+_IDEMPOTENCY_FIELDS = {
+    "assign_task": {"assignee_id", "assignee_wallet"},
+    "daily_report": {"progress", "work", "difficulty", "evidence"},
+    "task_content": {"content_kind", "content_reference"},
+}
+
+
+class TrackingStorageError(OSError):
+    """Tracking data cannot be read without risking data loss."""
 
 
 def _tracking_file_path(event_type: str | None = None) -> Path:
@@ -117,9 +134,11 @@ def _read_records(path: Path) -> list[dict]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
-    return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError) as exc:
+        raise TrackingStorageError(f"Unable to read blockchain tracking file: {path}") from exc
+    if not isinstance(data, list) or any(not isinstance(record, dict) for record in data):
+        raise TrackingStorageError(f"Blockchain tracking file has an invalid structure: {path}")
+    return data
 
 
 def _write_records(path: Path, records: list[dict]) -> None:
@@ -153,21 +172,166 @@ def _upsert_record(records: list[dict], payload: dict) -> list[dict]:
     return records
 
 
+def _find_existing_record(paths: set[Path], transaction_hash: str) -> tuple[Path | None, dict | None]:
+    for tracking_path in paths:
+        for record in _read_records(tracking_path):
+            if str(record.get("transaction_hash", "")).lower() == transaction_hash:
+                return tracking_path, record
+    return None, None
+
+
+def _find_creation_record(*, issue_id: str, slug: str, project_id) -> dict | None:
+    return next(
+        (
+            record
+            for record in _read_records(_tracking_file_path())
+            if record.get("event_type") == "create_task"
+            and str(record.get("issue_id")) == str(issue_id)
+            and record.get("workspace_slug") == slug
+            and str(record.get("project_id")) == str(project_id)
+            and record.get("on_chain_task_id") is not None
+        ),
+        None,
+    )
+
+
+def _normalize_identity(field: str, value):
+    if field in {"contract_address", "assignee_wallet"}:
+        return str(value or "").lower()
+    if field == "chain_id":
+        text = str(value).strip().lower()
+        try:
+            return int(text, 16 if text.startswith("0x") else 10)
+        except (TypeError, ValueError):
+            return text
+    if field in {"issue_id", "assignee_id"}:
+        return str(value or "")
+    return value
+
+
+def _has_same_identity(existing: dict, incoming: dict) -> bool:
+    event_type = str(incoming.get("event_type", ""))
+    fields = {
+        "event_type",
+        "issue_id",
+        "contract_address",
+        "chain_id",
+        *_IDEMPOTENCY_FIELDS.get(event_type, set()),
+    }
+    return all(
+        _normalize_identity(field, existing.get(field))
+        == _normalize_identity(field, incoming.get(field))
+        for field in fields
+    )
+
+
+def _apply_event_side_effects(*, event_type: str, payload: dict, slug: str, project_id) -> None:
+    """Idempotently mirror a verified event into Plane."""
+
+    if event_type == "assign_task":
+        member = ProjectMember.objects.filter(
+            workspace__slug=slug,
+            project_id=project_id,
+            member_id=payload.get("assignee_id"),
+            is_active=True,
+        ).first()
+        issue = Issue.objects.select_for_update().filter(
+            id=payload.get("issue_id"), workspace__slug=slug, project_id=project_id
+        ).first()
+        if member is None or issue is None:
+            raise ValueError("Task or employee was not found.")
+        issue.assignees.set([member.member_id])
+        return
+    if event_type == "delete_task":
+        issue = Issue.objects.select_for_update().filter(
+            id=payload.get("issue_id"), workspace__slug=slug, project_id=project_id, deleted_at__isnull=True
+        ).first()
+        if issue is not None:
+            Issue.objects.filter(parent_id=issue.id).update(parent_id=None)
+            issue.delete()
+        return
+    if event_type != "daily_report":
+        return
+    issue = Issue.objects.select_for_update().filter(
+        id=payload.get("issue_id"), workspace__slug=slug, project_id=project_id
+    ).first()
+    if issue is None:
+        raise ValueError("Task was not found.")
+    groups = (
+        ["completed"]
+        if payload["progress"] == 100
+        else ["started"]
+        if payload["progress"] > 0
+        else ["unstarted", "backlog"]
+    )
+    target_state = next(
+        (
+            State.objects.filter(project_id=project_id, group=group)
+            .order_by("sequence")
+            .first()
+            for group in groups
+            if State.objects.filter(project_id=project_id, group=group).exists()
+        ),
+        None,
+    )
+    if target_state is not None and issue.state_id != target_state.id:
+        issue.state = target_state
+        issue.save(update_fields=["state", "updated_at"])
+
+
+def _load_and_recover_pending(*, slug: str, project_id) -> list[dict]:
+    paths = {
+        _tracking_file_path(),
+        _tracking_file_path("daily_report"),
+        _tracking_file_path("assign_task"),
+        _tracking_file_path("task_content"),
+    }
+    loaded: list[dict] = []
+    for path in paths:
+        records = _read_records(path)
+        changed = False
+        for index, record in enumerate(records):
+            if (
+                record.get("persistence_status") != "pending"
+                or record.get("workspace_slug") != slug
+                or str(record.get("project_id")) != str(project_id)
+            ):
+                continue
+            try:
+                with transaction.atomic():
+                    _apply_event_side_effects(
+                        event_type=str(record.get("event_type", "")), payload=record, slug=slug, project_id=project_id
+                    )
+            except Exception:
+                logger.exception("Unable to recover blockchain transaction %s", record.get("transaction_hash"))
+                continue
+            records[index] = {**record, "persistence_status": "committed", "recovered_at": timezone.now().isoformat()}
+            changed = True
+        if changed:
+            _write_records(path, records)
+        loaded.extend(records)
+    return loaded
+
+
 class BlockchainTrackingEndpoint(BaseAPIView):
     permission_classes = [ProjectEntityPermission]
 
     def get(self, request, slug, project_id):
-        with _tracking_storage_lock():
-            records = (
-                _read_records(_tracking_file_path())
-                + _read_records(_tracking_file_path("daily_report"))
-                + _read_records(_tracking_file_path("assign_task"))
-                + _read_records(_tracking_file_path("task_content"))
+        try:
+            with _tracking_storage_lock():
+                records = _load_and_recover_pending(slug=slug, project_id=project_id)
+        except (OSError, TimeoutError):
+            logger.exception("Unable to load blockchain tracking data")
+            return Response(
+                {"error": "Blockchain tracking storage is unavailable or invalid."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         filtered = [
             record
             for record in records
-            if record.get("workspace_slug") == slug and record.get("project_id") == str(project_id)
+            if record.get("workspace_slug") == slug
+            and record.get("project_id") == str(project_id)
+            and record.get("persistence_status", "committed") == "committed"
         ]
         requested_assignee_id = request.query_params.get("assignee_id")
         if requested_assignee_id:
@@ -346,6 +510,24 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                     member.member.display_name or member.member.email or str(member.member_id)
                 )
 
+        if event_type != "create_task":
+            try:
+                with _tracking_storage_lock():
+                    creation_record = _find_creation_record(
+                        issue_id=str(payload["issue_id"]), slug=slug, project_id=project_id
+                    )
+            except (OSError, TimeoutError):
+                return Response(
+                    {"error": "Blockchain tracking storage is unavailable or invalid."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            if creation_record is not None:
+                payload["expected_on_chain_task_id"] = creation_record["on_chain_task_id"]
+
+        try:
+            payload.update(_verify_blockchain_transaction(payload))
+        except BlockchainVerificationError as exc:
+            return Response({"error": str(exc)}, status=exc.status_code)
 
         payload["workspace_slug"] = slug
         payload["project_id"] = str(project_id)
@@ -354,66 +536,50 @@ class BlockchainTrackingEndpoint(BaseAPIView):
             payload["report_id"] = str(uuid.uuid4())
 
         path = _tracking_file_path(event_type)
-        with _tracking_storage_lock():
-            transaction_hash = str(payload["transaction_hash"]).lower()
-            tracking_paths = {
-                _tracking_file_path(),
-                _tracking_file_path("daily_report"),
-                _tracking_file_path("assign_task"),
-                _tracking_file_path("task_content"),
-            }
-            existing_record = next(
-                (
-                    record
-                    for tracking_path in tracking_paths
-                    for record in _read_records(tracking_path)
-                    if str(record.get("transaction_hash", "")).lower() == transaction_hash
-                ),
-                None,
-            )
-            is_idempotent = False
-            if existing_record is not None:
-                is_idempotent = (
-                    existing_record.get("event_type") == event_type
-                    and str(existing_record.get("issue_id")) == str(payload.get("issue_id"))
-                    and existing_record.get("workspace_slug") == slug
-                    and str(existing_record.get("project_id")) == str(project_id)
-                )
-                if not is_idempotent:
-                    return Response(
-                        {"error": "Transaction hash is already linked to another blockchain event."},
-                        status=status.HTTP_409_CONFLICT,
+        transaction_hash = str(payload["transaction_hash"]).lower()
+        paths = {
+            _tracking_file_path(),
+            _tracking_file_path("daily_report"),
+            _tracking_file_path("assign_task"),
+            _tracking_file_path("task_content"),
+        }
+        is_idempotent = False
+        try:
+            with _tracking_storage_lock():
+                existing_path, existing_record = _find_existing_record(paths, transaction_hash)
+                if existing_record is not None:
+                    is_idempotent = (
+                        _has_same_identity(existing_record, payload)
+                        and existing_record.get("workspace_slug") == slug
+                        and str(existing_record.get("project_id")) == str(project_id)
                     )
-                payload = existing_record
-            else:
-                records = _read_records(path)
-                records = [payload, *records] if event_type == "daily_report" else _upsert_record(records, payload)
-                _write_records(path, records)
-
-        if is_idempotent:
-            return Response(payload, status=status.HTTP_200_OK)
-
-        if event_type == "assign_task" and assignment_member is not None and assigned_issue is not None:
-            assigned_issue.assignees.set([assignment_member.member_id])
-
-        if event_type == "daily_report" and issue is not None:
-            state_groups = (
-                ["completed"]
-                if payload["progress"] == 100
-                else ["started"]
-                if payload["progress"] > 0
-                else ["unstarted", "backlog"]
+                    if not is_idempotent:
+                        return Response(
+                            {"error": "Transaction hash is already linked to another blockchain event."},
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    payload = {**existing_record, **payload}
+                    path = existing_path or path
+                payload["persistence_status"] = "pending"
+                _write_records(path, _upsert_record(_read_records(path), payload))
+                with transaction.atomic():
+                    _apply_event_side_effects(
+                        event_type=event_type, payload=payload, slug=slug, project_id=project_id
+                    )
+                payload["persistence_status"] = "committed"
+                _write_records(path, _upsert_record(_read_records(path), payload))
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Verified blockchain event is pending Plane synchronization")
+            return Response(
+                {
+                    "error": (
+                        "The blockchain event was verified but synchronization is pending. "
+                        "Retry the same transaction hash; no new blockchain transaction is needed."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-            target_state = next(
-                (
-                    State.objects.filter(project_id=project_id, group=group).order_by("sequence").first()
-                    for group in state_groups
-                    if State.objects.filter(project_id=project_id, group=group).exists()
-                ),
-                None,
-            )
-            if target_state is not None and issue.state_id != target_state.id:
-                issue.state = target_state
-                issue.save(update_fields=["state", "updated_at"])
 
-        return Response(payload, status=status.HTTP_201_CREATED)
+        return Response(payload, status=status.HTTP_200_OK if is_idempotent else status.HTTP_201_CREATED)

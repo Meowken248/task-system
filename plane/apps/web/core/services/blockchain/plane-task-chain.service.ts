@@ -28,7 +28,8 @@ export function consumePendingAssignmentWallet(issueId: string): string | undefi
   return walletAddress;
 }
 const contractFunctions = planeTaskManagerAbi as unknown as AbiItem[];
-type InputValue = string | number;
+type InputValue = string | number | number[];
+let atomicHierarchySupport: boolean | undefined;
 type HashLike = {
   hash?: unknown;
   txHash?: unknown;
@@ -288,10 +289,19 @@ export function isOnChainTaskSyncEnabled(): boolean {
   return process.env.VITE_ONCHAIN_TASKS_ENABLED === "true" && isWalletAddress(process.env.VITE_CONTRACT_ADDRESS || "");
 }
 
+async function supportsAtomicHierarchy(): Promise<boolean> {
+  if (atomicHierarchySupport !== undefined) return atomicHierarchySupport;
+  const version = await readContract("contractVersion", {})
+    .then(readNumericResult)
+    .catch(() => null);
+  atomicHierarchySupport = version !== null && version >= 2;
+  return atomicHierarchySupport;
+}
+
 export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHash: string; assigneeWallet: string }> {
   const assignee = pendingCreateAssigneeWallet;
   pendingCreateAssigneeWallet = ZERO_ADDRESS;
-  const createdTransactionHash = await sendContractTransaction("createTask", {
+  const commonValues = {
     externalId: await hashTaskValue(`plane-issue:${issue.id}`),
     metadataHash: await hashTaskValue({
       id: issue.id,
@@ -303,7 +313,23 @@ export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHa
 
     dueAt: dueTimestamp(issue.target_date),
     priority: priorityValue(issue.priority),
-  });
+  };
+  let createdTransactionHash: string;
+  if (issue.parent_id && (await supportsAtomicHierarchy())) {
+    const parentTaskId = await getIssueTaskId(issue.parent_id);
+    createdTransactionHash = await sendContractTransaction("createChildTask", {
+      parentTaskId,
+      childExternalId: commonValues.externalId,
+      childMetadataHash: commonValues.metadataHash,
+      assignee,
+      dueAt: commonValues.dueAt,
+      priority: commonValues.priority,
+      relationshipExternalId: await hashTaskValue(`plane-sub-issue:${issue.id}`),
+      relationshipMetadataHash: commonValues.metadataHash,
+    });
+  } else {
+    createdTransactionHash = await sendContractTransaction("createTask", { ...commonValues, assignee });
+  }
   return { transactionHash: createdTransactionHash, assigneeWallet: assignee };
 }
 
@@ -317,9 +343,22 @@ export async function assignIssueByIssueIdOnChain(issueId: string, walletAddress
   return assignIssueOnChain(taskId, walletAddress);
 }
 
-export async function deleteIssueByIssueIdOnChain(issueId: string): Promise<string> {
-  const taskId = await getIssueTaskId(issueId);
-  return sendContractTransaction("deleteTask", { taskId });
+export async function deleteIssueByIssueIdOnChain(issueId: string, parentIssueId?: string | null): Promise<string> {
+  const childTaskId = await getIssueTaskId(issueId);
+  if (!parentIssueId) return sendContractTransaction("deleteTask", { taskId: childTaskId });
+  const parentTaskId = await getIssueTaskId(parentIssueId);
+  const subTaskId = readNumericResult(
+    await readContract("getSubTaskId", {
+      taskId: parentTaskId,
+      externalId: await hashTaskValue(`plane-sub-issue:${issueId}`),
+    })
+  );
+  if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
+  if (await supportsAtomicHierarchy()) {
+    return sendContractTransaction("deleteChildTask", { childTaskId, parentTaskId, subTaskId });
+  }
+  await sendContractTransaction("deleteSubTask", { taskId: parentTaskId, subTaskId });
+  return sendContractTransaction("deleteTask", { taskId: childTaskId });
 }
 
 export async function updateIssueProgressOnChain(taskId: number, progress: number): Promise<string> {
@@ -495,6 +534,13 @@ export async function createIssueSubTaskOnChain(
   subIssue: { id: string; name: string; description_html?: string | null }
 ): Promise<string> {
   const taskId = await getIssueTaskId(parentIssueId);
+  if (await supportsAtomicHierarchy()) {
+    const existing = await readContract("getSubTaskId", {
+      taskId,
+      externalId: await hashTaskValue(`plane-sub-issue:${subIssue.id}`),
+    }).catch(() => null);
+    if (readNumericResult(existing) !== null) return "";
+  }
   return sendContractTransaction("createSubTask", {
     taskId,
     externalId: await hashTaskValue(`plane-sub-issue:${subIssue.id}`),
@@ -565,14 +611,40 @@ export async function submitIssueDailyReportOnChain(
   };
   const effectiveProgress = subTaskStats.activeCount > 0 ? subTaskStats.progress : report.progress;
   onStatus?.("Đang chờ mở ví và xác nhận giao dịch...");
+  const reportValues = {
+    taskId,
+    progress: effectiveProgress,
+    workHash: await hashTaskValue(report.work),
+    difficultyHash: await hashTaskValue(report.difficulty),
+    evidenceHash: await hashTaskValue(report.evidence),
+  };
+  const useAtomicSync = ancestorIssueIds.length > 0 && (await supportsAtomicHierarchy());
+  const parentTaskIds: number[] = [];
+  const subTaskIds: number[] = [];
+  if (useAtomicSync) {
+    let childIssueId = issueId;
+    for (const parentIssueId of ancestorIssueIds) {
+      // eslint-disable-next-line no-await-in-loop
+      const parentTaskId = await getIssueTaskId(parentIssueId);
+      // eslint-disable-next-line no-await-in-loop
+      const relationshipExternalId = await hashTaskValue(`plane-sub-issue:${childIssueId}`);
+      // eslint-disable-next-line no-await-in-loop
+      const subTaskResult = await readContract("getSubTaskId", {
+        taskId: parentTaskId,
+        externalId: relationshipExternalId,
+      });
+      const subTaskId = readNumericResult(subTaskResult);
+      if (subTaskId === null) throw new Error("Không tìm thấy quan hệ task cha on-chain.");
+      parentTaskIds.push(parentTaskId);
+      subTaskIds.push(subTaskId);
+      childIssueId = parentIssueId;
+    }
+  }
   const reportTransactionHash = await withTimeout(
-    sendContractTransaction("submitDailyReport", {
-      taskId,
-      progress: effectiveProgress,
-      workHash: await hashTaskValue(report.work),
-      difficultyHash: await hashTaskValue(report.difficulty),
-      evidenceHash: await hashTaskValue(report.evidence),
-    }),
+    sendContractTransaction(
+      useAtomicSync ? "submitDailyReportAndSyncAncestors" : "submitDailyReport",
+      useAtomicSync ? { ...reportValues, parentTaskIds, subTaskIds } : reportValues
+    ),
     90_000,
     "Giao dịch báo cáo quá thời gian 90 giây. Hãy kiểm tra cửa sổ ví và thử lại."
   );
@@ -580,7 +652,7 @@ export async function submitIssueDailyReportOnChain(
   let parentSyncError: string | undefined;
   let childIssueId = issueId;
   let childProgress = effectiveProgress;
-  for (const [index, parentIssueId] of ancestorIssueIds.entries()) {
+  for (const [index, parentIssueId] of (useAtomicSync ? [] : ancestorIssueIds).entries()) {
     onStatus?.(`Báo cáo đã thành công. Đang đồng bộ tiến độ lên cấp ${index + 1}/${ancestorIssueIds.length}...`);
     try {
       // Wallet confirmations are intentionally sequential from the nearest parent to the root.

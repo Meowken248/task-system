@@ -1,6 +1,58 @@
 export const planeTaskManagerAbi = [
   {
     type: "function",
+    name: "submitDailyReportAndSyncAncestors",
+    inputs: [
+      { name: "taskId", type: "uint256" },
+      { name: "progress", type: "uint8" },
+      { name: "workHash", type: "bytes32" },
+      { name: "difficultyHash", type: "bytes32" },
+      { name: "evidenceHash", type: "bytes32" },
+      { name: "parentTaskIds", type: "uint256[]" },
+      { name: "subTaskIds", type: "uint256[]" },
+    ],
+    outputs: [{ name: "reportId", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "createChildTask",
+    inputs: [
+      { name: "parentTaskId", type: "uint256", internalType: "uint256" },
+      { name: "childExternalId", type: "bytes32", internalType: "bytes32" },
+      { name: "childMetadataHash", type: "bytes32", internalType: "bytes32" },
+      { name: "assignee", type: "address", internalType: "address" },
+      { name: "dueAt", type: "uint64", internalType: "uint64" },
+      { name: "priority", type: "uint8", internalType: "uint8" },
+      { name: "relationshipExternalId", type: "bytes32", internalType: "bytes32" },
+      { name: "relationshipMetadataHash", type: "bytes32", internalType: "bytes32" },
+    ],
+    outputs: [
+      { name: "childTaskId", type: "uint256" },
+      { name: "subTaskId", type: "uint256" },
+    ],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "contractVersion",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "pure",
+  },
+  {
+    type: "function",
+    name: "deleteChildTask",
+    inputs: [
+      { name: "childTaskId", type: "uint256", internalType: "uint256" },
+      { name: "parentTaskId", type: "uint256", internalType: "uint256" },
+      { name: "subTaskId", type: "uint256", internalType: "uint256" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
     name: "cancelTask",
     inputs: [{ name: "taskId", type: "uint256", internalType: "uint256" }],
     outputs: [],
