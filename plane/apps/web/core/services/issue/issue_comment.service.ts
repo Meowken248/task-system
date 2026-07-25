@@ -11,7 +11,7 @@ import { EIssueServiceType } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
-import { isOnChainTaskSyncEnabled, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
+import { isOnChainTaskSyncAvailable, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
 import { FileUploadService } from "@/services/file-upload.service";
 
 export class IssueCommentService extends APIService {
@@ -61,7 +61,7 @@ export class IssueCommentService extends APIService {
       .catch((error) => {
         throw error?.response?.data ?? error;
       });
-    if (!isOnChainTaskSyncEnabled() || data.external_source === "blockchain-daily-report") return comment;
+    if (!isOnChainTaskSyncAvailable() || data.external_source === "blockchain-daily-report") return comment;
 
     try {
       const { transactionHash, contentHash } = await recordIssueContentOnChain(
@@ -78,10 +78,8 @@ export class IssueCommentService extends APIService {
       });
       return comment;
     } catch (error) {
-      await this.delete(
-        `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/comments/${comment.id}/`
-      ).catch((rollbackError) => console.error("Failed to roll back comment after on-chain failure:", rollbackError));
-      throw error;
+      console.warn("Bình luận đã lưu trên Plane nhưng chưa đồng bộ on-chain.", error);
+      return comment;
     }
   }
 

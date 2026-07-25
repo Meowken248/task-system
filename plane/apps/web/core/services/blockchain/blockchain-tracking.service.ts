@@ -20,6 +20,10 @@ export type TBlockchainTrackingRecord = {
   contract_address?: string;
   chain_id?: string;
   transaction_hash?: string;
+  client_report_id?: string;
+  client_event_id?: string;
+  on_chain?: boolean;
+  verification_status?: string;
   progress?: number;
   work?: string;
   difficulty?: string;
@@ -67,7 +71,7 @@ class BlockchainTrackingService extends APIService {
   }
 
   private queueTracking(path: string, payload: Record<string, unknown>): void {
-    const id = String(payload.transaction_hash ?? "")
+    const id = String(payload.transaction_hash ?? payload.client_event_id ?? payload.client_report_id ?? "")
       .trim()
       .toLowerCase();
     if (!id) return;
@@ -75,7 +79,7 @@ class BlockchainTrackingService extends APIService {
   }
 
   private removeQueuedTracking(payload: Record<string, unknown>): void {
-    const id = String(payload.transaction_hash ?? "")
+    const id = String(payload.transaction_hash ?? payload.client_event_id ?? payload.client_report_id ?? "")
       .trim()
       .toLowerCase();
     if (!id) return;
@@ -149,6 +153,34 @@ class BlockchainTrackingService extends APIService {
       transaction_hash: payload.transactionHash,
     });
   }
+
+  async recordOfflineTaskCreation(
+    workspaceSlug: string,
+    projectId: string,
+    payload: {
+      issueId: string;
+      issueName: string;
+      parentIssueId?: string | null;
+      targetDate?: string | null;
+      priority?: string | null;
+    }
+  ): Promise<void> {
+    const clientEventId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+      event_type: "create_task",
+      issue_id: payload.issueId,
+      issue_name: payload.issueName,
+      parent_issue_id: payload.parentIssueId,
+      target_date: payload.targetDate,
+      priority: payload.priority,
+      client_event_id: clientEventId,
+      on_chain: false,
+      contract_address: process.env.VITE_CONTRACT_ADDRESS,
+    });
+  }
   async recordDailyReport(
     workspaceSlug: string,
     projectId: string,
@@ -170,6 +202,36 @@ class BlockchainTrackingService extends APIService {
       contract_address: process.env.VITE_CONTRACT_ADDRESS,
       chain_id: process.env.VITE_CHAIN_ID,
       transaction_hash: payload.transactionHash,
+      progress: payload.progress,
+      work: payload.work,
+      difficulty: payload.difficulty,
+      evidence: payload.evidence,
+    });
+  }
+
+  async recordOfflineDailyReport(
+    workspaceSlug: string,
+    projectId: string,
+    payload: {
+      issueId: string;
+      issueName: string;
+      progress: number;
+      work: string;
+      difficulty: string;
+      evidence: string;
+    }
+  ): Promise<void> {
+    const clientReportId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+      event_type: "daily_report",
+      issue_id: payload.issueId,
+      issue_name: payload.issueName,
+      client_event_id: clientReportId,
+      on_chain: false,
+      contract_address: process.env.VITE_CONTRACT_ADDRESS,
       progress: payload.progress,
       work: payload.work,
       difficulty: payload.difficulty,

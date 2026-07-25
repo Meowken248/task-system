@@ -30,7 +30,7 @@ function WorkspaceIntegrationsPage() {
 
   // derived values
   const isAdmin = allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.WORKSPACE);
-  const pageTitle = currentWorkspace?.name ? `${currentWorkspace.name} - Integrations` : undefined;
+  const pageTitle = currentWorkspace?.name ? `${currentWorkspace.name} - Import` : undefined;
   const { data: appIntegrations } = useSWR(isAdmin ? APP_INTEGRATIONS : null, () =>
     isAdmin ? integrationService.getAppIntegrationsList() : null
   );
@@ -41,7 +41,10 @@ function WorkspaceIntegrationsPage() {
     <>
       <PageHead title={pageTitle} />
       <section className="w-full overflow-y-auto">
-        <IntegrationAndImportExportBanner bannerName="Integrations" />
+        <IntegrationAndImportExportBanner
+          bannerName="Import"
+          description="Connect a supported source to import work items into Plane. Imported data is stored in Plane and does not use blockchain."
+        />
         <div>
           {appIntegrations ? (
             appIntegrations.map((integration) => (

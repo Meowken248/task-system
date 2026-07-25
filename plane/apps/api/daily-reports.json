@@ -1,5 +1,25 @@
 [
   {
+    "difficulty": "sss",
+    "work": "sss",
+    "issue_id": "455e6866-c4ff-42a7-8113-506d5222cf23",
+    "contract_address": "0x4666c9F3C96a22c343366573De361659994dA136",
+    "event_type": "daily_report",
+    "client_event_id": "5f2199d5-ecbe-458a-aa14-7511a9d2234c",
+    "issue_name": "ee",
+    "on_chain": false,
+    "evidence": "ssss",
+    "progress": 79,
+    "reporter_id": "44b84b03-e792-493e-a6b9-98e2b08c7ae8",
+    "reporter_name": "tuh225095",
+    "verification_status": "not_requested",
+    "workspace_slug": "fiai",
+    "project_id": "c063cfce-baa0-4f68-a43f-dbf30cecd3a4",
+    "recorded_at": "2026-07-22T03:44:27.231061+00:00",
+    "report_id": "5f2199d5-ecbe-458a-aa14-7511a9d2234c",
+    "persistence_status": "committed"
+  },
+  {
     "issue_id": "42c58df2-fea4-4358-a49d-ddc134ff4cdf",
     "evidence": "abc",
     "chain_id": "991",

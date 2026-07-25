@@ -15,7 +15,7 @@ import { copyUrlToClipboard } from "@plane/utils";
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useProjectState } from "@/hooks/store/use-project-state";
 import {
-  isOnChainTaskSyncEnabled,
+  isOnChainTaskSyncAvailable,
   updateIssueSubTaskStatusOnChain,
 } from "@/services/blockchain/plane-task-chain.service";
 
@@ -103,12 +103,13 @@ export const useSubIssueOperations = (issueServiceType: TIssueServiceType): TSub
           setSubIssueHelpers(parentIssueId, "issue_loader", issueId);
           if (
             issueServiceType === EIssueServiceType.ISSUES &&
-            isOnChainTaskSyncEnabled() &&
+            isOnChainTaskSyncAvailable() &&
             issueData.state_id &&
             issueData.state_id !== oldIssue.state_id
           ) {
             const stateGroup = getStateById(issueData.state_id)?.group;
-            const status = stateGroup === "completed" ? 2 : stateGroup === "started" ? 1 : stateGroup === "cancelled" ? 3 : 0;
+            const status =
+              stateGroup === "completed" ? 2 : stateGroup === "started" ? 1 : stateGroup === "cancelled" ? 3 : 0;
             await updateIssueSubTaskStatusOnChain(parentIssueId, issueId, status);
           }
           await updateSubIssue(workspaceSlug, projectId, parentIssueId, issueId, issueData, oldIssue, fromModal);

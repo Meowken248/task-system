@@ -41,7 +41,7 @@ import { useProjectState } from "@/hooks/store/use-project-state";
 import { useUserPermissions } from "@/hooks/store/user";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
-import { isOnChainTaskSyncEnabled, setPendingAssignmentWallet } from "@/services/blockchain/plane-task-chain.service";
+import { isOnChainTaskSyncAvailable, setPendingAssignmentWallet } from "@/services/blockchain/plane-task-chain.service";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 // plane web components
 // components
@@ -93,11 +93,12 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
   const pendingAssignee = pendingAssigneeId ? getUserDetails(pendingAssigneeId) : undefined;
 
   const handleAssigneeChange = async (assigneeIds: string[]) => {
-    if (!isOnChainTaskSyncEnabled()) {
+    if (!isOnChainTaskSyncAvailable()) {
+      await issueOperations.update(workspaceSlug, projectId, issueId, { assignee_ids: assigneeIds.slice(-1) });
       setToast({
-        type: TOAST_TYPE.ERROR,
-        title: "On-chain chưa được cấu hình",
-        message: "Không thể giao task khi kết nối hợp đồng MetaNode chưa sẵn sàng.",
+        type: TOAST_TYPE.SUCCESS,
+        title: "Đã giao task trên Plane",
+        message: "Blockchain chưa sẵn sàng nên lần giao task này không được ghi on-chain.",
       });
       return;
     }
@@ -141,13 +142,30 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
       setToast({
         type: TOAST_TYPE.SUCCESS,
         title: "Giao task thành công",
-        message: `Đã cập nhật nhân viên trên Plane và hợp đồng on-chain.`,
+        message: "Đã cập nhật nhân viên trên Plane; hệ thống đã thử đồng bộ on-chain.",
       });
     } catch (error) {
       setToast({
         type: TOAST_TYPE.ERROR,
         title: "Không thể giao task",
         message: error instanceof Error ? error.message : "Giao dịch on-chain thất bại.",
+      });
+    } finally {
+      setIsAssigningOnChain(false);
+    }
+  };
+
+  const confirmLocalAssignment = async () => {
+    if (!pendingAssigneeId) return;
+    setIsAssigningOnChain(true);
+    try {
+      await issueOperations.update(workspaceSlug, projectId, issueId, { assignee_ids: [pendingAssigneeId] });
+      await issueOperations.fetch(workspaceSlug, projectId, issueId, true);
+      setPendingAssigneeIds(null);
+      setToast({
+        type: TOAST_TYPE.SUCCESS,
+        title: "Đã giao task trên Plane",
+        message: "Lần giao task này không được ghi on-chain.",
       });
     } finally {
       setIsAssigningOnChain(false);
@@ -388,6 +406,14 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                 </div>
               )}
               <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={isAssigningOnChain}
+                  onClick={() => void confirmLocalAssignment()}
+                  className="text-sm rounded-md border border-subtle-1 px-3 py-2 text-secondary hover:bg-surface-2 disabled:opacity-50"
+                >
+                  Giao không on-chain
+                </button>
                 <button
                   type="button"
                   disabled={isAssigningOnChain}

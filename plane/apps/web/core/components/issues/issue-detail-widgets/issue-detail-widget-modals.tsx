@@ -12,7 +12,7 @@ import type { ISearchIssueResponse, TIssue, TIssueServiceType, TWorkItemWidgets 
 import { ExistingIssuesListModal } from "@/components/core/modals/existing-issues-list-modal";
 // hooks
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
-import { createIssueSubTaskOnChain, isOnChainTaskSyncEnabled } from "@/services/blockchain/plane-task-chain.service";
+import { createIssueSubTaskOnChain, isOnChainTaskSyncAvailable } from "@/services/blockchain/plane-task-chain.service";
 // plane web imports
 import { WorkItemAdditionalWidgetModals } from "@/plane-web/components/issues/issue-detail-widgets/modals";
 // local imports
@@ -78,11 +78,13 @@ export const IssueDetailWidgetModals = observer(function IssueDetailWidgetModals
   };
 
   const handleExistingIssuesModalOnSubmit = async (_issue: ISearchIssueResponse[]) => {
-    if (isOnChainTaskSyncEnabled()) {
+    if (isOnChainTaskSyncAvailable()) {
       for (const subIssue of _issue) {
         // Wallet confirmations must be sequential so dialogs do not overlap.
         // eslint-disable-next-line no-await-in-loop
-        await createIssueSubTaskOnChain(issueId, { id: subIssue.id, name: subIssue.name });
+        await createIssueSubTaskOnChain(issueId, { id: subIssue.id, name: subIssue.name }).catch((error) =>
+          console.warn("Task con vẫn được liên kết trên Plane nhưng chưa đồng bộ on-chain.", error)
+        );
       }
     }
     await subIssueOperations.addSubIssue(
@@ -101,7 +103,11 @@ export const IssueDetailWidgetModals = observer(function IssueDetailWidgetModals
 
   const handleCreateUpdateModalOnSubmit = async (_issue: TIssue) => {
     if (_issue.parent_id) {
-      if (isOnChainTaskSyncEnabled()) await createIssueSubTaskOnChain(_issue.parent_id, _issue);
+      if (isOnChainTaskSyncAvailable()) {
+        await createIssueSubTaskOnChain(_issue.parent_id, _issue).catch((error) =>
+          console.warn("Task con vẫn được tạo trên Plane nhưng chưa đồng bộ on-chain.", error)
+        );
+      }
       await subIssueOperations.addSubIssue(workspaceSlug, projectId, _issue.parent_id, [_issue.id]);
     }
   };

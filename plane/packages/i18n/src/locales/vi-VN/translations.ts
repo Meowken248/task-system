@@ -16,6 +16,7 @@ export default {
     views: "Chế độ xem",
     analytics: "Phân tích",
     work_items: "Mục công việc",
+    work_item_types: "Loại mục công việc",
     cycles: "Chu kỳ",
     modules: "Mô-đun",
     intake: "Thu thập",

@@ -529,6 +529,7 @@ export default {
     epics: "Epics",
     work_item: "Work item",
     work_items: "Work items",
+    work_item_types: "Work item types",
     sub_work_item: "Sub-work item",
     add: "Add",
     warning: "Warning",

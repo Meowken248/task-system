@@ -72,6 +72,20 @@ export const PROJECT_SETTINGS: Record<TProjectSettingsTabs, TProjectSettingsItem
     access: [EUserProjectRoles.ADMIN],
     highlight: (pathname: string, baseUrl: string) => pathname === `${baseUrl}/features/intake/`,
   },
+  epics: {
+    key: "epics",
+    i18n_label: "common.epics",
+    href: `/epics`,
+    access: [EUserProjectRoles.ADMIN],
+    highlight: (pathname: string, baseUrl: string) => pathname === `${baseUrl}/epics/`,
+  },
+  work_item_types: {
+    key: "work_item_types",
+    i18n_label: "common.work_item_types",
+    href: `/work-item-types`,
+    access: [EUserProjectRoles.ADMIN],
+    highlight: (pathname: string, baseUrl: string) => pathname === `${baseUrl}/work-item-types/`,
+  },
   states: {
     key: "states",
     i18n_label: "common.states",
@@ -114,6 +128,8 @@ export const GROUPED_PROJECT_SETTINGS: Record<PROJECT_SETTINGS_CATEGORY, TProjec
     PROJECT_SETTINGS["features_intake"],
   ],
   [PROJECT_SETTINGS_CATEGORY.WORK_STRUCTURE]: [
+    PROJECT_SETTINGS["epics"],
+    PROJECT_SETTINGS["work_item_types"],
     PROJECT_SETTINGS["states"],
     PROJECT_SETTINGS["labels"],
     PROJECT_SETTINGS["estimates"],

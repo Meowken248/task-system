@@ -41,6 +41,9 @@ import type { TIssueOperations } from "./root";
 // services init
 const workItemVersionService = new WorkItemVersionService();
 
+const escapeCommentHtml = (value: string) =>
+  value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+
 type Props = {
   workspaceSlug: string;
   projectId: string;
@@ -209,7 +212,7 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
         issueId={issueId}
         issueName={issue.name}
         ancestorIssueIds={ancestorIssueIds}
-        onReportRecorded={async ({ progress, transactionHash, recordedAt }) => {
+        onReportRecorded={async ({ progress, transactionHash, recordedAt, work, difficulty, evidence }) => {
           const date = new Intl.DateTimeFormat("vi-VN", {
             day: "2-digit",
             month: "2-digit",
@@ -223,8 +226,18 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
             hour12: false,
             timeZone: "Asia/Ho_Chi_Minh",
           }).format(recordedAt);
+          const transactionText = transactionHash
+            ? ` Transaction: <code>${transactionHash}</code>`
+            : " Báo cáo này được lưu trên Plane và chưa đồng bộ on-chain.";
+          const reportDetails = [
+            work && `<p><strong>Hôm nay làm gì:</strong> ${escapeCommentHtml(work)}</p>`,
+            difficulty && `<p><strong>Khó khăn:</strong> ${escapeCommentHtml(difficulty)}</p>`,
+            evidence && `<p><strong>Evidence:</strong> ${escapeCommentHtml(evidence)}</p>`,
+          ]
+            .filter(Boolean)
+            .join("");
           await createComment(workspaceSlug, projectId, issueId, {
-            comment_html: `<p>Báo cáo ngày thành công lúc <strong>${time}</strong>, ngày <strong>${date}</strong>. Tiến độ: <strong>${progress}%</strong>. Transaction: <code>${transactionHash}</code></p>`,
+            comment_html: `<p>Báo cáo ngày thành công lúc <strong>${time}</strong>, ngày <strong>${date}</strong>. Tiến độ: <strong>${progress}%</strong>.${transactionText}</p>${reportDetails}`,
             external_source: "blockchain-daily-report",
           });
         }}

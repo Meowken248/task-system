@@ -51,7 +51,7 @@ import { IssueTypeSelect, WorkItemTemplateSelect } from "@/plane-web/components/
 import { WorkItemModalAdditionalProperties } from "@/plane-web/components/issues/issue-modal/modal-additional-properties";
 import { useDebouncedDuplicateIssues } from "@/plane-web/hooks/use-debounced-duplicate-issues";
 import {
-  isOnChainTaskSyncEnabled,
+  isOnChainTaskSyncAvailable,
   setPendingCreateAssigneeWallet,
 } from "@/services/blockchain/plane-task-chain.service";
 import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
@@ -263,17 +263,10 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
       formData = { ...formData, assignee_ids: [currentUser.id] };
     }
 
-    if (!data?.id && !is_draft_issue && isOnChainTaskSyncEnabled()) {
+    if (!data?.id && !is_draft_issue && isOnChainTaskSyncAvailable()) {
       const adminWallet = process.env.VITE_METANODE_WALLET_ADDRESS || "";
-      if (!isWalletAddress(adminWallet)) {
-        setToast({
-          type: TOAST_TYPE.ERROR,
-          title: "Ví MetaNode của admin không hợp lệ",
-          message: "Hãy cấu hình VITE_METANODE_WALLET_ADDRESS trước khi tạo task.",
-        });
-        return;
-      }
-      setPendingCreateAssigneeWallet(adminWallet);
+      // A missing/invalid wallet must not block the normal Plane workflow.
+      if (isWalletAddress(adminWallet)) setPendingCreateAssigneeWallet(adminWallet);
     }
     const submitData = !data?.id
       ? formData
@@ -592,11 +585,7 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
                         loading={isSubmitting}
                         disabled={isDisabled}
                       >
-                        {isSubmitting && !data?.id && isOnChainTaskSyncEnabled()
-                          ? "Đang chờ xác nhận ví và hash on-chain..."
-                          : isSubmitting
-                            ? primaryButtonText.loading
-                            : primaryButtonText.default}
+                        {isSubmitting ? primaryButtonText.loading : primaryButtonText.default}
                       </Button>
                     </div>
 

@@ -46,6 +46,9 @@ _ALLOWED_FIELDS = {
     "contract_address",
     "chain_id",
     "transaction_hash",
+    "client_report_id",
+    "client_event_id",
+    "on_chain",
     "event_type",
     "progress",
     "work",
@@ -158,12 +161,27 @@ def _write_records(path: Path, records: list[dict]) -> None:
 
 
 def _upsert_record(records: list[dict], payload: dict) -> list[dict]:
-    transaction_hash = str(payload["transaction_hash"]).lower()
+    transaction_hash = str(payload.get("transaction_hash", "")).lower()
+    client_event_id = str(
+        payload.get("client_event_id") or payload.get("client_report_id") or ""
+    )
     existing_index = next(
         (
             index
             for index, record in enumerate(records)
-            if str(record.get("transaction_hash", "")).lower() == transaction_hash
+            if (
+                transaction_hash
+                and str(record.get("transaction_hash", "")).lower() == transaction_hash
+            )
+            or (
+                client_event_id
+                and str(
+                    record.get("client_event_id")
+                    or record.get("client_report_id")
+                    or ""
+                )
+                == client_event_id
+            )
         ),
         None,
     )
@@ -411,7 +429,16 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        is_off_chain_event = (
+            event_type in {"create_task", "daily_report"}
+            and payload.get("on_chain") is False
+        )
+        is_off_chain_report = event_type == "daily_report" and is_off_chain_event
         required_fields = _REQUIRED_FIELDS | _EVENT_REQUIRED_FIELDS.get(event_type, set())
+        if is_off_chain_event:
+            required_fields = {"event_type", "issue_id", "client_event_id"}
+            if is_off_chain_report:
+                required_fields.add("progress")
         missing = [
             key
             for key in required_fields
@@ -422,7 +449,9 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                 {"error": f"Missing required fields: {', '.join(sorted(missing))}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not re.fullmatch(r"0x[a-fA-F0-9]{64}", str(payload["transaction_hash"])):
+        if not is_off_chain_event and not re.fullmatch(
+            r"0x[a-fA-F0-9]{64}", str(payload["transaction_hash"])
+        ):
             return Response(
                 {"error": "Transaction hash must be a 32-byte 0x-prefixed hexadecimal value."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -531,7 +560,7 @@ class BlockchainTrackingEndpoint(BaseAPIView):
                     member.member.display_name or member.member.email or str(member.member_id)
                 )
 
-        if event_type != "create_task":
+        if event_type != "create_task" and not is_off_chain_event:
             try:
                 with _tracking_storage_lock():
                     creation_record = _find_creation_record(
@@ -545,19 +574,25 @@ class BlockchainTrackingEndpoint(BaseAPIView):
             if creation_record is not None:
                 payload["expected_on_chain_task_id"] = creation_record["on_chain_task_id"]
 
-        try:
-            payload.update(_verify_blockchain_transaction(payload))
-        except BlockchainVerificationError as exc:
-            return Response({"error": str(exc)}, status=exc.status_code)
+        if is_off_chain_event:
+            payload["on_chain"] = False
+            payload["verification_status"] = "not_requested"
+        else:
+            try:
+                payload.update(_verify_blockchain_transaction(payload))
+            except BlockchainVerificationError as exc:
+                return Response({"error": str(exc)}, status=exc.status_code)
 
         payload["workspace_slug"] = slug
         payload["project_id"] = str(project_id)
         payload["recorded_at"] = timezone.now().isoformat()
         if event_type == "daily_report":
-            payload["report_id"] = str(uuid.uuid4())
+            payload["report_id"] = (
+                str(payload["client_event_id"]) if is_off_chain_report else str(uuid.uuid4())
+            )
 
         path = _tracking_file_path(event_type)
-        transaction_hash = str(payload["transaction_hash"]).lower()
+        transaction_hash = str(payload.get("transaction_hash", "")).lower()
         paths = {
             _tracking_file_path(),
             _tracking_file_path("daily_report"),
@@ -567,7 +602,24 @@ class BlockchainTrackingEndpoint(BaseAPIView):
         is_idempotent = False
         try:
             with _tracking_storage_lock():
-                existing_path, existing_record = _find_existing_record(paths, transaction_hash)
+                existing_path, existing_record = (None, None)
+                if transaction_hash:
+                    existing_path, existing_record = _find_existing_record(paths, transaction_hash)
+                elif is_off_chain_event:
+                    existing_record = next(
+                        (
+                            record
+                            for record in _read_records(path)
+                            if (
+                                record.get("client_event_id")
+                                or record.get("client_report_id")
+                            )
+                            == payload.get("client_event_id")
+                        ),
+                        None,
+                    )
+                    if existing_record is not None:
+                        existing_path = path
                 if existing_record is not None:
                     is_idempotent = (
                         _has_same_identity(existing_record, payload)

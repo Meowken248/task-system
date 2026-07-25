@@ -29,7 +29,7 @@ import {
   createIssueOnChain,
   deleteIssueByIssueIdOnChain,
   getIssueSubTaskStats,
-  isOnChainTaskSyncEnabled,
+  isOnChainTaskSyncAvailable,
   issueExistsOnChain,
   updateIssueMetadataByIssueIdOnChain,
   updateIssueProgressByIssueIdOnChain,
@@ -120,7 +120,24 @@ export class IssueService extends APIService {
       throw error?.response?.data ?? error;
     }
 
-    if (!isOnChainTaskSyncEnabled()) return issue;
+    const recordOfflineCreation = async () => {
+      try {
+        await blockchainTrackingService.recordOfflineTaskCreation(workspaceSlug, projectId, {
+          issueId: issue.id,
+          issueName: issue.name,
+          parentIssueId: issue.parent_id,
+          targetDate: issue.target_date,
+          priority: issue.priority,
+        });
+      } catch (trackingError) {
+        console.warn("Task đã được tạo trên Plane nhưng chưa ghi được dữ liệu Dashboard.", trackingError);
+      }
+    };
+
+    if (!isOnChainTaskSyncAvailable()) {
+      await recordOfflineCreation();
+      return issue;
+    }
 
     let transactionHash: string;
     let assigneeWallet: string;
@@ -131,28 +148,9 @@ export class IssueService extends APIService {
     } catch (chainError) {
       const message =
         chainError instanceof Error ? chainError.message : "Giao dịch blockchain đã bị hủy hoặc thất bại.";
-      if (/giao dịch đã được gửi nhưng/i.test(message)) {
-        console.error(
-          "Blockchain may have accepted the task, so the Plane task is kept for reconciliation:",
-          chainError
-        );
-        throw {
-          error: `Không xác định được hash giao dịch. Task Plane được giữ lại để tránh xóa nhầm task có thể đã lên chain. ${message}`,
-          cause: chainError,
-        };
-      }
-
-      console.error("On-chain task creation failed before submission. Rolling back the Plane task:", chainError);
-      try {
-        await this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issue.id}/`);
-      } catch (rollbackError) {
-        console.error("Failed to roll back the Plane task after the blockchain error:", rollbackError);
-        throw {
-          error: "Giao dịch blockchain thất bại và không thể tự xóa task tạm. Hãy xóa task này thủ công.",
-          cause: chainError,
-        };
-      }
-      throw { error: `Không tạo task: ${message}`, cause: chainError };
+      console.warn(`Task đã được tạo trên Plane nhưng chưa đồng bộ on-chain: ${message}`, chainError);
+      await recordOfflineCreation();
+      return issue;
     }
 
     try {
@@ -362,60 +360,72 @@ export class IssueService extends APIService {
   async patchIssue(workspaceSlug: string, projectId: string, issueId: string, data: Partial<TIssue>): Promise<any> {
     if ("start_date" in data) assertStartDateIsNotInPast(data.start_date);
 
-    if (isOnChainTaskSyncEnabled()) {
-      const metadataFields = [
-        "name",
-        "description_html",
-        "description_json",
-        "description_stripped",
-        "description_binary",
-      ];
-      const needsCurrentIssue =
-        Boolean(data.state_id) ||
-        "priority" in data ||
-        "target_date" in data ||
-        metadataFields.some((field) => field in data);
-      const currentIssue = needsCurrentIssue ? await this.retrieve(workspaceSlug, projectId, issueId) : undefined;
+    if (isOnChainTaskSyncAvailable()) {
+      try {
+        const metadataFields = [
+          "name",
+          "description_html",
+          "description_json",
+          "description_stripped",
+          "description_binary",
+        ];
+        const needsCurrentIssue =
+          Boolean(data.state_id) ||
+          "priority" in data ||
+          "target_date" in data ||
+          metadataFields.some((field) => field in data);
+        const currentIssue = needsCurrentIssue ? await this.retrieve(workspaceSlug, projectId, issueId) : undefined;
 
-      if (data.state_id && currentIssue) {
-        await this.syncIssueStateOnChain(workspaceSlug, projectId, issueId, data.state_id, currentIssue);
-      }
+        if (data.state_id && currentIssue) {
+          await this.syncIssueStateOnChain(workspaceSlug, projectId, issueId, data.state_id, currentIssue);
+        }
 
-      if (("priority" in data || "target_date" in data) && currentIssue) {
-        const updatedIssue = { ...currentIssue, ...data } as TIssue;
-        await updateIssueScheduleByIssueIdOnChain(issueId, updatedIssue.target_date, updatedIssue.priority);
-      }
+        if (("priority" in data || "target_date" in data) && currentIssue) {
+          const updatedIssue = { ...currentIssue, ...data } as TIssue;
+          await updateIssueScheduleByIssueIdOnChain(issueId, updatedIssue.target_date, updatedIssue.priority);
+        }
 
-      if (metadataFields.some((field) => field in data) && currentIssue) {
-        await updateIssueMetadataByIssueIdOnChain({ ...currentIssue, ...data } as TIssue);
+        if (metadataFields.some((field) => field in data) && currentIssue) {
+          await updateIssueMetadataByIssueIdOnChain({ ...currentIssue, ...data } as TIssue);
+        }
+      } catch (chainError) {
+        console.warn("Không đồng bộ được thay đổi task lên blockchain; vẫn tiếp tục cập nhật Plane.", chainError);
       }
     }
 
-    if (isOnChainTaskSyncEnabled() && data.assignee_ids) {
+    if (isOnChainTaskSyncAvailable() && data.assignee_ids) {
       const assigneeId = data.assignee_ids.at(-1);
-      if (!assigneeId) throw { error: "Task phải có một nhân viên phụ trách." };
+      if (!assigneeId) {
+        return this.patch(
+          `/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/`,
+          data
+        )
+          .then((response) => response?.data)
+          .catch((error) => {
+            throw error?.response?.data;
+          });
+      }
       const storedWallet = await blockchainTrackingService
         .getStoredAssigneeWallet(workspaceSlug, projectId, assigneeId)
         .catch(() => "");
       const assigneeWallet = consumePendingAssignmentWallet(issueId) || storedWallet;
-      if (!isWalletAddress(assigneeWallet)) {
-        throw { error: "Chưa có địa chỉ ví MetaNode hợp lệ của nhân viên. Hãy nhập ví trước khi giao task." };
+      if (isWalletAddress(assigneeWallet)) {
+        try {
+          const issueBeforeAssignment = await this.retrieve(workspaceSlug, projectId, issueId);
+          const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet);
+          await blockchainTrackingService.recordTaskAssignment(workspaceSlug, projectId, {
+            issueId,
+            issueName: issueBeforeAssignment.name || issueId,
+            transactionHash,
+            assigneeWallet,
+            assigneeId,
+            assigneeName: "",
+          });
+          return this.retrieve(workspaceSlug, projectId, issueId);
+        } catch (chainError) {
+          console.warn("Không giao task được on-chain; chuyển sang giao task trên Plane.", chainError);
+        }
       }
-
-      const issueBeforeAssignment = await this.retrieve(workspaceSlug, projectId, issueId);
-      const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet);
-      await blockchainTrackingService.recordTaskAssignment(workspaceSlug, projectId, {
-        issueId,
-        issueName: issueBeforeAssignment.name || issueId,
-        transactionHash,
-        assigneeWallet,
-        assigneeId,
-        assigneeName: "",
-      });
-      // The verified tracking endpoint applies the assignment to Plane in the
-      // same synchronization workflow. Fetch that committed state instead of
-      // PATCHing the assignee a second time and producing duplicate activity.
-      return this.retrieve(workspaceSlug, projectId, issueId);
     }
     return this.patch(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/`, data)
       .then((response) => response?.data)
@@ -424,7 +434,7 @@ export class IssueService extends APIService {
       });
   }
   async deleteIssue(workspaceSlug: string, projectId: string, issuesId: string): Promise<any> {
-    if (!isOnChainTaskSyncEnabled()) {
+    if (!isOnChainTaskSyncAvailable()) {
       return this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`)
         .then((response) => response?.data)
         .catch((error) => {
@@ -432,30 +442,21 @@ export class IssueService extends APIService {
         });
     }
 
-    const issue = await this.retrieve(workspaceSlug, projectId, issuesId);
-    const existsOnCurrentContract = await issueExistsOnChain(issuesId);
+    try {
+      const issue = await this.retrieve(workspaceSlug, projectId, issuesId);
+      const existsOnCurrentContract = await issueExistsOnChain(issuesId);
 
-    if (existsOnCurrentContract) {
-      const transactionHash = await deleteIssueByIssueIdOnChain(issuesId, issue.parent_id);
-      try {
+      if (existsOnCurrentContract) {
+        const transactionHash = await deleteIssueByIssueIdOnChain(issuesId, issue.parent_id);
         await blockchainTrackingService.recordTaskDeletion(workspaceSlug, projectId, {
           issueId: issuesId,
           issueName: issue.name,
           transactionHash,
         });
-      } catch (trackingError) {
-        console.error("Task đã xóa on-chain nhưng chưa ghi được bản theo dõi xóa:", trackingError);
-        throw {
-          error:
-            "Task đã xóa on-chain nhưng đang chờ backend đồng bộ. Hãy tải lại trang để hệ thống tự thử lại, không ký thêm giao dịch.",
-          cause: trackingError,
-        };
+        return { id: issuesId, deleted: true };
       }
-
-      // The verified tracking endpoint deletes the Plane issue inside its database
-      // transaction. Calling the regular delete endpoint again would turn a
-      // successful deletion into a misleading 404/error in the UI.
-      return { id: issuesId, deleted: true };
+    } catch (chainError) {
+      console.warn("Không xóa được task on-chain; vẫn tiếp tục xóa task trên Plane.", chainError);
     }
 
     return this.delete(`/api/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issuesId}/`).then(

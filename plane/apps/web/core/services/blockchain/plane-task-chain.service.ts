@@ -183,6 +183,10 @@ function isNonceError(error: unknown): boolean {
   );
 }
 
+function isConfirmationTimeoutError(error: unknown): boolean {
+  return /transaction not confirmed|confirmation.*timed out|\b408\b/i.test(blockchainErrorMessage(error));
+}
+
 async function sendContractTransactionNow(functionName: string, values: Record<string, InputValue>): Promise<string> {
   if (
     typeof window !== "undefined" &&
@@ -232,14 +236,23 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
   };
 
   let result: unknown;
+  let confirmationTimeoutError: unknown = null;
   try {
     result = await sendWithWalletRecovery();
   } catch (error) {
     const message = blockchainErrorMessage(error);
-    if (!/failed to decrypt payload/i.test(message)) throw new Error(message, { cause: error });
-    bridge = await resetFiaiSDK();
-    if (!bridge) throw new Error("Không thể tạo lại phiên bảo mật với Crypto Vault.", { cause: error });
-    result = await sendWithWalletRecovery();
+    if (/failed to decrypt payload/i.test(message)) {
+      bridge = await resetFiaiSDK();
+      if (!bridge) throw new Error("Không thể tạo lại phiên bảo mật với Crypto Vault.", { cause: error });
+      result = await sendWithWalletRecovery();
+    } else if (isConfirmationTimeoutError(error)) {
+      // Blockchain Bridge can report its short confirmation timeout even after
+      // the wallet has broadcast the transaction. Do not discard a valid send:
+      // poll Crypto Vault's lastHash below before reporting a failure.
+      confirmationTimeoutError = error;
+    } else {
+      throw new Error(message, { cause: error });
+    }
   }
   let hash = transactionHash(result);
   if (hash === hashBeforeSend) hash = null;
@@ -262,6 +275,12 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
     if (walletHash && walletHash !== hashBeforeSend) hash = walletHash;
   }
   if (!hash) {
+    if (confirmationTimeoutError) {
+      throw new Error(
+        `Blockchain Bridge chưa xác nhận giao dịch sau ${Math.round(hashWaitTimeout / 1000)} giây và Crypto Vault không trả hash mới. Vui lòng kiểm tra lịch sử ví trước khi gửi lại.`,
+        { cause: confirmationTimeoutError }
+      );
+    }
     throw new Error(
       `Giao dịch đã được gửi nhưng Crypto Vault chưa trả transaction hash mới sau ${Math.round(hashWaitTimeout / 1000)} giây. Dữ liệu chưa được ghi để tránh dùng nhầm hash cũ.`
     );
@@ -287,6 +306,14 @@ async function sendContractTransaction(functionName: string, values: Record<stri
 }
 export function isOnChainTaskSyncEnabled(): boolean {
   return process.env.VITE_ONCHAIN_TASKS_ENABLED === "true" && isWalletAddress(process.env.VITE_CONTRACT_ADDRESS || "");
+}
+
+export function isOnChainTaskSyncAvailable(): boolean {
+  if (!isOnChainTaskSyncEnabled()) return false;
+
+  // MetaNode relies on secure browser APIs. Plain HTTP is only considered a
+  // secure context on localhost; a LAN IP such as http://192.168.x.x is not.
+  return typeof window === "undefined" || window.isSecureContext;
 }
 
 async function supportsAtomicHierarchy(): Promise<boolean> {
@@ -684,12 +711,12 @@ export async function recordIssueContentOnChain(
 ): Promise<{ transactionHash: string; contentHash: string }> {
   const taskId = await getIssueTaskId(issueId);
   const contentHash = await hashTaskValue(content);
-  const transactionHash = await sendContractTransaction("recordTaskContent", {
+  const contentTransactionHash = await sendContractTransaction("recordTaskContent", {
     taskId,
     kind,
     contentHash,
   });
-  return { transactionHash, contentHash };
+  return { transactionHash: contentTransactionHash, contentHash };
 }
 export type OnChainKPI = {
   total: number;

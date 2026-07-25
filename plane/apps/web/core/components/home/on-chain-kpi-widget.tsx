@@ -589,6 +589,11 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                           <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">
                             Tiến độ {report.progress ?? 0}%
                           </span>
+                          {report.on_chain === false && (
+                            <span className="rounded-md bg-layer-2 px-2 py-1 text-10 font-medium text-secondary">
+                              Lưu nội bộ
+                            </span>
+                          )}
                         </div>
                         <dl className="mt-3 space-y-2 text-11">
                           <div>
@@ -617,12 +622,14 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                             <dt className="text-tertiary">Evidence</dt>
                             <dd className="mt-0.5 break-all text-primary">{report.evidence || "Không có"}</dd>
                           </div>
-                          <div>
-                            <dt className="text-tertiary">Transaction hash</dt>
-                            <dd className="font-mono mt-0.5 text-primary" title={report.transaction_hash}>
-                              {shortHash(report.transaction_hash)}
-                            </dd>
-                          </div>
+                          {report.transaction_hash && (
+                            <div>
+                              <dt className="text-tertiary">Transaction hash</dt>
+                              <dd className="font-mono mt-0.5 text-primary" title={report.transaction_hash}>
+                                {shortHash(report.transaction_hash)}
+                              </dd>
+                            </div>
+                          )}
                         </dl>
                       </article>
                     ))}
