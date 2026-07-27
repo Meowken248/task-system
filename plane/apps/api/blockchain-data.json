@@ -1,1 +1,18 @@
-[]
+[
+  {
+    "priority": "none",
+    "target_date": "2026-07-31",
+    "client_event_id": "8ee3b53c-fa00-490d-8a4c-6d60912bbef2",
+    "issue_id": "c760a581-5d42-4d8d-9ec6-a18f3c6e55d6",
+    "on_chain": false,
+    "parent_issue_id": null,
+    "contract_address": "0x4F0C9476448eA51244A9B5FD602BF6DF688B67Bf",
+    "issue_name": "ABC",
+    "event_type": "create_task",
+    "verification_status": "not_requested",
+    "workspace_slug": "fiai",
+    "project_id": "d977d974-e768-411a-9889-b32625b6ad6e",
+    "recorded_at": "2026-07-27T02:40:19.546007+00:00",
+    "persistence_status": "committed"
+  }
+]

@@ -1,1 +1,22 @@
-[]
+[
+  {
+    "work": "dddd",
+    "progress": 63,
+    "evidence": "dd",
+    "client_event_id": "bf67d93e-040f-4c10-82aa-d9c0cd448b4e",
+    "issue_id": "c760a581-5d42-4d8d-9ec6-a18f3c6e55d6",
+    "difficulty": "dddd",
+    "on_chain": false,
+    "contract_address": "0x4F0C9476448eA51244A9B5FD602BF6DF688B67Bf",
+    "issue_name": "ABC",
+    "event_type": "daily_report",
+    "reporter_id": "6ce6f3b9-9113-46e0-a348-c5d3dd9786ef",
+    "reporter_name": "tuh225095",
+    "verification_status": "not_requested",
+    "workspace_slug": "fiai",
+    "project_id": "d977d974-e768-411a-9889-b32625b6ad6e",
+    "recorded_at": "2026-07-27T02:41:19.586223+00:00",
+    "report_id": "bf67d93e-040f-4c10-82aa-d9c0cd448b4e",
+    "persistence_status": "committed"
+  }
+]
