@@ -1,4 +1,5 @@
 import { getFiaiSDK, initFiaiSDK } from "./fiai-sdk.service";
+import { UserService } from "@/services/user.service";
 
 type WalletLike = { address?: unknown };
 type ConnectWallet = (mode: "light") => Promise<unknown> | unknown;
@@ -6,6 +7,32 @@ type ConnectWallet = (mode: "light") => Promise<unknown> | unknown;
 let connectWalletFn: ConnectWallet | null = null;
 let systemCorePromise: Promise<ConnectWallet> | null = null;
 let connectWalletPopup: Window | null = null;
+let currentPlaneUserId: string | null = null;
+let linkedWalletAddress: string | null = null;
+const userService = new UserService();
+
+function walletStorageKey(userId: string): string {
+  return `plane:metanode-wallet:${userId}`;
+}
+
+export function configureMetanodeWalletUser(userId?: string, walletAddress?: string | null): void {
+  currentPlaneUserId = userId || null;
+  if (!currentPlaneUserId || typeof window === "undefined") {
+    linkedWalletAddress = null;
+    return;
+  }
+  const serverAddress = walletAddress?.trim() || "";
+  const localAddress = window.localStorage.getItem(walletStorageKey(currentPlaneUserId))?.trim() || "";
+  linkedWalletAddress = isWalletAddress(serverAddress)
+    ? normalizeWalletAddress(serverAddress)
+    : isWalletAddress(localAddress)
+      ? normalizeWalletAddress(localAddress)
+      : null;
+}
+
+export function getLinkedMetanodeWalletAddress(): string | null {
+  return linkedWalletAddress;
+}
 export function isMetanodeWalletRuntimeSupported(): boolean {
   return typeof window !== "undefined" && window.isSecureContext && "serviceWorker" in navigator;
 }
@@ -23,6 +50,11 @@ function openConnectWalletPage(): void {
 
 export function isWalletAddress(value: string): boolean {
   return /^(0x)?[a-fA-F0-9]{40}$/.test(value.trim());
+}
+
+function normalizeWalletAddress(value: string): string {
+  const trimmed = value.trim();
+  return `${trimmed.toLowerCase().startsWith("0x") ? "" : "0x"}${trimmed}`.toLowerCase();
 }
 
 function readAddress(value: unknown): string | null {
@@ -51,6 +83,51 @@ async function getWallets(): Promise<unknown[]> {
   const sdk = (await initFiaiSDK()) ?? getFiaiSDK();
   if (!sdk) throw new Error("FiaiSDK is not available.");
   return readWallets(await sdk.request<unknown>("getAllWallets", {}));
+}
+
+async function getActiveWalletAddress(): Promise<string | null> {
+  const sdk = (await initFiaiSDK()) ?? getFiaiSDK();
+  if (!sdk) return null;
+  return readAddress(await sdk.request<unknown>("getActiveWallet", {}).catch(() => null));
+}
+
+async function persistLinkedWallet(address: string): Promise<void> {
+  if (!currentPlaneUserId) throw new Error("Hãy đăng nhập Plane trước khi kết nối ví MetaNode.");
+  const normalizedAddress = normalizeWalletAddress(address);
+  linkedWalletAddress = normalizedAddress;
+  window.localStorage.setItem(walletStorageKey(currentPlaneUserId), normalizedAddress);
+  try {
+    await userService.updateUser({ metanode_wallet_address: normalizedAddress });
+  } catch (error) {
+    linkedWalletAddress = null;
+    window.localStorage.removeItem(walletStorageKey(currentPlaneUserId));
+    throw new Error("Ví này đã được liên kết với tài khoản khác hoặc không thể lưu vào hồ sơ Plane.", {
+      cause: error,
+    });
+  }
+}
+
+async function selectAndLinkWallet(): Promise<string> {
+  if (!currentPlaneUserId) throw new Error("Hãy đăng nhập Plane trước khi kết nối ví MetaNode.");
+  await openMetanodeWallet();
+  const deadline = Date.now() + 120_000;
+  // Give the wallet picker time to render before accepting its active wallet.
+  await new Promise((resolve) => window.setTimeout(resolve, 750));
+  while (Date.now() < deadline) {
+    // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
+    const selectedAddress = await getActiveWalletAddress();
+    if (selectedAddress) {
+      // oxlint-disable-next-line no-await-in-loop -- the account link must finish before transaction signing.
+      await persistLinkedWallet(selectedAddress);
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      connectWalletPopup?.close();
+      connectWalletPopup = null;
+      return normalizeWalletAddress(selectedAddress);
+    }
+    // oxlint-disable-next-line no-await-in-loop -- polling is throttled to avoid loading Crypto Vault.
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+  }
+  throw new Error("Đã hết thời gian chọn ví MetaNode cho tài khoản này.");
 }
 
 export async function activateMetanodeWallet(address: string): Promise<boolean> {
@@ -103,12 +180,8 @@ export async function openMetanodeWallet(): Promise<unknown> {
 export async function resolveMetanodeWalletAddress(): Promise<string> {
   if (typeof window === "undefined") throw new Error("MetaNode wallet is only available in the browser.");
   await initFiaiSDK();
-
-  const configuredAddress = process.env.VITE_METANODE_WALLET_ADDRESS?.trim();
-  if (!configuredAddress || !isWalletAddress(configuredAddress)) {
-    throw new Error("VITE_METANODE_WALLET_ADDRESS is invalid.");
-  }
-  return configuredAddress;
+  if (linkedWalletAddress && isWalletAddress(linkedWalletAddress)) return linkedWalletAddress;
+  return selectAndLinkWallet();
 }
 async function hasWallet(address: string): Promise<boolean> {
   const wallets = await getWallets().catch(() => []);

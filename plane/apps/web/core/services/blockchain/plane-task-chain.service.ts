@@ -326,7 +326,8 @@ async function supportsAtomicHierarchy(): Promise<boolean> {
 }
 
 export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHash: string; assigneeWallet: string }> {
-  const assignee = pendingCreateAssigneeWallet;
+  const creatorWallet = await resolveMetanodeWalletAddress();
+  const assignee = pendingCreateAssigneeWallet === ZERO_ADDRESS ? creatorWallet : pendingCreateAssigneeWallet;
   pendingCreateAssigneeWallet = ZERO_ADDRESS;
   const commonValues = {
     externalId: await hashTaskValue(`plane-issue:${issue.id}`),

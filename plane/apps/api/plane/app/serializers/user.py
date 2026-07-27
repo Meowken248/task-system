@@ -3,6 +3,8 @@
 # See the LICENSE file for details.
 
 # Third party imports
+import re
+
 from rest_framework import serializers
 
 # Module import
@@ -13,6 +15,13 @@ from .base import BaseSerializer
 
 
 class UserSerializer(BaseSerializer):
+    def validate_metanode_wallet_address(self, value):
+        if value in (None, ""):
+            return None
+        if not re.fullmatch(r"0x[a-fA-F0-9]{40}", value):
+            raise serializers.ValidationError("MetaNode wallet must be a 20-byte 0x-prefixed address.")
+        return value.lower()
+
     def validate_first_name(self, value):
         if contains_url(value):
             raise serializers.ValidationError("First name cannot contain a URL.")
@@ -83,6 +92,7 @@ class UserMeSerializer(BaseSerializer):
             "is_email_verified",
             "last_login_medium",
             "last_login_time",
+            "metanode_wallet_address",
         ]
         read_only_fields = fields
 
@@ -149,6 +159,7 @@ class UserLiteSerializer(BaseSerializer):
             "avatar_url",
             "is_bot",
             "display_name",
+            "metanode_wallet_address",
         ]
         read_only_fields = ["id", "is_bot"]
 

@@ -1,1 +1,27 @@
-[]
+[
+  {
+    "wallet_address": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "content_reference": "44f1334f-9a40-4999-97e0-eb59beef2daf",
+    "transaction_hash": "0x5a7b5149f0b02fafa568a339752a6b11b54df420245f383238aefb7edbf0ced3",
+    "content_kind": "comment",
+    "contract_address": "0x4F0C9476448eA51244A9B5FD602BF6DF688B67Bf",
+    "issue_id": "d13a0255-68ff-4775-b02e-5b25a8431b71",
+    "chain_id": "991",
+    "event_type": "task_content",
+    "content_hash": "0xed968e840d10d2d313a870bc131a4e2c311d7ad09bdf32b3418147221f51a6e2",
+    "expected_on_chain_task_id": 2,
+    "verified_at": "2026-07-27T09:31:34Z",
+    "receipt_status": 1,
+    "block_number": 100360,
+    "on_chain_task_id": 2,
+    "transaction_from": "0x665993f448b0552e842a81f89343ff70457539d7",
+    "task_binding_verified": true,
+    "event_signature": "TaskContentRecorded(uint256,uint8,bytes32,address)",
+    "event_topic": "0xb1f9efc020ef70f9a1917446d0da5975b390c7d86584a6b21b388dc7bcb652a3",
+    "log_index": "0x0",
+    "workspace_slug": "fiai",
+    "project_id": "7577af65-0e53-4db1-b4a6-f9ce1be7d103",
+    "recorded_at": "2026-07-27T09:31:34.306933+00:00",
+    "persistence_status": "committed"
+  }
+]

@@ -31,6 +31,7 @@ export interface IUserLite {
   is_bot: boolean;
   last_name: string;
   joining_date?: string;
+  metanode_wallet_address?: string | null;
 }
 export interface IUser extends IUserLite {
   // only for uploading the cover image

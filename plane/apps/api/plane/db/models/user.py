@@ -59,6 +59,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     # user fields
     mobile_number = models.CharField(max_length=255, blank=True, null=True)
     email = models.CharField(max_length=255, null=True, blank=True, unique=True)
+    # Public MetaNode address linked to this Plane account. Private keys remain
+    # exclusively inside the user's Crypto Vault.
+    metanode_wallet_address = models.CharField(max_length=42, null=True, blank=True, unique=True)
 
     # identity
     display_name = models.CharField(max_length=255, default="")
@@ -169,6 +172,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     def save(self, *args, **kwargs):
         self.email = self.email.lower().strip()
         self.mobile_number = self.mobile_number
+        if self.metanode_wallet_address:
+            self.metanode_wallet_address = self.metanode_wallet_address.lower()
 
         if self.token_updated_at is not None:
             self.token = uuid.uuid4().hex + uuid.uuid4().hex
