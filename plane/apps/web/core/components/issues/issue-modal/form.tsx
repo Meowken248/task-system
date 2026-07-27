@@ -50,11 +50,6 @@ import { DuplicateModalRoot } from "@/plane-web/components/de-dupe/duplicate-mod
 import { IssueTypeSelect, WorkItemTemplateSelect } from "@/plane-web/components/issues/issue-modal";
 import { WorkItemModalAdditionalProperties } from "@/plane-web/components/issues/issue-modal/modal-additional-properties";
 import { useDebouncedDuplicateIssues } from "@/plane-web/hooks/use-debounced-duplicate-issues";
-import {
-  isOnChainTaskSyncAvailable,
-  setPendingCreateAssigneeWallet,
-} from "@/services/blockchain/plane-task-chain.service";
-import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
 
 export interface IssueFormProps {
   data?: Partial<TIssue>;
@@ -263,11 +258,6 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
       formData = { ...formData, assignee_ids: [currentUser.id] };
     }
 
-    if (!data?.id && !is_draft_issue && isOnChainTaskSyncAvailable()) {
-      const adminWallet = process.env.VITE_METANODE_WALLET_ADDRESS || "";
-      // A missing/invalid wallet must not block the normal Plane workflow.
-      if (isWalletAddress(adminWallet)) setPendingCreateAssigneeWallet(adminWallet);
-    }
     const submitData = !data?.id
       ? formData
       : {

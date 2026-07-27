@@ -67,13 +67,15 @@ export class IssueAttachmentService extends APIService {
           const evidenceReference = `${signedURLResponse.asset_id}:${file.name}:${file.size}:${file.lastModified}`;
           try {
             const { transactionHash, contentHash } = await recordIssueContentOnChain(issueId, 2, evidenceReference);
-            await blockchainTrackingService.recordTaskContent(workspaceSlug, projectId, {
-              issueId,
-              transactionHash,
-              kind: "evidence",
-              reference: signedURLResponse.asset_id,
-              contentHash,
-            });
+            void blockchainTrackingService
+              .recordTaskContent(workspaceSlug, projectId, {
+                issueId,
+                transactionHash,
+                kind: "evidence",
+                reference: signedURLResponse.asset_id,
+                contentHash,
+              })
+              .catch((trackingError) => console.warn("Audit tệp đính kèm đang chờ tự đồng bộ.", trackingError));
           } catch (error) {
             console.warn("Tệp đã tải lên Plane nhưng chưa đồng bộ bằng chứng on-chain.", error);
           }

@@ -118,8 +118,8 @@ export function OnChainTaskPanel({
         setStatus,
         ancestorIssueIds
       );
-      try {
-        await blockchainTrackingService.recordDailyReport(workspaceSlug, projectId, {
+      void blockchainTrackingService
+        .recordDailyReport(workspaceSlug, projectId, {
           issueId,
           issueName,
           transactionHash: result.transactionHash,
@@ -127,11 +127,10 @@ export function OnChainTaskPanel({
           work,
           difficulty,
           evidence,
+        })
+        .catch((trackingError) => {
+          console.warn("Báo cáo đã lên blockchain; audit đang chờ tự đồng bộ.", trackingError);
         });
-      } catch (trackingError) {
-        console.error("Báo cáo đã lên blockchain nhưng không ghi được blockchain-data.json:", trackingError);
-        setStatus(`Đã gửi on-chain: ${result.transactionHash}. Không ghi được file JSON.`);
-      }
       await onReportRecorded({
         progress: result.progress,
         transactionHash: result.transactionHash,

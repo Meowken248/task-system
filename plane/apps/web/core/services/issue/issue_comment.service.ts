@@ -69,13 +69,15 @@ export class IssueCommentService extends APIService {
         0,
         comment.comment_stripped || comment.comment_html
       );
-      await blockchainTrackingService.recordTaskContent(workspaceSlug, projectId, {
-        issueId,
-        transactionHash,
-        kind: "comment",
-        reference: comment.id,
-        contentHash,
-      });
+      void blockchainTrackingService
+        .recordTaskContent(workspaceSlug, projectId, {
+          issueId,
+          transactionHash,
+          kind: "comment",
+          reference: comment.id,
+          contentHash,
+        })
+        .catch((trackingError) => console.warn("Audit bình luận đang chờ tự đồng bộ.", trackingError));
       return comment;
     } catch (error) {
       console.warn("Bình luận đã lưu trên Plane nhưng chưa đồng bộ on-chain.", error);

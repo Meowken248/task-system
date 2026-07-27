@@ -77,7 +77,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
   const { getStateById } = useProjectState();
   const { allowPermissions } = useUserPermissions();
   const [pendingAssigneeIds, setPendingAssigneeIds] = useState<string[] | null>(null);
-  const [assigneeWallet, setAssigneeWallet] = useState(process.env.VITE_METANODE_WALLET_ADDRESS || "");
+  const [assigneeWallet, setAssigneeWallet] = useState("");
   const [isAssigningOnChain, setIsAssigningOnChain] = useState(false);
   const issue = getIssueById(issueId);
   if (!issue) return <></>;
@@ -116,10 +116,11 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
       setAssigneeWallet("");
       return;
     }
+    const memberWallet = getUserDetails(selectedAssigneeId)?.metanode_wallet_address || "";
     const storedWallet = await blockchainTrackingService
       .getStoredAssigneeWallet(workspaceSlug, projectId, selectedAssigneeId)
       .catch(() => "");
-    setAssigneeWallet(storedWallet || process.env.VITE_METANODE_WALLET_ADDRESS || "");
+    setAssigneeWallet(memberWallet || storedWallet);
   };
 
   const confirmOnChainAssignment = async () => {
