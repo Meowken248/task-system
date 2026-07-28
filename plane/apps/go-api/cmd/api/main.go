@@ -74,6 +74,38 @@ func main() {
 				Store: auth.PostgreSQLSessionStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 				CookieDomain: cfg.CookieDomain, RedirectURL: cfg.AppBaseURL,
 			},
+			SignIn: auth.SignInHandler{
+				Store: auth.PostgreSQLSignInStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				CookieDomain: cfg.CookieDomain, AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret,
+				SessionAge: cfg.SessionAge,
+			},
+			ChangePassword: auth.PasswordHandler{Store: auth.PostgreSQLPasswordStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, SecretKey: cfg.SessionSecret},
+			SetPassword:    auth.PasswordHandler{Store: auth.PostgreSQLPasswordStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, SecretKey: cfg.SessionSecret, SetOnly: true},
+			EmailCheck: auth.EmailCheckHandler{Store: auth.PostgreSQLEmailCheckStore{
+				Pool: db.Native(), EmailHost: cfg.EmailHost, EnableMagicLogin: cfg.EnableMagicLogin,
+			}},
+			ForgotPassword: auth.ForgotPasswordHandler{
+				Store: auth.PostgreSQLForgotPasswordStore{Pool: db.Native()},
+				Sender: auth.SMTPResetSender{
+					Host: cfg.EmailHost, Port: cfg.EmailPort, Username: cfg.EmailHostUser,
+					Password: cfg.EmailHostPassword, From: cfg.EmailFrom,
+					UseTLS: cfg.EmailUseTLS, UseSSL: cfg.EmailUseSSL,
+				},
+				AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret,
+			},
+			ResetPassword: auth.ResetPasswordHandler{
+				Store:      auth.PostgreSQLResetPasswordStore{Pool: db.Native()},
+				AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret,
+				Timeout: cfg.PasswordResetTimeout,
+			},
+			SignUp: auth.SignUpHandler{
+				Store: auth.PostgreSQLSignUpStore{
+					Pool: db.Native(), EnableSignUp: cfg.EnableSignUp,
+					EnableEmailPassword: cfg.EnableEmailPassword,
+				},
+				SessionCookieName: cfg.SessionCookie, CookieDomain: cfg.CookieDomain,
+				AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret, SessionAge: cfg.SessionAge,
+			},
 			Tracking: tracking.Handler{
 				Store: tracking.PostgreSQLStore{Pool: db.Native()}, Legacy: legacyHandler,
 				Verifier: blockchain.Verifier{Config: blockchain.Config{

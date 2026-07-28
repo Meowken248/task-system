@@ -50,6 +50,9 @@ func validCSRFRequest(r *http.Request) bool {
 		return false
 	}
 	token := r.FormValue("csrfmiddlewaretoken")
+	if token == "" {
+		token = r.Header.Get("X-CSRFToken")
+	}
 	secret, ok := unmaskToken(token)
 	return ok && subtle.ConstantTimeCompare([]byte(secret), []byte(cookie.Value)) == 1
 }
