@@ -49,6 +49,26 @@ services:
       - plane-db
       - plane-redis
 
+  go-api:
+    container_name: go-api
+    build:
+      context: ./apps/go-api
+      dockerfile: Dockerfile
+    restart: always
+    env_file:
+      - ./apps/api/.env
+    environment:
+      GO_API_ADDRESS: ":8080"
+      LEGACY_API_URL: "http://api:8000"
+    depends_on:
+      - api
+      - plane-db
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   worker:
     container_name: bgworker
     build:
@@ -167,6 +187,7 @@ services:
     depends_on:
       - web
       - api
+      - go-api
       - space
       - admin
 

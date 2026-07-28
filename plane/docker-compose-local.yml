@@ -84,6 +84,29 @@ services:
     ports:
       - "8000:8000"
 
+  go-api:
+    build:
+      context: ./apps/go-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - dev_env
+    env_file:
+      - ./apps/api/.env
+    environment:
+      GO_API_ADDRESS: ":8080"
+      LEGACY_API_URL: "http://api:8000"
+    depends_on:
+      - api
+      - plane-db
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   worker:
     build:
       context: ./apps/api
