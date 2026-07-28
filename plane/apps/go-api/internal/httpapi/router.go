@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -12,10 +13,24 @@ type ReadinessChecker interface {
 }
 
 type Dependencies struct {
-	Readiness ReadinessChecker
-	Legacy    http.Handler
-	Instance  http.Handler
-	Version   string
+	Readiness      ReadinessChecker
+	Legacy         http.Handler
+	Instance       http.Handler
+	CSRF           http.Handler
+	SignOut        http.Handler
+	Tracking       http.Handler
+	Workspaces     http.Handler
+	CurrentUser    http.Handler
+	UserProfile    http.Handler
+	UserSettings   http.Handler
+	ProjectsLite   http.Handler
+	Projects       http.Handler
+	Project        http.Handler
+	States         http.Handler
+	ProjectMembers http.Handler
+	Labels         http.Handler
+	Issues         http.Handler
+	Version        string
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -41,13 +56,70 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Instance != nil {
 			portedGroups = append(portedGroups, "instance-info-cache")
 		}
+		if deps.CSRF != nil {
+			portedGroups = append(portedGroups, "csrf")
+		}
+		if deps.SignOut != nil {
+			portedGroups = append(portedGroups, "sign-out")
+		}
+		if deps.Tracking != nil {
+			portedGroups = append(portedGroups, "blockchain-receipt-verification", "blockchain-tracking")
+		}
+		if deps.Workspaces != nil {
+			portedGroups = append(portedGroups, "user-workspaces")
+		}
+		if deps.CurrentUser != nil {
+			portedGroups = append(portedGroups, "current-user")
+		}
+		if deps.UserProfile != nil && deps.UserSettings != nil {
+			portedGroups = append(portedGroups, "user-profile-settings")
+		}
+		if deps.ProjectsLite != nil && deps.Projects != nil && deps.Project != nil {
+			portedGroups = append(portedGroups, "project-reads")
+		}
+		if deps.States != nil {
+			portedGroups = append(portedGroups, "project-state-reads")
+		}
+		if deps.ProjectMembers != nil {
+			portedGroups = append(portedGroups, "project-member-reads")
+		}
+		if deps.Labels != nil {
+			portedGroups = append(portedGroups, "project-label-reads")
+		}
+		if deps.Issues != nil {
+			portedGroups = append(portedGroups, "basic-work-item-reads")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"service": "plane-go-api", "phase": "foundation",
+			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": deps.Legacy != nil, "ported_groups": portedGroups,
 		})
 	})
 	if deps.Instance != nil {
 		mux.Handle("GET /api/instances/", deps.Instance)
+	}
+	if deps.CSRF != nil {
+		mux.Handle("GET /auth/get-csrf-token/", deps.CSRF)
+	}
+	if deps.SignOut != nil {
+		mux.Handle("POST /auth/sign-out/", deps.SignOut)
+	}
+	if deps.Workspaces != nil {
+		mux.Handle("GET /api/users/me/workspaces/", deps.Workspaces)
+	}
+	if deps.CurrentUser != nil {
+		mux.Handle("GET /api/users/me/", deps.CurrentUser)
+	}
+	if deps.UserProfile != nil {
+		mux.Handle("GET /api/users/me/profile/", deps.UserProfile)
+	}
+	if deps.UserSettings != nil {
+		mux.Handle("GET /api/users/me/settings/", deps.UserSettings)
+	}
+	if deps.ProjectsLite != nil {
+		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
+	}
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil {
+		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Legacy != nil {
 		mux.Handle("/", deps.Legacy)
@@ -57,6 +129,97 @@ func NewRouter(deps Dependencies) http.Handler {
 		})
 	}
 	return requestID(mux)
+}
+
+type projectRoutes struct {
+	deps Dependencies
+}
+
+func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	tail := strings.Trim(r.PathValue("tail"), "/")
+	parts := strings.Split(tail, "/")
+	if r.Method == http.MethodGet && tail == "details" && h.deps.Projects != nil {
+		h.deps.Projects.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 1 && parts[0] != "" && r.Method == http.MethodGet && h.deps.Project != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Project.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "states" &&
+		r.Method == http.MethodGet && h.deps.States != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.States.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "members" &&
+		r.Method == http.MethodGet && h.deps.ProjectMembers != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.ProjectMembers.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "issue-labels" &&
+		r.Method == http.MethodGet && h.deps.Labels != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Labels.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "issue-labels" && parts[2] != "" &&
+		r.Method == http.MethodGet && h.deps.Labels != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("label_id", parts[2])
+		h.deps.Labels.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "states" && parts[2] != "" &&
+		r.Method == http.MethodGet && h.deps.States != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("state_id", parts[2])
+		h.deps.States.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "issues" && r.Method == http.MethodGet &&
+		h.deps.Issues != nil && canServeBasicIssueRead(r) {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Issues.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" &&
+		r.Method == http.MethodGet && h.deps.Issues != nil && canServeBasicIssueRead(r) {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Issues.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "blockchain-transactions" &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPost) && h.deps.Tracking != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Tracking.ServeHTTP(w, r)
+		return
+	}
+	if h.deps.Legacy != nil {
+		h.deps.Legacy.ServeHTTP(w, r)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not migrated"})
+}
+
+// The legacy API still owns grouped, filtered and expanded work-item reads. Keeping
+// this gate explicit prevents a partial Go response from silently breaking clients.
+func canServeBasicIssueRead(r *http.Request) bool {
+	for key, values := range r.URL.Query() {
+		switch key {
+		case "cursor", "per_page":
+		case "order_by":
+			if len(values) != 1 || (values[0] != "-created_at" && values[0] != "created_at") {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func requestID(next http.Handler) http.Handler {

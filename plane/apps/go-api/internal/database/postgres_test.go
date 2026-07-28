@@ -1,19 +1,23 @@
 package database
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
-func TestNewChecker(t *testing.T) {
-	checker, err := NewChecker("postgresql://plane:plane@plane-db:5432/plane")
+func TestOpenParsesPostgresURLWithoutConnecting(t *testing.T) {
+	pool, err := Open(context.Background(), "postgresql://plane:plane@plane-db:5432/plane")
 	if err != nil {
-		t.Fatalf("NewChecker() error = %v", err)
+		t.Fatalf("Open() error = %v", err)
 	}
-	if checker.address != "plane-db:5432" {
-		t.Fatalf("address = %q", checker.address)
+	defer pool.Close()
+	if pool.Native() == nil {
+		t.Fatal("expected native pool")
 	}
 }
 
-func TestNewCheckerRejectsWrongScheme(t *testing.T) {
-	if _, err := NewChecker("http://plane-db/plane"); err == nil {
-		t.Fatal("expected scheme validation error")
+func TestOpenRejectsMissingURL(t *testing.T) {
+	if _, err := Open(context.Background(), " "); err == nil {
+		t.Fatal("expected validation error")
 	}
 }

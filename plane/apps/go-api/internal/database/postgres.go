@@ -3,41 +3,49 @@ package database
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/url"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Checker struct {
-	address string
+type Pool struct {
+	pool *pgxpool.Pool
 }
 
-func NewChecker(databaseURL string) (*Checker, error) {
-	parsed, err := url.Parse(databaseURL)
+func Open(ctx context.Context, databaseURL string) (*Pool, error) {
+	if strings.TrimSpace(databaseURL) == "" {
+		return nil, fmt.Errorf("DATABASE_URL is required")
+	}
+	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
-	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
-		return nil, fmt.Errorf("DATABASE_URL must use postgres or postgresql scheme")
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres pool: %w", err)
 	}
-	host := parsed.Hostname()
-	if host == "" {
-		return nil, fmt.Errorf("DATABASE_URL host is required")
-	}
-	port := parsed.Port()
-	if port == "" {
-		port = "5432"
-	}
-	return &Checker{address: net.JoinHostPort(host, port)}, nil
+	return &Pool{pool: pool}, nil
 }
 
-func (c *Checker) PingContext(ctx context.Context) error {
-	if c == nil || strings.TrimSpace(c.address) == "" {
-		return fmt.Errorf("postgres address is not configured")
+func (p *Pool) PingContext(ctx context.Context) error {
+	if p == nil || p.pool == nil {
+		return fmt.Errorf("postgres pool is not configured")
 	}
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", c.address)
-	if err != nil {
-		return fmt.Errorf("connect postgres: %w", err)
+	if err := p.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("ping postgres: %w", err)
 	}
-	return conn.Close()
+	return nil
+}
+
+func (p *Pool) Close() {
+	if p != nil && p.pool != nil {
+		p.pool.Close()
+	}
+}
+
+func (p *Pool) Native() *pgxpool.Pool {
+	if p == nil {
+		return nil
+	}
+	return p.pool
 }

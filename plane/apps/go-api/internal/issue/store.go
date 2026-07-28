@@ -1,0 +1,178 @@
+package issue
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var (
+	ErrUnauthorized = errors.New("authentication required")
+	ErrForbidden    = errors.New("project access denied")
+	ErrNotFound     = errors.New("work item not found")
+)
+
+type Item struct {
+	ID              string     `json:"id"`
+	SequenceID      int        `json:"sequence_id"`
+	Name            string     `json:"name"`
+	DescriptionHTML string     `json:"description_html,omitempty"`
+	SortOrder       float64    `json:"sort_order"`
+	StateID         *string    `json:"state_id"`
+	Priority        string     `json:"priority"`
+	LabelIDs        []string   `json:"label_ids"`
+	AssigneeIDs     []string   `json:"assignee_ids"`
+	EstimatePoint   *string    `json:"estimate_point"`
+	SubIssuesCount  int        `json:"sub_issues_count"`
+	AttachmentCount int        `json:"attachment_count"`
+	LinkCount       int        `json:"link_count"`
+	ProjectID       string     `json:"project_id"`
+	ParentID        *string    `json:"parent_id"`
+	CycleID         *string    `json:"cycle_id"`
+	ModuleIDs       []string   `json:"module_ids"`
+	TypeID          *string    `json:"type_id"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	StartDate       *time.Time `json:"start_date"`
+	TargetDate      *time.Time `json:"target_date"`
+	CompletedAt     *time.Time `json:"completed_at"`
+	ArchivedAt      *time.Time `json:"archived_at"`
+	CreatedBy       *string    `json:"created_by"`
+	UpdatedBy       *string    `json:"updated_by"`
+	IsDraft         bool       `json:"is_draft"`
+}
+
+type Page struct {
+	GroupedBy    any    `json:"grouped_by"`
+	SubGroupedBy any    `json:"sub_grouped_by"`
+	TotalCount   int    `json:"total_count"`
+	NextCursor   string `json:"next_cursor"`
+	PrevCursor   string `json:"prev_cursor"`
+	NextPage     bool   `json:"next_page_results"`
+	PrevPage     bool   `json:"prev_page_results"`
+	Count        int    `json:"count"`
+	TotalPages   int    `json:"total_pages"`
+	TotalResults int    `json:"total_results"`
+	ExtraStats   any    `json:"extra_stats"`
+	Results      []Item `json:"results"`
+}
+
+type PostgreSQLStore struct{ Pool *pgxpool.Pool }
+
+func (s PostgreSQLStore) authorize(ctx context.Context, sessionKey, slug, projectID string) error {
+	if s.Pool == nil {
+		return errors.New("work item database unavailable")
+	}
+	if sessionKey == "" {
+		return ErrUnauthorized
+	}
+	var allowed bool
+	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions s
+		JOIN workspaces w ON w.slug=$2 AND w.deleted_at IS NULL
+		JOIN projects p ON p.id::text=$3 AND p.workspace_id=w.id AND p.deleted_at IS NULL AND p.archived_at IS NULL
+		JOIN project_members pm ON pm.project_id=p.id AND pm.member_id::text=s.user_id
+			AND pm.is_active=TRUE AND pm.deleted_at IS NULL
+		WHERE s.session_key=$1 AND s.expire_date>NOW())`, sessionKey, slug, projectID).Scan(&allowed)
+	if err != nil {
+		return fmt.Errorf("resolve work item access: %w", err)
+	}
+	if allowed {
+		return nil
+	}
+	var validSession bool
+	if err = s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE session_key=$1 AND expire_date>NOW())`, sessionKey).Scan(&validSession); err != nil {
+		return fmt.Errorf("check work item session: %w", err)
+	}
+	if validSession {
+		return ErrForbidden
+	}
+	return ErrUnauthorized
+}
+
+const itemColumns = `i.id::text, i.sequence_id, i.name, i.description_html, i.sort_order,
+	i.state_id::text, i.priority,
+	ARRAY(SELECT ia.assignee_id::text FROM issue_assignees ia WHERE ia.issue_id=i.id AND ia.deleted_at IS NULL ORDER BY ia.created_at),
+	ARRAY(SELECT il.label_id::text FROM issue_labels il WHERE il.issue_id=i.id AND il.deleted_at IS NULL ORDER BY il.created_at),
+	i.estimate_point_id::text,
+	(SELECT COUNT(*)::int FROM issues child WHERE child.parent_id=i.id AND child.deleted_at IS NULL AND child.archived_at IS NULL AND child.is_draft=FALSE),
+	(SELECT COUNT(*)::int FROM file_assets fa WHERE fa.issue_id=i.id AND fa.deleted_at IS NULL),
+	(SELECT COUNT(*)::int FROM issue_links link WHERE link.issue_id=i.id AND link.deleted_at IS NULL),
+	i.project_id::text, i.parent_id::text,
+	(SELECT ci.cycle_id::text FROM cycle_issues ci WHERE ci.issue_id=i.id AND ci.deleted_at IS NULL ORDER BY ci.created_at LIMIT 1),
+	ARRAY(SELECT mi.module_id::text FROM module_issues mi WHERE mi.issue_id=i.id AND mi.deleted_at IS NULL ORDER BY mi.created_at),
+	i.type_id::text, i.created_at, i.updated_at, i.start_date, i.target_date, i.completed_at, i.archived_at,
+	i.created_by_id::text, i.updated_by_id::text, i.is_draft`
+
+func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, projectID string, limit, offset int) (Page, error) {
+	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
+		return Page{}, err
+	}
+	var total int
+	if err := s.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM issues i JOIN states st ON st.id=i.state_id
+		WHERE i.project_id::text=$1 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`, projectID).Scan(&total); err != nil {
+		return Page{}, fmt.Errorf("count work items: %w", err)
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT `+itemColumns+` FROM issues i JOIN states st ON st.id=i.state_id
+		WHERE i.project_id::text=$1 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'
+		ORDER BY i.created_at DESC LIMIT $2 OFFSET $3`, projectID, limit, offset)
+	if err != nil {
+		return Page{}, fmt.Errorf("list work items: %w", err)
+	}
+	defer rows.Close()
+	items := make([]Item, 0, limit)
+	for rows.Next() {
+		item, scanErr := scan(rows)
+		if scanErr != nil {
+			return Page{}, fmt.Errorf("scan work item: %w", scanErr)
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return Page{}, fmt.Errorf("iterate work items: %w", err)
+	}
+	return makePage(items, total, limit, offset), nil
+}
+
+func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, projectID, issueID string) (Item, error) {
+	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
+		return Item{}, err
+	}
+	item, err := scan(s.Pool.QueryRow(ctx, `SELECT `+itemColumns+` FROM issues i JOIN states st ON st.id=i.state_id
+		WHERE i.project_id::text=$1 AND i.id::text=$2 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`, projectID, issueID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Item{}, ErrNotFound
+	}
+	return item, err
+}
+
+type rowScanner interface{ Scan(...any) error }
+
+func scan(row rowScanner) (Item, error) {
+	var item Item
+	err := row.Scan(&item.ID, &item.SequenceID, &item.Name, &item.DescriptionHTML, &item.SortOrder,
+		&item.StateID, &item.Priority, &item.AssigneeIDs, &item.LabelIDs, &item.EstimatePoint,
+		&item.SubIssuesCount, &item.AttachmentCount, &item.LinkCount, &item.ProjectID, &item.ParentID,
+		&item.CycleID, &item.ModuleIDs, &item.TypeID, &item.CreatedAt, &item.UpdatedAt, &item.StartDate,
+		&item.TargetDate, &item.CompletedAt, &item.ArchivedAt, &item.CreatedBy, &item.UpdatedBy, &item.IsDraft)
+	return item, err
+}
+
+func makePage(items []Item, total, limit, offset int) Page {
+	nextOffset := offset + len(items)
+	prevOffset := offset - limit
+	if prevOffset < 0 {
+		prevOffset = 0
+	}
+	totalPages := 0
+	if limit > 0 {
+		totalPages = (total + limit - 1) / limit
+	}
+	return Page{GroupedBy: nil, SubGroupedBy: nil, TotalCount: total,
+		NextCursor: fmt.Sprintf("%d:%d:0", limit, nextOffset), PrevCursor: fmt.Sprintf("%d:%d:0", limit, prevOffset),
+		NextPage: nextOffset < total, PrevPage: offset > 0, Count: len(items), TotalPages: totalPages,
+		TotalResults: total, ExtraStats: nil, Results: items}
+}

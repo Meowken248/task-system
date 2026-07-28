@@ -10,11 +10,21 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/makeplane/plane/apps/go-api/internal/auth"
+	"github.com/makeplane/plane/apps/go-api/internal/blockchain"
 	"github.com/makeplane/plane/apps/go-api/internal/config"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
 	"github.com/makeplane/plane/apps/go-api/internal/httpapi"
 	"github.com/makeplane/plane/apps/go-api/internal/instance"
+	"github.com/makeplane/plane/apps/go-api/internal/issue"
+	"github.com/makeplane/plane/apps/go-api/internal/label"
 	"github.com/makeplane/plane/apps/go-api/internal/legacy"
+	"github.com/makeplane/plane/apps/go-api/internal/project"
+	"github.com/makeplane/plane/apps/go-api/internal/projectmember"
+	"github.com/makeplane/plane/apps/go-api/internal/state"
+	"github.com/makeplane/plane/apps/go-api/internal/tracking"
+	"github.com/makeplane/plane/apps/go-api/internal/user"
+	"github.com/makeplane/plane/apps/go-api/internal/workspace"
 )
 
 var version = "dev"
@@ -28,11 +38,19 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	db, err := database.NewChecker(cfg.DatabaseURL)
+	db, err := database.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("database readiness configuration failed", "error", err)
 		os.Exit(1)
 	}
+	defer db.Close()
+	migrationCtx, cancelMigrations := context.WithTimeout(ctx, 30*time.Second)
+	if err = db.Migrate(migrationCtx); err != nil {
+		cancelMigrations()
+		logger.Error("database migration failed", "error", err)
+		os.Exit(1)
+	}
+	cancelMigrations()
 	var legacyHandler http.Handler
 	var instanceHandler http.Handler
 	if cfg.LegacyAPIURL != "" {
@@ -50,7 +68,57 @@ func main() {
 	server := &http.Server{
 		Addr: cfg.Address,
 		Handler: httpapi.NewRouter(httpapi.Dependencies{
-			Readiness: db, Legacy: legacyHandler, Instance: instanceHandler, Version: version,
+			Readiness: db, Legacy: legacyHandler, Instance: instanceHandler,
+			CSRF: auth.CSRFHandler{CookieDomain: cfg.CookieDomain},
+			SignOut: auth.SignOutHandler{
+				Store: auth.PostgreSQLSessionStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				CookieDomain: cfg.CookieDomain, RedirectURL: cfg.AppBaseURL,
+			},
+			Tracking: tracking.Handler{
+				Store: tracking.PostgreSQLStore{Pool: db.Native()}, Legacy: legacyHandler,
+				Verifier: blockchain.Verifier{Config: blockchain.Config{
+					RPCURL: cfg.BlockchainRPCURL, ContractAddress: cfg.BlockchainContractAddress,
+					ChainID: cfg.BlockchainChainID, RPCTimeout: cfg.BlockchainRPCTimeout,
+					ReceiptWait: cfg.BlockchainReceiptWait,
+				}},
+				SessionCookieName: cfg.SessionCookie,
+			},
+			Workspaces: workspace.Handler{
+				Store: workspace.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			CurrentUser: user.Handler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UserProfile: user.ProfileHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UserSettings: user.SettingsHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			ProjectsLite: project.Handler{
+				Store: project.PostgreSQLStore{Pool: db.Native()}, Legacy: legacyHandler,
+				SessionCookieName: cfg.SessionCookie,
+			},
+			Projects: project.Handler{
+				Store: project.PostgreSQLStore{Pool: db.Native()}, Legacy: legacyHandler,
+				SessionCookieName: cfg.SessionCookie, Detailed: true,
+			},
+			Project: project.Handler{
+				Store: project.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, Single: true,
+			},
+			States: state.Handler{
+				Store: state.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			ProjectMembers: projectmember.Handler{
+				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Labels: label.Handler{
+				Store: label.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Issues: issue.Handler{
+				Store: issue.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Version: version,
 		}),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
