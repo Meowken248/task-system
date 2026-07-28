@@ -366,6 +366,13 @@ export class ProjectStore implements IProjectStore {
       const response = await this.projectService.getProject(workspaceSlug, projectId);
       runInAction(() => {
         update(this.projectMap, [projectId], (p) => ({ ...p, ...response }));
+        if (response.member_role) {
+          set(
+            this.rootStore.user.permission.workspaceProjectsPermissions,
+            [workspaceSlug, projectId],
+            response.member_role
+          );
+        }
       });
       return response;
     } catch (error) {
