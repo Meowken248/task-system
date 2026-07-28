@@ -11,8 +11,8 @@ Current phase:
   event topics, task identity, sender, assignee, progress, and content hashes.
 - Verified blockchain metadata and the corresponding Plane issue mutation are
   committed in one PostgreSQL transaction.
-- Existing legacy JSON tracking records are merged into GET responses while the
-  migration is in progress.
+- Go imports the four legacy blockchain JSON files into PostgreSQL idempotently
+  at startup; blockchain GET/POST no longer call Django.
 - Unported routes temporarily fall back to Django.
 - GET /api/instances/ is owned by Go with a short read-through cache and
   stale-response fallback to prevent startup reload loops during legacy outages.
@@ -41,6 +41,7 @@ Run locally:
     $env:BLOCKCHAIN_RPC_URL="https://your-rpc.example"
     $env:BLOCKCHAIN_CHAIN_ID="991"
     $env:BLOCKCHAIN_CONTRACT_ADDRESS="0x..."
+    $env:LEGACY_TRACKING_DIR="../api"
     go run ./cmd/api
 
 For the web development server, point its proxy at Go only after this process

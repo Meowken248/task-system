@@ -32,6 +32,7 @@ type Config struct {
 	BlockchainChainID         string
 	BlockchainRPCTimeout      time.Duration
 	BlockchainReceiptWait     time.Duration
+	LegacyTrackingDir         string
 	ShutdownTimeout           time.Duration
 }
 
@@ -61,6 +62,7 @@ func Load() (Config, error) {
 		BlockchainChainID:         firstEnv("BLOCKCHAIN_CHAIN_ID", "CHAIN_ID", "VITE_CHAIN_ID"),
 		BlockchainRPCTimeout:      durationSeconds("BLOCKCHAIN_RPC_TIMEOUT_SECONDS", 8*time.Second, 30*time.Second),
 		BlockchainReceiptWait:     durationSeconds("BLOCKCHAIN_RECEIPT_WAIT_SECONDS", 15*time.Second, 60*time.Second),
+		LegacyTrackingDir:         strings.TrimSpace(os.Getenv("LEGACY_TRACKING_DIR")),
 		ShutdownTimeout:           10 * time.Second,
 	}
 	if cfg.DatabaseURL == "" {

@@ -175,11 +175,7 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug,
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sort_order), 55535)+10000 FROM issues WHERE project_id::text=$1 AND state_id::text=$2 AND deleted_at IS NULL`, projectID, *stateID).Scan(&sortOrder); err != nil {
 		return Item{}, fmt.Errorf("next work item order: %w", err)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO issues
-		(id, project_id, workspace_id, state_id, parent_id, name, description_json, description_html, description_stripped,
-		priority, start_date, target_date, sequence_id, sort_order, estimate_point_id, type_id, external_id, external_source,
-		is_draft, created_by_id, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,''),NULLIF($16,''),$17,$18,FALSE,$19,NOW(),NOW())`,
+	_, err = tx.Exec(ctx, createIssueQuery,
 		issueID, projectID, identity.WorkspaceID, *stateID, stringValue(input.ParentID), name, descriptionJSON,
 		descriptionHTML, stripHTML(descriptionHTML), priority, startDate, targetDate, sequenceID, sortOrder,
 		stringValue(input.EstimatePointID), stringValue(input.TypeID), input.ExternalID, input.ExternalSource, identity.UserID)
@@ -210,6 +206,13 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug,
 	}
 	return item, nil
 }
+
+const createIssueQuery = `INSERT INTO issues
+	(id, project_id, workspace_id, state_id, parent_id, name, description_json, description_html, description_stripped,
+	priority, start_date, target_date, sequence_id, sort_order, estimate_point_id, type_id, external_id, external_source,
+	is_draft, created_by_id, created_at, updated_at)
+	VALUES ($1,$2,$3,$4,NULLIF($5,'')::uuid,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+		NULLIF($15,'')::uuid,NULLIF($16,'')::uuid,$17,$18,FALSE,$19,NOW(),NOW())`
 
 func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug, projectID, issueID string, input WritePayload) (Item, error) {
 	identity, err := s.writeIdentity(ctx, sessionKey, slug, projectID)

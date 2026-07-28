@@ -3,9 +3,21 @@ package issue
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
+func TestCreateIssueQueryCastsOptionalUUIDs(t *testing.T) {
+	for _, expression := range []string{
+		"NULLIF($5,'')::uuid",
+		"NULLIF($15,'')::uuid",
+		"NULLIF($16,'')::uuid",
+	} {
+		if !strings.Contains(createIssueQuery, expression) {
+			t.Fatalf("create issue query is missing optional UUID cast %q", expression)
+		}
+	}
+}
 func TestWritePayloadTracksOmittedAndNullFields(t *testing.T) {
 	var payload WritePayload
 	if err := json.Unmarshal([]byte(`{"name":"Task","target_date":null,"assignees":[]}`), &payload); err != nil {

@@ -9,11 +9,16 @@ import (
 
 type readerStub struct {
 	items []Membership
+	item  Membership
 	err   error
 }
 
 func (s readerStub) ListForSession(context.Context, string, string, string) ([]Membership, error) {
 	return s.items, s.err
+}
+
+func (s readerStub) GetForSession(context.Context, string, string, string) (Membership, error) {
+	return s.item, s.err
 }
 
 func TestList(t *testing.T) {
@@ -31,5 +36,16 @@ func TestUnauthorized(t *testing.T) {
 	Handler{Store: readerStub{err: ErrUnauthorized}}.ServeHTTP(res, req)
 	if res.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d, want 401", res.Code)
+	}
+}
+func TestCurrentMember(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/project-members/me/", nil)
+	res := httptest.NewRecorder()
+	Handler{
+		Store:   readerStub{item: Membership{ID: "member-1", Member: "user-1", Role: 20, OriginalRole: 20}},
+		Current: true,
+	}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", res.Code)
 	}
 }

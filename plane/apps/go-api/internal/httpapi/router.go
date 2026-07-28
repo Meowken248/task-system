@@ -13,31 +13,32 @@ type ReadinessChecker interface {
 }
 
 type Dependencies struct {
-	Readiness      ReadinessChecker
-	Legacy         http.Handler
-	Instance       http.Handler
-	CSRF           http.Handler
-	SignOut        http.Handler
-	SignIn         http.Handler
-	SignUp         http.Handler
-	EmailCheck     http.Handler
-	ForgotPassword http.Handler
-	ResetPassword  http.Handler
-	ChangePassword http.Handler
-	SetPassword    http.Handler
-	Tracking       http.Handler
-	Workspaces     http.Handler
-	CurrentUser    http.Handler
-	UserProfile    http.Handler
-	UserSettings   http.Handler
-	ProjectsLite   http.Handler
-	Projects       http.Handler
-	Project        http.Handler
-	States         http.Handler
-	ProjectMembers http.Handler
-	Labels         http.Handler
-	Issues         http.Handler
-	Version        string
+	Readiness       ReadinessChecker
+	Legacy          http.Handler
+	Instance        http.Handler
+	CSRF            http.Handler
+	SignOut         http.Handler
+	SignIn          http.Handler
+	SignUp          http.Handler
+	EmailCheck      http.Handler
+	ForgotPassword  http.Handler
+	ResetPassword   http.Handler
+	ChangePassword  http.Handler
+	SetPassword     http.Handler
+	Tracking        http.Handler
+	Workspaces      http.Handler
+	CurrentUser     http.Handler
+	UserProfile     http.Handler
+	UserSettings    http.Handler
+	ProjectsLite    http.Handler
+	Projects        http.Handler
+	Project         http.Handler
+	States          http.Handler
+	ProjectMembers  http.Handler
+	ProjectMemberMe http.Handler
+	Labels          http.Handler
+	Issues          http.Handler
+	Version         string
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -88,7 +89,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			portedGroups = append(portedGroups, "password-management")
 		}
 		if deps.Tracking != nil {
-			portedGroups = append(portedGroups, "blockchain-receipt-verification", "blockchain-tracking")
+			portedGroups = append(portedGroups, "blockchain-receipt-verification", "blockchain-tracking", "blockchain-json-import")
 		}
 		if deps.Workspaces != nil {
 			portedGroups = append(portedGroups, "user-workspaces")
@@ -105,7 +106,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.States != nil {
 			portedGroups = append(portedGroups, "project-state-reads")
 		}
-		if deps.ProjectMembers != nil {
+		if deps.ProjectMembers != nil || deps.ProjectMemberMe != nil {
 			portedGroups = append(portedGroups, "project-member-reads")
 		}
 		if deps.Labels != nil {
@@ -164,7 +165,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.ProjectsLite != nil {
 		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil {
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Legacy != nil {
@@ -203,6 +204,12 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Method == http.MethodGet && h.deps.ProjectMembers != nil {
 		r.SetPathValue("project_id", parts[0])
 		h.deps.ProjectMembers.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "project-members" && parts[2] == "me" &&
+		r.Method == http.MethodGet && h.deps.ProjectMemberMe != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.ProjectMemberMe.ServeHTTP(w, r)
 		return
 	}
 	if len(parts) == 2 && parts[0] != "" && parts[1] == "issue-labels" &&

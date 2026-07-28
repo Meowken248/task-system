@@ -11,9 +11,14 @@ type Reader interface {
 	ListForSession(context.Context, string, string, string) ([]Membership, error)
 }
 
+type CurrentReader interface {
+	GetForSession(context.Context, string, string, string) (Membership, error)
+}
+
 type Handler struct {
 	Store             Reader
 	SessionCookieName string
+	Current           bool
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +34,22 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(cookieName); err == nil {
 		sessionKey = cookie.Value
 	}
-	members, err := h.Store.ListForSession(r.Context(), sessionKey, r.PathValue("slug"), r.PathValue("project_id"))
+	var payload any
+	var err error
+	if h.Current {
+		currentStore, ok := h.Store.(CurrentReader)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "current project member storage is unavailable"})
+			return
+		}
+		payload, err = currentStore.GetForSession(
+			r.Context(), sessionKey, r.PathValue("slug"), r.PathValue("project_id"),
+		)
+	} else {
+		payload, err = h.Store.ListForSession(
+			r.Context(), sessionKey, r.PathValue("slug"), r.PathValue("project_id"),
+		)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUnauthorized):
@@ -43,7 +63,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "private, max-age=10")
 	w.Header().Add("Vary", "Cookie")
-	writeJSON(w, http.StatusOK, members)
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
