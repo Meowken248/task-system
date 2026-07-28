@@ -60,6 +60,9 @@ services:
     environment:
       GO_API_ADDRESS: ":8080"
       LEGACY_API_URL: "http://api:8000"
+      LEGACY_TRACKING_DIR: "/legacy-api-data"
+    volumes:
+      - ./apps/api:/legacy-api-data:ro
     depends_on:
       - api
       - plane-db

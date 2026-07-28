@@ -51,6 +51,19 @@ func main() {
 		os.Exit(1)
 	}
 	cancelMigrations()
+	trackingStore := tracking.PostgreSQLStore{Pool: db.Native()}
+	if cfg.LegacyTrackingDir != "" {
+		importCtx, cancelImport := context.WithTimeout(ctx, 30*time.Second)
+		importStats, importErr := trackingStore.ImportLegacyJSON(importCtx, cfg.LegacyTrackingDir)
+		cancelImport()
+		if importErr != nil {
+			logger.Error("legacy blockchain tracking import failed", "error", importErr)
+			os.Exit(1)
+		}
+		logger.Info("legacy blockchain tracking import completed",
+			"files", importStats.Files, "records", importStats.Records,
+			"added", importStats.Added, "skipped", importStats.Skipped)
+	}
 	var legacyHandler http.Handler
 	var instanceHandler http.Handler
 	if cfg.LegacyAPIURL != "" {
@@ -74,8 +87,40 @@ func main() {
 				Store: auth.PostgreSQLSessionStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 				CookieDomain: cfg.CookieDomain, RedirectURL: cfg.AppBaseURL,
 			},
+			SignIn: auth.SignInHandler{
+				Store: auth.PostgreSQLSignInStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				CookieDomain: cfg.CookieDomain, AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret,
+				SessionAge: cfg.SessionAge,
+			},
+			ChangePassword: auth.PasswordHandler{Store: auth.PostgreSQLPasswordStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, SecretKey: cfg.SessionSecret},
+			SetPassword:    auth.PasswordHandler{Store: auth.PostgreSQLPasswordStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, SecretKey: cfg.SessionSecret, SetOnly: true},
+			EmailCheck: auth.EmailCheckHandler{Store: auth.PostgreSQLEmailCheckStore{
+				Pool: db.Native(), EmailHost: cfg.EmailHost, EnableMagicLogin: cfg.EnableMagicLogin,
+			}},
+			ForgotPassword: auth.ForgotPasswordHandler{
+				Store: auth.PostgreSQLForgotPasswordStore{Pool: db.Native()},
+				Sender: auth.SMTPResetSender{
+					Host: cfg.EmailHost, Port: cfg.EmailPort, Username: cfg.EmailHostUser,
+					Password: cfg.EmailHostPassword, From: cfg.EmailFrom,
+					UseTLS: cfg.EmailUseTLS, UseSSL: cfg.EmailUseSSL,
+				},
+				AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret,
+			},
+			ResetPassword: auth.ResetPasswordHandler{
+				Store:      auth.PostgreSQLResetPasswordStore{Pool: db.Native()},
+				AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret,
+				Timeout: cfg.PasswordResetTimeout,
+			},
+			SignUp: auth.SignUpHandler{
+				Store: auth.PostgreSQLSignUpStore{
+					Pool: db.Native(), EnableSignUp: cfg.EnableSignUp,
+					EnableEmailPassword: cfg.EnableEmailPassword,
+				},
+				SessionCookieName: cfg.SessionCookie, CookieDomain: cfg.CookieDomain,
+				AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret, SessionAge: cfg.SessionAge,
+			},
 			Tracking: tracking.Handler{
-				Store: tracking.PostgreSQLStore{Pool: db.Native()}, Legacy: legacyHandler,
+				Store: trackingStore,
 				Verifier: blockchain.Verifier{Config: blockchain.Config{
 					RPCURL: cfg.BlockchainRPCURL, ContractAddress: cfg.BlockchainContractAddress,
 					ChainID: cfg.BlockchainChainID, RPCTimeout: cfg.BlockchainRPCTimeout,
@@ -111,6 +156,9 @@ func main() {
 			},
 			ProjectMembers: projectmember.Handler{
 				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			}, ProjectMemberMe: projectmember.Handler{
+				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Current: true,
 			},
 			Labels: label.Handler{
 				Store: label.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,

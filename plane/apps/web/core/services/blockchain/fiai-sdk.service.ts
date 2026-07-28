@@ -12,6 +12,47 @@ const DEFAULT_FRAME_URLS = {
 
 let initPromise: Promise<FiaiSDK | null> | null = null;
 let sdkInstance: FiaiSDK | null = null;
+let lastSelectedWallet: unknown = null;
+
+type WalletBridgeSdk = FiaiSDK & {
+  __planeWalletBridge?: boolean;
+};
+
+function registerWalletSelectionBridge(sdk: FiaiSDK): void {
+  const bridgedSdk = sdk as WalletBridgeSdk;
+  if (bridgedSdk.__planeWalletBridge) return;
+  bridgedSdk.__planeWalletBridge = true;
+
+  const emitWalletSelected = (params: unknown) => {
+    const wallet = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+    lastSelectedWallet = wallet;
+    sdk.emit("onSetActiveWallet", wallet);
+    sdk.emit("wallet-changed", wallet);
+  };
+
+  sdk.interceptors.request.push((request) => {
+    if (request.action === "setActiveWalletDapp" || request.action === "setWalletActiveDApp") {
+      emitWalletSelected(request.params);
+    }
+    return request;
+  });
+
+  sdk.registerHostAction("setActiveWallet", async (params: unknown) => {
+    const wallet = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+
+    // Acknowledge immediately so Crypto Vault can leave the picker and show
+    // the password/signing screen.
+    emitWalletSelected(wallet);
+    void sdk
+      .request("setActiveWalletDapp", {
+        ...wallet,
+        domain: window.location.hostname,
+      })
+      .catch((error) => console.warn("Unable to persist the active MetaNode wallet:", error));
+
+    return { success: true };
+  });
+}
 
 function getFrameUrls() {
   return {
@@ -43,6 +84,14 @@ export function getFiaiSDK(): FiaiSDK | null {
   return sdkInstance;
 }
 
+export function getLastSelectedMetanodeWallet(): unknown {
+  return lastSelectedWallet;
+}
+
+export function clearLastSelectedMetanodeWallet(): void {
+  lastSelectedWallet = null;
+}
+
 export async function initFiaiSDK(): Promise<FiaiSDK | null> {
   if (typeof window === "undefined" || typeof document === "undefined") return null;
   if (sdkInstance && !sdkInstance.isDestroyed) return sdkInstance;
@@ -56,6 +105,7 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
     onError: (error) => console.error("FiaiSDK error:", error),
   })
     .then((sdk) => {
+      registerWalletSelectionBridge(sdk);
       sdkInstance = sdk;
       (window as FiaiSdkWindow).fiaiSDK = sdk;
       return sdk;
@@ -74,10 +124,10 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
 export function disposeFiaiSDK(): void {
   sdkInstance?.destroy();
   sdkInstance = null;
+  lastSelectedWallet = null;
   initPromise = null;
   if (typeof window !== "undefined") delete (window as FiaiSdkWindow).fiaiSDK;
 }
-
 
 export async function resetFiaiSDK(): Promise<FiaiSDK | null> {
   disposeFiaiSDK();

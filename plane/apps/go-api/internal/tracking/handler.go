@@ -1,14 +1,11 @@
 package tracking
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 )
 
 type Store interface {
@@ -24,7 +21,6 @@ type Verifier interface {
 type Handler struct {
 	Store             Store
 	Verifier          Verifier
-	Legacy            http.Handler
 	SessionCookieName string
 }
 
@@ -41,21 +37,16 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) get(w http.ResponseWriter, r *http.Request, slug, projectID string) {
-	goRecords := make([]map[string]any, 0)
-	var goErr error
-	if h.Store != nil {
-		goRecords, goErr = h.Store.List(r.Context(), slug, projectID, r.URL.Query().Get("assignee_id"))
-	}
-	legacyRecords, legacyStatus, legacyErr := h.readLegacy(r)
-	if goErr != nil && legacyErr != nil {
+	if h.Store == nil {
 		writeError(w, http.StatusServiceUnavailable, "tracking storage is unavailable")
 		return
 	}
-	if legacyErr != nil && len(goRecords) == 0 {
-		writeError(w, legacyStatus, "legacy tracking storage is unavailable")
+	records, err := h.Store.List(r.Context(), slug, projectID, r.URL.Query().Get("assignee_id"))
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "tracking storage is unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, mergeRecords(legacyRecords, goRecords))
+	writeJSON(w, http.StatusOK, records)
 }
 
 func (h Handler) post(w http.ResponseWriter, r *http.Request, slug, projectID string) {
@@ -110,17 +101,7 @@ func (h Handler) post(w http.ResponseWriter, r *http.Request, slug, projectID st
 			payload[key] = value
 		}
 		record, err = h.Store.RecordVerified(r.Context(), sessionKey, slug, projectID, payload)
-	} else if h.Legacy != nil {
-		raw, marshalErr := json.Marshal(payload)
-		if marshalErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON payload")
-			return
-		}
-		r.Body = http.NoBody
-		r.ContentLength = int64(len(raw))
-		r.Body = io.NopCloser(bytes.NewReader(raw))
-		h.Legacy.ServeHTTP(w, r)
-		return
+
 	} else {
 		writeError(w, http.StatusNotImplemented, "on-chain verification has not been migrated")
 		return
@@ -141,44 +122,6 @@ func (h Handler) post(w http.ResponseWriter, r *http.Request, slug, projectID st
 		return
 	}
 	writeJSON(w, http.StatusCreated, record)
-}
-
-func (h Handler) readLegacy(r *http.Request) ([]map[string]any, int, error) {
-	if h.Legacy == nil {
-		return nil, http.StatusServiceUnavailable, errors.New("legacy unavailable")
-	}
-	clone := r.Clone(r.Context())
-	recorder := httptest.NewRecorder()
-	h.Legacy.ServeHTTP(recorder, clone)
-	if recorder.Code < 200 || recorder.Code >= 300 {
-		return nil, recorder.Code, fmt.Errorf("legacy status %d", recorder.Code)
-	}
-	var records []map[string]any
-	if err := json.Unmarshal(recorder.Body.Bytes(), &records); err != nil {
-		return nil, http.StatusBadGateway, err
-	}
-	return records, recorder.Code, nil
-}
-
-func mergeRecords(groups ...[]map[string]any) []map[string]any {
-	result := make([]map[string]any, 0)
-	seen := make(map[string]struct{})
-	for _, records := range groups {
-		for _, record := range records {
-			key := fmt.Sprint(record["transaction_hash"])
-			if key == "<nil>" || key == "" {
-				key = fmt.Sprint(record["client_event_id"])
-			}
-			if key != "" && key != "<nil>" {
-				if _, exists := seen[key]; exists {
-					continue
-				}
-				seen[key] = struct{}{}
-			}
-			result = append(result, record)
-		}
-	}
-	return result
 }
 
 func empty(value any) bool {

@@ -80,12 +80,19 @@ export const ProjectAuthWrapper = observer(function ProjectAuthWrapper(props: IP
   }, []);
 
   // fetching project details
-  const { isLoading: isProjectDetailsLoading, error: projectDetailsError } = useSWR(
+  const {
+    data: projectDetails,
+    isLoading: isProjectDetailsLoading,
+    error: projectDetailsError,
+  } = useSWR(
     PROJECT_DETAILS(workspaceSlug, projectId),
     () => fetchProjectDetails(workspaceSlug, projectId)
   );
   // fetching user project member information
-  useSWR(PROJECT_ME_INFORMATION(workspaceSlug, projectId), () => fetchUserProjectInfo(workspaceSlug, projectId));
+  const { isLoading: isProjectPermissionLoading, error: projectPermissionError } = useSWR(
+    PROJECT_ME_INFORMATION(workspaceSlug, projectId),
+    () => fetchUserProjectInfo(workspaceSlug, projectId)
+  );
   // fetching project member preferences
   useSWR(
     currentUserData?.id ? PROJECT_MEMBER_PREFERENCES(projectId, currentProjectRole) : null,
@@ -142,14 +149,23 @@ export const ProjectAuthWrapper = observer(function ProjectAuthWrapper(props: IP
     joinProject(workspaceSlug, projectId).finally(() => setIsJoiningProject(false));
   };
 
-  const isProjectLoading = (isParentLoading || isProjectDetailsLoading) && !projectDetailsError;
+  const isProjectLoading =
+    isParentLoading ||
+    (isProjectDetailsLoading && !projectDetailsError) ||
+    (isProjectPermissionLoading && !projectPermissionError);
+
+  // A successful project-details response is authoritative: that endpoint
+  // already enforces workspace/project access on the API. Relying only on the
+  // asynchronously populated permission map can turn an accessible project into
+  // a misleading Project not found screen.
+  const canAccessCurrentProject = hasPermissionToCurrentProject || Boolean(projectDetails);
 
   if (isProjectLoading) return null;
 
-  if (!isProjectLoading && hasPermissionToCurrentProject === false) {
+  if (!isProjectLoading && !canAccessCurrentProject) {
     return (
       <ProjectAccessRestriction
-        errorStatusCode={projectDetailsError?.status}
+        errorStatusCode={projectDetailsError?.status ?? projectPermissionError?.status}
         isWorkspaceAdmin={isWorkspaceAdmin}
         handleJoinProject={handleJoinProject}
         isJoinButtonDisabled={isJoiningProject}

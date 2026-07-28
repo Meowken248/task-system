@@ -27,6 +27,45 @@ type PostgreSQLStore struct {
 	Pool *pgxpool.Pool
 }
 
+func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, projectID string) (Membership, error) {
+	if s.Pool == nil {
+		return Membership{}, errors.New("project member database unavailable")
+	}
+	if sessionKey == "" {
+		return Membership{}, ErrUnauthorized
+	}
+
+	var item Membership
+	err := s.Pool.QueryRow(ctx, `SELECT pm.id::text, pm.member_id::text, pm.role, pm.created_at
+		FROM sessions s
+		JOIN workspaces w ON w.slug = $2 AND w.deleted_at IS NULL
+		JOIN projects p ON p.id::text = $3 AND p.workspace_id = w.id
+			AND p.deleted_at IS NULL AND p.archived_at IS NULL
+		JOIN project_members pm ON pm.project_id = p.id AND pm.member_id::text = s.user_id
+			AND pm.is_active = TRUE AND pm.deleted_at IS NULL
+		WHERE s.session_key = $1 AND s.expire_date > NOW()`,
+		sessionKey, slug, projectID,
+	).Scan(&item.ID, &item.Member, &item.Role, &item.CreatedAt)
+	if err == nil {
+		item.OriginalRole = item.Role
+		return item, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Membership{}, fmt.Errorf("get current project member: %w", err)
+	}
+
+	var validSession bool
+	if err = s.Pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM sessions WHERE session_key = $1 AND expire_date > NOW())`,
+		sessionKey,
+	).Scan(&validSession); err != nil {
+		return Membership{}, fmt.Errorf("check current project member session: %w", err)
+	}
+	if !validSession {
+		return Membership{}, ErrUnauthorized
+	}
+	return Membership{}, ErrForbidden
+}
 func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, projectID string) ([]Membership, error) {
 	if s.Pool == nil {
 		return nil, errors.New("project member database unavailable")

@@ -13,24 +13,32 @@ type ReadinessChecker interface {
 }
 
 type Dependencies struct {
-	Readiness      ReadinessChecker
-	Legacy         http.Handler
-	Instance       http.Handler
-	CSRF           http.Handler
-	SignOut        http.Handler
-	Tracking       http.Handler
-	Workspaces     http.Handler
-	CurrentUser    http.Handler
-	UserProfile    http.Handler
-	UserSettings   http.Handler
-	ProjectsLite   http.Handler
-	Projects       http.Handler
-	Project        http.Handler
-	States         http.Handler
-	ProjectMembers http.Handler
-	Labels         http.Handler
-	Issues         http.Handler
-	Version        string
+	Readiness       ReadinessChecker
+	Legacy          http.Handler
+	Instance        http.Handler
+	CSRF            http.Handler
+	SignOut         http.Handler
+	SignIn          http.Handler
+	SignUp          http.Handler
+	EmailCheck      http.Handler
+	ForgotPassword  http.Handler
+	ResetPassword   http.Handler
+	ChangePassword  http.Handler
+	SetPassword     http.Handler
+	Tracking        http.Handler
+	Workspaces      http.Handler
+	CurrentUser     http.Handler
+	UserProfile     http.Handler
+	UserSettings    http.Handler
+	ProjectsLite    http.Handler
+	Projects        http.Handler
+	Project         http.Handler
+	States          http.Handler
+	ProjectMembers  http.Handler
+	ProjectMemberMe http.Handler
+	Labels          http.Handler
+	Issues          http.Handler
+	Version         string
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -62,8 +70,26 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.SignOut != nil {
 			portedGroups = append(portedGroups, "sign-out")
 		}
+		if deps.SignIn != nil {
+			portedGroups = append(portedGroups, "email-sign-in")
+		}
+		if deps.SignUp != nil {
+			portedGroups = append(portedGroups, "email-sign-up")
+		}
+		if deps.EmailCheck != nil {
+			portedGroups = append(portedGroups, "email-check")
+		}
+		if deps.ForgotPassword != nil {
+			portedGroups = append(portedGroups, "forgot-password")
+		}
+		if deps.ResetPassword != nil {
+			portedGroups = append(portedGroups, "reset-password")
+		}
+		if deps.ChangePassword != nil && deps.SetPassword != nil {
+			portedGroups = append(portedGroups, "password-management")
+		}
 		if deps.Tracking != nil {
-			portedGroups = append(portedGroups, "blockchain-receipt-verification", "blockchain-tracking")
+			portedGroups = append(portedGroups, "blockchain-receipt-verification", "blockchain-tracking", "blockchain-json-import")
 		}
 		if deps.Workspaces != nil {
 			portedGroups = append(portedGroups, "user-workspaces")
@@ -80,14 +106,14 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.States != nil {
 			portedGroups = append(portedGroups, "project-state-reads")
 		}
-		if deps.ProjectMembers != nil {
+		if deps.ProjectMembers != nil || deps.ProjectMemberMe != nil {
 			portedGroups = append(portedGroups, "project-member-reads")
 		}
 		if deps.Labels != nil {
 			portedGroups = append(portedGroups, "project-label-reads")
 		}
 		if deps.Issues != nil {
-			portedGroups = append(portedGroups, "basic-work-item-reads")
+			portedGroups = append(portedGroups, "basic-work-item-reads", "basic-work-item-writes")
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
@@ -102,6 +128,27 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	if deps.SignOut != nil {
 		mux.Handle("POST /auth/sign-out/", deps.SignOut)
+	}
+	if deps.SignIn != nil {
+		mux.Handle("POST /auth/sign-in/", deps.SignIn)
+	}
+	if deps.SignUp != nil {
+		mux.Handle("POST /auth/sign-up/", deps.SignUp)
+	}
+	if deps.EmailCheck != nil {
+		mux.Handle("POST /auth/email-check/", deps.EmailCheck)
+	}
+	if deps.ForgotPassword != nil {
+		mux.Handle("POST /auth/forgot-password/", deps.ForgotPassword)
+	}
+	if deps.ResetPassword != nil {
+		mux.Handle("POST /auth/reset-password/{uidb64}/{token}/", deps.ResetPassword)
+	}
+	if deps.ChangePassword != nil {
+		mux.Handle("POST /auth/change-password/", deps.ChangePassword)
+	}
+	if deps.SetPassword != nil {
+		mux.Handle("POST /auth/set-password/", deps.SetPassword)
 	}
 	if deps.Workspaces != nil {
 		mux.Handle("GET /api/users/me/workspaces/", deps.Workspaces)
@@ -118,7 +165,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.ProjectsLite != nil {
 		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil {
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Legacy != nil {
@@ -159,6 +206,12 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.ProjectMembers.ServeHTTP(w, r)
 		return
 	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "project-members" && parts[2] == "me" &&
+		r.Method == http.MethodGet && h.deps.ProjectMemberMe != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.ProjectMemberMe.ServeHTTP(w, r)
+		return
+	}
 	if len(parts) == 2 && parts[0] != "" && parts[1] == "issue-labels" &&
 		r.Method == http.MethodGet && h.deps.Labels != nil {
 		r.SetPathValue("project_id", parts[0])
@@ -179,14 +232,14 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.States.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 2 && parts[0] != "" && parts[1] == "issues" && r.Method == http.MethodGet &&
-		h.deps.Issues != nil && canServeBasicIssueRead(r) {
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "issues" && h.deps.Issues != nil &&
+		((r.Method == http.MethodGet && canServeBasicIssueRead(r)) || r.Method == http.MethodPost) {
 		r.SetPathValue("project_id", parts[0])
 		h.deps.Issues.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 3 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" &&
-		r.Method == http.MethodGet && h.deps.Issues != nil && canServeBasicIssueRead(r) {
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && h.deps.Issues != nil &&
+		((r.Method == http.MethodGet && canServeBasicIssueRead(r)) || r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		h.deps.Issues.ServeHTTP(w, r)

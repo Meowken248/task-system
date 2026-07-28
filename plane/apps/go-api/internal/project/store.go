@@ -96,9 +96,7 @@ func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, pr
 	if err != nil {
 		return nil, err
 	}
-	row := s.Pool.QueryRow(ctx, projectQuery+`
-		WHERE p.workspace_id::text = $1 AND p.id::text = $4 AND p.deleted_at IS NULL AND p.archived_at IS NULL`,
-		a.workspaceID, a.userID, a.role, projectID)
+	row := s.Pool.QueryRow(ctx, getProjectByIDQuery, a.workspaceID, a.userID, projectID)
 	item, err := scanProject(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -106,13 +104,20 @@ func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, pr
 	if err != nil {
 		return nil, err
 	}
-	if item["member_role"] == nil {
-		if network, _ := numberAsInt(item["network"]); network == 0 {
-			return nil, ErrForbidden
-		}
+	network, _ := numberAsInt(item["network"])
+	if !canAccessProject(a.role, item["member_role"] != nil, network) {
 		return nil, ErrNotFound
 	}
 	return item, nil
+}
+
+// canAccessProject mirrors the visibility rules used by ListForSession.
+// Workspace admins can open every project, workspace members can also open
+// public projects, and guests need an explicit project membership.
+func canAccessProject(workspaceRole int, hasProjectMembership bool, network int) bool {
+	return workspaceRole == 20 ||
+		(workspaceRole == 15 && (hasProjectMembership || network == 2)) ||
+		(workspaceRole == 5 && hasProjectMembership)
 }
 
 const projectQuery = `SELECT to_jsonb(p), member.role, property.sort_order,
@@ -130,6 +135,9 @@ const projectQuery = `SELECT to_jsonb(p), member.role, property.sort_order,
 		AND pm.member_id::text = $2 AND pm.is_active = TRUE AND pm.deleted_at IS NULL LIMIT 1) member ON TRUE
 	LEFT JOIN LATERAL (SELECT pup.sort_order FROM project_user_properties pup WHERE pup.project_id = p.id
 		AND pup.user_id::text = $2 AND pup.deleted_at IS NULL LIMIT 1) property ON TRUE `
+
+const getProjectByIDQuery = projectQuery + `
+	WHERE p.workspace_id::text = $1 AND p.id::text = $3 AND p.deleted_at IS NULL AND p.archived_at IS NULL`
 
 type rowScanner interface {
 	Scan(...any) error

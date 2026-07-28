@@ -181,7 +181,7 @@ func TestLabelReadsUseGoHandlerButMutationUsesLegacy(t *testing.T) {
 	}
 }
 
-func TestBasicIssueReadsUseGoAndComplexReadsUseLegacy(t *testing.T) {
+func TestBasicIssueCRUDUsesGoAndComplexReadsUseLegacy(t *testing.T) {
 	issues := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("project_id") != "project-1" {
 			t.Fatalf("project_id=%q", r.PathValue("project_id"))
@@ -197,13 +197,40 @@ func TestBasicIssueReadsUseGoAndComplexReadsUseLegacy(t *testing.T) {
 		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issues/issue-1/", http.StatusOK},
 		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issues/?group_by=state", http.StatusTeapot},
 		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issues/issue-1/?expand=assignees", http.StatusTeapot},
-		{http.MethodPost, "/api/workspaces/demo/projects/project-1/issues/", http.StatusTeapot},
+		{http.MethodPost, "/api/workspaces/demo/projects/project-1/issues/", http.StatusOK},
+		{http.MethodPatch, "/api/workspaces/demo/projects/project-1/issues/issue-1/", http.StatusOK},
+		{http.MethodDelete, "/api/workspaces/demo/projects/project-1/issues/issue-1/", http.StatusOK},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		res := httptest.NewRecorder()
 		NewRouter(Dependencies{Issues: issues, Legacy: legacy}).ServeHTTP(res, req)
 		if res.Code != tc.want {
 			t.Fatalf("method=%s path=%s status=%d want=%d", tc.method, tc.path, res.Code, tc.want)
+		}
+	}
+}
+
+func TestPasswordRecoveryRoutesUseGoHandlers(t *testing.T) {
+	forgot := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	reset := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("uidb64") != "dXNlcg" || r.PathValue("token") != "token-value" {
+			t.Fatalf("uid=%q token=%q", r.PathValue("uidb64"), r.PathValue("token"))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	legacy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/auth/forgot-password/", http.StatusAccepted},
+		{"/auth/reset-password/dXNlcg/token-value/", http.StatusNoContent},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+		res := httptest.NewRecorder()
+		NewRouter(Dependencies{ForgotPassword: forgot, ResetPassword: reset, Legacy: legacy}).ServeHTTP(res, req)
+		if res.Code != tc.want {
+			t.Fatalf("path=%s status=%d want=%d", tc.path, res.Code, tc.want)
 		}
 	}
 }

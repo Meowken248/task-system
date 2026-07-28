@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,12 @@ import (
 type Reader interface {
 	ListForSession(context.Context, string, string, string, int, int) (Page, error)
 	GetForSession(context.Context, string, string, string, string) (Item, error)
+}
+
+type Writer interface {
+	CreateForSession(context.Context, string, string, string, WritePayload) (Item, error)
+	UpdateForSession(context.Context, string, string, string, string, WritePayload) (Item, error)
+	DeleteForSession(context.Context, string, string, string, string) error
 }
 
 type Handler struct {
@@ -32,17 +39,50 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(cookieName); err == nil {
 		sessionKey = cookie.Value
 	}
+	slug, projectID, issueID := r.PathValue("slug"), r.PathValue("project_id"), r.PathValue("issue_id")
 	var payload any
 	var err error
-	if issueID := r.PathValue("issue_id"); issueID != "" {
-		payload, err = h.Store.GetForSession(r.Context(), sessionKey, r.PathValue("slug"), r.PathValue("project_id"), issueID)
-	} else {
+	statusCode := http.StatusOK
+
+	switch r.Method {
+	case http.MethodGet:
+		if issueID != "" {
+			payload, err = h.Store.GetForSession(r.Context(), sessionKey, slug, projectID, issueID)
+			break
+		}
 		limit, offset, parseErr := parseCursor(r.URL.Query().Get("cursor"), r.URL.Query().Get("per_page"))
 		if parseErr != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Invalid cursor parameter."})
 			return
 		}
-		payload, err = h.Store.ListForSession(r.Context(), sessionKey, r.PathValue("slug"), r.PathValue("project_id"), limit, offset)
+		payload, err = h.Store.ListForSession(r.Context(), sessionKey, slug, projectID, limit, offset)
+	case http.MethodPost, http.MethodPatch, http.MethodDelete:
+		writer, ok := h.Store.(Writer)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "work item writes are unavailable"})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			err = writer.DeleteForSession(r.Context(), sessionKey, slug, projectID, issueID)
+			statusCode = http.StatusNoContent
+			break
+		}
+		var input WritePayload
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		if decodeErr := decoder.Decode(&input); decodeErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid work item payload."})
+			return
+		}
+		if r.Method == http.MethodPost {
+			payload, err = writer.CreateForSession(r.Context(), sessionKey, slug, projectID, input)
+			statusCode = http.StatusCreated
+		} else {
+			payload, err = writer.UpdateForSession(r.Context(), sessionKey, slug, projectID, issueID, input)
+		}
+	default:
+		w.Header().Set("Allow", "GET, POST, PATCH, DELETE")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
 	}
 	if err != nil {
 		switch {
@@ -52,14 +92,22 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "You do not have permission"})
 		case errors.Is(err, ErrNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Work item does not exist"})
+		case errors.Is(err, ErrInvalid):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrConflict):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		default:
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "work item storage is unavailable"})
 		}
 		return
 	}
+	if statusCode == http.StatusNoContent {
+		w.WriteHeader(statusCode)
+		return
+	}
 	w.Header().Set("Cache-Control", "private, max-age=5")
 	w.Header().Add("Vary", "Cookie")
-	writeJSON(w, http.StatusOK, payload)
+	writeJSON(w, statusCode, payload)
 }
 
 func parseCursor(cursor, perPage string) (int, int, error) {
