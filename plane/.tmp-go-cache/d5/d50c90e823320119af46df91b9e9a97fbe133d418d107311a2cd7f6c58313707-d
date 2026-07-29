@@ -1,0 +1,10 @@
+./csrf.go
+./django_session.go
+./emailcheck.go
+./forgot.go
+./password.go
+./reset.go
+./session.go
+./signin.go
+./signout.go
+./signup.go

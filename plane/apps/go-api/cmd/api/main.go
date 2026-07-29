@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/makeplane/plane/apps/go-api/internal/activity"
+	"github.com/makeplane/plane/apps/go-api/internal/analytic"
 	"github.com/makeplane/plane/apps/go-api/internal/archive"
 	"github.com/makeplane/plane/apps/go-api/internal/asset"
 	"github.com/makeplane/plane/apps/go-api/internal/auth"
@@ -20,18 +21,21 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/config"
 	"github.com/makeplane/plane/apps/go-api/internal/cycle"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
+	"github.com/makeplane/plane/apps/go-api/internal/estimate"
 	"github.com/makeplane/plane/apps/go-api/internal/favorite"
 	"github.com/makeplane/plane/apps/go-api/internal/httpapi"
 	"github.com/makeplane/plane/apps/go-api/internal/instance"
+	"github.com/makeplane/plane/apps/go-api/internal/intake"
 	"github.com/makeplane/plane/apps/go-api/internal/issue"
 	"github.com/makeplane/plane/apps/go-api/internal/label"
-	"github.com/makeplane/plane/apps/go-api/internal/legacy"
 	"github.com/makeplane/plane/apps/go-api/internal/link"
 	"github.com/makeplane/plane/apps/go-api/internal/module"
+	"github.com/makeplane/plane/apps/go-api/internal/notification"
 	"github.com/makeplane/plane/apps/go-api/internal/project"
 	"github.com/makeplane/plane/apps/go-api/internal/projectmember"
 	"github.com/makeplane/plane/apps/go-api/internal/reaction"
 	"github.com/makeplane/plane/apps/go-api/internal/relation"
+	"github.com/makeplane/plane/apps/go-api/internal/search"
 	"github.com/makeplane/plane/apps/go-api/internal/state"
 	"github.com/makeplane/plane/apps/go-api/internal/subissue"
 	"github.com/makeplane/plane/apps/go-api/internal/subscriber"
@@ -39,6 +43,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/tracking"
 	"github.com/makeplane/plane/apps/go-api/internal/user"
 	"github.com/makeplane/plane/apps/go-api/internal/view"
+	"github.com/makeplane/plane/apps/go-api/internal/worker"
 	"github.com/makeplane/plane/apps/go-api/internal/workspace"
 )
 
@@ -79,24 +84,15 @@ func main() {
 			"files", importStats.Files, "records", importStats.Records,
 			"added", importStats.Added, "skipped", importStats.Skipped)
 	}
-	var legacyHandler http.Handler
-	var instanceHandler http.Handler
-	if cfg.LegacyAPIURL != "" {
-		legacyHandler, err = legacy.NewProxy(cfg.LegacyAPIURL)
-		if err != nil {
-			logger.Error("legacy proxy initialization failed", "error", err)
-			os.Exit(1)
-		}
-		instanceHandler, err = instance.NewHandler(cfg.LegacyAPIURL, 2*time.Minute)
-		if err != nil {
-			logger.Error("instance handler initialization failed", "error", err)
-			os.Exit(1)
-		}
-	}
+
+	workerManager := worker.NewManager(db.Native(), logger)
+	workerManager.Start()
+	defer workerManager.Stop()
+
 	server := &http.Server{
 		Addr: cfg.Address,
 		Handler: httpapi.NewRouter(httpapi.Dependencies{
-			Readiness: db, Legacy: legacyHandler, Instance: instanceHandler,
+			Readiness: db,
 			CSRF: auth.CSRFHandler{CookieDomain: cfg.CookieDomain},
 			SignOut: auth.SignOutHandler{
 				Store: auth.PostgreSQLSessionStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
@@ -156,11 +152,11 @@ func main() {
 				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			ProjectsLite: project.Handler{
-				Store: project.PostgreSQLStore{Pool: db.Native()}, Legacy: legacyHandler,
+				Store: project.PostgreSQLStore{Pool: db.Native()},
 				SessionCookieName: cfg.SessionCookie,
 			},
 			Projects: project.Handler{
-				Store: project.PostgreSQLStore{Pool: db.Native()}, Legacy: legacyHandler,
+				Store: project.PostgreSQLStore{Pool: db.Native()},
 				SessionCookieName: cfg.SessionCookie, Detailed: true,
 			},
 			Project: project.Handler{
@@ -171,10 +167,17 @@ func main() {
 			},
 			ProjectMembers: projectmember.Handler{
 				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
-			}, ProjectMemberMe: projectmember.Handler{
+			},
+			ProjectMemberMe: projectmember.Handler{
 				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 				Current: true,
 			},
+			Notification:  notification.Handler{Store: notification.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Estimate:      estimate.Handler{Store: estimate.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Search:        search.Handler{Store: search.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Analytic:      analytic.Handler{Store: analytic.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Instances:     instance.NewHandler(instance.PostgreSQLStore{Pool: db.Native()}, cfg.SessionCookie),
+			Intake:        intake.Handler{Store: intake.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Labels: label.Handler{
 				Store: label.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
@@ -233,7 +236,7 @@ func main() {
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 	go func() {
-		logger.Info("Go API listening", "address", cfg.Address, "legacy_fallback", cfg.LegacyAPIURL != "")
+		logger.Info("Go API listening", "address", cfg.Address, "legacy_fallback", false)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("HTTP server failed", "error", err)
 			stop()

@@ -70,6 +70,8 @@ type IssueFilter struct {
 	Assignees  string
 	CreatedBy  string
 	OrderBy    string
+	GroupBy    string
+	SubGroupBy string
 }
 
 type PostgreSQLStore struct{ Pool *pgxpool.Pool }
@@ -163,6 +165,10 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 		orderBy = "ORDER BY i.created_at ASC"
 	}
 
+	if filter.GroupBy != "" {
+		return s.groupItems(ctx, projectID, filter, baseQuery, args, argIdx, orderBy)
+	}
+
 	var total int
 	if err := s.Pool.QueryRow(ctx, `SELECT COUNT(*)` + baseQuery, args...).Scan(&total); err != nil {
 		return Page{}, fmt.Errorf("count work items: %w", err)
@@ -228,4 +234,64 @@ func makePage(items []Item, total, limit, offset int) Page {
 		NextCursor: fmt.Sprintf("%d:%d:0", limit, nextOffset), PrevCursor: fmt.Sprintf("%d:%d:0", limit, prevOffset),
 		NextPage: nextOffset < total, PrevPage: offset > 0, Count: len(items), TotalPages: totalPages,
 		ExtraStats: nil, Results: items}
+}
+
+func (s PostgreSQLStore) groupItems(ctx context.Context, projectID string, filter IssueFilter, baseQuery string, args []any, argIdx int, orderBy string) (Page, error) {
+	// 1. Load all matching items (for grouping we usually load all or a large limit)
+	query := `SELECT ` + itemColumns + baseQuery + ` ` + orderBy
+	rows, err := s.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return Page{}, fmt.Errorf("list work items for grouping: %w", err)
+	}
+	defer rows.Close()
+	
+	items := make([]Item, 0)
+	for rows.Next() {
+		item, scanErr := scan(rows)
+		if scanErr != nil {
+			return Page{}, fmt.Errorf("scan work item for grouping: %w", scanErr)
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return Page{}, fmt.Errorf("iterate work items for grouping: %w", err)
+	}
+
+	// 2. Perform grouping in memory
+	grouped := make(map[string]map[string]any)
+	for _, item := range items {
+		var groupKey string
+		switch filter.GroupBy {
+		case "state", "state_id":
+			if item.StateID != nil {
+				groupKey = *item.StateID
+			}
+		case "priority":
+			groupKey = item.Priority
+		default:
+			groupKey = "None"
+		}
+		if groupKey == "" {
+			groupKey = "None"
+		}
+
+		if _, exists := grouped[groupKey]; !exists {
+			grouped[groupKey] = map[string]any{
+				"results": []Item{},
+				"count":   0,
+			}
+		}
+
+		group := grouped[groupKey]
+		results := group["results"].([]Item)
+		results = append(results, item)
+		group["results"] = results
+		group["count"] = len(results)
+	}
+
+	return Page{
+		GroupedBy:  grouped,
+		TotalCount: len(items),
+		Count:      len(items),
+	}, nil
 }

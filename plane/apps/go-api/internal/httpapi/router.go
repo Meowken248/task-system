@@ -14,8 +14,6 @@ type ReadinessChecker interface {
 
 type Dependencies struct {
 	Readiness       ReadinessChecker
-	Legacy          http.Handler
-	Instance        http.Handler
 	CSRF            http.Handler
 	SignOut         http.Handler
 	SignIn          http.Handler
@@ -52,6 +50,12 @@ type Dependencies struct {
 	Views           http.Handler
 	CommentReactions http.Handler
 	Assets          http.Handler
+	Notification    http.Handler
+	Estimate        http.Handler
+	Search          http.Handler
+	Analytic        http.Handler
+	Instances       http.Handler
+	Intake          http.Handler
 	Version         string
 }
 
@@ -75,9 +79,6 @@ func NewRouter(deps Dependencies) http.Handler {
 	})
 	mux.HandleFunc("GET /api/go/migration-status", func(w http.ResponseWriter, _ *http.Request) {
 		portedGroups := []string{"health"}
-		if deps.Instance != nil {
-			portedGroups = append(portedGroups, "instance-info-cache")
-		}
 		if deps.CSRF != nil {
 			portedGroups = append(portedGroups, "csrf")
 		}
@@ -164,14 +165,15 @@ func NewRouter(deps Dependencies) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
-			"legacy_fallback": deps.Legacy != nil, "ported_groups": portedGroups,
+			"legacy_fallback": false, "ported_groups": portedGroups,
 		})
 	})
-	if deps.Instance != nil {
-		mux.Handle("GET /api/instances/", deps.Instance)
-	}
+
 	if deps.CSRF != nil {
 		mux.Handle("GET /auth/get-csrf-token/", deps.CSRF)
+	}
+	if deps.Instances != nil {
+		mux.Handle("/api/instances/", deps.Instances)
 	}
 	if deps.SignOut != nil {
 		mux.Handle("POST /auth/sign-out/", deps.SignOut)
@@ -231,14 +233,30 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/{asset_id}/", deps.Assets)
 		mux.Handle("/api/assets/v2/workspaces/{slug}/{asset_id}/", deps.Assets) // For workspace logos, page descriptions, etc.
 	}
-	if deps.Legacy != nil {
-		mux.Handle("/", deps.Legacy)
-	} else {
-		mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not migrated"})
-		})
-	}
-	return requestID(mux)
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not migrated or does not exist"})
+	})
+	return corsMiddleware(requestID(mux))
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, X-Workspace-Id, Sentry-Trace, Baggage")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type projectRoutes struct {
@@ -491,27 +509,22 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.CommentReactions.ServeHTTP(w, r)
 		return
 	}
-	if h.deps.Legacy != nil {
-		h.deps.Legacy.ServeHTTP(w, r)
-		return
-	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not migrated"})
 }
 
-// The legacy API still owns grouped, filtered and expanded work-item reads. Keeping
+// The legacy API still owns expanded work-item reads. Keeping
 // this gate explicit prevents a partial Go response from silently breaking clients.
 func canServeBasicIssueRead(r *http.Request) bool {
 	for key, values := range r.URL.Query() {
 		switch key {
-		case "cursor", "per_page":
+		case "cursor", "per_page", "group_by", "sub_group_by":
 		case "order_by":
 			if len(values) != 1 || (values[0] != "-created_at" && values[0] != "created_at") {
 				return false
 			}
 		default:
-			// If it's a simple list request with filters but NO group_by, we could theoretically handle it, 
-			// but for now we route group_by and sub_group_by to Python to not break the Kanban board.
-			if key == "group_by" || key == "sub_group_by" || key == "expand" {
+			// We now handle group_by and sub_group_by natively in Go!
+			if key == "expand" {
 				return false
 			}
 		}

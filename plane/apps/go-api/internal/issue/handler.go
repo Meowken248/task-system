@@ -65,6 +65,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Assignees: r.URL.Query().Get("assignees"),
 			CreatedBy: r.URL.Query().Get("created_by"),
 			OrderBy: r.URL.Query().Get("order_by"),
+			GroupBy: r.URL.Query().Get("group_by"),
+			SubGroupBy: r.URL.Query().Get("sub_group_by"),
 		}
 		
 		payload, err = h.Store.ListForSession(r.Context(), sessionKey, slug, projectID, filter)

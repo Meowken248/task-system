@@ -43,7 +43,14 @@ func (h Handler) get(w http.ResponseWriter, r *http.Request, slug, projectID str
 	}
 	records, err := h.Store.List(r.Context(), slug, projectID, r.URL.Query().Get("assignee_id"))
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "tracking storage is unavailable")
+		switch {
+		case errors.Is(err, ErrUnauthorized):
+			writeError(w, http.StatusUnauthorized, err.Error())
+		case errors.Is(err, ErrForbidden):
+			writeError(w, http.StatusForbidden, err.Error())
+		default:
+			writeError(w, http.StatusServiceUnavailable, "tracking storage is unavailable")
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, records)
