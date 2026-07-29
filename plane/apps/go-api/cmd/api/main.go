@@ -21,8 +21,11 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/issue"
 	"github.com/makeplane/plane/apps/go-api/internal/label"
 	"github.com/makeplane/plane/apps/go-api/internal/legacy"
+	"github.com/makeplane/plane/apps/go-api/internal/link"
 	"github.com/makeplane/plane/apps/go-api/internal/project"
 	"github.com/makeplane/plane/apps/go-api/internal/projectmember"
+	"github.com/makeplane/plane/apps/go-api/internal/reaction"
+	"github.com/makeplane/plane/apps/go-api/internal/relation"
 	"github.com/makeplane/plane/apps/go-api/internal/state"
 	"github.com/makeplane/plane/apps/go-api/internal/tracking"
 	"github.com/makeplane/plane/apps/go-api/internal/user"
@@ -173,6 +176,15 @@ func main() {
 			},
 			Activities: activity.Handler{
 				Store: activity.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Relations: relation.Handler{
+				Store: relation.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Links: link.Handler{
+				Store: link.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Reactions: reaction.Handler{
+				Store: reaction.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Version: version,
 		}),

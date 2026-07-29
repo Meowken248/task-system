@@ -40,6 +40,9 @@ type Dependencies struct {
 	Issues          http.Handler
 	Comments        http.Handler
 	Activities      http.Handler
+	Relations       http.Handler
+	Links           http.Handler
+	Reactions       http.Handler
 	Version         string
 }
 
@@ -123,6 +126,15 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Activities != nil {
 			portedGroups = append(portedGroups, "issue-activity-history")
 		}
+		if deps.Relations != nil {
+			portedGroups = append(portedGroups, "issue-relations")
+		}
+		if deps.Links != nil {
+			portedGroups = append(portedGroups, "issue-links")
+		}
+		if deps.Reactions != nil {
+			portedGroups = append(portedGroups, "issue-reactions")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": deps.Legacy != nil, "ported_groups": portedGroups,
@@ -173,7 +185,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.ProjectsLite != nil {
 		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil {
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Legacy != nil {
@@ -281,6 +293,54 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		h.deps.Activities.ServeHTTP(w, r)
+		return
+	}
+	// Issue relations: .../issues/{issue_id}/issue-relation/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-relation" &&
+		h.deps.Relations != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Relations.ServeHTTP(w, r)
+		return
+	}
+	// Issue remove relations: .../issues/{issue_id}/remove-relation/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "remove-relation" &&
+		h.deps.Relations != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Relations.ServeHTTP(w, r)
+		return
+	}
+	// Issue links: .../issues/{issue_id}/issue-links/ and .../issues/{issue_id}/issue-links/{link_id}/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-links" &&
+		h.deps.Links != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Links.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 5 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-links" && parts[4] != "" &&
+		h.deps.Links != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		r.SetPathValue("link_id", parts[4])
+		h.deps.Links.ServeHTTP(w, r)
+		return
+	}
+	// Issue reactions: .../issues/{issue_id}/reactions/ and .../issues/{issue_id}/reactions/{reaction_code}/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "reactions" &&
+		h.deps.Reactions != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Reactions.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 5 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "reactions" && parts[4] != "" &&
+		h.deps.Reactions != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		r.SetPathValue("reaction_code", parts[4])
+		h.deps.Reactions.ServeHTTP(w, r)
 		return
 	}
 	if h.deps.Legacy != nil {
