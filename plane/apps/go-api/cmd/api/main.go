@@ -17,6 +17,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/comment"
 	"github.com/makeplane/plane/apps/go-api/internal/config"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
+	"github.com/makeplane/plane/apps/go-api/internal/favorite"
 	"github.com/makeplane/plane/apps/go-api/internal/httpapi"
 	"github.com/makeplane/plane/apps/go-api/internal/instance"
 	"github.com/makeplane/plane/apps/go-api/internal/issue"
@@ -197,6 +198,9 @@ func main() {
 			},
 			Subissues: subissue.Handler{
 				Store: subissue.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Favorites: favorite.Handler{
+				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Version: version,
 		}),

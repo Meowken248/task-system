@@ -46,6 +46,7 @@ type Dependencies struct {
 	Subscribers     http.Handler
 	Archives        http.Handler
 	Subissues       http.Handler
+	Favorites       http.Handler
 	Version         string
 }
 
@@ -150,6 +151,12 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Projects != nil {
 			portedGroups = append(portedGroups, "project-mutations")
 		}
+		if deps.Favorites != nil {
+			portedGroups = append(portedGroups, "user-favorites")
+		}
+		if deps.Workspaces != nil {
+			portedGroups = append(portedGroups, "workspace-mutations")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": deps.Legacy != nil, "ported_groups": portedGroups,
@@ -186,6 +193,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("POST /auth/set-password/", deps.SetPassword)
 	}
 	if deps.Workspaces != nil {
+		mux.Handle("/api/workspaces/", deps.Workspaces)
+		mux.Handle("/api/workspaces/{slug}/", deps.Workspaces)
 		mux.Handle("GET /api/users/me/workspaces/", deps.Workspaces)
 	}
 	if deps.CurrentUser != nil {
@@ -205,6 +214,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
+	}
+	if deps.Favorites != nil {
+		mux.Handle("/api/workspaces/{slug}/user-favorites/", deps.Favorites)
+		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/", deps.Favorites)
+		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/group/", deps.Favorites)
 	}
 	if deps.Legacy != nil {
 		mux.Handle("/", deps.Legacy)

@@ -21,6 +21,18 @@ func (s *listerStub) ListForSession(_ context.Context, session string, fields []
 	return s.workspaces, s.err
 }
 
+func (s *listerStub) Create(_ context.Context, _ string, _ WorkspacePayload) (map[string]any, error) {
+	return map[string]any{}, s.err
+}
+
+func (s *listerStub) Update(_ context.Context, _, _ string, _ map[string]any) (map[string]any, error) {
+	return map[string]any{}, s.err
+}
+
+func (s *listerStub) Delete(_ context.Context, _, _ string) error {
+	return s.err
+}
+
 func TestHandlerListsAuthenticatedUserWorkspaces(t *testing.T) {
 	store := &listerStub{workspaces: []map[string]any{{"id": "workspace-id", "slug": "demo"}}}
 	req := httptest.NewRequest(http.MethodGet, "/api/users/me/workspaces/?fields=id,slug", nil)
