@@ -38,6 +38,8 @@ type Dependencies struct {
 	ProjectMemberMe http.Handler
 	Labels          http.Handler
 	Issues          http.Handler
+	Comments        http.Handler
+	Activities      http.Handler
 	Version         string
 }
 
@@ -115,6 +117,12 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Issues != nil {
 			portedGroups = append(portedGroups, "basic-work-item-reads", "basic-work-item-writes")
 		}
+		if deps.Comments != nil {
+			portedGroups = append(portedGroups, "issue-comments")
+		}
+		if deps.Activities != nil {
+			portedGroups = append(portedGroups, "issue-activity-history")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": deps.Legacy != nil, "ported_groups": portedGroups,
@@ -165,7 +173,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.ProjectsLite != nil {
 		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil {
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Legacy != nil {
@@ -249,6 +257,30 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		(r.Method == http.MethodGet || r.Method == http.MethodPost) && h.deps.Tracking != nil {
 		r.SetPathValue("project_id", parts[0])
 		h.deps.Tracking.ServeHTTP(w, r)
+		return
+	}
+	// Issue comments: .../issues/{issue_id}/comments/ and .../issues/{issue_id}/comments/{comment_id}/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "comments" &&
+		h.deps.Comments != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Comments.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 5 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "comments" && parts[4] != "" &&
+		h.deps.Comments != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		r.SetPathValue("comment_id", parts[4])
+		h.deps.Comments.ServeHTTP(w, r)
+		return
+	}
+	// Issue activity history: .../issues/{issue_id}/history/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "history" &&
+		r.Method == http.MethodGet && h.deps.Activities != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Activities.ServeHTTP(w, r)
 		return
 	}
 	if h.deps.Legacy != nil {

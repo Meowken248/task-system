@@ -10,8 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/makeplane/plane/apps/go-api/internal/activity"
 	"github.com/makeplane/plane/apps/go-api/internal/auth"
 	"github.com/makeplane/plane/apps/go-api/internal/blockchain"
+	"github.com/makeplane/plane/apps/go-api/internal/comment"
 	"github.com/makeplane/plane/apps/go-api/internal/config"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
 	"github.com/makeplane/plane/apps/go-api/internal/httpapi"
@@ -165,6 +167,12 @@ func main() {
 			},
 			Issues: issue.Handler{
 				Store: issue.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Comments: comment.Handler{
+				Store: comment.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Activities: activity.Handler{
+				Store: activity.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Version: version,
 		}),

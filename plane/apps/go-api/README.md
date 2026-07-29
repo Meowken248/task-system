@@ -30,6 +30,10 @@ Current phase:
   list/detail reads plus transactional create, patch, and soft-delete writes.
   Filtered, grouped, and expanded queries continue through Django until
   compatibility is complete.
+- Go owns issue comment CRUD (list, create, patch, delete) with
+  guest-permission enforcement, Description-table sync, and activity recording.
+- Go owns the issue activity/history timeline endpoint with
+  `activity_type` and `created_at__gt` filtering.
 - Write methods on partially migrated project resources deliberately continue
   to Django until their transaction and permission behavior is ported.
 - The fallback must be removed before Python is retired.
@@ -61,6 +65,6 @@ A route group can leave Django only after its Go implementation has API
 compatibility tests and the frontend has been exercised against it.
 
 Remaining Python areas include OAuth/magic-code/social auth flows,
-workspace/project mutations, advanced issue queries, comments/attachments, file
-storage, background workers, email, and integrations.
+workspace/project mutations, advanced issue queries, comment reactions,
+attachments, file storage, background workers, email, and integrations.
 Until each area has been ported and tested, `LEGACY_API_URL` remains required.
