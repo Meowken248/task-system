@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/makeplane/plane/apps/go-api/internal/activity"
+	"github.com/makeplane/plane/apps/go-api/internal/archive"
 	"github.com/makeplane/plane/apps/go-api/internal/auth"
 	"github.com/makeplane/plane/apps/go-api/internal/blockchain"
 	"github.com/makeplane/plane/apps/go-api/internal/comment"
@@ -27,6 +28,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/reaction"
 	"github.com/makeplane/plane/apps/go-api/internal/relation"
 	"github.com/makeplane/plane/apps/go-api/internal/state"
+	"github.com/makeplane/plane/apps/go-api/internal/subscriber"
 	"github.com/makeplane/plane/apps/go-api/internal/tracking"
 	"github.com/makeplane/plane/apps/go-api/internal/user"
 	"github.com/makeplane/plane/apps/go-api/internal/workspace"
@@ -185,6 +187,12 @@ func main() {
 			},
 			Reactions: reaction.Handler{
 				Store: reaction.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Subscribers: subscriber.Handler{
+				Store: subscriber.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Archives: archive.Handler{
+				Store: archive.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Version: version,
 		}),

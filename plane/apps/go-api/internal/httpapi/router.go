@@ -43,6 +43,8 @@ type Dependencies struct {
 	Relations       http.Handler
 	Links           http.Handler
 	Reactions       http.Handler
+	Subscribers     http.Handler
+	Archives        http.Handler
 	Version         string
 }
 
@@ -135,6 +137,12 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Reactions != nil {
 			portedGroups = append(portedGroups, "issue-reactions")
 		}
+		if deps.Subscribers != nil {
+			portedGroups = append(portedGroups, "issue-subscribers")
+		}
+		if deps.Archives != nil {
+			portedGroups = append(portedGroups, "issue-archives")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": deps.Legacy != nil, "ported_groups": portedGroups,
@@ -185,7 +193,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.ProjectsLite != nil {
 		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil {
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Legacy != nil {
@@ -341,6 +349,46 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("issue_id", parts[2])
 		r.SetPathValue("reaction_code", parts[4])
 		h.deps.Reactions.ServeHTTP(w, r)
+		return
+	}
+	// Issue subscribers: .../issues/{issue_id}/issue-subscribers/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-subscribers" &&
+		h.deps.Subscribers != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Subscribers.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 5 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-subscribers" && parts[4] != "" &&
+		h.deps.Subscribers != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		r.SetPathValue("subscriber_id", parts[4])
+		h.deps.Subscribers.ServeHTTP(w, r)
+		return
+	}
+	// Issue subscribe: .../issues/{issue_id}/subscribe/ and .../issues/{issue_id}/unsubscribe/ and .../issues/{issue_id}/subscription_status/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" &&
+		(parts[3] == "subscribe" || parts[3] == "unsubscribe" || parts[3] == "subscription_status") &&
+		h.deps.Subscribers != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Subscribers.ServeHTTP(w, r)
+		return
+	}
+	// Single archive: .../issues/{issue_id}/archive/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "archive" &&
+		h.deps.Archives != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Archives.ServeHTTP(w, r)
+		return
+	}
+	// Bulk archive: .../bulk-archive-issues/
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "bulk-archive-issues" &&
+		r.Method == http.MethodPost && h.deps.Archives != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Archives.ServeHTTP(w, r)
 		return
 	}
 	if h.deps.Legacy != nil {
