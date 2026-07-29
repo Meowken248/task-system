@@ -2,6 +2,8 @@ package project
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ var (
 	ErrUnauthorized = errors.New("authentication required")
 	ErrForbidden    = errors.New("workspace access denied")
 	ErrNotFound     = errors.New("project not found")
+	ErrInvalid      = errors.New("invalid payload")
 )
 
 type PostgreSQLStore struct {
@@ -111,9 +114,271 @@ func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, pr
 	return item, nil
 }
 
-// canAccessProject mirrors the visibility rules used by ListForSession.
-// Workspace admins can open every project, workspace members can also open
-// public projects, and guests need an explicit project membership.
+type ProjectPayload struct {
+	Name                 string  `json:"name"`
+	Identifier           string  `json:"identifier"`
+	Description          *string `json:"description"`
+	Network              *int    `json:"network"`
+	ProjectLead          *string `json:"project_lead"`
+	DefaultAssignee      *string `json:"default_assignee"`
+	CycleView            *bool   `json:"cycle_view"`
+	ModuleView           *bool   `json:"module_view"`
+	IssueViewsView       *bool   `json:"issue_views_view"`
+	PageView             *bool   `json:"page_view"`
+	InboxView            *bool   `json:"inbox_view"`
+	GuestViewAllFeatures *bool   `json:"guest_view_all_features"`
+}
+
+var defaultStates = []map[string]any{
+	{"name": "Backlog", "color": "#60646C", "sequence": float64(15000), "group": "backlog", "default": true},
+	{"name": "Todo", "color": "#60646C", "sequence": float64(25000), "group": "unstarted", "default": false},
+	{"name": "In Progress", "color": "#F59E0B", "sequence": float64(35000), "group": "started", "default": false},
+	{"name": "Done", "color": "#46A758", "sequence": float64(45000), "group": "completed", "default": false},
+	{"name": "Cancelled", "color": "#9AA4BC", "sequence": float64(55000), "group": "cancelled", "default": false},
+	{"name": "Triage", "color": "#4E5355", "sequence": float64(65000), "group": "triage", "default": false},
+}
+
+func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug string, payload ProjectPayload) (map[string]any, error) {
+	a, err := s.resolveAccess(ctx, sessionKey, slug)
+	if err != nil {
+		return nil, err
+	}
+	if a.role < 15 { // Only Admin/Member can create project
+		return nil, ErrForbidden
+	}
+	if payload.Name == "" || payload.Identifier == "" {
+		return nil, fmt.Errorf("%w: name and identifier are required", ErrInvalid)
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Check identifier uniqueness in workspace
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE workspace_id::text=$1 AND identifier=$2 AND deleted_at IS NULL)`,
+		a.workspaceID, payload.Identifier).Scan(&exists)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, fmt.Errorf("%w: project identifier already exists", ErrInvalid)
+	}
+
+	projectID := newUUID()
+	network := 2 // default public
+	if payload.Network != nil {
+		network = *payload.Network
+	}
+
+	cycleView := true
+	if payload.CycleView != nil {
+		cycleView = *payload.CycleView
+	}
+	moduleView := true
+	if payload.ModuleView != nil {
+		moduleView = *payload.ModuleView
+	}
+	issueViewsView := true
+	if payload.IssueViewsView != nil {
+		issueViewsView = *payload.IssueViewsView
+	}
+	pageView := true
+	if payload.PageView != nil {
+		pageView = *payload.PageView
+	}
+	inboxView := true
+	if payload.InboxView != nil {
+		inboxView = *payload.InboxView
+	}
+	guestViewAll := false
+	if payload.GuestViewAllFeatures != nil {
+		guestViewAll = *payload.GuestViewAllFeatures
+	}
+
+	_, err = tx.Exec(ctx, `INSERT INTO projects
+		(id, name, identifier, description, network, workspace_id,
+		 cycle_view, module_view, issue_views_view, page_view, intake_view, guest_view_all_features,
+		 project_lead_id, default_assignee_id,
+		 created_by_id, updated_by_id, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6::uuid,
+			$7,$8,$9,$10,$11,$12,
+			NULLIF($13,'')::uuid, NULLIF($14,'')::uuid,
+			$15::uuid,$15::uuid,NOW(),NOW())`,
+		projectID, payload.Name, payload.Identifier, payload.Description, network, a.workspaceID,
+		cycleView, moduleView, issueViewsView, pageView, inboxView, guestViewAll,
+		stringValue(payload.ProjectLead), stringValue(payload.DefaultAssignee), a.userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add creator as Administrator
+	_, err = tx.Exec(ctx, `INSERT INTO project_members
+		(id, project_id, member_id, role, workspace_id, is_active, created_by_id, updated_by_id, created_at, updated_at)
+		VALUES ($1,$2::uuid,$3::uuid,20,$4::uuid,TRUE,$3::uuid,$3::uuid,NOW(),NOW())`,
+		newUUID(), projectID, a.userID, a.workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	// If lead is different from creator, add lead as Administrator
+	if payload.ProjectLead != nil && *payload.ProjectLead != "" && *payload.ProjectLead != a.userID {
+		_, err = tx.Exec(ctx, `INSERT INTO project_members
+			(id, project_id, member_id, role, workspace_id, is_active, created_by_id, updated_by_id, created_at, updated_at)
+			VALUES ($1,$2::uuid,$3::uuid,20,$4::uuid,TRUE,$5::uuid,$5::uuid,NOW(),NOW())`,
+			newUUID(), projectID, *payload.ProjectLead, a.workspaceID, a.userID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Bulk create DEFAULT_STATES
+	for _, state := range defaultStates {
+		_, err = tx.Exec(ctx, `INSERT INTO states
+			(id, name, color, sequence, "group", "default", project_id, workspace_id,
+			 created_by_id, updated_by_id, created_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7::uuid,$8::uuid,$9::uuid,$9::uuid,NOW(),NOW())`,
+			newUUID(), state["name"], state["color"], state["sequence"], state["group"], state["default"],
+			projectID, a.workspaceID, a.userID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Get and return project details
+	row := tx.QueryRow(ctx, getProjectByIDQuery, a.workspaceID, a.userID, projectID)
+	item, err := scanProject(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug, projectID string, payload map[string]any) (map[string]any, error) {
+	a, err := s.resolveAccess(ctx, sessionKey, slug)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Check permission (Workspace Admin (20) or Project Admin (20) required)
+	var hasPerm bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM project_members WHERE project_id::text=$1 AND member_id::text=$2 AND role=20 AND is_active=TRUE AND deleted_at IS NULL
+	) OR $3=20`, projectID, a.userID, a.role).Scan(&hasPerm)
+	if err != nil {
+		return nil, err
+	}
+	if !hasPerm {
+		return nil, ErrForbidden
+	}
+
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id::text=$1 AND workspace_id::text=$2 AND deleted_at IS NULL)`, projectID, a.workspaceID).Scan(&exists)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	// Update columns dynamically
+	query := `UPDATE projects SET updated_at=NOW(), updated_by_id=$2 `
+	args := []any{projectID, a.userID}
+	placeholderIndex := 3
+
+	// Map of allowed update fields
+	allowedFields := map[string]string{
+		"name":                     "name",
+		"description":              "description",
+		"network":                  "network",
+		"cycle_view":               "cycle_view",
+		"module_view":              "module_view",
+		"issue_views_view":         "issue_views_view",
+		"page_view":                "page_view",
+		"inbox_view":               "intake_view",
+		"guest_view_all_features":  "guest_view_all_features",
+		"project_lead":             "project_lead_id",
+		"default_assignee":         "default_assignee_id",
+	}
+
+	for key, val := range payload {
+		if dbCol, ok := allowedFields[key]; ok {
+			query += fmt.Sprintf(", %s=$%d ", dbCol, placeholderIndex)
+			if val == nil {
+				args = append(args, nil)
+			} else if key == "project_lead" || key == "default_assignee" {
+				// Convert to uuid safely if non-empty string
+				strVal := fmt.Sprintf("%v", val)
+				if strVal == "" {
+					args = append(args, nil)
+				} else {
+					args = append(args, strVal)
+				}
+			} else {
+				args = append(args, val)
+			}
+			placeholderIndex++
+		}
+	}
+
+	query += ` WHERE id::text=$1 AND workspace_id::text = (SELECT id FROM workspaces WHERE slug=$12 AND deleted_at IS NULL) AND deleted_at IS NULL`
+	// Map workspace slug using the last positional arg (placeholder 12)
+	for placeholderIndex < 12 {
+		query += fmt.Sprintf(" AND 1=$%d", placeholderIndex)
+		args = append(args, 1)
+		placeholderIndex++
+	}
+	args = append(args, slug)
+
+	_, err = tx.Exec(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	row := tx.QueryRow(ctx, getProjectByIDQuery, a.workspaceID, a.userID, projectID)
+	item, err := scanProject(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (s PostgreSQLStore) DeleteForSession(ctx context.Context, sessionKey, slug, projectID string) error {
+	a, err := s.resolveAccess(ctx, sessionKey, slug)
+	if err != nil {
+		return err
+	}
+	if a.role < 20 { // Only Workspace Administrator can delete projects
+		return ErrForbidden
+	}
+
+	result, err := s.Pool.Exec(ctx, `UPDATE projects SET deleted_at=NOW(), updated_by_id=$2, updated_at=NOW()
+		WHERE id::text=$1 AND workspace_id::text=$3 AND deleted_at IS NULL`, projectID, a.userID, a.workspaceID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func canAccessProject(workspaceRole int, hasProjectMembership bool, network int) bool {
 	return workspaceRole == 20 ||
 		(workspaceRole == 15 && (hasProjectMembership || network == 2)) ||
@@ -212,4 +477,20 @@ func numberAsInt(value any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func newUUID() string {
+	var bytes [16]byte
+	_, _ = rand.Read(bytes[:])
+	bytes[6] = (bytes[6] & 0x0f) | 0x40
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(bytes[:])
+	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

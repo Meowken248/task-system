@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -11,6 +12,9 @@ import (
 type Reader interface {
 	ListForSession(context.Context, string, string, bool, []string) ([]map[string]any, error)
 	GetForSession(context.Context, string, string, string) (map[string]any, error)
+	CreateForSession(context.Context, string, string, ProjectPayload) (map[string]any, error)
+	UpdateForSession(context.Context, string, string, string, map[string]any) (map[string]any, error)
+	DeleteForSession(context.Context, string, string, string) error
 }
 
 type Handler struct {
@@ -39,13 +43,53 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionKey = cookie.Value
 	}
 	slug := r.PathValue("slug")
+	projectID := r.PathValue("project_id")
+
 	var payload any
 	var err error
-	if h.Single {
-		payload, err = h.Store.GetForSession(r.Context(), sessionKey, slug, r.PathValue("project_id"))
-	} else {
-		payload, err = h.Store.ListForSession(r.Context(), sessionKey, slug, h.Detailed, splitFields(r.URL.Query().Get("fields")))
+	statusCode := http.StatusOK
+
+	switch r.Method {
+	case http.MethodGet:
+		if h.Single {
+			payload, err = h.Store.GetForSession(r.Context(), sessionKey, slug, projectID)
+		} else {
+			payload, err = h.Store.ListForSession(r.Context(), sessionKey, slug, h.Detailed, splitFields(r.URL.Query().Get("fields")))
+		}
+	case http.MethodPost:
+		var input ProjectPayload
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		if decodeErr := decoder.Decode(&input); decodeErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid project payload."})
+			return
+		}
+		payload, err = h.Store.CreateForSession(r.Context(), sessionKey, slug, input)
+		statusCode = http.StatusCreated
+	case http.MethodPatch:
+		if projectID == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project id required"})
+			return
+		}
+		var input map[string]any
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		if decodeErr := decoder.Decode(&input); decodeErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid payload."})
+			return
+		}
+		payload, err = h.Store.UpdateForSession(r.Context(), sessionKey, slug, projectID, input)
+	case http.MethodDelete:
+		if projectID == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project id required"})
+			return
+		}
+		err = h.Store.DeleteForSession(r.Context(), sessionKey, slug, projectID)
+		statusCode = http.StatusNoContent
+	default:
+		w.Header().Set("Allow", "GET, POST, PATCH, DELETE")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
 	}
+
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUnauthorized):
@@ -54,14 +98,21 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "You do not have permission"})
 		case errors.Is(err, ErrNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Project does not exist"})
+		case errors.Is(err, ErrInvalid):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		default:
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "project storage is unavailable"})
 		}
 		return
 	}
+
+	if statusCode == http.StatusNoContent {
+		w.WriteHeader(statusCode)
+		return
+	}
 	w.Header().Set("Cache-Control", "private, max-age=10")
 	w.Header().Add("Vary", "Cookie")
-	writeJSON(w, http.StatusOK, payload)
+	writeJSON(w, statusCode, payload)
 }
 
 func splitFields(value string) []string {

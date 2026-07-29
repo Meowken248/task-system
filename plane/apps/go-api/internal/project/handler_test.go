@@ -27,6 +27,18 @@ func (s *readerStub) GetForSession(_ context.Context, session, slug, projectID s
 	return s.project, s.err
 }
 
+func (s *readerStub) CreateForSession(_ context.Context, _, _ string, _ ProjectPayload) (map[string]any, error) {
+	return s.project, s.err
+}
+
+func (s *readerStub) UpdateForSession(_ context.Context, _, _, _ string, _ map[string]any) (map[string]any, error) {
+	return s.project, s.err
+}
+
+func (s *readerStub) DeleteForSession(_ context.Context, _, _, _ string) error {
+	return s.err
+}
+
 func TestListHandlerReturnsProjects(t *testing.T) {
 	store := &readerStub{list: []map[string]any{{"id": "project-id"}}}
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/demo/projects/details/", nil)

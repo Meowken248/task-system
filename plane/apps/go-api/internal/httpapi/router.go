@@ -45,6 +45,7 @@ type Dependencies struct {
 	Reactions       http.Handler
 	Subscribers     http.Handler
 	Archives        http.Handler
+	Subissues       http.Handler
 	Version         string
 }
 
@@ -143,6 +144,12 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Archives != nil {
 			portedGroups = append(portedGroups, "issue-archives")
 		}
+		if deps.Subissues != nil {
+			portedGroups = append(portedGroups, "sub-issues")
+		}
+		if deps.Projects != nil {
+			portedGroups = append(portedGroups, "project-mutations")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": deps.Legacy != nil, "ported_groups": portedGroups,
@@ -193,7 +200,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.ProjectsLite != nil {
 		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil {
+	if deps.Projects != nil {
+		mux.Handle("POST /api/workspaces/{slug}/projects/{$}", deps.Projects)
+	}
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Legacy != nil {
@@ -217,7 +227,8 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.Projects.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 1 && parts[0] != "" && r.Method == http.MethodGet && h.deps.Project != nil {
+	if len(parts) == 1 && parts[0] != "" && h.deps.Project != nil &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
 		r.SetPathValue("project_id", parts[0])
 		h.deps.Project.ServeHTTP(w, r)
 		return
@@ -389,6 +400,14 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Method == http.MethodPost && h.deps.Archives != nil {
 		r.SetPathValue("project_id", parts[0])
 		h.deps.Archives.ServeHTTP(w, r)
+		return
+	}
+	// Sub-issues: .../issues/{issue_id}/sub-issues/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "sub-issues" &&
+		r.Method == http.MethodGet && h.deps.Subissues != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		h.deps.Subissues.ServeHTTP(w, r)
 		return
 	}
 	if h.deps.Legacy != nil {

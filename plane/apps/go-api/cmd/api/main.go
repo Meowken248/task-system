@@ -28,6 +28,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/reaction"
 	"github.com/makeplane/plane/apps/go-api/internal/relation"
 	"github.com/makeplane/plane/apps/go-api/internal/state"
+	"github.com/makeplane/plane/apps/go-api/internal/subissue"
 	"github.com/makeplane/plane/apps/go-api/internal/subscriber"
 	"github.com/makeplane/plane/apps/go-api/internal/tracking"
 	"github.com/makeplane/plane/apps/go-api/internal/user"
@@ -193,6 +194,9 @@ func main() {
 			},
 			Archives: archive.Handler{
 				Store: archive.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Subissues: subissue.Handler{
+				Store: subissue.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Version: version,
 		}),
