@@ -47,6 +47,11 @@ type Dependencies struct {
 	Archives        http.Handler
 	Subissues       http.Handler
 	Favorites       http.Handler
+	Cycles          http.Handler
+	Modules         http.Handler
+	Views           http.Handler
+	CommentReactions http.Handler
+	Assets          http.Handler
 	Version         string
 }
 
@@ -212,13 +217,19 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.Projects != nil {
 		mux.Handle("POST /api/workspaces/{slug}/projects/{$}", deps.Projects)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil {
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil || deps.Cycles != nil || deps.Modules != nil || deps.Views != nil || deps.CommentReactions != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Favorites != nil {
 		mux.Handle("/api/workspaces/{slug}/user-favorites/", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/group/", deps.Favorites)
+	}
+	if deps.Assets != nil {
+		mux.Handle("/api/assets/v2/static/{asset_id}/", deps.Assets)
+		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/", deps.Assets)
+		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/{asset_id}/", deps.Assets)
+		mux.Handle("/api/assets/v2/workspaces/{slug}/{asset_id}/", deps.Assets) // For workspace logos, page descriptions, etc.
 	}
 	if deps.Legacy != nil {
 		mux.Handle("/", deps.Legacy)
@@ -424,6 +435,62 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.Subissues.ServeHTTP(w, r)
 		return
 	}
+	// Cycles: .../cycles/
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "cycles" && h.deps.Cycles != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Cycles.ServeHTTP(w, r)
+		return
+	}
+	// Cycles single: .../cycles/{cycle_id}/
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "cycles" && parts[2] != "" && h.deps.Cycles != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("cycle_id", parts[2])
+		h.deps.Cycles.ServeHTTP(w, r)
+		return
+	}
+	// Modules: .../modules/
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "modules" && h.deps.Modules != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Modules.ServeHTTP(w, r)
+		return
+	}
+	// Modules single: .../modules/{module_id}/
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "modules" && parts[2] != "" && h.deps.Modules != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("module_id", parts[2])
+		h.deps.Modules.ServeHTTP(w, r)
+		return
+	}
+	// Views: .../views/
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "views" && h.deps.Views != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Views.ServeHTTP(w, r)
+		return
+	}
+	// Views single: .../views/{view_id}/
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "views" && parts[2] != "" && h.deps.Views != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("view_id", parts[2])
+		h.deps.Views.ServeHTTP(w, r)
+		return
+	}
+	// Comment reactions list/create: .../issues/{issue_id}/comments/{comment_id}/reactions/
+	if len(parts) == 6 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "comments" && parts[4] != "" && parts[5] == "reactions" && h.deps.CommentReactions != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		r.SetPathValue("comment_id", parts[4])
+		h.deps.CommentReactions.ServeHTTP(w, r)
+		return
+	}
+	// Comment reactions delete: .../issues/{issue_id}/comments/{comment_id}/reactions/{reaction_code}/
+	if len(parts) == 7 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "comments" && parts[4] != "" && parts[5] == "reactions" && parts[6] != "" && h.deps.CommentReactions != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("issue_id", parts[2])
+		r.SetPathValue("comment_id", parts[4])
+		r.SetPathValue("reaction_code", parts[6])
+		h.deps.CommentReactions.ServeHTTP(w, r)
+		return
+	}
 	if h.deps.Legacy != nil {
 		h.deps.Legacy.ServeHTTP(w, r)
 		return
@@ -442,11 +509,16 @@ func canServeBasicIssueRead(r *http.Request) bool {
 				return false
 			}
 		default:
-			return false
+			// If it's a simple list request with filters but NO group_by, we could theoretically handle it, 
+			// but for now we route group_by and sub_group_by to Python to not break the Kanban board.
+			if key == "group_by" || key == "sub_group_by" || key == "expand" {
+				return false
+			}
 		}
 	}
 	return true
 }
+
 
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

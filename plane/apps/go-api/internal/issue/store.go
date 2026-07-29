@@ -56,9 +56,20 @@ type Page struct {
 	PrevPage     bool   `json:"prev_page_results"`
 	Count        int    `json:"count"`
 	TotalPages   int    `json:"total_pages"`
-	TotalResults int    `json:"total_results"`
 	ExtraStats   any    `json:"extra_stats"`
 	Results      []Item `json:"results"`
+}
+
+type IssueFilter struct {
+	Limit      int
+	Offset     int
+	State      string
+	StateGroup string
+	Priority   string
+	Labels     string
+	Assignees  string
+	CreatedBy  string
+	OrderBy    string
 }
 
 type PostgreSQLStore struct{ Pool *pgxpool.Pool }
@@ -107,23 +118,65 @@ const itemColumns = `i.id::text, i.sequence_id, i.name, i.description_html, i.so
 	i.type_id::text, i.created_at, i.updated_at, i.start_date, i.target_date, i.completed_at, i.archived_at,
 	i.created_by_id::text, i.updated_by_id::text, i.is_draft`
 
-func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, projectID string, limit, offset int) (Page, error) {
+func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, projectID string, filter IssueFilter) (Page, error) {
 	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
 		return Page{}, err
 	}
+	
+	baseQuery := ` FROM issues i JOIN states st ON st.id=i.state_id WHERE i.project_id::text=$1 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`
+	args := []any{projectID}
+	argIdx := 2
+	
+	if filter.State != "" && filter.State != "null" {
+		baseQuery += fmt.Sprintf(` AND i.state_id::text = ANY(string_to_array($%d, ','))`, argIdx)
+		args = append(args, filter.State)
+		argIdx++
+	}
+	if filter.StateGroup != "" && filter.StateGroup != "null" {
+		baseQuery += fmt.Sprintf(` AND st."group" = ANY(string_to_array($%d, ','))`, argIdx)
+		args = append(args, filter.StateGroup)
+		argIdx++
+	}
+	if filter.Priority != "" && filter.Priority != "null" {
+		baseQuery += fmt.Sprintf(` AND i.priority = ANY(string_to_array($%d, ','))`, argIdx)
+		args = append(args, filter.Priority)
+		argIdx++
+	}
+	if filter.Labels != "" && filter.Labels != "null" {
+		baseQuery += fmt.Sprintf(` AND EXISTS(SELECT 1 FROM issue_labels il WHERE il.issue_id=i.id AND il.label_id::text = ANY(string_to_array($%d, ',')) AND il.deleted_at IS NULL)`, argIdx)
+		args = append(args, filter.Labels)
+		argIdx++
+	}
+	if filter.Assignees != "" && filter.Assignees != "null" {
+		baseQuery += fmt.Sprintf(` AND EXISTS(SELECT 1 FROM issue_assignees ia WHERE ia.issue_id=i.id AND ia.assignee_id::text = ANY(string_to_array($%d, ',')) AND ia.deleted_at IS NULL)`, argIdx)
+		args = append(args, filter.Assignees)
+		argIdx++
+	}
+	if filter.CreatedBy != "" && filter.CreatedBy != "null" {
+		baseQuery += fmt.Sprintf(` AND i.created_by_id::text = ANY(string_to_array($%d, ','))`, argIdx)
+		args = append(args, filter.CreatedBy)
+		argIdx++
+	}
+
+	orderBy := "ORDER BY i.created_at DESC"
+	if filter.OrderBy == "created_at" {
+		orderBy = "ORDER BY i.created_at ASC"
+	}
+
 	var total int
-	if err := s.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM issues i JOIN states st ON st.id=i.state_id
-		WHERE i.project_id::text=$1 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`, projectID).Scan(&total); err != nil {
+	if err := s.Pool.QueryRow(ctx, `SELECT COUNT(*)` + baseQuery, args...).Scan(&total); err != nil {
 		return Page{}, fmt.Errorf("count work items: %w", err)
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT `+itemColumns+` FROM issues i JOIN states st ON st.id=i.state_id
-		WHERE i.project_id::text=$1 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'
-		ORDER BY i.created_at DESC LIMIT $2 OFFSET $3`, projectID, limit, offset)
+	
+	query := `SELECT ` + itemColumns + baseQuery + ` ` + orderBy + fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
+	args = append(args, filter.Limit, filter.Offset)
+	
+	rows, err := s.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return Page{}, fmt.Errorf("list work items: %w", err)
 	}
 	defer rows.Close()
-	items := make([]Item, 0, limit)
+	items := make([]Item, 0, filter.Limit)
 	for rows.Next() {
 		item, scanErr := scan(rows)
 		if scanErr != nil {
@@ -134,7 +187,7 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	if err = rows.Err(); err != nil {
 		return Page{}, fmt.Errorf("iterate work items: %w", err)
 	}
-	return makePage(items, total, limit, offset), nil
+	return makePage(items, total, filter.Limit, filter.Offset), nil
 }
 
 func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, projectID, issueID string) (Item, error) {
@@ -174,5 +227,5 @@ func makePage(items []Item, total, limit, offset int) Page {
 	return Page{GroupedBy: nil, SubGroupedBy: nil, TotalCount: total,
 		NextCursor: fmt.Sprintf("%d:%d:0", limit, nextOffset), PrevCursor: fmt.Sprintf("%d:%d:0", limit, prevOffset),
 		NextPage: nextOffset < total, PrevPage: offset > 0, Count: len(items), TotalPages: totalPages,
-		TotalResults: total, ExtraStats: nil, Results: items}
+		ExtraStats: nil, Results: items}
 }

@@ -11,7 +11,7 @@ import (
 )
 
 type Reader interface {
-	ListForSession(context.Context, string, string, string, int, int) (Page, error)
+	ListForSession(context.Context, string, string, string, IssueFilter) (Page, error)
 	GetForSession(context.Context, string, string, string, string) (Item, error)
 }
 
@@ -55,7 +55,19 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Invalid cursor parameter."})
 			return
 		}
-		payload, err = h.Store.ListForSession(r.Context(), sessionKey, slug, projectID, limit, offset)
+		
+		filter := IssueFilter{
+			Limit: limit, Offset: offset,
+			State: r.URL.Query().Get("state"),
+			StateGroup: r.URL.Query().Get("state_group"),
+			Priority: r.URL.Query().Get("priority"),
+			Labels: r.URL.Query().Get("labels"),
+			Assignees: r.URL.Query().Get("assignees"),
+			CreatedBy: r.URL.Query().Get("created_by"),
+			OrderBy: r.URL.Query().Get("order_by"),
+		}
+		
+		payload, err = h.Store.ListForSession(r.Context(), sessionKey, slug, projectID, filter)
 	case http.MethodPost, http.MethodPatch, http.MethodDelete:
 		writer, ok := h.Store.(Writer)
 		if !ok {

@@ -12,10 +12,13 @@ import (
 
 	"github.com/makeplane/plane/apps/go-api/internal/activity"
 	"github.com/makeplane/plane/apps/go-api/internal/archive"
+	"github.com/makeplane/plane/apps/go-api/internal/asset"
 	"github.com/makeplane/plane/apps/go-api/internal/auth"
 	"github.com/makeplane/plane/apps/go-api/internal/blockchain"
 	"github.com/makeplane/plane/apps/go-api/internal/comment"
+	"github.com/makeplane/plane/apps/go-api/internal/commentreaction"
 	"github.com/makeplane/plane/apps/go-api/internal/config"
+	"github.com/makeplane/plane/apps/go-api/internal/cycle"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
 	"github.com/makeplane/plane/apps/go-api/internal/favorite"
 	"github.com/makeplane/plane/apps/go-api/internal/httpapi"
@@ -24,6 +27,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/label"
 	"github.com/makeplane/plane/apps/go-api/internal/legacy"
 	"github.com/makeplane/plane/apps/go-api/internal/link"
+	"github.com/makeplane/plane/apps/go-api/internal/module"
 	"github.com/makeplane/plane/apps/go-api/internal/project"
 	"github.com/makeplane/plane/apps/go-api/internal/projectmember"
 	"github.com/makeplane/plane/apps/go-api/internal/reaction"
@@ -31,8 +35,10 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/state"
 	"github.com/makeplane/plane/apps/go-api/internal/subissue"
 	"github.com/makeplane/plane/apps/go-api/internal/subscriber"
+	"github.com/makeplane/plane/apps/go-api/internal/storage"
 	"github.com/makeplane/plane/apps/go-api/internal/tracking"
 	"github.com/makeplane/plane/apps/go-api/internal/user"
+	"github.com/makeplane/plane/apps/go-api/internal/view"
 	"github.com/makeplane/plane/apps/go-api/internal/workspace"
 )
 
@@ -201,6 +207,25 @@ func main() {
 			},
 			Favorites: favorite.Handler{
 				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Cycles: cycle.Handler{
+				Store: cycle.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Modules: module.Handler{
+				Store: module.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Views: view.Handler{
+				Store: view.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			CommentReactions: commentreaction.Handler{
+				Store: commentreaction.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Assets: asset.Handler{
+				Store: asset.PostgreSQLStore{
+					Pool: db.Native(), 
+					Provider: &storage.Local{BaseDir: "./media", BaseURL: cfg.AppBaseURL + "/api/assets/v2"},
+				}, 
+				SessionCookieName: cfg.SessionCookie,
 			},
 			Version: version,
 		}),
