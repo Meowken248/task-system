@@ -221,3 +221,24 @@ func TestPasswordRecoveryRoutesUseGoHandlers(t *testing.T) {
 		}
 	}
 }
+
+func TestNotificationRoutesUseGoHandler(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("slug") != "demo" {
+			t.Fatalf("slug=%q", r.PathValue("slug"))
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	for _, path := range []string{
+		"/api/workspaces/demo/users/notifications",
+		"/api/workspaces/demo/users/notifications/unread/",
+		"/api/workspaces/demo/users/notifications/notification-1/read/",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		res := httptest.NewRecorder()
+		NewRouter(Dependencies{Notification: handler}).ServeHTTP(res, req)
+		if res.Code != http.StatusOK {
+			t.Fatalf("path=%s status=%d want=200", path, res.Code)
+		}
+	}
+}

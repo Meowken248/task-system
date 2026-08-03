@@ -175,6 +175,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Intake != nil {
 			portedGroups = append(portedGroups, "project-intake-reads")
 		}
+		if deps.Notification != nil {
+			portedGroups = append(portedGroups, "workspace-notifications")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": false, "ported_groups": portedGroups,
@@ -230,6 +233,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	if deps.Analytic != nil {
 		mux.Handle("GET /api/workspaces/{slug}/analytics/", deps.Analytic)
+	}
+	if deps.Notification != nil {
+		mux.Handle("/api/workspaces/{slug}/users/notifications", deps.Notification)
+		mux.Handle("/api/workspaces/{slug}/users/notifications/{tail...}", deps.Notification)
 	}
 	if deps.ProjectsLite != nil {
 		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
