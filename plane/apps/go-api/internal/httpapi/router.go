@@ -170,7 +170,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			portedGroups = append(portedGroups, "workspace-analytics")
 		}
 		if deps.Estimate != nil {
-			portedGroups = append(portedGroups, "project-estimate-reads")
+			portedGroups = append(portedGroups, "workspace-estimates", "project-estimates")
 		}
 		if deps.Intake != nil {
 			portedGroups = append(portedGroups, "project-intake-reads")
@@ -233,6 +233,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	if deps.Analytic != nil {
 		mux.Handle("GET /api/workspaces/{slug}/analytics/", deps.Analytic)
+	}
+	if deps.Estimate != nil {
+		mux.Handle("GET /api/workspaces/{slug}/estimates/", deps.Estimate)
 	}
 	if deps.Notification != nil {
 		mux.Handle("/api/workspaces/{slug}/users/notifications", deps.Notification)
@@ -339,8 +342,17 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.States.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 2 && parts[0] != "" && parts[1] == "estimates" && h.deps.Estimate != nil {
+	if len(parts) >= 2 && len(parts) <= 5 && parts[0] != "" && parts[1] == "estimates" && h.deps.Estimate != nil {
 		r.SetPathValue("project_id", parts[0])
+		if len(parts) >= 3 && parts[2] != "" {
+			r.SetPathValue("estimate_id", parts[2])
+		}
+		if len(parts) >= 4 && parts[3] == "estimate-points" {
+			r.SetPathValue("estimate_points", "true")
+		}
+		if len(parts) == 5 && parts[4] != "" {
+			r.SetPathValue("estimate_point_id", parts[4])
+		}
 		h.deps.Estimate.ServeHTTP(w, r)
 		return
 	}
