@@ -2,23 +2,50 @@ package search
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var (
+	ErrUnauthorized = errors.New("authentication required")
+	ErrForbidden    = errors.New("workspace access denied")
+)
+
 type Store interface {
-	GlobalSearch(ctx context.Context, workspaceSlug, query string) (map[string]interface{}, error)
+	GlobalSearch(ctx context.Context, sessionKey, workspaceSlug, query string) (map[string]interface{}, error)
 }
 
 type PostgreSQLStore struct {
 	Pool *pgxpool.Pool
 }
 
-func (s PostgreSQLStore) GlobalSearch(ctx context.Context, workspaceSlug, query string) (map[string]interface{}, error) {
+func (s PostgreSQLStore) GlobalSearch(ctx context.Context, sessionKey, workspaceSlug, query string) (map[string]interface{}, error) {
+	if sessionKey == "" {
+		return nil, ErrUnauthorized
+	}
+	var allowed bool
+	err := s.Pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM sessions session
+		JOIN workspaces w ON w.slug=$2 AND w.deleted_at IS NULL
+		JOIN workspace_members wm ON wm.workspace_id=w.id AND wm.member_id=session.user_id
+			AND wm.is_active=TRUE AND wm.deleted_at IS NULL
+		WHERE session.session_key=$1 AND session.expire_date>NOW()
+	)`, sessionKey, workspaceSlug).Scan(&allowed)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrForbidden
+		}
+		return nil, err
+	}
+	if !allowed {
+		return nil, ErrForbidden
+	}
 	// A simplified global search returning basic objects matching the query
 	// In a real application, you'd want to use PostgreSQL Full Text Search (tsvector)
 	// For this milestone, we will use ILIKE on the most common tables.
-	
+
 	results := map[string]interface{}{
 		"workspace":  []map[string]any{},
 		"project":    []map[string]any{},
@@ -31,7 +58,7 @@ func (s PostgreSQLStore) GlobalSearch(ctx context.Context, workspaceSlug, query 
 	}
 
 	searchPattern := "%" + query + "%"
-	
+
 	// Search Projects
 	projQuery := `
 		SELECT p.id, p.name, p.identifier, w.slug

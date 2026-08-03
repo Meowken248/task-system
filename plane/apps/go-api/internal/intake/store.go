@@ -2,9 +2,8 @@ package intake
 
 import (
 	"context"
-	"time"
-
 	"github.com/jackc/pgx/v5/pgxpool"
+	"time"
 )
 
 type Intake struct {
@@ -19,7 +18,6 @@ type Intake struct {
 	CreatedAt   time.Time              `json:"created_at"`
 	UpdatedAt   time.Time              `json:"updated_at"`
 }
-
 type IntakeIssue struct {
 	ID             string                 `json:"id"`
 	WorkspaceID    string                 `json:"workspace"`
@@ -37,77 +35,39 @@ type IntakeIssue struct {
 	CreatedAt      time.Time              `json:"created_at"`
 	UpdatedAt      time.Time              `json:"updated_at"`
 }
+type PostgreSQLStore struct{ Pool *pgxpool.Pool }
 
-type Store interface {
-	ListIntakes(ctx context.Context, projectID string) ([]Intake, error)
-	ListIntakeIssues(ctx context.Context, intakeID string) ([]IntakeIssue, error)
-}
-
-type PostgreSQLStore struct {
-	Pool *pgxpool.Pool
-}
-
-func (s PostgreSQLStore) ListIntakes(ctx context.Context, projectID string) ([]Intake, error) {
-	query := `
-		SELECT id, workspace_id, project_id, name, description, is_default, view_props, logo_props, created_at, updated_at
-		FROM intakes
-		WHERE project_id = $1 AND deleted_at IS NULL
-		ORDER BY name ASC
-	`
-	rows, err := s.Pool.Query(ctx, query, projectID)
+func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, projectID string) ([]Intake, error) {
+	if sessionKey == "" {
+		return nil, ErrUnauthorized
+	}
+	var allowed bool
+	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM sessions session
+		JOIN workspaces w ON w.slug=$2 AND w.deleted_at IS NULL
+		JOIN project_members pm ON pm.project_id::text=$3 AND pm.member_id=session.user_id
+			AND pm.is_active=TRUE AND pm.deleted_at IS NULL
+		WHERE session.session_key=$1 AND session.expire_date>NOW()
+	)`, sessionKey, slug, projectID).Scan(&allowed)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, ErrForbidden
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT id,workspace_id,project_id,name,description,is_default,view_props,logo_props,created_at,updated_at
+		FROM intakes WHERE project_id=$1 AND deleted_at IS NULL ORDER BY name ASC`, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var results []Intake
+	items := make([]Intake, 0)
 	for rows.Next() {
 		var i Intake
-		err := rows.Scan(
-			&i.ID, &i.WorkspaceID, &i.ProjectID, &i.Name, &i.Description,
-			&i.IsDefault, &i.ViewProps, &i.LogoProps, &i.CreatedAt, &i.UpdatedAt,
-		)
-		if err != nil {
+		if err := rows.Scan(&i.ID, &i.WorkspaceID, &i.ProjectID, &i.Name, &i.Description, &i.IsDefault, &i.ViewProps, &i.LogoProps, &i.CreatedAt, &i.UpdatedAt); err != nil {
 			return nil, err
 		}
-		results = append(results, i)
+		items = append(items, i)
 	}
-	if results == nil {
-		results = []Intake{}
-	}
-	return results, nil
-}
-
-func (s PostgreSQLStore) ListIntakeIssues(ctx context.Context, intakeID string) ([]IntakeIssue, error) {
-	query := `
-		SELECT id, workspace_id, project_id, intake_id, issue_id, status, snoozed_till,
-		       duplicate_to_id, source, source_email, external_source, external_id, extra,
-		       created_at, updated_at
-		FROM intake_issues
-		WHERE intake_id = $1 AND deleted_at IS NULL
-		ORDER BY created_at DESC
-	`
-	rows, err := s.Pool.Query(ctx, query, intakeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []IntakeIssue
-	for rows.Next() {
-		var ii IntakeIssue
-		err := rows.Scan(
-			&ii.ID, &ii.WorkspaceID, &ii.ProjectID, &ii.IntakeID, &ii.IssueID, &ii.Status,
-			&ii.SnoozedTill, &ii.DuplicateToID, &ii.Source, &ii.SourceEmail, &ii.ExternalSource,
-			&ii.ExternalID, &ii.Extra, &ii.CreatedAt, &ii.UpdatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, ii)
-	}
-	if results == nil {
-		results = []IntakeIssue{}
-	}
-	return results, nil
+	return items, rows.Err()
 }

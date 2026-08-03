@@ -10,7 +10,7 @@ import (
 
 type readerStub struct{ err error }
 
-func (s readerStub) ListForSession(context.Context, string, string, string, int, int) (Page, error) {
+func (s readerStub) ListForSession(context.Context, string, string, string, IssueFilter) (Page, error) {
 	return Page{Results: []Item{{ID: "issue-1", Name: "Test"}}}, s.err
 }
 func (s readerStub) GetForSession(context.Context, string, string, string, string) (Item, error) {

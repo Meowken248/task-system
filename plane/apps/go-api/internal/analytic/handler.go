@@ -1,10 +1,20 @@
 package analytic
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
 )
+
+var (
+	ErrUnauthorized = errors.New("authentication required")
+	ErrForbidden    = errors.New("workspace access denied")
+)
+
+type Store interface {
+	ListForSession(context.Context, string, string) ([]AnalyticView, error)
+}
 
 type Handler struct {
 	Store             Store
@@ -12,32 +22,41 @@ type Handler struct {
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	userID := r.Header.Get("X-User-ID")
-	if userID == "" {
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	if h.Store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "analytics storage is unavailable"})
 		return
 	}
-
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	
-	// GET /api/workspaces/{slug}/analytics/
-	if r.Method == http.MethodGet && len(parts) >= 3 && parts[len(parts)-1] == "analytics" {
-		workspaceSlug := parts[2]
-		
-		views, err := h.Store.ListAnalyticViews(r.Context(), workspaceSlug)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	cookieName := h.SessionCookieName
+	if cookieName == "" {
+		cookieName = "sessionid"
+	}
+	cookie, err := r.Cookie(cookieName)
+	if err != nil || cookie.Value == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Authentication credentials were not provided."})
+		return
+	}
+	views, err := h.Store.ListForSession(r.Context(), cookie.Value, r.PathValue("slug"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUnauthorized):
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Authentication credentials were not provided."})
+		case errors.Is(err, ErrForbidden):
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "You do not have permission"})
+		default:
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "analytics storage is unavailable"})
 		}
-		
-		json.NewEncoder(w).Encode(views)
 		return
 	}
-	
-	w.WriteHeader(http.StatusMethodNotAllowed)
-	json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+	writeJSON(w, http.StatusOK, views)
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }

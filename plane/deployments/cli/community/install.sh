@@ -337,84 +337,43 @@ function download() {
 function startServices() {
     /bin/bash -c "$COMPOSE_CMD -f $DOCKER_FILE_PATH --env-file=$DOCKER_ENV_PATH up -d --pull if_not_present --quiet-pull"
 
-    local migrator_container_id=$(docker container ls -aq -f "name=$SERVICE_FOLDER-migrator")
-    if [ -n "$migrator_container_id" ]; then
-        local idx=0
-        while docker inspect --format='{{.State.Status}}' $migrator_container_id | grep -q "running"; do
-            local message=">> Waiting for Data Migration to finish"
-            local dots=$(printf '%*s' $idx | tr ' ' '.')
-            echo -ne "\r$message$dots"
-            ((idx++))
-            sleep 1
-        done
-    fi
-    printf "\r\033[K"
-    echo ""
-    echo "   Data Migration completed successfully ✅"
+    local api_container_id=$(docker container ls -q -f "name=$SERVICE_FOLDER-go-api")
 
-    # if migrator exit status is not 0, show error message and exit
-    if [ -n "$migrator_container_id" ]; then
-        local migrator_exit_code=$(docker inspect --format='{{.State.ExitCode}}' $migrator_container_id)
-        if [ $migrator_exit_code -ne 0 ]; then
-            echo "Plane Server failed to start ❌"
-            # stopServices
-            echo
-            echo "Please check the logs for the 'migrator' service and resolve the issue(s)."
-            echo "Stop the services by running the command: ./setup.sh stop"
-            exit 1
-        fi
-    fi
-
-    local api_container_id=$(docker container ls -q -f "name=$SERVICE_FOLDER-api")
-
-    # Verify container exists
     if [ -z "$api_container_id" ]; then
-        echo "   Error: API container not found. Please check if services are running."
+        echo "   Error: Go API container not found. Please check if services are running."
         exit 1
     fi
 
-    local idx2=0
-    local api_ready=true        # assume success, flip on timeout
-    local max_wait_time=300  # 5 minutes timeout
+    local idx=0
+    local max_wait_time=300
     local start_time=$(date +%s)
 
-    echo "   Waiting for API Service to be ready..."
-    while ! docker exec "$api_container_id" python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=3)" > /dev/null 2>&1; do
+    echo "   Waiting for Go API Service to be ready..."
+    while ! docker exec "$api_container_id" wget -q -O - http://localhost:8080/health/ready > /dev/null 2>&1; do
         local current_time=$(date +%s)
         local elapsed_time=$((current_time - start_time))
 
         if [ $elapsed_time -gt $max_wait_time ]; then
             echo ""
-            echo "   API Service health check timed out after 5 minutes"
-            echo "   Checking if API container is still running..."
-            if docker ps | grep -q "$SERVICE_FOLDER-api"; then
-                echo "   API container is running but did not pass the health-check. Continuing without marking it ready."
-                api_ready=false
-                break
-            else
-                echo "   API container is not running. Please check logs."
-                exit 1
-            fi
+            echo "   Go API Service health check timed out after 5 minutes"
+            docker logs "$api_container_id" --tail 100
+            exit 1
         fi
 
-        local message=">> Waiting for API Service to Start (${elapsed_time}s)"
-        local dots=$(printf '%*s' $idx2 | tr ' ' '.')
+        local message=">> Waiting for Go API Service to Start ($elapsed_time seconds)"
+        local dots=$(printf '%*s' $idx | tr ' ' '.')
         echo -ne "\r$message$dots"
-        ((idx2++))
+        ((idx++))
         sleep 1
     done
+
     printf "\r\033[K"
-    if [ "$api_ready" = true ]; then
-        echo "   API Service started successfully ✅"
-    else
-        echo "   ⚠️  API Service did not respond to health-check – please verify manually."
-    fi
-    source "${DOCKER_ENV_PATH}"
+    echo "   Go API Service started successfully ✅"
+    source "$DOCKER_ENV_PATH"
     echo "   Plane Server started successfully ✅"
     echo ""
     echo "   You can access the application at $WEB_URL"
     echo ""
-
 }
 function stopServices() {
     /bin/bash -c "$COMPOSE_CMD -f $DOCKER_FILE_PATH --env-file=$DOCKER_ENV_PATH down"
@@ -482,10 +441,7 @@ function viewLogs(){
         echo "Select a Service you want to view the logs for:"
         echo "   1) Web"
         echo "   2) Space"
-        echo "   3) API"
-        echo "   4) Worker"
-        echo "   5) Beat-Worker"
-        echo "   6) Migrator"
+        echo "   3) Go API"
         echo "   7) Proxy"
         echo "   8) Redis"
         echo "   9) Postgres"
@@ -507,10 +463,7 @@ function viewLogs(){
             case $DOCKER_SERVICE_NAME in
                 1) viewSpecificLogs "web";;
                 2) viewSpecificLogs "space";;
-                3) viewSpecificLogs "api";;
-                4) viewSpecificLogs "worker";;
-                5) viewSpecificLogs "beat-worker";;
-                6) viewSpecificLogs "migrator";;
+                3) viewSpecificLogs "go-api";;
                 7) viewSpecificLogs "proxy";;
                 8) viewSpecificLogs "plane-redis";;
                 9) viewSpecificLogs "plane-db";;
@@ -526,10 +479,7 @@ function viewLogs(){
         case $ARG_SERVICE_NAME in
             web) viewSpecificLogs "web";;
             space) viewSpecificLogs "space";;
-            api) viewSpecificLogs "api";;
-            worker) viewSpecificLogs "worker";;
-            beat-worker) viewSpecificLogs "beat-worker";;
-            migrator) viewSpecificLogs "migrator";;
+            go-api|api) viewSpecificLogs "go-api";;
             proxy) viewSpecificLogs "proxy";;
             redis) viewSpecificLogs "plane-redis";;
             postgres) viewSpecificLogs "plane-db";;

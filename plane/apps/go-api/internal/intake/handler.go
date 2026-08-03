@@ -1,10 +1,20 @@
 package intake
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
 )
+
+var (
+	ErrUnauthorized = errors.New("authentication required")
+	ErrForbidden    = errors.New("project access denied")
+)
+
+type Store interface {
+	ListForSession(context.Context, string, string, string) ([]Intake, error)
+}
 
 type Handler struct {
 	Store             Store
@@ -12,37 +22,40 @@ type Handler struct {
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "intake storage is unavailable"})
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	name := h.SessionCookieName
+	if name == "" {
+		name = "sessionid"
+	}
+	cookie, err := r.Cookie(name)
+	if err != nil || cookie.Value == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Authentication credentials were not provided."})
+		return
+	}
+	items, err := h.Store.ListForSession(r.Context(), cookie.Value, r.PathValue("slug"), r.PathValue("project_id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUnauthorized):
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Authentication credentials were not provided."})
+		case errors.Is(err, ErrForbidden):
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "You do not have permission"})
+		default:
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "intake storage is unavailable"})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
-	
-	userID := r.Header.Get("X-User-ID")
-	if userID == "" {
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
-		return
-	}
-
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	
-	// GET /api/workspaces/{slug}/projects/{project_id}/intakes/
-	if r.Method == http.MethodGet && len(parts) > 0 && parts[len(parts)-1] == "intakes" {
-		projectID := r.PathValue("project_id")
-		if projectID == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "project_id missing"})
-			return
-		}
-		
-		intakes, err := h.Store.ListIntakes(r.Context(), projectID)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-		
-		json.NewEncoder(w).Encode(intakes)
-		return
-	}
-	
-	w.WriteHeader(http.StatusMethodNotAllowed)
-	json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }

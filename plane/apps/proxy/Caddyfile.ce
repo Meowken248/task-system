@@ -10,20 +10,9 @@
 	reverse_proxy /god-mode/* admin:3000
 	
 	reverse_proxy /live/* live:3000
-	# Go is the primary API during the gradual migration. If it is restarting or
-	# unavailable, Caddy falls back to Django so an API restart does not send the
-	# web application into a reload/error loop.
-	reverse_proxy /api/* go-api:8080 api:8000 {
-		lb_policy first
-		lb_try_duration 5s
-	}
-
-	reverse_proxy /auth/* go-api:8080 api:8000 {
-		lb_policy first
-		lb_try_duration 5s
-	}
-
-	reverse_proxy /static/* api:8000
+	# All API and authentication traffic is served by the Go backend.
+	reverse_proxy /api/* go-api:8080
+	reverse_proxy /auth/* go-api:8080
 
 	reverse_proxy /{$BUCKET_NAME}/* plane-minio:9000
 	reverse_proxy /{$BUCKET_NAME} plane-minio:9000

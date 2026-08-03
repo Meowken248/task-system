@@ -13,50 +13,50 @@ type ReadinessChecker interface {
 }
 
 type Dependencies struct {
-	Readiness       ReadinessChecker
-	CSRF            http.Handler
-	SignOut         http.Handler
-	SignIn          http.Handler
-	SignUp          http.Handler
-	EmailCheck      http.Handler
-	ForgotPassword  http.Handler
-	ResetPassword   http.Handler
-	ChangePassword  http.Handler
-	SetPassword     http.Handler
-	Tracking        http.Handler
-	Workspaces      http.Handler
-	CurrentUser     http.Handler
-	UserProfile     http.Handler
-	UserSettings    http.Handler
-	ProjectsLite    http.Handler
-	Projects        http.Handler
-	Project         http.Handler
-	States          http.Handler
-	ProjectMembers  http.Handler
-	ProjectMemberMe http.Handler
-	Labels          http.Handler
-	Issues          http.Handler
-	Comments        http.Handler
-	Activities      http.Handler
-	Relations       http.Handler
-	Links           http.Handler
-	Reactions       http.Handler
-	Subscribers     http.Handler
-	Archives        http.Handler
-	Subissues       http.Handler
-	Favorites       http.Handler
-	Cycles          http.Handler
-	Modules         http.Handler
-	Views           http.Handler
+	Readiness        ReadinessChecker
+	CSRF             http.Handler
+	SignOut          http.Handler
+	SignIn           http.Handler
+	SignUp           http.Handler
+	EmailCheck       http.Handler
+	ForgotPassword   http.Handler
+	ResetPassword    http.Handler
+	ChangePassword   http.Handler
+	SetPassword      http.Handler
+	Tracking         http.Handler
+	Workspaces       http.Handler
+	CurrentUser      http.Handler
+	UserProfile      http.Handler
+	UserSettings     http.Handler
+	ProjectsLite     http.Handler
+	Projects         http.Handler
+	Project          http.Handler
+	States           http.Handler
+	ProjectMembers   http.Handler
+	ProjectMemberMe  http.Handler
+	Labels           http.Handler
+	Issues           http.Handler
+	Comments         http.Handler
+	Activities       http.Handler
+	Relations        http.Handler
+	Links            http.Handler
+	Reactions        http.Handler
+	Subscribers      http.Handler
+	Archives         http.Handler
+	Subissues        http.Handler
+	Favorites        http.Handler
+	Cycles           http.Handler
+	Modules          http.Handler
+	Views            http.Handler
 	CommentReactions http.Handler
-	Assets          http.Handler
-	Notification    http.Handler
-	Estimate        http.Handler
-	Search          http.Handler
-	Analytic        http.Handler
-	Instances       http.Handler
-	Intake          http.Handler
-	Version         string
+	Assets           http.Handler
+	Notification     http.Handler
+	Estimate         http.Handler
+	Search           http.Handler
+	Analytic         http.Handler
+	Instances        http.Handler
+	Intake           http.Handler
+	Version          string
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -163,6 +163,18 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Workspaces != nil {
 			portedGroups = append(portedGroups, "workspace-mutations")
 		}
+		if deps.Search != nil {
+			portedGroups = append(portedGroups, "workspace-search")
+		}
+		if deps.Analytic != nil {
+			portedGroups = append(portedGroups, "workspace-analytics")
+		}
+		if deps.Estimate != nil {
+			portedGroups = append(portedGroups, "project-estimate-reads")
+		}
+		if deps.Intake != nil {
+			portedGroups = append(portedGroups, "project-intake-reads")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": false, "ported_groups": portedGroups,
@@ -213,13 +225,19 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.UserSettings != nil {
 		mux.Handle("GET /api/users/me/settings/", deps.UserSettings)
 	}
+	if deps.Search != nil {
+		mux.Handle("GET /api/workspaces/{slug}/search/", deps.Search)
+	}
+	if deps.Analytic != nil {
+		mux.Handle("GET /api/workspaces/{slug}/analytics/", deps.Analytic)
+	}
 	if deps.ProjectsLite != nil {
 		mux.Handle("GET /api/workspaces/{slug}/projects/{$}", deps.ProjectsLite)
 	}
 	if deps.Projects != nil {
 		mux.Handle("POST /api/workspaces/{slug}/projects/{$}", deps.Projects)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil || deps.Cycles != nil || deps.Modules != nil || deps.Views != nil || deps.CommentReactions != nil {
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil || deps.Cycles != nil || deps.Modules != nil || deps.Views != nil || deps.CommentReactions != nil || deps.Estimate != nil || deps.Intake != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Favorites != nil {
@@ -312,6 +330,16 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("state_id", parts[2])
 		h.deps.States.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "estimates" && h.deps.Estimate != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Estimate.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "intakes" && h.deps.Intake != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.Intake.ServeHTTP(w, r)
 		return
 	}
 	if len(parts) == 2 && parts[0] != "" && parts[1] == "issues" && h.deps.Issues != nil &&
@@ -531,7 +559,6 @@ func canServeBasicIssueRead(r *http.Request) bool {
 	}
 	return true
 }
-
 
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

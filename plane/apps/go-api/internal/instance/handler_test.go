@@ -1,81 +1,91 @@
 package instance
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
-func TestHandlerCachesInstanceResponse(t *testing.T) {
-	requests := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		if r.URL.Path != "/api/instances/" {
-			t.Fatalf("path = %q", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"instance": map[string]any{"is_setup_done": true},
-			"config":   map[string]any{},
-		})
-	}))
-	defer upstream.Close()
-	handler, err := NewHandler(upstream.URL, time.Minute)
-	if err != nil {
-		t.Fatalf("NewHandler() error = %v", err)
-	}
-	for range 2 {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/instances/", nil))
-		if response.Code != http.StatusOK {
-			t.Fatalf("status = %d", response.Code)
-		}
-	}
-	if requests != 1 {
-		t.Fatalf("upstream requests = %d, want 1", requests)
-	}
+type storeStub struct {
+	instance *Instance
+	configs  []InstanceConfiguration
+	err      error
 }
 
-func TestHandlerServesStaleValueWhenUpstreamFails(t *testing.T) {
-	healthy := true
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if !healthy {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"instance": map[string]any{},
-			"config":   map[string]any{},
-		})
-	}))
-	defer upstream.Close()
-	handler, err := NewHandler(upstream.URL, 0)
-	if err != nil {
-		t.Fatalf("NewHandler() error = %v", err)
+func (s storeStub) GetInstance(context.Context) (*Instance, error) {
+	if s.err != nil {
+		return nil, s.err
 	}
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/instances/", nil))
-	healthy = false
+	return s.instance, nil
+}
+func (storeStub) CreateInstance(context.Context, *Instance) error { return nil }
+func (storeStub) UpdateInstance(context.Context, *Instance) error { return nil }
+func (storeStub) CreateUser(context.Context, *User) error         { return nil }
+func (storeStub) GetUserByEmail(context.Context, string) (*User, error) {
+	return nil, errors.New("not found")
+}
+func (storeStub) GetUserByID(context.Context, string) (*User, error) {
+	return nil, errors.New("not found")
+}
+func (storeStub) CreateInstanceAdmin(context.Context, *InstanceAdmin) error  { return nil }
+func (storeStub) GetInstanceAdmins(context.Context) ([]InstanceAdmin, error) { return nil, nil }
+func (storeStub) GetInstanceAdminByUserID(context.Context, string) (*InstanceAdmin, error) {
+	return nil, errors.New("not found")
+}
+func (storeStub) DeleteInstanceAdmin(context.Context, string) error { return nil }
+func (s storeStub) GetConfigurations(context.Context) ([]InstanceConfiguration, error) {
+	return s.configs, nil
+}
+func (storeStub) UpdateConfiguration(context.Context, *InstanceConfiguration) error { return nil }
+func (storeStub) GetUserIDBySessionKey(context.Context, string) (string, error) {
+	return "", errors.New("unauthorized")
+}
+
+func TestHandlerReturnsInstanceAndConfiguration(t *testing.T) {
+	value := "true"
+	handler := NewHandler(storeStub{
+		instance: &Instance{ID: "instance-1", InstanceName: "Plane", IsSetupDone: true},
+		configs:  []InstanceConfiguration{{Key: "is_signup_enabled", Value: &value}},
+	}, "sessionid")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/instances/", nil))
 	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d", response.Code)
+		t.Fatalf("status = %d, want 200", response.Code)
 	}
-	if response.Header().Get("X-Plane-Instance-Stale") != "true" {
-		t.Fatal("expected stale response header")
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	instancePayload, ok := payload["instance"].(map[string]any)
+	if !ok || instancePayload["id"] != "instance-1" {
+		t.Fatalf("unexpected instance payload: %#v", payload["instance"])
 	}
 }
 
-func TestHandlerRejectsInvalidUpstreamPayload(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("not-json"))
-	}))
-	defer upstream.Close()
-	handler, _ := NewHandler(upstream.URL, time.Minute)
+func TestHandlerReturnsSetupFalseWhenInstanceMissing(t *testing.T) {
+	handler := NewHandler(storeStub{err: errors.New("not found")}, "sessionid")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/instances/", nil))
-	if response.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502", response.Code)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if payload["is_setup_done"] != false {
+		t.Fatalf("is_setup_done = %#v, want false", payload["is_setup_done"])
+	}
+}
+
+func TestHandlerProtectsInstanceMutation(t *testing.T) {
+	handler := NewHandler(storeStub{instance: &Instance{ID: "instance-1"}}, "sessionid")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/api/instances/", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", response.Code)
 	}
 }
