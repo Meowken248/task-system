@@ -191,7 +191,10 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("GET /auth/get-csrf-token/", deps.CSRF)
 	}
 	if deps.Instances != nil {
-		mux.Handle("/api/instances/", deps.Instances)
+		mux.Handle("GET /api/instances/{$}", deps.Instances)
+		mux.Handle("PATCH /api/instances/{$}", deps.Instances)
+		mux.Handle("/api/instances/admins/", deps.Instances)
+		mux.Handle("/api/instances/configurations/", deps.Instances)
 	}
 	if deps.SignOut != nil {
 		mux.Handle("POST /auth/sign-out/", deps.SignOut)
@@ -268,6 +271,13 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.LegacyAPIURL != "" {
 			if legacyURL, err := url.Parse(deps.LegacyAPIURL); err == nil {
 				proxy := httputil.NewSingleHostReverseProxy(legacyURL)
+				proxy.ModifyResponse = func(res *http.Response) error {
+					res.Header.Del("Access-Control-Allow-Origin")
+					res.Header.Del("Access-Control-Allow-Credentials")
+					res.Header.Del("Access-Control-Allow-Headers")
+					res.Header.Del("Access-Control-Allow-Methods")
+					return nil
+				}
 				proxy.ServeHTTP(w, r)
 				return
 			}

@@ -13,6 +13,7 @@ type Config struct {
 	LegacyAPIURL              string
 	AppBaseURL                string
 	SessionCookie             string
+	AdminSessionCookie        string
 	SessionSecret             string
 	SessionAge                time.Duration
 	CookieDomain              string
@@ -43,6 +44,7 @@ func Load() (Config, error) {
 		LegacyAPIURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("LEGACY_API_URL")), "/"),
 		AppBaseURL:                strings.TrimRight(envOrDefault("APP_BASE_URL", "http://localhost:3000"), "/"),
 		SessionCookie:             envOrDefault("SESSION_COOKIE_NAME", "session-id"),
+		AdminSessionCookie:        envOrDefault("ADMIN_SESSION_COOKIE_NAME", "admin-session-id"),
 		SessionSecret:             strings.TrimSpace(os.Getenv("SECRET_KEY")),
 		SessionAge:                durationSeconds("SESSION_COOKIE_AGE", 7*24*time.Hour, 365*24*time.Hour),
 		CookieDomain:              strings.TrimSpace(os.Getenv("COOKIE_DOMAIN")),

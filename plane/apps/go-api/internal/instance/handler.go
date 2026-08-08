@@ -32,8 +32,8 @@ func NewHandler(store Store, cookieName string) *Handler {
 		mux:               http.NewServeMux(),
 	}
 
-	h.mux.HandleFunc("GET /api/instances/", h.GetInstance)
-	h.mux.HandleFunc("PATCH /api/instances/", h.UpdateInstance)
+	h.mux.HandleFunc("GET /api/instances/{$}", h.GetInstance)
+	h.mux.HandleFunc("PATCH /api/instances/{$}", h.UpdateInstance)
 	h.mux.HandleFunc("GET /api/instances/admins/", h.ListAdmins)
 	h.mux.HandleFunc("POST /api/instances/admins/", h.CreateAdmin)
 	h.mux.HandleFunc("DELETE /api/instances/admins/{id}/", h.DeleteAdmin)
