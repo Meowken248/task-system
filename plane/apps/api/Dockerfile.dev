@@ -37,9 +37,9 @@ COPY . .
 
 # The MetaNode RPC currently omits its GlobalSign intermediate certificate.
 # Install the pinned public intermediate without disabling TLS verification.
-RUN cp /code/certs/globalsign-gcc-r6-alphassl-ca-2025.pem \
-        /usr/local/share/ca-certificates/globalsign-gcc-r6-alphassl-ca-2025.crt \
-    && update-ca-certificates
+# RUN cp /code/certs/globalsign-gcc-r6-alphassl-ca-2025.pem \
+#         /usr/local/share/ca-certificates/globalsign-gcc-r6-alphassl-ca-2025.crt \
+#     && update-ca-certificates
 
 RUN mkdir -p /code/plane/logs
 RUN chmod -R +x /code/bin

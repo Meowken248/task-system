@@ -271,7 +271,8 @@ func (h *Handler) AdminSignIn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminSignUp(w http.ResponseWriter, r *http.Request) {
-	if _, err := h.Store.GetInstance(r.Context()); err == nil {
+	instance, err := h.Store.GetInstance(r.Context())
+	if err == nil && instance != nil && instance.IsSetupDone {
 		http.Redirect(w, r, getAdminFrontendBase(r)+"/?error_message=INSTANCE_ALREADY_CONFIGURED", http.StatusFound)
 		return
 	}
@@ -281,6 +282,10 @@ func (h *Handler) AdminSignUp(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	firstName := r.FormValue("first_name")
 	lastName := r.FormValue("last_name")
+	companyName := r.FormValue("company_name")
+	if companyName == "" {
+		companyName = "Plane"
+	}
 
 	hashed, err := auth.EncodeDjangoPassword(password)
 	if err != nil {
@@ -295,23 +300,38 @@ func (h *Handler) AdminSignUp(w http.ResponseWriter, r *http.Request) {
 		LastName:  lastName,
 		IsActive:  true,
 	}
-	h.Store.CreateUser(r.Context(), user)
-
-	instance := &Instance{
-		InstanceName:          "Plane",
-		InstanceID:            uuid.New().String(),
-		CurrentVersion:        "v1.0.0",
-		Edition:               "PLANE_COMMUNITY",
-		IsSetupDone:           true,
-		IsSignupScreenVisited: true,
+	err = h.Store.CreateUser(r.Context(), user)
+	if err != nil {
+		http.Error(w, "could not create admin user: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
-	h.Store.CreateInstance(r.Context(), instance)
 
-	h.Store.CreateInstanceAdmin(r.Context(), &InstanceAdmin{
+	if instance == nil || err != nil {
+		instance = &Instance{
+			InstanceName:          companyName,
+			InstanceID:            uuid.New().String(),
+			CurrentVersion:        "v1.0.0",
+			Edition:               "PLANE_COMMUNITY",
+			IsSetupDone:           true,
+			IsSignupScreenVisited: true,
+		}
+		h.Store.CreateInstance(r.Context(), instance)
+	} else {
+		instance.InstanceName = companyName
+		instance.IsSetupDone = true
+		instance.IsSignupScreenVisited = true
+		h.Store.UpdateInstance(r.Context(), instance)
+	}
+
+	err = h.Store.CreateInstanceAdmin(r.Context(), &InstanceAdmin{
 		UserID:     user.ID,
 		InstanceID: instance.ID,
 		Role:       20,
 	})
+	if err != nil {
+		http.Error(w, "could not create instance admin: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	if h.SessionSecret == "" {
 		http.Error(w, "admin sign-up session is not configured", http.StatusServiceUnavailable)

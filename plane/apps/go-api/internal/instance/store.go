@@ -165,8 +165,18 @@ func (s PostgreSQLStore) UpdateInstance(ctx context.Context, i *Instance) error 
 func (s PostgreSQLStore) CreateUser(ctx context.Context, u *User) error {
 	query := `
 		INSERT INTO users (
-			username, email, password, first_name, last_name, is_active, is_bot
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			id, username, email, password, first_name, last_name, is_active, is_bot,
+			avatar, date_joined, created_at, updated_at, last_location, created_location,
+			is_superuser, is_managed, is_password_expired, is_staff, is_email_verified,
+			is_password_autoset, token, user_timezone, last_login_ip, last_logout_ip,
+			last_login_medium, last_login_uagent, is_email_valid, is_password_reset_required, display_name
+		) VALUES (
+			gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7,
+			'', NOW(), NOW(), NOW(), '', '',
+			false, false, false, false, false,
+			false, '', 'UTC', '', '',
+			'email', '', false, false, ''
+		)
 		RETURNING id, created_at, updated_at
 	`
 	return s.Pool.QueryRow(ctx, query,
@@ -200,8 +210,8 @@ func (s PostgreSQLStore) GetUserByID(ctx context.Context, id string) (*User, err
 
 func (s PostgreSQLStore) CreateInstanceAdmin(ctx context.Context, a *InstanceAdmin) error {
 	query := `
-		INSERT INTO instance_admins (user_id, instance_id, role, is_verified)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO instance_admins (id, user_id, instance_id, role, is_verified, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW(), NOW())
 		RETURNING id, created_at, updated_at
 	`
 	return s.Pool.QueryRow(ctx, query, a.UserID, a.InstanceID, a.Role, a.IsVerified).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)

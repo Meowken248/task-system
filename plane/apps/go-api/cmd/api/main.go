@@ -230,22 +230,24 @@ func main() {
 				},
 				SessionCookieName: cfg.SessionCookie,
 			},
-			Version: version,
+			Version:      version,
+			LegacyAPIURL: cfg.LegacyAPIURL,
 		}),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 	go func() {
-		logger.Info("Go API listening", "address", cfg.Address, "legacy_fallback", false)
+		logger.Info("Go API listening", "address", cfg.Address, "legacy_fallback", cfg.LegacyAPIURL != "")
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("HTTP server failed", "error", err)
-			stop()
+			logger.Error("server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 	<-ctx.Done()
+	logger.Info("shutting down...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("graceful shutdown failed", "error", err)
+		logger.Error("server shutdown failed", "error", err)
 	}
 }

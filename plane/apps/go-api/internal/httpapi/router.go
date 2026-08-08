@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -57,6 +59,7 @@ type Dependencies struct {
 	Instances        http.Handler
 	Intake           http.Handler
 	Version          string
+	LegacyAPIURL     string
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -180,7 +183,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
-			"legacy_fallback": false, "ported_groups": portedGroups,
+			"legacy_fallback": true, "ported_groups": portedGroups,
 		})
 	})
 
@@ -261,7 +264,14 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/{asset_id}/", deps.Assets)
 		mux.Handle("/api/assets/v2/workspaces/{slug}/{asset_id}/", deps.Assets) // For workspace logos, page descriptions, etc.
 	}
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if deps.LegacyAPIURL != "" {
+			if legacyURL, err := url.Parse(deps.LegacyAPIURL); err == nil {
+				proxy := httputil.NewSingleHostReverseProxy(legacyURL)
+				proxy.ServeHTTP(w, r)
+				return
+			}
+		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not migrated or does not exist"})
 	})
 	return corsMiddleware(requestID(mux))
@@ -555,6 +565,13 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("reaction_code", parts[6])
 		h.deps.CommentReactions.ServeHTTP(w, r)
 		return
+	}
+	if h.deps.LegacyAPIURL != "" {
+		if legacyURL, err := url.Parse(h.deps.LegacyAPIURL); err == nil {
+			proxy := httputil.NewSingleHostReverseProxy(legacyURL)
+			proxy.ServeHTTP(w, r)
+			return
+		}
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not migrated"})
 }

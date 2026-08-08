@@ -53,6 +53,97 @@ services:
 
 
 
+  plane-mq:
+    image: rabbitmq:3.13.6-management-alpine
+    restart: unless-stopped
+    networks:
+      - dev_env
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    env_file:
+      - .env
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST}
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+      args:
+        DOCKER_BUILDKIT: 1
+    restart: unless-stopped
+    networks:
+      - dev_env
+    volumes:
+      - ./apps/api:/code
+    command: ./bin/docker-entrypoint-api-local.sh
+    env_file:
+      - ./apps/api/.env
+    depends_on:
+      - plane-db
+      - plane-redis
+      - plane-mq
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+      args:
+        DOCKER_BUILDKIT: 1
+    restart: unless-stopped
+    networks:
+      - dev_env
+    volumes:
+      - ./apps/api:/code
+    command: ./bin/docker-entrypoint-worker.sh
+    env_file:
+      - ./apps/api/.env
+    depends_on:
+      - api
+      - plane-db
+      - plane-redis
+
+  beat-worker:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+      args:
+        DOCKER_BUILDKIT: 1
+    restart: unless-stopped
+    networks:
+      - dev_env
+    volumes:
+      - ./apps/api:/code
+    command: ./bin/docker-entrypoint-beat.sh
+    env_file:
+      - ./apps/api/.env
+    depends_on:
+      - api
+      - plane-db
+      - plane-redis
+
+  migrator:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+      args:
+        DOCKER_BUILDKIT: 1
+    restart: "no"
+    networks:
+      - dev_env
+    volumes:
+      - ./apps/api:/code
+    command: ./bin/docker-entrypoint-migrator.sh --settings=plane.settings.local
+    env_file:
+      - ./apps/api/.env
+    depends_on:
+      - plane-db
+      - plane-redis
+
   go-api:
     build:
       context: ./apps/go-api
@@ -64,7 +155,9 @@ services:
       - ./apps/go-api/.env
     environment:
       GO_API_ADDRESS: ":8080"
+      LEGACY_API_URL: "http://api:8000"
     depends_on:
+      - api
       - plane-db
     ports:
       - "8080:8080"
@@ -80,6 +173,7 @@ volumes:
   redisdata:
   uploads:
   pgdata:
+  rabbitmq_data:
 
 networks:
   dev_env:
