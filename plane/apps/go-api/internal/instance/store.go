@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/makeplane/plane/apps/go-api/internal/auth"
 )
 
 type Instance struct {
@@ -79,10 +81,15 @@ type Store interface {
 	GetConfigurations(context.Context) ([]InstanceConfiguration, error)
 	UpdateConfiguration(context.Context, *InstanceConfiguration) error
 	GetUserIDBySessionKey(context.Context, string) (string, error)
+	CreateLoginSession(context.Context, auth.LoginSession) error
 }
 
 type PostgreSQLStore struct {
 	Pool *pgxpool.Pool
+}
+
+func (s PostgreSQLStore) CreateLoginSession(ctx context.Context, session auth.LoginSession) error {
+	return (auth.PostgreSQLSignInStore{Pool: s.Pool}).CreateLoginSession(ctx, session)
 }
 
 func (s PostgreSQLStore) GetUserIDBySessionKey(ctx context.Context, sessionKey string) (string, error) {

@@ -88,40 +88,17 @@ func (h SignInHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.redirectError(w, r, 5065, "AUTHENTICATION_FAILED_SIGN_IN", email)
 		return
 	}
-	now := time.Now().UTC()
-	if h.Now != nil {
-		now = h.Now().UTC()
-	}
-	age := h.SessionAge
-	if age <= 0 {
-		age = 7 * 24 * time.Hour
-	}
-	key, err := randomString(32)
+	session, err := NewLoginSession(r, user, h.SecretKey, h.SessionAge, h.Now)
 	if err != nil {
 		http.Error(w, "could not create session", http.StatusInternalServerError)
 		return
 	}
-	tokenBytes := make([]byte, 32)
-	if _, err = rand.Read(tokenBytes); err != nil {
-		http.Error(w, "could not create session", http.StatusInternalServerError)
-		return
-	}
-	device := map[string]string{"user_agent": r.UserAgent(), "ip_address": clientIP(r), "domain": requestHost(r)}
-	data, err := encodeDjangoSession(user.ID, user.PasswordHash, h.SecretKey, device, now)
-	if err != nil {
-		http.Error(w, "could not encode session", http.StatusInternalServerError)
-		return
-	}
-	err = h.Store.CreateLoginSession(r.Context(), LoginSession{Key: key, Data: data, UserID: user.ID, ExpiresAt: now.Add(age), DeviceInfo: device, LoginIP: clientIP(r), UserAgent: r.UserAgent(), Token: fmt.Sprintf("%x", tokenBytes)})
+	err = h.Store.CreateLoginSession(r.Context(), session)
 	if err != nil {
 		http.Error(w, "could not persist session", http.StatusServiceUnavailable)
 		return
 	}
-	cookieName := h.SessionCookieName
-	if cookieName == "" {
-		cookieName = "session-id"
-	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: key, Path: "/", Domain: h.CookieDomain, MaxAge: int(age.Seconds()), Expires: now.Add(age), HttpOnly: true, Secure: requestIsSecure(r), SameSite: http.SameSiteLaxMode})
+	SetLoginCookie(w, r, h.SessionCookieName, h.CookieDomain, session)
 	path := safeNextPath(r.FormValue("next_path"))
 	if path == "" {
 		path, err = h.Store.RedirectPath(r.Context(), user.ID, user.Email)
@@ -160,6 +137,48 @@ func verifyDjangoPassword(password, encoded string) bool {
 	}
 	actual := pbkdf2.Key([]byte(password), []byte(parts[2]), iterations, len(expected), sha256.New)
 	return subtle.ConstantTimeCompare(actual, expected) == 1
+}
+
+// VerifyDjangoPassword validates passwords stored by Plane/Django.
+func VerifyDjangoPassword(password, encoded string) bool {
+	return verifyDjangoPassword(password, encoded)
+}
+
+// NewLoginSession builds the same signed session payload used by the main Plane sign-in flow.
+func NewLoginSession(r *http.Request, user LoginUser, secretKey string, sessionAge time.Duration, nowFn func() time.Time) (LoginSession, error) {
+	now := time.Now().UTC()
+	if nowFn != nil {
+		now = nowFn().UTC()
+	}
+	if sessionAge <= 0 {
+		sessionAge = 7 * 24 * time.Hour
+	}
+	key, err := randomString(32)
+	if err != nil {
+		return LoginSession{}, err
+	}
+	tokenBytes := make([]byte, 32)
+	if _, err = rand.Read(tokenBytes); err != nil {
+		return LoginSession{}, err
+	}
+	device := map[string]string{"user_agent": r.UserAgent(), "ip_address": clientIP(r), "domain": requestHost(r)}
+	data, err := encodeDjangoSession(user.ID, user.PasswordHash, secretKey, device, now)
+	if err != nil {
+		return LoginSession{}, err
+	}
+	return LoginSession{Key: key, Data: data, UserID: user.ID, ExpiresAt: now.Add(sessionAge), DeviceInfo: device, LoginIP: clientIP(r), UserAgent: r.UserAgent(), Token: fmt.Sprintf("%x", tokenBytes)}, nil
+}
+
+// SetLoginCookie writes the canonical Plane session cookie.
+func SetLoginCookie(w http.ResponseWriter, r *http.Request, cookieName, cookieDomain string, session LoginSession) {
+	if cookieName == "" {
+		cookieName = "session-id"
+	}
+	maxAge := int(time.Until(session.ExpiresAt).Seconds())
+	if maxAge < 1 {
+		maxAge = 1
+	}
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: session.Key, Path: "/", Domain: cookieDomain, MaxAge: maxAge, Expires: session.ExpiresAt, HttpOnly: true, Secure: requestIsSecure(r), SameSite: http.SameSiteLaxMode})
 }
 
 func safeNextPath(value string) string {

@@ -214,6 +214,11 @@ func encodeDjangoPassword(password string) (string, error) {
 	return fmt.Sprintf("pbkdf2_sha256$%d$%s$%s", djangoPBKDF2Iterations, salt, base64.StdEncoding.EncodeToString(hash)), nil
 }
 
+// EncodeDjangoPassword creates a password hash compatible with Plane/Django.
+func EncodeDjangoPassword(password string) (string, error) {
+	return encodeDjangoPassword(password)
+}
+
 func randomUUID() (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {

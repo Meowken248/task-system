@@ -37,9 +37,9 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/relation"
 	"github.com/makeplane/plane/apps/go-api/internal/search"
 	"github.com/makeplane/plane/apps/go-api/internal/state"
+	"github.com/makeplane/plane/apps/go-api/internal/storage"
 	"github.com/makeplane/plane/apps/go-api/internal/subissue"
 	"github.com/makeplane/plane/apps/go-api/internal/subscriber"
-	"github.com/makeplane/plane/apps/go-api/internal/storage"
 	"github.com/makeplane/plane/apps/go-api/internal/tracking"
 	"github.com/makeplane/plane/apps/go-api/internal/user"
 	"github.com/makeplane/plane/apps/go-api/internal/view"
@@ -93,7 +93,7 @@ func main() {
 		Addr: cfg.Address,
 		Handler: httpapi.NewRouter(httpapi.Dependencies{
 			Readiness: db,
-			CSRF: auth.CSRFHandler{CookieDomain: cfg.CookieDomain},
+			CSRF:      auth.CSRFHandler{CookieDomain: cfg.CookieDomain},
 			SignOut: auth.SignOutHandler{
 				Store: auth.PostgreSQLSessionStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 				CookieDomain: cfg.CookieDomain, RedirectURL: cfg.AppBaseURL,
@@ -152,11 +152,11 @@ func main() {
 				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			ProjectsLite: project.Handler{
-				Store: project.PostgreSQLStore{Pool: db.Native()},
+				Store:             project.PostgreSQLStore{Pool: db.Native()},
 				SessionCookieName: cfg.SessionCookie,
 			},
 			Projects: project.Handler{
-				Store: project.PostgreSQLStore{Pool: db.Native()},
+				Store:             project.PostgreSQLStore{Pool: db.Native()},
 				SessionCookieName: cfg.SessionCookie, Detailed: true,
 			},
 			Project: project.Handler{
@@ -172,12 +172,12 @@ func main() {
 				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 				Current: true,
 			},
-			Notification:  notification.Handler{Store: notification.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
-			Estimate:      estimate.Handler{Store: estimate.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
-			Search:        search.Handler{Store: search.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
-			Analytic:      analytic.Handler{Store: analytic.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
-			Instances:     instance.NewHandler(instance.PostgreSQLStore{Pool: db.Native()}, cfg.SessionCookie),
-			Intake:        intake.Handler{Store: intake.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Notification: notification.Handler{Store: notification.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Estimate:     estimate.Handler{Store: estimate.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Search:       search.Handler{Store: search.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Analytic:     analytic.Handler{Store: analytic.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Instances:    instance.NewHandler(instance.PostgreSQLStore{Pool: db.Native()}, cfg.SessionCookie).ConfigureSession(cfg.SessionSecret, cfg.CookieDomain, cfg.SessionAge),
+			Intake:       intake.Handler{Store: intake.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Labels: label.Handler{
 				Store: label.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
@@ -225,9 +225,9 @@ func main() {
 			},
 			Assets: asset.Handler{
 				Store: asset.PostgreSQLStore{
-					Pool: db.Native(), 
+					Pool:     db.Native(),
 					Provider: &storage.Local{BaseDir: "./media", BaseURL: cfg.AppBaseURL + "/api/assets/v2"},
-				}, 
+				},
 				SessionCookieName: cfg.SessionCookie,
 			},
 			Version: version,
