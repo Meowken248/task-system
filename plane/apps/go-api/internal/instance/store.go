@@ -163,6 +163,12 @@ func (s PostgreSQLStore) UpdateInstance(ctx context.Context, i *Instance) error 
 }
 
 func (s PostgreSQLStore) CreateUser(ctx context.Context, u *User) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
 	query := `
 		INSERT INTO users (
 			id, username, email, password, first_name, last_name, is_active, is_bot,
@@ -179,9 +185,44 @@ func (s PostgreSQLStore) CreateUser(ctx context.Context, u *User) error {
 		)
 		RETURNING id, created_at, updated_at
 	`
-	return s.Pool.QueryRow(ctx, query,
+	err = tx.QueryRow(ctx, query,
 		u.Username, u.Email, u.Password, u.FirstName, u.LastName, u.IsActive, u.IsBot,
 	).Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO profiles (
+			created_at,updated_at,id,theme,is_tour_completed,onboarding_step,use_case,role,is_onboarded,
+			last_workspace_id,billing_address_country,billing_address,has_billing_address,company_name,
+			user_id,is_mobile_onboarded,mobile_onboarding_step,mobile_timezone_auto_set,language,
+			is_smooth_cursor_enabled,start_of_the_week,is_app_rail_docked,background_color,goals,
+			has_marketing_email_consent,is_navigation_tour_completed,is_subscribed_to_changelog,
+			notification_view_mode,product_tour
+		) VALUES (
+			$1,$1,gen_random_uuid(),'{}'::jsonb,FALSE,
+			'{"profile_complete":false,"workspace_create":false,"workspace_invite":false,"workspace_join":false}'::jsonb,
+			NULL,NULL,FALSE,NULL,'INDIA',NULL,FALSE,'',$2,FALSE,
+			'{"profile_complete":false,"workspace_create":false,"workspace_join":false}'::jsonb,
+			FALSE,'en',FALSE,0,TRUE,'#3b82f6','{}'::jsonb,FALSE,FALSE,FALSE,'full',
+			'{"work_items":false,"cycles":false,"modules":false,"intake":false,"pages":false}'::jsonb
+		)`, u.CreatedAt, u.ID)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO user_notification_preferences (
+			created_at,updated_at,id,property_change,state_change,comment,mention,issue_completed,
+			created_by_id,project_id,updated_by_id,user_id,workspace_id,deleted_at
+		) VALUES ($1,$1,gen_random_uuid(),TRUE,TRUE,TRUE,TRUE,TRUE,NULL,NULL,NULL,$2,NULL,NULL)`,
+		u.CreatedAt, u.ID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (s PostgreSQLStore) GetUserByEmail(ctx context.Context, email string) (*User, error) {
