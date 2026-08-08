@@ -221,8 +221,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("POST /auth/set-password/", deps.SetPassword)
 	}
 	if deps.Workspaces != nil {
-		mux.Handle("/api/workspaces/", deps.Workspaces)
-		mux.Handle("/api/workspaces/{slug}/", deps.Workspaces)
+		mux.Handle("/api/workspaces/{$}", deps.Workspaces)
+		mux.Handle("/api/workspaces/{slug}/{$}", deps.Workspaces)
 		mux.Handle("GET /api/users/me/workspaces/", deps.Workspaces)
 	}
 	if deps.CurrentUser != nil {
@@ -257,9 +257,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Favorites != nil {
-		mux.Handle("/api/workspaces/{slug}/user-favorites/", deps.Favorites)
-		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/", deps.Favorites)
-		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/group/", deps.Favorites)
+		mux.Handle("/api/workspaces/{slug}/user-favorites/{$}", deps.Favorites)
+		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/{$}", deps.Favorites)
+		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/group/{$}", deps.Favorites)
 	}
 	if deps.Assets != nil {
 		mux.Handle("/api/assets/v2/static/{asset_id}/", deps.Assets)

@@ -78,7 +78,7 @@ func (s PostgreSQLStore) identity(ctx context.Context, sessionKey, slug string) 
 		JOIN workspaces workspace ON workspace.slug = $2
 		JOIN workspace_members member
 		  ON member.workspace_id = workspace.id
-		 AND member.member_id = session.user_id
+		 AND member.member_id = NULLIF(session.user_id, '')::uuid
 		 AND member.is_active = TRUE
 		WHERE session.session_key = $1 AND session.expire_date > NOW()
 		LIMIT 1

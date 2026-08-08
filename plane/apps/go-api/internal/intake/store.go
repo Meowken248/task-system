@@ -45,7 +45,7 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(
 		SELECT 1 FROM sessions session
 		JOIN workspaces w ON w.slug=$2 AND w.deleted_at IS NULL
-		JOIN project_members pm ON pm.project_id::text=$3 AND pm.member_id=session.user_id
+		JOIN project_members pm ON pm.project_id::text=$3 AND pm.member_id=NULLIF(session.user_id, '')::uuid
 			AND pm.is_active=TRUE AND pm.deleted_at IS NULL
 		WHERE session.session_key=$1 AND session.expire_date>NOW()
 	)`, sessionKey, slug, projectID).Scan(&allowed)

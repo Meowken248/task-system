@@ -3,6 +3,7 @@ package notification
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -142,6 +143,7 @@ func parseBool(value string) bool {
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
+	fmt.Println("STORE ERROR:", err)
 	switch {
 	case errors.Is(err, ErrUnauthorized):
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})

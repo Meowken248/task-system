@@ -77,7 +77,7 @@ func (s PostgreSQLStore) projectIdentity(ctx context.Context, sessionKey, slug, 
 		FROM sessions session
 		JOIN workspaces w ON w.slug=$2 AND w.deleted_at IS NULL
 		JOIN projects p ON p.id::text=$3 AND p.workspace_id=w.id AND p.deleted_at IS NULL
-		JOIN project_members pm ON pm.project_id=p.id AND pm.member_id=session.user_id
+		JOIN project_members pm ON pm.project_id=p.id AND pm.member_id=NULLIF(session.user_id, '')::uuid
 			AND pm.is_active=TRUE AND pm.deleted_at IS NULL
 		WHERE session.session_key=$1 AND session.expire_date>NOW()`, sessionKey, slug, projectID).
 		Scan(&access.WorkspaceID, &access.UserID, &access.Role)
@@ -95,7 +95,7 @@ func (s PostgreSQLStore) workspaceIdentity(ctx context.Context, sessionKey, slug
 	err := s.Pool.QueryRow(ctx, `SELECT w.id::text
 		FROM sessions session
 		JOIN workspaces w ON w.slug=$2 AND w.deleted_at IS NULL
-		JOIN workspace_members wm ON wm.workspace_id=w.id AND wm.member_id=session.user_id
+		JOIN workspace_members wm ON wm.workspace_id=w.id AND wm.member_id=NULLIF(session.user_id, '')::uuid
 			AND wm.is_active=TRUE AND wm.deleted_at IS NULL
 		WHERE session.session_key=$1 AND session.expire_date>NOW()`, sessionKey, slug).Scan(&workspaceID)
 	if errors.Is(err, pgx.ErrNoRows) {
