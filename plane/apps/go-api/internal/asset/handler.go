@@ -46,7 +46,42 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.Copy(w, reader)
 
 	case http.MethodPost:
-		// Requires multipart/form-data parsing
+		// V2 API uses JSON to request a presigned URL
+		if r.Header.Get("Content-Type") == "application/json" {
+			var req struct {
+				Name             string `json:"name"`
+				Type             string `json:"type"`
+				Size             int64  `json:"size"`
+				EntityType       string `json:"entity_type"`
+				EntityIdentifier string `json:"entity_identifier"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if req.Name == "" {
+				req.Name = "unnamed"
+			}
+			if req.Type == "" {
+				req.Type = "image/jpeg" // default
+			}
+
+			asset, uploadData, err := h.Store.CreatePresigned(r.Context(), sessionKey, slug, projectID, req.Name, req.Type, req.EntityType, req.Size, req.EntityIdentifier)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"upload_data": uploadData,
+				"asset_id":    asset.ID,
+				"asset_url":   asset.Asset,
+			})
+			return
+		}
+
+		// Fallback for V1 non-presigned multipart form
 		err := r.ParseMultipartForm(5 << 20) // 5 MB
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -70,6 +105,17 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(asset)
 		
+	case http.MethodPatch:
+		if assetID == "" {
+			http.Error(w, "Asset ID required", http.StatusBadRequest)
+			return
+		}
+		if err := h.Store.ConfirmUpload(r.Context(), sessionKey, slug, assetID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}

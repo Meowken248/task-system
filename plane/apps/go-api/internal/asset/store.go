@@ -94,3 +94,82 @@ func (s PostgreSQLStore) Create(ctx context.Context, sessionKey, slug, projectID
 
 	return s.Get(ctx, id)
 }
+
+// CreatePresigned creates a DB record with is_uploaded=false and returns a presigned URL
+func (s PostgreSQLStore) CreatePresigned(ctx context.Context, sessionKey, slug, projectID, filename, fileType, entityType string, size int64, entityIdentifier string) (FileAsset, map[string]any, error) {
+	if slug != "" {
+		if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
+			return FileAsset{}, nil, err
+		}
+	}
+
+	var wID *string
+	var workspaceID string
+	var key string
+	if slug != "" {
+		err := s.Pool.QueryRow(ctx, `SELECT id FROM workspaces WHERE slug=$1`, slug).Scan(&workspaceID)
+		if err != nil {
+			return FileAsset{}, nil, fmt.Errorf("workspace not found: %w", err)
+		}
+		wID = &workspaceID
+		key = fmt.Sprintf("%s/%d-%s", workspaceID, time.Now().UnixNano(), filename)
+	} else {
+		// User asset (avatar/cover)
+		key = fmt.Sprintf("users/%d-%s", time.Now().UnixNano(), filename)
+	}
+
+	var pID *string
+	if projectID != "" {
+		pID = &projectID
+	}
+
+	var eID *string
+	if entityIdentifier != "" {
+		eID = &entityIdentifier
+	}
+
+	var id string
+	err := s.Pool.QueryRow(ctx, `INSERT INTO file_assets (asset, attributes, entity_type, size, is_uploaded, workspace_id, project_id, entity_identifier, created_at, updated_at) 
+		VALUES ($1, $2, $3, $4, false, $5, $6, $7, NOW(), NOW()) RETURNING id`,
+		key, fmt.Sprintf(`{"name": "%s", "type": "%s", "size": %d}`, filename, fileType, size), entityType, size, wID, pID, eID).Scan(&id)
+	if err != nil {
+		return FileAsset{}, nil, fmt.Errorf("insert error: %w", err)
+	}
+
+	// Generate presigned POST
+	uploadData, err := s.Provider.GeneratePresignedPost(ctx, key, fileType, size)
+	if err != nil {
+		// If Provider doesn't support Presigned POST (e.g. LocalStorage), just return a fallback/dummy URL
+		if err.Error() == "GeneratePresignedPost not supported for local storage" {
+			uploadData = map[string]any{
+				"url": s.Provider.GetURL(key),
+				"fields": map[string]string{
+					"key": key,
+				},
+			}
+		} else {
+			return FileAsset{}, nil, fmt.Errorf("generate presigned post: %w", err)
+		}
+	}
+
+	asset, err := s.Get(ctx, id)
+	return asset, uploadData, err
+}
+
+func (s PostgreSQLStore) ConfirmUpload(ctx context.Context, sessionKey, slug, assetID string) error {
+	if slug != "" {
+		if err := s.authorize(ctx, sessionKey, slug, ""); err != nil {
+			return err
+		}
+		_, err := s.Pool.Exec(ctx, `UPDATE file_assets SET is_uploaded = true, updated_at = NOW() WHERE id = $1 AND workspace_id = (SELECT id FROM workspaces WHERE slug=$2)`, assetID, slug)
+		return err
+	}
+	
+	// User assets (no workspace)
+	if sessionKey == "" {
+		return ErrUnauthorized
+	}
+	// Assuming sessionKey is valid, we just update it
+	_, err := s.Pool.Exec(ctx, `UPDATE file_assets SET is_uploaded = true, updated_at = NOW() WHERE id = $1 AND workspace_id IS NULL`, assetID)
+	return err
+}

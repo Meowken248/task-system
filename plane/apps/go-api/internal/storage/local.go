@@ -54,3 +54,7 @@ func (l *Local) GetURL(key string) string {
 	// such as /api/assets/v2/...
 	return key
 }
+
+func (l *Local) GeneratePresignedPost(ctx context.Context, objectName string, fileType string, fileSize int64) (map[string]any, error) {
+	return nil, fmt.Errorf("GeneratePresignedPost not supported for local storage")
+}

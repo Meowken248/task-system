@@ -40,6 +40,16 @@ type Config struct {
 	UnsplashAccessKey         string
 	SkipEnvVar                bool
 	ShutdownTimeout           time.Duration
+	// S3/MinIO Configuration
+	AWSAccessKeyID            string
+	AWSSecretAccessKey        string
+	AWSS3BucketName           string
+	AWSRegion                 string
+	AWSS3EndpointURL          string
+	AWSS3PublicEndpointURL    string
+	UseMinio                  bool
+	MinioEndpointSSL          bool
+	SignedURLExpiration       time.Duration
 }
 
 func Load() (Config, error) {
@@ -76,6 +86,15 @@ func Load() (Config, error) {
 		UnsplashAccessKey:         strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY")),
 		SkipEnvVar:                envBool("SKIP_ENV_VAR", false),
 		ShutdownTimeout:           10 * time.Second,
+		AWSAccessKeyID:            strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),
+		AWSSecretAccessKey:        strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")),
+		AWSS3BucketName:           strings.TrimSpace(os.Getenv("AWS_S3_BUCKET_NAME")),
+		AWSRegion:                 strings.TrimSpace(os.Getenv("AWS_REGION")),
+		AWSS3EndpointURL:          firstEnv("AWS_S3_ENDPOINT_URL", "MINIO_ENDPOINT_URL"),
+		AWSS3PublicEndpointURL:    strings.TrimSpace(os.Getenv("AWS_S3_PUBLIC_ENDPOINT_URL")),
+		UseMinio:                  envBool("USE_MINIO", false),
+		MinioEndpointSSL:          envBool("MINIO_ENDPOINT_SSL", false),
+		SignedURLExpiration:       durationSeconds("SIGNED_URL_EXPIRATION", 3600*time.Second, 24*time.Hour),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

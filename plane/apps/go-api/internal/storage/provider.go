@@ -10,4 +10,5 @@ type Provider interface {
 	Download(ctx context.Context, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, key string) error
 	GetURL(key string) string
+	GeneratePresignedPost(ctx context.Context, objectName string, fileType string, fileSize int64) (map[string]any, error)
 }

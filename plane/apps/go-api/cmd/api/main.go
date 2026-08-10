@@ -100,6 +100,27 @@ func main() {
 	workerManager.Start()
 	defer workerManager.Stop()
 
+	var storageProvider storage.Provider
+	if cfg.AWSS3BucketName != "" && cfg.AWSS3EndpointURL != "" {
+		s3Provider, err := storage.NewS3(
+			cfg.AWSS3EndpointURL,
+			cfg.AWSAccessKeyID,
+			cfg.AWSSecretAccessKey,
+			cfg.AWSRegion,
+			cfg.AWSS3BucketName,
+			cfg.AWSS3PublicEndpointURL,
+			cfg.MinioEndpointSSL,
+			cfg.SignedURLExpiration,
+		)
+		if err != nil {
+			logger.Error("Failed to initialize S3 storage provider", "error", err)
+			os.Exit(1)
+		}
+		storageProvider = s3Provider
+	} else {
+		storageProvider = &storage.Local{BaseDir: "./media", BaseURL: cfg.AppBaseURL + "/api/assets/v2"}
+	}
+
 	server := &http.Server{
 		Addr: cfg.Address,
 		Handler: httpapi.NewRouter(httpapi.Dependencies{
@@ -296,7 +317,7 @@ func main() {
 			Assets: asset.Handler{
 				Store: asset.PostgreSQLStore{
 					Pool:     db.Native(),
-					Provider: &storage.Local{BaseDir: "./media", BaseURL: cfg.AppBaseURL + "/api/assets/v2"},
+					Provider: storageProvider,
 				},
 				SessionCookieName: cfg.SessionCookie,
 			},
