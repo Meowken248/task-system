@@ -261,12 +261,12 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/{$}", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/group/{$}", deps.Favorites)
 	}
-	if deps.Assets != nil {
-		mux.Handle("/api/assets/v2/static/{asset_id}/", deps.Assets)
-		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/", deps.Assets)
-		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/{asset_id}/", deps.Assets)
-		mux.Handle("/api/assets/v2/workspaces/{slug}/{asset_id}/", deps.Assets) // For workspace logos, page descriptions, etc.
-	}
+	// if deps.Assets != nil {
+	// 	mux.Handle("/api/assets/v2/static/{asset_id}/", deps.Assets)
+	// 	mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/", deps.Assets)
+	// 	mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/{asset_id}/", deps.Assets)
+	// 	mux.Handle("/api/assets/v2/workspaces/{slug}/{asset_id}/", deps.Assets) // For workspace logos, page descriptions, etc.
+	// }
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if deps.LegacyAPIURL != "" {
 			if legacyURL, err := url.Parse(deps.LegacyAPIURL); err == nil {

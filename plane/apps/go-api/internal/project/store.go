@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -197,17 +198,23 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug 
 	if payload.GuestViewAllFeatures != nil {
 		guestViewAll = *payload.GuestViewAllFeatures
 	}
+	description := ""
+	if payload.Description != nil {
+		description = *payload.Description
+	}
 
 	_, err = tx.Exec(ctx, `INSERT INTO projects
 		(id, name, identifier, description, network, workspace_id,
 		 cycle_view, module_view, issue_views_view, page_view, intake_view, guest_view_all_features,
 		 project_lead_id, default_assignee_id,
+		 archive_in, close_in, logo_props, is_time_tracking_enabled, is_issue_type_enabled, timezone,
 		 created_by_id, updated_by_id, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6::uuid,
 			$7,$8,$9,$10,$11,$12,
 			NULLIF($13,'')::uuid, NULLIF($14,'')::uuid,
+			0, 0, '{}'::jsonb, FALSE, FALSE, 'UTC',
 			$15::uuid,$15::uuid,NOW(),NOW())`,
-		projectID, payload.Name, payload.Identifier, payload.Description, network, a.workspaceID,
+		projectID, payload.Name, payload.Identifier, description, network, a.workspaceID,
 		cycleView, moduleView, issueViewsView, pageView, inboxView, guestViewAll,
 		stringValue(payload.ProjectLead), stringValue(payload.DefaultAssignee), a.userID)
 	if err != nil {
@@ -216,8 +223,12 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug 
 
 	// Add creator as Administrator
 	_, err = tx.Exec(ctx, `INSERT INTO project_members
-		(id, project_id, member_id, role, workspace_id, is_active, created_by_id, updated_by_id, created_at, updated_at)
-		VALUES ($1,$2::uuid,$3::uuid,20,$4::uuid,TRUE,$3::uuid,$3::uuid,NOW(),NOW())`,
+		(id, project_id, member_id, role, workspace_id, is_active,
+		 view_props, default_props, preferences, sort_order,
+		 created_by_id, updated_by_id, created_at, updated_at)
+		VALUES ($1,$2::uuid,$3::uuid,20,$4::uuid,TRUE,
+			'{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 65535,
+			$3::uuid,$3::uuid,NOW(),NOW())`,
 		newUUID(), projectID, a.userID, a.workspaceID)
 	if err != nil {
 		return nil, err
@@ -226,8 +237,12 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug 
 	// If lead is different from creator, add lead as Administrator
 	if payload.ProjectLead != nil && *payload.ProjectLead != "" && *payload.ProjectLead != a.userID {
 		_, err = tx.Exec(ctx, `INSERT INTO project_members
-			(id, project_id, member_id, role, workspace_id, is_active, created_by_id, updated_by_id, created_at, updated_at)
-			VALUES ($1,$2::uuid,$3::uuid,20,$4::uuid,TRUE,$5::uuid,$5::uuid,NOW(),NOW())`,
+			(id, project_id, member_id, role, workspace_id, is_active,
+			 view_props, default_props, preferences, sort_order,
+			 created_by_id, updated_by_id, created_at, updated_at)
+			VALUES ($1,$2::uuid,$3::uuid,20,$4::uuid,TRUE,
+				'{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 65535,
+				$5::uuid,$5::uuid,NOW(),NOW())`,
 			newUUID(), projectID, *payload.ProjectLead, a.workspaceID, a.userID)
 		if err != nil {
 			return nil, err
@@ -236,11 +251,14 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug 
 
 	// Bulk create DEFAULT_STATES
 	for _, state := range defaultStates {
+		stateName := state["name"].(string)
+		stateSlug := strings.ToLower(strings.ReplaceAll(stateName, " ", "-"))
+		isTriage := state["group"] == "triage"
 		_, err = tx.Exec(ctx, `INSERT INTO states
-			(id, name, color, sequence, "group", "default", project_id, workspace_id,
+			(id, name, description, slug, color, sequence, "group", "default", is_triage, project_id, workspace_id,
 			 created_by_id, updated_by_id, created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7::uuid,$8::uuid,$9::uuid,$9::uuid,NOW(),NOW())`,
-			newUUID(), state["name"], state["color"], state["sequence"], state["group"], state["default"],
+			VALUES ($1,$2,'',$3,$4,$5,$6,$7,$8,$9::uuid,$10::uuid,$11::uuid,$11::uuid,NOW(),NOW())`,
+			newUUID(), stateName, stateSlug, state["color"], state["sequence"], state["group"], state["default"], isTriage,
 			projectID, a.workspaceID, a.userID)
 		if err != nil {
 			return nil, err
