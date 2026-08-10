@@ -12,7 +12,7 @@ import (
 
 type Reader interface {
 	ListForSession(context.Context, string, string, string, IssueFilter) (Page, error)
-	GetForSession(context.Context, string, string, string, string) (Item, error)
+	GetForSession(context.Context, string, string, string, string, string) (Item, error)
 }
 
 type Writer interface {
@@ -47,7 +47,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if issueID != "" {
-			payload, err = h.Store.GetForSession(r.Context(), sessionKey, slug, projectID, issueID)
+			payload, err = h.Store.GetForSession(r.Context(), sessionKey, slug, projectID, issueID, r.URL.Query().Get("expand"))
 			break
 		}
 		limit, offset, parseErr := parseCursor(r.URL.Query().Get("cursor"), r.URL.Query().Get("per_page"))
@@ -67,6 +67,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			OrderBy:    r.URL.Query().Get("order_by"),
 			GroupBy:    r.URL.Query().Get("group_by"),
 			SubGroupBy: r.URL.Query().Get("sub_group_by"),
+			Expand:     r.URL.Query().Get("expand"),
 		}
 
 		payload, err = h.Store.ListForSession(r.Context(), sessionKey, slug, projectID, filter)

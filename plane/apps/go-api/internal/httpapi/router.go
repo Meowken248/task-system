@@ -64,6 +64,8 @@ type Dependencies struct {
 	Stickies                 http.Handler
 	Cycles                   http.Handler
 	Modules                  http.Handler
+	Dashboard                http.Handler
+	RecentVisit              http.Handler
 	Views                    http.Handler
 	CommentReactions         http.Handler
 	Assets                   http.Handler
@@ -367,6 +369,12 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil || deps.Cycles != nil || deps.Modules != nil || deps.Views != nil || deps.CommentReactions != nil || deps.Estimate != nil || deps.Intake != nil || deps.ProjectUserProperties != nil || deps.CycleUserProperties != nil || deps.ModuleUserProperties != nil || deps.Pages != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
+	if deps.Dashboard != nil {
+		mux.Handle("/api/users/me/workspaces/{slug}/dashboard/", deps.Dashboard)
+	}
+	if deps.RecentVisit != nil {
+		mux.Handle("/api/workspaces/{slug}/workspace-views/recent-visits/", deps.RecentVisit)
+	}
 	if deps.Favorites != nil {
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{$}", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/{$}", deps.Favorites)
@@ -511,8 +519,8 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.Project.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 2 && parts[0] != "" && parts[1] == "states" &&
-		r.Method == http.MethodGet && h.deps.States != nil {
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "states" && h.deps.States != nil &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPost) {
 		r.SetPathValue("project_id", parts[0])
 		h.deps.States.ServeHTTP(w, r)
 		return
@@ -529,21 +537,21 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.ProjectMemberMe.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 2 && parts[0] != "" && parts[1] == "issue-labels" &&
-		r.Method == http.MethodGet && h.deps.Labels != nil {
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "issue-labels" && h.deps.Labels != nil &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPost) {
 		r.SetPathValue("project_id", parts[0])
 		h.deps.Labels.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 3 && parts[0] != "" && parts[1] == "issue-labels" && parts[2] != "" &&
-		r.Method == http.MethodGet && h.deps.Labels != nil {
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "issue-labels" && parts[2] != "" && h.deps.Labels != nil &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("label_id", parts[2])
 		h.deps.Labels.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 3 && parts[0] != "" && parts[1] == "states" && parts[2] != "" &&
-		r.Method == http.MethodGet && h.deps.States != nil {
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "states" && parts[2] != "" && h.deps.States != nil &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("state_id", parts[2])
 		h.deps.States.ServeHTTP(w, r)
@@ -784,10 +792,7 @@ func canServeBasicIssueRead(r *http.Request) bool {
 				return false
 			}
 		default:
-			// We now handle group_by and sub_group_by natively in Go!
-			if key == "expand" {
-				return false
-			}
+			// We now handle group_by, sub_group_by, expand natively in Go!
 		}
 	}
 	return true

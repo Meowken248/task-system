@@ -21,6 +21,15 @@ func (s readerStub) ListForSession(context.Context, string, string, string) ([]m
 func (s readerStub) GetForSession(context.Context, string, string, string, string) (map[string]any, error) {
 	return s.item, s.err
 }
+func (s readerStub) CreateForSession(context.Context, string, string, string, WritePayload) (map[string]any, error) {
+	return s.item, s.err
+}
+func (s readerStub) UpdateForSession(context.Context, string, string, string, string, WritePayload) (map[string]any, error) {
+	return s.item, s.err
+}
+func (s readerStub) DeleteForSession(context.Context, string, string, string, string) error {
+	return s.err
+}
 
 func TestListStates(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/states/", nil)

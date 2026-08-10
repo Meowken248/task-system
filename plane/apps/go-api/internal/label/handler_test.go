@@ -15,6 +15,15 @@ func (s readerStub) ListForSession(context.Context, string, string, string) ([]I
 func (s readerStub) GetForSession(context.Context, string, string, string, string) (Item, error) {
 	return Item{ID: "label-1", Name: "Bug"}, s.err
 }
+func (s readerStub) CreateForSession(context.Context, string, string, string, WritePayload) (Item, error) {
+	return Item{ID: "label-1", Name: "Bug"}, s.err
+}
+func (s readerStub) UpdateForSession(context.Context, string, string, string, string, WritePayload) (Item, error) {
+	return Item{ID: "label-1", Name: "Bug"}, s.err
+}
+func (s readerStub) DeleteForSession(context.Context, string, string, string, string) error {
+	return s.err
+}
 
 func TestList(t *testing.T) {
 	res := httptest.NewRecorder()

@@ -29,13 +29,28 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	issueID := r.PathValue("issue_id")
 	groupBy := r.URL.Query().Get("group_by")
 
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
 
-	payload, err := h.Store.ListForSession(r.Context(), sessionKey, slug, projectID, issueID, groupBy)
+	var payload any
+	var err error
+	var statusCode = http.StatusOK
+
+	if r.Method == http.MethodGet {
+		payload, err = h.Store.ListForSession(r.Context(), sessionKey, slug, projectID, issueID, groupBy)
+	} else {
+		var input SubIssuePayload
+		if errDecode := json.NewDecoder(r.Body).Decode(&input); errDecode == nil && len(input.SubIssueIDs) > 0 {
+			payload, err = h.Store.CreateForSession(r.Context(), sessionKey, slug, projectID, issueID, input)
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Sub Issue IDs are required"})
+			return
+		}
+	}
+
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUnauthorized):
@@ -48,7 +63,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, payload)
+	writeJSON(w, statusCode, payload)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

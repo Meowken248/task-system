@@ -44,6 +44,17 @@ type Item struct {
 	CreatedBy       *string    `json:"created_by"`
 	UpdatedBy       *string    `json:"updated_by"`
 	IsDraft         bool       `json:"is_draft"`
+
+	// Expansions
+	State            any `json:"state,omitempty"`
+	Assignees        any `json:"assignees,omitempty"`
+	Labels           any `json:"labels,omitempty"`
+	IssueReactions   any `json:"issue_reactions,omitempty"`
+	IssueRelation    any `json:"issue_relation,omitempty"`
+	IssueRelated     any `json:"issue_related,omitempty"`
+	IssueAttachments any `json:"issue_attachments,omitempty"`
+	IssueLink        any `json:"issue_link,omitempty"`
+	Parent           any `json:"parent,omitempty"`
 }
 
 type Page struct {
@@ -72,6 +83,7 @@ type IssueFilter struct {
 	OrderBy    string
 	GroupBy    string
 	SubGroupBy string
+	Expand     string
 }
 
 type PostgreSQLStore struct{ Pool *pgxpool.Pool }
@@ -193,10 +205,14 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	if err = rows.Err(); err != nil {
 		return Page{}, fmt.Errorf("iterate work items: %w", err)
 	}
-	return makePage(items, total, filter.Limit, filter.Offset), nil
+	expanded, err := expandItems(ctx, s.Pool, items, filter.Expand)
+	if err != nil {
+		return Page{}, err
+	}
+	return makePage(expanded, total, filter.Limit, filter.Offset), nil
 }
 
-func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, projectID, issueID string) (Item, error) {
+func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, projectID, issueID, expand string) (Item, error) {
 	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
 		return Item{}, err
 	}
@@ -205,7 +221,11 @@ func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, pr
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, ErrNotFound
 	}
-	return item, err
+	expanded, err := expandItems(ctx, s.Pool, []Item{item}, expand)
+	if err != nil {
+		return Item{}, err
+	}
+	return expanded[0], nil
 }
 
 type rowScanner interface{ Scan(...any) error }
@@ -256,10 +276,14 @@ func (s PostgreSQLStore) groupItems(ctx context.Context, projectID string, filte
 	if err = rows.Err(); err != nil {
 		return Page{}, fmt.Errorf("iterate work items for grouping: %w", err)
 	}
+	expanded, err := expandItems(ctx, s.Pool, items, filter.Expand)
+	if err != nil {
+		return Page{}, err
+	}
 
 	// 2. Perform grouping in memory
 	grouped := make(map[string]map[string]any)
-	for _, item := range items {
+	for _, item := range expanded {
 		var groupKey string
 		switch filter.GroupBy {
 		case "state", "state_id":

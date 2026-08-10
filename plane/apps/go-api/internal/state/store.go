@@ -118,3 +118,169 @@ func scanState(row rowScanner) (map[string]any, error) {
 		"sequence": sequence,
 	}, nil
 }
+
+func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug, projectID string, payload WritePayload) (map[string]any, error) {
+	userID, err := s.resolveUser(ctx, sessionKey, slug, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	if payload.Name == nil || *payload.Name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var workspaceID string
+	err = tx.QueryRow(ctx, `SELECT workspace_id FROM projects WHERE id::text=$1 AND deleted_at IS NULL`, projectID).Scan(&workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	color := "#000000"
+	if payload.Color != nil {
+		color = *payload.Color
+	}
+	desc := ""
+	if payload.Description != nil {
+		desc = *payload.Description
+	}
+	seq := float64(15000)
+	if payload.Sequence != nil {
+		seq = *payload.Sequence
+	}
+	group := "backlog"
+	if payload.Group != nil {
+		group = *payload.Group
+	}
+	isDef := false
+	if payload.Default != nil {
+		isDef = *payload.Default
+	}
+
+	_, err = tx.Exec(ctx, `INSERT INTO states (id, name, color, description, sequence, "group", "default", is_triage, project_id, workspace_id, created_by_id, updated_by_id, created_at, updated_at) 
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, FALSE, $7::uuid, $8::uuid, $9::uuid, $9::uuid, NOW(), NOW())`,
+		*payload.Name, color, desc, seq, group, isDef, projectID, workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	item, err := scanState(tx.QueryRow(ctx, `SELECT id::text, project_id::text, workspace_id::text, name, color,
+		"group", "default", description, sequence
+		FROM states WHERE name=$1 AND project_id::text=$2 ORDER BY created_at DESC LIMIT 1`, *payload.Name, projectID))
+	if err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	item["order"] = float64(0)
+	return item, nil
+}
+
+func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug, projectID, stateID string, payload WritePayload) (map[string]any, error) {
+	userID, err := s.resolveUser(ctx, sessionKey, slug, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM states WHERE id::text=$1 AND project_id::text=$2 AND deleted_at IS NULL)`, stateID, projectID).Scan(&exists)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	query := `UPDATE states SET updated_at=NOW(), updated_by_id=$2 `
+	args := []any{stateID, userID}
+	idx := 3
+
+	if payload.Name != nil {
+		query += fmt.Sprintf(", name=$%d ", idx)
+		args = append(args, *payload.Name)
+		idx++
+	}
+	if payload.Color != nil {
+		query += fmt.Sprintf(", color=$%d ", idx)
+		args = append(args, *payload.Color)
+		idx++
+	}
+	if payload.Description != nil {
+		query += fmt.Sprintf(", description=$%d ", idx)
+		args = append(args, *payload.Description)
+		idx++
+	}
+	if payload.Sequence != nil {
+		query += fmt.Sprintf(", sequence=$%d ", idx)
+		args = append(args, *payload.Sequence)
+		idx++
+	}
+	if payload.Group != nil {
+		query += fmt.Sprintf(", \"group\"=$%d ", idx)
+		args = append(args, *payload.Group)
+		idx++
+	}
+	if payload.Default != nil {
+		query += fmt.Sprintf(", \"default\"=$%d ", idx)
+		args = append(args, *payload.Default)
+		idx++
+	}
+
+	query += fmt.Sprintf(` WHERE id::text=$1 AND project_id::text=$%d AND deleted_at IS NULL`, idx)
+	args = append(args, projectID)
+
+	_, err = tx.Exec(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	item, err := scanState(tx.QueryRow(ctx, `SELECT id::text, project_id::text, workspace_id::text, name, color,
+		"group", "default", description, sequence
+		FROM states WHERE id::text=$1 AND deleted_at IS NULL`, stateID))
+	if err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	item["order"] = float64(0)
+	return item, nil
+}
+
+func (s PostgreSQLStore) DeleteForSession(ctx context.Context, sessionKey, slug, projectID, stateID string) error {
+	userID, err := s.resolveUser(ctx, sessionKey, slug, projectID)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// In Plane, if a state is deleted, issues might need to be moved, but the basic delete is soft-delete.
+	res, err := tx.Exec(ctx, `UPDATE states SET deleted_at=NOW(), updated_at=NOW(), updated_by_id=$2 WHERE id::text=$1 AND project_id::text=$3 AND deleted_at IS NULL`, stateID, userID, projectID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+
+	return tx.Commit(ctx)
+}

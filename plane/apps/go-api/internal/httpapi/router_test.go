@@ -208,15 +208,7 @@ func TestStateReadRoutesUseGoHandler(t *testing.T) {
 	}
 }
 
-func TestUnportedStateMutationReturnsNotFound(t *testing.T) {
-	states := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/demo/projects/project-1/states/", nil)
-	res := httptest.NewRecorder()
-	NewRouter(Dependencies{States: states}).ServeHTTP(res, req)
-	if res.Code != http.StatusNotFound {
-		t.Fatalf("status=%d, want 404", res.Code)
-	}
-}
+
 
 func TestUnportedProjectChildRouteReturnsNotFound(t *testing.T) {
 	projects := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -244,7 +236,7 @@ func TestProjectMemberListUsesGoHandlerButMutationUsesLegacy(t *testing.T) {
 	}
 }
 
-func TestLabelReadsUseGoHandlerButMutationUsesLegacy(t *testing.T) {
+func TestLabelCRUDUsesGoHandler(t *testing.T) {
 	labels := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	for _, tc := range []struct {
 		method string
@@ -253,7 +245,7 @@ func TestLabelReadsUseGoHandlerButMutationUsesLegacy(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issue-labels/", http.StatusOK},
 		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issue-labels/label-1/", http.StatusOK},
-		{http.MethodPost, "/api/workspaces/demo/projects/project-1/issue-labels/", http.StatusNotFound},
+		{http.MethodPost, "/api/workspaces/demo/projects/project-1/issue-labels/", http.StatusOK},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		res := httptest.NewRecorder()
@@ -278,7 +270,7 @@ func TestBasicIssueCRUDUsesGoAndComplexReadsUseLegacy(t *testing.T) {
 		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issues/", http.StatusOK},
 		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issues/issue-1/", http.StatusOK},
 		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issues/?group_by=state", http.StatusOK},
-		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issues/issue-1/?expand=assignees", http.StatusNotFound},
+		{http.MethodGet, "/api/workspaces/demo/projects/project-1/issues/issue-1/?expand=assignees", http.StatusOK},
 		{http.MethodPost, "/api/workspaces/demo/projects/project-1/issues/", http.StatusOK},
 		{http.MethodPatch, "/api/workspaces/demo/projects/project-1/issues/issue-1/", http.StatusOK},
 		{http.MethodDelete, "/api/workspaces/demo/projects/project-1/issues/issue-1/", http.StatusOK},

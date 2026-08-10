@@ -22,6 +22,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/commentreaction"
 	"github.com/makeplane/plane/apps/go-api/internal/config"
 	"github.com/makeplane/plane/apps/go-api/internal/cycle"
+	"github.com/makeplane/plane/apps/go-api/internal/dashboard"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
 	"github.com/makeplane/plane/apps/go-api/internal/estimate"
 	"github.com/makeplane/plane/apps/go-api/internal/external"
@@ -38,6 +39,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/project"
 	"github.com/makeplane/plane/apps/go-api/internal/projectmember"
 	"github.com/makeplane/plane/apps/go-api/internal/reaction"
+	"github.com/makeplane/plane/apps/go-api/internal/recentvisit"
 	"github.com/makeplane/plane/apps/go-api/internal/relation"
 	"github.com/makeplane/plane/apps/go-api/internal/search"
 	"github.com/makeplane/plane/apps/go-api/internal/state"
@@ -298,6 +300,12 @@ func main() {
 			},
 			Favorites: favorite.Handler{
 				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Dashboard: dashboard.Handler{
+				Store: dashboard.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			RecentVisit: recentvisit.Handler{
+				Store: recentvisit.PostgreSQLStore{Pool: db.Native()},
 			},
 			Stickies: sticky.Handler{
 				Store: sticky.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
