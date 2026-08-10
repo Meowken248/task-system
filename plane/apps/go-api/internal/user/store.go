@@ -5,13 +5,245 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type PostgreSQLStore struct {
 	Pool *pgxpool.Pool
+}
+
+type profileField struct {
+	column string
+	kind   string
+}
+
+var writableProfileFields = map[string]profileField{
+	"theme": {"theme", "json"}, "is_app_rail_docked": {"is_app_rail_docked", "bool"},
+	"is_tour_completed": {"is_tour_completed", "bool"}, "onboarding_step": {"onboarding_step", "json"},
+	"use_case": {"use_case", "nullable_string"}, "role": {"role", "nullable_string"},
+	"is_onboarded": {"is_onboarded", "bool"}, "last_workspace_id": {"last_workspace_id", "nullable_uuid"},
+	"billing_address_country": {"billing_address_country", "string"}, "billing_address": {"billing_address", "nullable_json"},
+	"has_billing_address": {"has_billing_address", "bool"}, "company_name": {"company_name", "string"},
+	"notification_view_mode":   {"notification_view_mode", "notification_mode"},
+	"is_smooth_cursor_enabled": {"is_smooth_cursor_enabled", "bool"},
+	"is_mobile_onboarded":      {"is_mobile_onboarded", "bool"}, "mobile_onboarding_step": {"mobile_onboarding_step", "json"},
+	"mobile_timezone_auto_set": {"mobile_timezone_auto_set", "bool"}, "language": {"language", "string"},
+	"start_of_the_week": {"start_of_the_week", "weekday"}, "goals": {"goals", "json"},
+	"background_color":             {"background_color", "string"},
+	"is_navigation_tour_completed": {"is_navigation_tour_completed", "bool"},
+	"has_marketing_email_consent":  {"has_marketing_email_consent", "bool"},
+	"is_subscribed_to_changelog":   {"is_subscribed_to_changelog", "bool"}, "product_tour": {"product_tour", "json"},
+}
+
+var (
+	metaNodeAddressPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
+	URLInNamePattern       = regexp.MustCompile(`(?i)(https?://|www\.|[a-z0-9-]+\.(com|net|org|io|ai|co|dev)(/|\b))`)
+)
+
+var writableUserFields = map[string]profileField{
+	"display_name":               {"display_name", "short_string"},
+	"first_name":                 {"first_name", "name"},
+	"last_name":                  {"last_name", "name"},
+	"avatar":                     {"avatar", "string"},
+	"avatar_asset":               {"avatar_asset_id", "nullable_uuid"},
+	"avatar_asset_id":            {"avatar_asset_id", "nullable_uuid"},
+	"cover_image":                {"cover_image", "nullable_url"},
+	"cover_image_asset":          {"cover_image_asset_id", "nullable_uuid"},
+	"cover_image_asset_id":       {"cover_image_asset_id", "nullable_uuid"},
+	"is_password_expired":        {"is_password_expired", "bool"},
+	"is_password_reset_required": {"is_password_reset_required", "bool"},
+	"user_timezone":              {"user_timezone", "timezone"},
+	"is_email_valid":             {"is_email_valid", "bool"},
+	"masked_at":                  {"masked_at", "nullable_datetime"},
+	"metanode_wallet_address":    {"metanode_wallet_address", "wallet"},
+}
+
+func (s PostgreSQLStore) UpdateCurrentForSession(ctx context.Context, sessionKey string, payload map[string]any) (map[string]any, error) {
+	if s.Pool == nil {
+		return nil, errors.New("user database unavailable")
+	}
+	userID, err := s.authenticatedUserID(ctx, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	sets := make([]string, 0, len(payload)+1)
+	args := make([]any, 0, len(payload)+1)
+	errorsByField := ValidationError{}
+	for name, raw := range payload {
+		field, ok := writableUserFields[name]
+		if !ok {
+			continue
+		}
+		value, valid := normalizeUserValue(field.kind, raw)
+		if !valid {
+			message := "Not a valid value."
+			if name == "metanode_wallet_address" {
+				message = "MetaNode wallet must be a 20-byte 0x-prefixed address."
+			} else if name == "first_name" {
+				message = "First name cannot contain a URL."
+			} else if name == "last_name" {
+				message = "Last name cannot contain a URL."
+			}
+			errorsByField[name] = []string{message}
+			continue
+		}
+		args = append(args, value)
+		sets = append(sets, fmt.Sprintf("%s = $%d", field.column, len(args)))
+	}
+	if len(errorsByField) != 0 {
+		return nil, errorsByField
+	}
+	if len(sets) != 0 {
+		sets = append(sets, "updated_at = NOW()")
+		args = append(args, userID)
+		query := "UPDATE users SET " + strings.Join(sets, ", ") + fmt.Sprintf(" WHERE id::text = $%d", len(args))
+		if _, err = s.Pool.Exec(ctx, query, args...); err != nil {
+			return nil, fmt.Errorf("update current user: %w", err)
+		}
+	}
+	return s.CurrentForSession(ctx, sessionKey)
+}
+
+func normalizeUserValue(kind string, raw any) (any, bool) {
+	switch kind {
+	case "short_string":
+		value, ok := raw.(string)
+		return value, ok && len(value) <= 255
+	case "name":
+		value, ok := raw.(string)
+		return value, ok && len(value) <= 255 && !URLInNamePattern.MatchString(value)
+	case "wallet":
+		if raw == nil || raw == "" {
+			return nil, true
+		}
+		value, ok := raw.(string)
+		return strings.ToLower(value), ok && metaNodeAddressPattern.MatchString(value)
+	case "nullable_url":
+		if raw == nil || raw == "" {
+			return nil, true
+		}
+		value, ok := raw.(string)
+		if !ok || len(value) > 800 {
+			return nil, false
+		}
+		parsed, err := url.ParseRequestURI(value)
+		return value, err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+	case "timezone":
+		value, ok := raw.(string)
+		if !ok || value == "" || len(value) > 255 {
+			return nil, false
+		}
+		_, err := time.LoadLocation(value)
+		return value, err == nil
+	case "nullable_datetime":
+		if raw == nil || raw == "" {
+			return nil, true
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return nil, false
+		}
+		_, err := time.Parse(time.RFC3339, value)
+		return value, err == nil
+	default:
+		return normalizeProfileValue(kind, raw)
+	}
+}
+
+func (s PostgreSQLStore) UpdateProfileForSession(ctx context.Context, sessionKey string, payload map[string]any) (map[string]any, error) {
+	if s.Pool == nil {
+		return nil, errors.New("user database unavailable")
+	}
+	userID, err := s.authenticatedUserID(ctx, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	sets := make([]string, 0, len(payload)+1)
+	args := make([]any, 0, len(payload)+1)
+	errorsByField := ValidationError{}
+	for name, raw := range payload {
+		field, ok := writableProfileFields[name]
+		if !ok {
+			continue // DRF ModelSerializer ignores unknown fields on partial updates.
+		}
+		value, valid := normalizeProfileValue(field.kind, raw)
+		if !valid {
+			errorsByField[name] = []string{"Not a valid value."}
+			continue
+		}
+		args = append(args, value)
+		sets = append(sets, fmt.Sprintf("%s = $%d", field.column, len(args)))
+	}
+	if len(errorsByField) != 0 {
+		return nil, errorsByField
+	}
+	if len(sets) != 0 {
+		sets = append(sets, "updated_at = NOW()")
+		args = append(args, userID)
+		query := "UPDATE profiles SET " + strings.Join(sets, ", ") + fmt.Sprintf(" WHERE user_id::text = $%d", len(args))
+		result, execErr := s.Pool.Exec(ctx, query, args...)
+		if execErr != nil {
+			return nil, fmt.Errorf("update current profile: %w", execErr)
+		}
+		if result.RowsAffected() == 0 {
+			return nil, ErrUnauthorized
+		}
+	}
+	return s.ProfileForSession(ctx, sessionKey)
+}
+
+func normalizeProfileValue(kind string, raw any) (any, bool) {
+	switch kind {
+	case "bool":
+		value, ok := raw.(bool)
+		return value, ok
+	case "string":
+		value, ok := raw.(string)
+		return value, ok
+	case "nullable_string":
+		if raw == nil {
+			return nil, true
+		}
+		value, ok := raw.(string)
+		return value, ok
+	case "nullable_uuid":
+		if raw == nil || raw == "" {
+			return nil, true
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return nil, false
+		}
+		_, err := uuid.Parse(value)
+		return value, err == nil
+	case "weekday":
+		value, ok := raw.(float64)
+		return int(value), ok && value == float64(int(value)) && value >= 0 && value <= 6
+	case "notification_mode":
+		value, ok := raw.(string)
+		return value, ok && (value == "full" || value == "compact")
+	case "json":
+		if raw == nil {
+			return nil, false
+		}
+		value, err := json.Marshal(raw)
+		return value, err == nil
+	case "nullable_json":
+		if raw == nil {
+			return nil, true
+		}
+		value, err := json.Marshal(raw)
+		return value, err == nil
+	default:
+		return nil, false
+	}
 }
 
 func (s PostgreSQLStore) ProfileForSession(ctx context.Context, sessionKey string) (map[string]any, error) {

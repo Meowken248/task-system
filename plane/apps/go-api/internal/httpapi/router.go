@@ -15,51 +15,69 @@ type ReadinessChecker interface {
 }
 
 type Dependencies struct {
-	Readiness        ReadinessChecker
-	CSRF             http.Handler
-	SignOut          http.Handler
-	SignIn           http.Handler
-	SignUp           http.Handler
-	EmailCheck       http.Handler
-	ForgotPassword   http.Handler
-	ResetPassword    http.Handler
-	ChangePassword   http.Handler
-	SetPassword      http.Handler
-	Tracking         http.Handler
-	Workspaces       http.Handler
-	CurrentUser      http.Handler
-	UserProfile      http.Handler
-	UserSettings     http.Handler
-	ProjectsLite     http.Handler
-	Projects         http.Handler
-	Project          http.Handler
-	States           http.Handler
-	ProjectMembers   http.Handler
-	ProjectMemberMe  http.Handler
-	Labels           http.Handler
-	Issues           http.Handler
-	Comments         http.Handler
-	Activities       http.Handler
-	Relations        http.Handler
-	Links            http.Handler
-	Reactions        http.Handler
-	Subscribers      http.Handler
-	Archives         http.Handler
-	Subissues        http.Handler
-	Favorites        http.Handler
-	Cycles           http.Handler
-	Modules          http.Handler
-	Views            http.Handler
-	CommentReactions http.Handler
-	Assets           http.Handler
-	Notification     http.Handler
-	Estimate         http.Handler
-	Search           http.Handler
-	Analytic         http.Handler
-	Instances        http.Handler
-	Intake           http.Handler
-	Version          string
-	LegacyAPIURL     string
+	Readiness                ReadinessChecker
+	CSRF                     http.Handler
+	SignOut                  http.Handler
+	SignIn                   http.Handler
+	SignUp                   http.Handler
+	EmailCheck               http.Handler
+	ForgotPassword           http.Handler
+	ResetPassword            http.Handler
+	ChangePassword           http.Handler
+	SetPassword              http.Handler
+	Tracking                 http.Handler
+	Workspaces               http.Handler
+	WorkspaceMemberMe        http.Handler
+	WorkspaceMembers         http.Handler
+	WorkspaceLeave           http.Handler
+	WorkspaceInvitations     http.Handler
+	WorkspaceInvitationJoin  http.Handler
+	UserWorkspaceInvitations http.Handler
+	APITokens                http.Handler
+	Webhooks                 http.Handler
+	RecentVisits             http.Handler
+	SidebarPreferences       http.Handler
+	UserProperties           http.Handler
+	ProjectUserProperties    http.Handler
+	CycleUserProperties      http.Handler
+	ModuleUserProperties     http.Handler
+	CurrentUser              http.Handler
+	UserProfile              http.Handler
+	UserSettings             http.Handler
+	ProjectsLite             http.Handler
+	Projects                 http.Handler
+	Project                  http.Handler
+	States                   http.Handler
+	ProjectMembers           http.Handler
+	ProjectMemberMe          http.Handler
+	Labels                   http.Handler
+	Issues                   http.Handler
+	Comments                 http.Handler
+	Activities               http.Handler
+	Relations                http.Handler
+	Links                    http.Handler
+	Reactions                http.Handler
+	Subscribers              http.Handler
+	Archives                 http.Handler
+	Subissues                http.Handler
+	Favorites                http.Handler
+	Stickies                 http.Handler
+	Cycles                   http.Handler
+	Modules                  http.Handler
+	Views                    http.Handler
+	CommentReactions         http.Handler
+	Assets                   http.Handler
+	Notification             http.Handler
+	Estimate                 http.Handler
+	Search                   http.Handler
+	Analytic                 http.Handler
+	Instances                http.Handler
+	Intake                   http.Handler
+	Timezones                http.Handler
+	Unsplash                 http.Handler
+	Pages                    http.Handler
+	Version                  string
+	LegacyAPIURL             string
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -112,6 +130,24 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Workspaces != nil {
 			portedGroups = append(portedGroups, "user-workspaces")
 		}
+		if deps.WorkspaceMemberMe != nil && deps.RecentVisits != nil && deps.SidebarPreferences != nil && deps.UserProperties != nil {
+			portedGroups = append(portedGroups, "workspace-bootstrap-preferences")
+		}
+		if deps.ProjectUserProperties != nil && deps.CycleUserProperties != nil && deps.ModuleUserProperties != nil {
+			portedGroups = append(portedGroups, "project-cycle-module-user-properties")
+		}
+		if deps.WorkspaceMembers != nil && deps.WorkspaceLeave != nil {
+			portedGroups = append(portedGroups, "workspace-member-management")
+		}
+		if deps.WorkspaceInvitations != nil && deps.WorkspaceInvitationJoin != nil && deps.UserWorkspaceInvitations != nil {
+			portedGroups = append(portedGroups, "workspace-invitations")
+		}
+		if deps.APITokens != nil {
+			portedGroups = append(portedGroups, "api-tokens")
+		}
+		if deps.Webhooks != nil {
+			portedGroups = append(portedGroups, "workspace-webhooks")
+		}
 		if deps.CurrentUser != nil {
 			portedGroups = append(portedGroups, "current-user")
 		}
@@ -163,6 +199,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Favorites != nil {
 			portedGroups = append(portedGroups, "user-favorites")
 		}
+		if deps.Stickies != nil {
+			portedGroups = append(portedGroups, "workspace-stickies")
+		}
 		if deps.Workspaces != nil {
 			portedGroups = append(portedGroups, "workspace-mutations")
 		}
@@ -181,6 +220,15 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Notification != nil {
 			portedGroups = append(portedGroups, "workspace-notifications")
 		}
+		if deps.Timezones != nil {
+			portedGroups = append(portedGroups, "timezones")
+		}
+		if deps.Unsplash != nil {
+			portedGroups = append(portedGroups, "unsplash")
+		}
+		if deps.Pages != nil {
+			portedGroups = append(portedGroups, "project-pages")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": true, "ported_groups": portedGroups,
@@ -189,6 +237,12 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	if deps.CSRF != nil {
 		mux.Handle("GET /auth/get-csrf-token/", deps.CSRF)
+	}
+	if deps.Timezones != nil {
+		mux.Handle("GET /api/timezones/", deps.Timezones)
+	}
+	if deps.Unsplash != nil {
+		mux.Handle("GET /api/unsplash/", deps.Unsplash)
 	}
 	if deps.Instances != nil {
 		mux.Handle("GET /api/instances/{$}", deps.Instances)
@@ -225,11 +279,68 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/workspaces/{slug}/{$}", deps.Workspaces)
 		mux.Handle("GET /api/users/me/workspaces/", deps.Workspaces)
 	}
+	if deps.WorkspaceMemberMe != nil {
+		mux.Handle("GET /api/workspaces/{slug}/workspace-members/me/", deps.WorkspaceMemberMe)
+	}
+	if deps.WorkspaceMembers != nil {
+		mux.Handle("GET /api/workspaces/{slug}/members/", deps.WorkspaceMembers)
+		mux.Handle("GET /api/workspaces/{slug}/members/{member_id}/", deps.WorkspaceMembers)
+		mux.Handle("PATCH /api/workspaces/{slug}/members/{member_id}/", deps.WorkspaceMembers)
+		mux.Handle("DELETE /api/workspaces/{slug}/members/{member_id}/", deps.WorkspaceMembers)
+	}
+	if deps.WorkspaceLeave != nil {
+		mux.Handle("POST /api/workspaces/{slug}/members/leave/", deps.WorkspaceLeave)
+	}
+	if deps.WorkspaceInvitations != nil {
+		mux.Handle("GET /api/workspaces/{slug}/invitations/", deps.WorkspaceInvitations)
+		mux.Handle("POST /api/workspaces/{slug}/invitations/", deps.WorkspaceInvitations)
+		mux.Handle("GET /api/workspaces/{slug}/invitations/{invitation_id}/", deps.WorkspaceInvitations)
+		mux.Handle("PATCH /api/workspaces/{slug}/invitations/{invitation_id}/", deps.WorkspaceInvitations)
+		mux.Handle("DELETE /api/workspaces/{slug}/invitations/{invitation_id}/", deps.WorkspaceInvitations)
+	}
+	if deps.WorkspaceInvitationJoin != nil {
+		mux.Handle("GET /api/workspaces/{slug}/invitations/{invitation_id}/join/", deps.WorkspaceInvitationJoin)
+		mux.Handle("POST /api/workspaces/{slug}/invitations/{invitation_id}/join/", deps.WorkspaceInvitationJoin)
+	}
+	if deps.UserWorkspaceInvitations != nil {
+		mux.Handle("GET /api/users/me/workspaces/invitations/", deps.UserWorkspaceInvitations)
+		mux.Handle("POST /api/users/me/workspaces/invitations/", deps.UserWorkspaceInvitations)
+	}
+	if deps.APITokens != nil {
+		mux.Handle("GET /api/users/api-tokens/", deps.APITokens)
+		mux.Handle("POST /api/users/api-tokens/", deps.APITokens)
+		mux.Handle("GET /api/users/api-tokens/{token_id}/", deps.APITokens)
+		mux.Handle("PATCH /api/users/api-tokens/{token_id}/", deps.APITokens)
+		mux.Handle("DELETE /api/users/api-tokens/{token_id}/", deps.APITokens)
+	}
+	if deps.Webhooks != nil {
+		mux.Handle("GET /api/workspaces/{slug}/webhooks/", deps.Webhooks)
+		mux.Handle("POST /api/workspaces/{slug}/webhooks/", deps.Webhooks)
+		mux.Handle("GET /api/workspaces/{slug}/webhooks/{pk}/", deps.Webhooks)
+		mux.Handle("PATCH /api/workspaces/{slug}/webhooks/{pk}/", deps.Webhooks)
+		mux.Handle("DELETE /api/workspaces/{slug}/webhooks/{pk}/", deps.Webhooks)
+		mux.Handle("POST /api/workspaces/{slug}/webhooks/{pk}/regenerate/", deps.Webhooks)
+		mux.Handle("GET /api/workspaces/{slug}/webhook-logs/{webhook_id}/", deps.Webhooks)
+	}
+	if deps.RecentVisits != nil {
+		mux.Handle("GET /api/workspaces/{slug}/recent-visits/", deps.RecentVisits)
+	}
+	if deps.SidebarPreferences != nil {
+		mux.Handle("GET /api/workspaces/{slug}/sidebar-preferences/", deps.SidebarPreferences)
+		mux.Handle("PATCH /api/workspaces/{slug}/sidebar-preferences/", deps.SidebarPreferences)
+		mux.Handle("PATCH /api/workspaces/{slug}/sidebar-preferences/{preference_key}/", deps.SidebarPreferences)
+	}
+	if deps.UserProperties != nil {
+		mux.Handle("GET /api/workspaces/{slug}/user-properties/", deps.UserProperties)
+		mux.Handle("PATCH /api/workspaces/{slug}/user-properties/", deps.UserProperties)
+	}
 	if deps.CurrentUser != nil {
 		mux.Handle("GET /api/users/me/", deps.CurrentUser)
+		mux.Handle("PATCH /api/users/me/", deps.CurrentUser)
 	}
 	if deps.UserProfile != nil {
 		mux.Handle("GET /api/users/me/profile/", deps.UserProfile)
+		mux.Handle("PATCH /api/users/me/profile/", deps.UserProfile)
 	}
 	if deps.UserSettings != nil {
 		mux.Handle("GET /api/users/me/settings/", deps.UserSettings)
@@ -253,13 +364,18 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.Projects != nil {
 		mux.Handle("POST /api/workspaces/{slug}/projects/{$}", deps.Projects)
 	}
-	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil || deps.Cycles != nil || deps.Modules != nil || deps.Views != nil || deps.CommentReactions != nil || deps.Estimate != nil || deps.Intake != nil {
+	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMemberMe != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil || deps.Cycles != nil || deps.Modules != nil || deps.Views != nil || deps.CommentReactions != nil || deps.Estimate != nil || deps.Intake != nil || deps.ProjectUserProperties != nil || deps.CycleUserProperties != nil || deps.ModuleUserProperties != nil || deps.Pages != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Favorites != nil {
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{$}", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/{$}", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/group/{$}", deps.Favorites)
+	}
+	if deps.Stickies != nil {
+		mux.Handle("/api/workspaces/{slug}/stickies/{$}", deps.Stickies)
+		mux.Handle("/api/workspaces/{slug}/stickies/{sticky_id}", deps.Stickies)
+		mux.Handle("/api/workspaces/{slug}/stickies/{sticky_id}/{$}", deps.Stickies)
 	}
 	// if deps.Assets != nil {
 	// 	mux.Handle("/api/assets/v2/static/{asset_id}/", deps.Assets)
@@ -314,6 +430,72 @@ type projectRoutes struct {
 func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tail := strings.Trim(r.PathValue("tail"), "/")
 	parts := strings.Split(tail, "/")
+	if len(parts) >= 2 && parts[0] != "" && h.deps.Pages != nil {
+		projectID := parts[0]
+		if len(parts) == 2 && parts[1] == "pages-summary" {
+			r.SetPathValue("project_id", projectID)
+			r.SetPathValue("page_action", "summary")
+			h.deps.Pages.ServeHTTP(w, r)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "pages" {
+			r.SetPathValue("project_id", projectID)
+			h.deps.Pages.ServeHTTP(w, r)
+			return
+		}
+		if len(parts) == 3 && parts[1] == "pages" && parts[2] != "" {
+			r.SetPathValue("project_id", projectID)
+			r.SetPathValue("page_id", parts[2])
+			h.deps.Pages.ServeHTTP(w, r)
+			return
+		}
+		if len(parts) == 3 && parts[1] == "favorite-pages" && parts[2] != "" {
+			r.SetPathValue("project_id", projectID)
+			r.SetPathValue("page_id", parts[2])
+			r.SetPathValue("page_action", "favorite")
+			h.deps.Pages.ServeHTTP(w, r)
+			return
+		}
+		if len(parts) == 4 && parts[1] == "pages" && parts[2] != "" {
+			action := parts[3]
+			switch action {
+			case "archive", "lock", "access", "description", "duplicate", "versions":
+				r.SetPathValue("project_id", projectID)
+				r.SetPathValue("page_id", parts[2])
+				r.SetPathValue("page_action", action)
+				h.deps.Pages.ServeHTTP(w, r)
+				return
+			}
+		}
+		if len(parts) == 5 && parts[1] == "pages" && parts[2] != "" && parts[3] == "versions" && parts[4] != "" {
+			r.SetPathValue("project_id", projectID)
+			r.SetPathValue("page_id", parts[2])
+			r.SetPathValue("page_action", "version")
+			r.SetPathValue("version_id", parts[4])
+			h.deps.Pages.ServeHTTP(w, r)
+			return
+		}
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "user-properties" &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPatch) && h.deps.ProjectUserProperties != nil {
+		r.SetPathValue("project_id", parts[0])
+		h.deps.ProjectUserProperties.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "cycles" && parts[2] != "" && parts[3] == "user-properties" &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPatch) && h.deps.CycleUserProperties != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("cycle_id", parts[2])
+		h.deps.CycleUserProperties.ServeHTTP(w, r)
+		return
+	}
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "modules" && parts[2] != "" && parts[3] == "user-properties" &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPatch) && h.deps.ModuleUserProperties != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("module_id", parts[2])
+		h.deps.ModuleUserProperties.ServeHTTP(w, r)
+		return
+	}
 	if r.Method == http.MethodGet && tail == "details" && h.deps.Projects != nil {
 		h.deps.Projects.ServeHTTP(w, r)
 		return

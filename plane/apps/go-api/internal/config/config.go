@@ -34,6 +34,11 @@ type Config struct {
 	BlockchainRPCTimeout      time.Duration
 	BlockchainReceiptWait     time.Duration
 	LegacyTrackingDir         string
+	WebhookAllowedIPs         []string
+	WebhookAllowedHosts       []string
+	WebhookDisallowedDomains  []string
+	UnsplashAccessKey         string
+	SkipEnvVar                bool
 	ShutdownTimeout           time.Duration
 }
 
@@ -65,12 +70,32 @@ func Load() (Config, error) {
 		BlockchainRPCTimeout:      durationSeconds("BLOCKCHAIN_RPC_TIMEOUT_SECONDS", 8*time.Second, 30*time.Second),
 		BlockchainReceiptWait:     durationSeconds("BLOCKCHAIN_RECEIPT_WAIT_SECONDS", 15*time.Second, 60*time.Second),
 		LegacyTrackingDir:         strings.TrimSpace(os.Getenv("LEGACY_TRACKING_DIR")),
+		WebhookAllowedIPs:         csvEnv("WEBHOOK_ALLOWED_IPS"),
+		WebhookAllowedHosts:       csvEnv("WEBHOOK_ALLOWED_HOSTS"),
+		WebhookDisallowedDomains:  csvEnv("WEBHOOK_DISALLOWED_DOMAINS"),
+		UnsplashAccessKey:         strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY")),
+		SkipEnvVar:                envBool("SKIP_ENV_VAR", false),
 		ShutdownTimeout:           10 * time.Second,
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
 	}
 	return cfg, nil
+}
+
+func csvEnv(key string) []string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			result = append(result, strings.ToLower(part))
+		}
+	}
+	return result
 }
 
 func envBool(key string, fallback bool) bool {

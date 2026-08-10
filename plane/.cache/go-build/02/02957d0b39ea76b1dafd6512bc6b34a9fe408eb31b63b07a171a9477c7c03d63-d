@@ -1,0 +1,25 @@
+# test log
+getenv APPDATA
+stat C:\Users\Huynh Anh Tu\AppData\Roaming\postgresql\postgresql.crt
+stat C:\Users\Huynh Anh Tu\AppData\Roaming\postgresql\root.crt
+getenv PGHOST
+getenv PGAPPNAME
+getenv PGSSLKEY
+getenv PGSSLNEGOTIATION
+getenv PGSERVICE
+getenv PGPORT
+getenv PGTZ
+getenv PGDATABASE
+getenv PGUSER
+getenv PGPASSWORD
+getenv PGCONNECT_TIMEOUT
+getenv PGSSLSNI
+getenv PGSSLPASSWORD
+getenv PGSERVICEFILE
+getenv PGOPTIONS
+getenv PGPASSFILE
+getenv PGSSLMODE
+getenv PGSSLCERT
+getenv PGSSLROOTCERT
+getenv PGTARGETSESSIONATTRS
+open C:\Users\Huynh Anh Tu\AppData\Roaming\postgresql\pgpass.conf

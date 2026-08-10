@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/makeplane/plane/apps/go-api/internal/activity"
 	"github.com/makeplane/plane/apps/go-api/internal/analytic"
+	"github.com/makeplane/plane/apps/go-api/internal/apitoken"
 	"github.com/makeplane/plane/apps/go-api/internal/archive"
 	"github.com/makeplane/plane/apps/go-api/internal/asset"
 	"github.com/makeplane/plane/apps/go-api/internal/auth"
@@ -22,6 +24,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/cycle"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
 	"github.com/makeplane/plane/apps/go-api/internal/estimate"
+	"github.com/makeplane/plane/apps/go-api/internal/external"
 	"github.com/makeplane/plane/apps/go-api/internal/favorite"
 	"github.com/makeplane/plane/apps/go-api/internal/httpapi"
 	"github.com/makeplane/plane/apps/go-api/internal/instance"
@@ -31,20 +34,28 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/link"
 	"github.com/makeplane/plane/apps/go-api/internal/module"
 	"github.com/makeplane/plane/apps/go-api/internal/notification"
+	"github.com/makeplane/plane/apps/go-api/internal/page"
 	"github.com/makeplane/plane/apps/go-api/internal/project"
 	"github.com/makeplane/plane/apps/go-api/internal/projectmember"
 	"github.com/makeplane/plane/apps/go-api/internal/reaction"
 	"github.com/makeplane/plane/apps/go-api/internal/relation"
 	"github.com/makeplane/plane/apps/go-api/internal/search"
 	"github.com/makeplane/plane/apps/go-api/internal/state"
+	"github.com/makeplane/plane/apps/go-api/internal/sticky"
 	"github.com/makeplane/plane/apps/go-api/internal/storage"
 	"github.com/makeplane/plane/apps/go-api/internal/subissue"
 	"github.com/makeplane/plane/apps/go-api/internal/subscriber"
+	goTimezone "github.com/makeplane/plane/apps/go-api/internal/timezone"
 	"github.com/makeplane/plane/apps/go-api/internal/tracking"
 	"github.com/makeplane/plane/apps/go-api/internal/user"
+	"github.com/makeplane/plane/apps/go-api/internal/userproperty"
 	"github.com/makeplane/plane/apps/go-api/internal/view"
+	"github.com/makeplane/plane/apps/go-api/internal/webhook"
 	"github.com/makeplane/plane/apps/go-api/internal/worker"
 	"github.com/makeplane/plane/apps/go-api/internal/workspace"
+	"github.com/makeplane/plane/apps/go-api/internal/workspacecontext"
+	"github.com/makeplane/plane/apps/go-api/internal/workspaceinvite"
+	"github.com/makeplane/plane/apps/go-api/internal/workspacemember"
 )
 
 var version = "dev"
@@ -142,6 +153,49 @@ func main() {
 			Workspaces: workspace.Handler{
 				Store: workspace.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
+			WorkspaceMemberMe: workspacecontext.Handler{
+				Store: workspacecontext.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Mode: workspacecontext.ModeCurrentMember,
+			},
+			WorkspaceMembers: workspacemember.Handler{
+				Store: workspacemember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			WorkspaceLeave: workspacemember.Handler{
+				Store: workspacemember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Leave: true,
+			},
+			WorkspaceInvitations: workspaceinvite.Handler{
+				Store:             workspaceinvite.PostgreSQLStore{Pool: db.Native(), SecretKey: cfg.SessionSecret},
+				SessionCookieName: cfg.SessionCookie,
+			},
+			WorkspaceInvitationJoin: workspaceinvite.Handler{
+				Store:             workspaceinvite.PostgreSQLStore{Pool: db.Native(), SecretKey: cfg.SessionSecret},
+				SessionCookieName: cfg.SessionCookie, Mode: workspaceinvite.ModeJoin,
+			},
+			UserWorkspaceInvitations: workspaceinvite.Handler{
+				Store:             workspaceinvite.PostgreSQLStore{Pool: db.Native(), SecretKey: cfg.SessionSecret},
+				SessionCookieName: cfg.SessionCookie, Mode: workspaceinvite.ModeUser,
+			},
+			APITokens: apitoken.Handler{
+				Store: apitoken.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			Webhooks: webhook.Handler{
+				Store: webhook.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				AllowedHosts: cfg.WebhookAllowedHosts, AllowedCIDRs: parseCIDRs(cfg.WebhookAllowedIPs),
+				DisallowedDomains: cfg.WebhookDisallowedDomains,
+			},
+			RecentVisits: workspacecontext.Handler{
+				Store: workspacecontext.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Mode: workspacecontext.ModeRecentVisits,
+			},
+			SidebarPreferences: workspacecontext.Handler{
+				Store: workspacecontext.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Mode: workspacecontext.ModeSidebarPreferences,
+			},
+			UserProperties: workspacecontext.Handler{
+				Store: workspacecontext.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Mode: workspacecontext.ModeUserProperties,
+			},
 			CurrentUser: user.Handler{
 				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
@@ -162,6 +216,18 @@ func main() {
 			Project: project.Handler{
 				Store: project.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, Single: true,
 			},
+			ProjectUserProperties: userproperty.Handler{
+				Store: userproperty.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Scope: userproperty.ScopeProject,
+			},
+			CycleUserProperties: userproperty.Handler{
+				Store: userproperty.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Scope: userproperty.ScopeCycle,
+			},
+			ModuleUserProperties: userproperty.Handler{
+				Store: userproperty.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Scope: userproperty.ScopeModule,
+			},
 			States: state.Handler{
 				Store: state.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
@@ -178,7 +244,7 @@ func main() {
 			Analytic:     analytic.Handler{Store: analytic.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Instances: instance.NewHandler(instance.PostgreSQLStore{Pool: db.Native()}, cfg.AdminSessionCookie).
 				ConfigureSession(cfg.SessionSecret, cfg.CookieDomain, cfg.SessionAge),
-			Intake:       intake.Handler{Store: intake.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			Intake: intake.Handler{Store: intake.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Labels: label.Handler{
 				Store: label.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
@@ -212,6 +278,9 @@ func main() {
 			Favorites: favorite.Handler{
 				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
+			Stickies: sticky.Handler{
+				Store: sticky.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
 			Cycles: cycle.Handler{
 				Store: cycle.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
@@ -230,6 +299,16 @@ func main() {
 					Provider: &storage.Local{BaseDir: "./media", BaseURL: cfg.AppBaseURL + "/api/assets/v2"},
 				},
 				SessionCookieName: cfg.SessionCookie,
+			},
+			Timezones: goTimezone.Handler{},
+			Unsplash: external.UnsplashHandler{
+				Store: external.PostgreSQLUnsplashStore{
+					Pool: db.Native(), FallbackKey: cfg.UnsplashAccessKey, UseDatabaseKey: cfg.SkipEnvVar,
+				},
+				SessionCookieName: cfg.SessionCookie,
+			},
+			Pages: page.Handler{
+				Store: page.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Version:      version,
 			LegacyAPIURL: cfg.LegacyAPIURL,
@@ -251,4 +330,22 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server shutdown failed", "error", err)
 	}
+}
+
+func parseCIDRs(values []string) []*net.IPNet {
+	result := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		if ip := net.ParseIP(value); ip != nil {
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			result = append(result, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		if _, network, err := net.ParseCIDR(value); err == nil {
+			result = append(result, network)
+		}
+	}
+	return result
 }

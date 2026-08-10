@@ -52,6 +52,62 @@ func TestCSRFRouteUsesGoHandler(t *testing.T) {
 	}
 }
 
+func TestTimezoneRouteUsesGoHandler(t *testing.T) {
+	timezones := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/api/timezones/", nil)
+	res := httptest.NewRecorder()
+	NewRouter(Dependencies{Timezones: timezones}).ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.Code)
+	}
+}
+
+func TestUnsplashRouteUsesGoHandler(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	req := httptest.NewRequest(http.MethodGet, "/api/unsplash/", nil)
+	res := httptest.NewRecorder()
+	NewRouter(Dependencies{Unsplash: handler}).ServeHTTP(res, req)
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", res.Code)
+	}
+}
+
+func TestPageRoutesUseGoHandler(t *testing.T) {
+	tests := []struct {
+		method, path, action, version string
+	}{
+		{http.MethodGet, "/api/workspaces/demo/projects/project-1/pages-summary/", "summary", ""},
+		{http.MethodGet, "/api/workspaces/demo/projects/project-1/pages/", "", ""},
+		{http.MethodPatch, "/api/workspaces/demo/projects/project-1/pages/page-1/", "", ""},
+		{http.MethodPost, "/api/workspaces/demo/projects/project-1/favorite-pages/page-1/", "favorite", ""},
+		{http.MethodPatch, "/api/workspaces/demo/projects/project-1/pages/page-1/description/", "description", ""},
+		{http.MethodGet, "/api/workspaces/demo/projects/project-1/pages/page-1/versions/version-1/", "version", "version-1"},
+	}
+	for _, test := range tests {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			called := false
+			pages := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				if got := r.PathValue("project_id"); got != "project-1" {
+					t.Fatalf("project_id=%q", got)
+				}
+				if got := r.PathValue("page_action"); got != test.action {
+					t.Fatalf("page_action=%q want=%q", got, test.action)
+				}
+				if got := r.PathValue("version_id"); got != test.version {
+					t.Fatalf("version_id=%q want=%q", got, test.version)
+				}
+				w.WriteHeader(http.StatusAccepted)
+			})
+			res := httptest.NewRecorder()
+			NewRouter(Dependencies{Pages: pages}).ServeHTTP(res, httptest.NewRequest(test.method, test.path, nil))
+			if !called || res.Code != http.StatusAccepted {
+				t.Fatalf("called=%t status=%d", called, res.Code)
+			}
+		})
+	}
+}
+
 func TestTrackingRouteUsesGoHandler(t *testing.T) {
 	tracking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })
 	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/demo/projects/00000000-0000-0000-0000-000000000001/blockchain-transactions/", nil)
@@ -72,24 +128,62 @@ func TestUserWorkspacesRouteUsesGoHandler(t *testing.T) {
 	}
 }
 
+func TestWorkspaceInvitationRoutesUseGoHandlers(t *testing.T) {
+	workspaceInvites := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	join := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })
+	userInvites := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	deps := Dependencies{
+		WorkspaceInvitations:     workspaceInvites,
+		WorkspaceInvitationJoin:  join,
+		UserWorkspaceInvitations: userInvites,
+	}
+	for _, tc := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "/api/workspaces/demo/invitations/", http.StatusAccepted},
+		{http.MethodPost, "/api/workspaces/demo/invitations/", http.StatusAccepted},
+		{http.MethodPatch, "/api/workspaces/demo/invitations/invite-1/", http.StatusAccepted},
+		{http.MethodDelete, "/api/workspaces/demo/invitations/invite-1/", http.StatusAccepted},
+		{http.MethodGet, "/api/workspaces/demo/invitations/invite-1/join/", http.StatusCreated},
+		{http.MethodPost, "/api/workspaces/demo/invitations/invite-1/join/", http.StatusCreated},
+		{http.MethodGet, "/api/users/me/workspaces/invitations/", http.StatusNoContent},
+		{http.MethodPost, "/api/users/me/workspaces/invitations/", http.StatusNoContent},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		res := httptest.NewRecorder()
+		NewRouter(deps).ServeHTTP(res, req)
+		if res.Code != tc.want {
+			t.Fatalf("method=%s path=%s status=%d, want %d", tc.method, tc.path, res.Code, tc.want)
+		}
+	}
+}
+
 func TestCurrentUserRouteUsesGoHandler(t *testing.T) {
 	currentUser := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodGet, "/api/users/me/", nil)
-	res := httptest.NewRecorder()
-	NewRouter(Dependencies{CurrentUser: currentUser}).ServeHTTP(res, req)
-	if res.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", res.Code)
+	for _, method := range []string{http.MethodGet, http.MethodPatch} {
+		req := httptest.NewRequest(method, "/api/users/me/", nil)
+		res := httptest.NewRecorder()
+		NewRouter(Dependencies{CurrentUser: currentUser}).ServeHTTP(res, req)
+		if res.Code != http.StatusOK {
+			t.Fatalf("method=%s status = %d, want 200", method, res.Code)
+		}
 	}
 }
 
 func TestUserProfileAndSettingsRoutesUseGoHandlers(t *testing.T) {
 	goHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	for _, path := range []string{"/api/users/me/profile/", "/api/users/me/settings/"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/users/me/profile/"},
+		{http.MethodPatch, "/api/users/me/profile/"},
+		{http.MethodGet, "/api/users/me/settings/"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
 		res := httptest.NewRecorder()
 		NewRouter(Dependencies{UserProfile: goHandler, UserSettings: goHandler}).ServeHTTP(res, req)
 		if res.Code != http.StatusOK {
-			t.Fatalf("path=%s status=%d, want 200", path, res.Code)
+			t.Fatalf("method=%s path=%s status=%d, want 200", tc.method, tc.path, res.Code)
 		}
 	}
 }
@@ -239,6 +333,58 @@ func TestNotificationRoutesUseGoHandler(t *testing.T) {
 		NewRouter(Dependencies{Notification: handler}).ServeHTTP(res, req)
 		if res.Code != http.StatusOK {
 			t.Fatalf("path=%s status=%d want=200", path, res.Code)
+		}
+	}
+}
+
+func TestProjectCycleAndModuleUserPropertyRoutesUseGoHandlers(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("project_id") != "project-1" {
+			t.Fatalf("project_id=%q", r.PathValue("project_id"))
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	deps := Dependencies{
+		ProjectUserProperties: handler,
+		CycleUserProperties:   handler,
+		ModuleUserProperties:  handler,
+	}
+	for _, path := range []string{
+		"/api/workspaces/demo/projects/project-1/user-properties/",
+		"/api/workspaces/demo/projects/project-1/cycles/cycle-1/user-properties/",
+		"/api/workspaces/demo/projects/project-1/modules/module-1/user-properties/",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodPatch} {
+			res := httptest.NewRecorder()
+			NewRouter(deps).ServeHTTP(res, httptest.NewRequest(method, path, nil))
+			if res.Code != http.StatusAccepted {
+				t.Fatalf("method=%s path=%s status=%d, want 202", method, path, res.Code)
+			}
+		}
+	}
+}
+
+func TestStickyRoutesUseGoHandler(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("slug") != "demo" {
+			t.Fatalf("slug=%q", r.PathValue("slug"))
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/workspaces/demo/stickies/"},
+		{http.MethodPost, "/api/workspaces/demo/stickies/"},
+		{http.MethodGet, "/api/workspaces/demo/stickies/sticky-1"},
+		{http.MethodPatch, "/api/workspaces/demo/stickies/sticky-1/"},
+		{http.MethodDelete, "/api/workspaces/demo/stickies/sticky-1"},
+	} {
+		res := httptest.NewRecorder()
+		NewRouter(Dependencies{Stickies: handler}).ServeHTTP(res, httptest.NewRequest(tc.method, tc.path, nil))
+		if res.Code != http.StatusAccepted {
+			t.Fatalf("method=%s path=%s status=%d, want 202", tc.method, tc.path, res.Code)
 		}
 	}
 }

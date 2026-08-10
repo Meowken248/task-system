@@ -1,6 +1,7 @@
 package user
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -12,12 +13,26 @@ type readerStub struct {
 	current map[string]any
 	err     error
 	session string
+	updated map[string]any
+}
+
+func (s *readerStub) UpdateCurrentForSession(_ context.Context, session string, payload map[string]any) (map[string]any, error) {
+	s.session = session
+	s.updated = payload
+	return s.current, s.err
 }
 
 type profileReaderStub struct {
 	profile map[string]any
 	err     error
 	session string
+	updated map[string]any
+}
+
+func (s *profileReaderStub) UpdateProfileForSession(_ context.Context, session string, payload map[string]any) (map[string]any, error) {
+	s.session = session
+	s.updated = payload
+	return s.profile, s.err
 }
 
 func (s *profileReaderStub) ProfileForSession(_ context.Context, session string) (map[string]any, error) {
@@ -64,6 +79,25 @@ func TestHandlerRejectsInvalidSession(t *testing.T) {
 	}
 }
 
+func TestHandlerUpdatesCurrentUser(t *testing.T) {
+	store := &readerStub{current: map[string]any{"display_name": "Plane User"}}
+	req := httptest.NewRequest(http.MethodPatch, "/api/users/me/", bytes.NewBufferString(`{"display_name":"Plane User"}`))
+	req.AddCookie(&http.Cookie{Name: "session-id", Value: "valid-session"})
+	res := httptest.NewRecorder()
+	Handler{Store: store, SessionCookieName: "session-id"}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || store.session != "valid-session" || store.updated["display_name"] != "Plane User" {
+		t.Fatalf("status=%d session=%q payload=%v", res.Code, store.session, store.updated)
+	}
+}
+
+func TestHandlerRejectsInvalidPatchJSON(t *testing.T) {
+	res := httptest.NewRecorder()
+	Handler{Store: &readerStub{}}.ServeHTTP(res, httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(`{`)))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", res.Code)
+	}
+}
+
 func TestHandlerReturnsServiceUnavailableOnStoreFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/users/me/", nil)
 	res := httptest.NewRecorder()
@@ -92,6 +126,25 @@ func TestSettingsHandlerReturnsSettings(t *testing.T) {
 	SettingsHandler{Store: store, SessionCookieName: "session-id"}.ServeHTTP(res, req)
 	if res.Code != http.StatusOK || store.session != "valid-session" {
 		t.Fatalf("status=%d session=%q", res.Code, store.session)
+	}
+}
+
+func TestProfileHandlerUpdatesProfile(t *testing.T) {
+	store := &profileReaderStub{profile: map[string]any{"language": "vi"}}
+	req := httptest.NewRequest(http.MethodPatch, "/api/users/me/profile/", bytes.NewBufferString(`{"language":"vi"}`))
+	req.AddCookie(&http.Cookie{Name: "session-id", Value: "valid-session"})
+	res := httptest.NewRecorder()
+	ProfileHandler{Store: store, SessionCookieName: "session-id"}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || store.session != "valid-session" || store.updated["language"] != "vi" {
+		t.Fatalf("status=%d session=%q payload=%v", res.Code, store.session, store.updated)
+	}
+}
+
+func TestProfileHandlerRejectsInvalidJSON(t *testing.T) {
+	res := httptest.NewRecorder()
+	ProfileHandler{Store: &profileReaderStub{}}.ServeHTTP(res, httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(`{`)))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", res.Code)
 	}
 }
 
