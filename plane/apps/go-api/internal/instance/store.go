@@ -78,6 +78,7 @@ type Store interface {
 	CreateInstanceAdmin(ctx context.Context, admin *InstanceAdmin) error
 	GetInstanceAdmins(context.Context) ([]InstanceAdmin, error)
 	GetInstanceAdminByUserID(context.Context, string) (*InstanceAdmin, error)
+	UpdateInstanceAdmin(context.Context, string, int) error
 	DeleteInstanceAdmin(context.Context, string) error
 	GetConfigurations(context.Context) ([]InstanceConfiguration, error)
 	UpdateConfiguration(context.Context, *InstanceConfiguration) error
@@ -291,6 +292,12 @@ func (s PostgreSQLStore) GetInstanceAdminByUserID(ctx context.Context, userID st
 	return &a, nil
 }
 
+func (s PostgreSQLStore) UpdateInstanceAdmin(ctx context.Context, id string, role int) error {
+	query := `UPDATE instance_admins SET role = $1, updated_at = NOW() WHERE id = $2`
+	_, err := s.Pool.Exec(ctx, query, role, id)
+	return err
+}
+
 func (s PostgreSQLStore) DeleteInstanceAdmin(ctx context.Context, id string) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM instance_admins WHERE id = $1`, id)
 	return err
@@ -412,4 +419,3 @@ func (s PostgreSQLStore) ListWorkspaces(ctx context.Context, search string, limi
 	}
 	return result, total, nil
 }
-

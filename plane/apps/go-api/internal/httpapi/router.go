@@ -75,7 +75,9 @@ type Dependencies struct {
 	ProjectFavoriteViews     http.Handler
 	Stickies                 http.Handler
 	Cycles                   http.Handler
+	CycleIssues              http.Handler
 	Modules                  http.Handler
+	ModuleIssues             http.Handler
 	Dashboard                http.Handler
 	RecentVisit              http.Handler
 	Views                    http.Handler
@@ -90,6 +92,7 @@ type Dependencies struct {
 	Intake                   http.Handler
 	Timezones                http.Handler
 	Unsplash                 http.Handler
+	WorkspaceSlugCheck       http.Handler
 	Pages                    http.Handler
 	Version                  string
 	LegacyAPIURL             string
@@ -262,6 +265,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Instances != nil {
 			portedGroups = append(portedGroups, "instances")
 		}
+		if deps.WorkspaceSlugCheck != nil {
+			portedGroups = append(portedGroups, "workspace-slug-check")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": true, "ported_groups": portedGroups,
@@ -279,6 +285,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	if deps.Instances != nil {
 		mux.Handle("/api/instances/", deps.Instances)
+	}
+	if deps.WorkspaceSlugCheck != nil {
+		mux.Handle("GET /api/workspace-slug-check/", deps.WorkspaceSlugCheck)
 	}
 	if deps.SignOut != nil {
 		mux.Handle("POST /auth/sign-out/", deps.SignOut)
@@ -823,6 +832,21 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.Cycles.ServeHTTP(w, r)
 		return
 	}
+	// Cycle issues: .../cycles/{cycle_id}/cycle-issues/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "cycles" && parts[2] != "" && parts[3] == "cycle-issues" && h.deps.CycleIssues != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("cycle_id", parts[2])
+		h.deps.CycleIssues.ServeHTTP(w, r)
+		return
+	}
+	// Cycle issues detail: .../cycles/{cycle_id}/cycle-issues/{issue_id}/
+	if len(parts) == 5 && parts[0] != "" && parts[1] == "cycles" && parts[2] != "" && parts[3] == "cycle-issues" && parts[4] != "" && h.deps.CycleIssues != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("cycle_id", parts[2])
+		r.SetPathValue("issue_id", parts[4])
+		h.deps.CycleIssues.ServeHTTP(w, r)
+		return
+	}
 	// Modules: .../modules/
 	if len(parts) == 2 && parts[0] != "" && parts[1] == "modules" && h.deps.Modules != nil {
 		r.SetPathValue("project_id", parts[0])
@@ -834,6 +858,21 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("module_id", parts[2])
 		h.deps.Modules.ServeHTTP(w, r)
+		return
+	}
+	// Module issues: .../modules/{module_id}/module-issues/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "modules" && parts[2] != "" && parts[3] == "module-issues" && h.deps.ModuleIssues != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("module_id", parts[2])
+		h.deps.ModuleIssues.ServeHTTP(w, r)
+		return
+	}
+	// Module issues detail: .../modules/{module_id}/module-issues/{issue_id}/
+	if len(parts) == 5 && parts[0] != "" && parts[1] == "modules" && parts[2] != "" && parts[3] == "module-issues" && parts[4] != "" && h.deps.ModuleIssues != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("module_id", parts[2])
+		r.SetPathValue("issue_id", parts[4])
+		h.deps.ModuleIssues.ServeHTTP(w, r)
 		return
 	}
 	// Views: .../views/

@@ -37,9 +37,9 @@ func TestListThemes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/themes/", nil)
 	req.SetPathValue("slug", "demo")
 	res := httptest.NewRecorder()
-	
+
 	Handler{Store: storeStub{payload: WorkspaceTheme{ID: "theme-1"}}}.ServeHTTP(res, req)
-	
+
 	if res.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", res.Code)
 	}
@@ -49,9 +49,9 @@ func TestCreateTheme(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/themes/", strings.NewReader(`{"name":"My Theme","colors":{"bg":"#000"}}`))
 	req.SetPathValue("slug", "demo")
 	res := httptest.NewRecorder()
-	
+
 	Handler{Store: storeStub{payload: WorkspaceTheme{ID: "theme-2"}}}.ServeHTTP(res, req)
-	
+
 	if res.Code != http.StatusCreated {
 		t.Fatalf("status=%d, want 201", res.Code)
 	}
@@ -67,7 +67,7 @@ func TestErrors(t *testing.T) {
 		{ErrNotFound, http.StatusNotFound},
 		{ErrInvalid, http.StatusBadRequest},
 	}
-	
+
 	for _, tc := range tests {
 		req := httptest.NewRequest(http.MethodGet, "/themes/", nil)
 		res := httptest.NewRecorder()

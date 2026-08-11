@@ -29,9 +29,9 @@ func TestListPreferences(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/home-preferences/", nil)
 	req.SetPathValue("slug", "demo")
 	res := httptest.NewRecorder()
-	
+
 	Handler{Store: storeStub{payload: WorkspaceHomePreference{ID: "pref-1"}}}.ServeHTTP(res, req)
-	
+
 	if res.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", res.Code)
 	}
@@ -42,9 +42,9 @@ func TestUpdatePreference(t *testing.T) {
 	req.SetPathValue("slug", "demo")
 	req.SetPathValue("key", "my_stickies")
 	res := httptest.NewRecorder()
-	
+
 	Handler{Store: storeStub{payload: WorkspaceHomePreference{ID: "pref-1"}}}.ServeHTTP(res, req)
-	
+
 	if res.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", res.Code)
 	}
@@ -60,7 +60,7 @@ func TestErrors(t *testing.T) {
 		{ErrNotFound, http.StatusNotFound},
 		{ErrInvalid, http.StatusBadRequest},
 	}
-	
+
 	for _, tc := range tests {
 		req := httptest.NewRequest(http.MethodGet, "/home-preferences/", nil)
 		res := httptest.NewRecorder()

@@ -18,25 +18,25 @@ var (
 
 // Activity represents a single activity entry from issue_activities.
 type Activity struct {
-	ID             string     `json:"id"`
-	IssueID        *string    `json:"issue"`
-	Verb           string     `json:"verb"`
-	Field          *string    `json:"field"`
-	OldValue       *string    `json:"old_value"`
-	NewValue       *string    `json:"new_value"`
-	Comment        string     `json:"comment"`
-	Attachments    []string   `json:"attachments"`
-	IssueCommentID *string    `json:"issue_comment"`
-	ActorID        *string    `json:"actor"`
-	OldIdentifier  *string    `json:"old_identifier"`
-	NewIdentifier  *string    `json:"new_identifier"`
-	Epoch          *float64   `json:"epoch"`
-	ProjectID      string     `json:"project"`
-	WorkspaceID    string     `json:"workspace"`
-	CreatedBy      *string    `json:"created_by"`
-	UpdatedBy      *string    `json:"updated_by"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID             string    `json:"id"`
+	IssueID        *string   `json:"issue"`
+	Verb           string    `json:"verb"`
+	Field          *string   `json:"field"`
+	OldValue       *string   `json:"old_value"`
+	NewValue       *string   `json:"new_value"`
+	Comment        string    `json:"comment"`
+	Attachments    []string  `json:"attachments"`
+	IssueCommentID *string   `json:"issue_comment"`
+	ActorID        *string   `json:"actor"`
+	OldIdentifier  *string   `json:"old_identifier"`
+	NewIdentifier  *string   `json:"new_identifier"`
+	Epoch          *float64  `json:"epoch"`
+	ProjectID      string    `json:"project"`
+	WorkspaceID    string    `json:"workspace"`
+	CreatedBy      *string   `json:"created_by"`
+	UpdatedBy      *string   `json:"updated_by"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // CommentEntry represents a comment in the combined activity timeline.

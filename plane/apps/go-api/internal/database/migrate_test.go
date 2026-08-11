@@ -30,7 +30,7 @@ func TestBootstrapFreshDatabase(t *testing.T) {
 	if err := pool.Migrate(ctx); err != nil {
 		t.Fatalf("failed to migrate fresh db: %v", err)
 	}
-	
+
 	// Ensure idempotent migration
 	if err := pool.Migrate(ctx); err != nil {
 		t.Fatalf("failed idempotent migration: %v", err)

@@ -60,10 +60,13 @@ func (s storeStub) GetConfigurations(context.Context) ([]InstanceConfiguration, 
 func (storeStub) UpdateConfiguration(context.Context, *InstanceConfiguration) error { return nil }
 
 func (s storeStub) UpdateEmailConfigurationDisabled(context.Context) error { return nil }
-func (s storeStub) CheckWorkspaceSlug(ctx context.Context, slug string) (bool, error) { return false, nil }
+func (s storeStub) CheckWorkspaceSlug(ctx context.Context, slug string) (bool, error) {
+	return false, nil
+}
 func (s storeStub) ListWorkspaces(ctx context.Context, search string, limit, offset int) ([]map[string]any, int, error) {
 	return nil, 0, nil
 }
+func (s storeStub) UpdateInstanceAdmin(ctx context.Context, id string, role int) error { return nil }
 
 func (s storeStub) CreateLoginSession(_ context.Context, session auth.LoginSession) error {
 	if s.loginSession != nil {

@@ -20,7 +20,7 @@ var (
 )
 
 type MemberItem struct {
-	ID        string `json:"id"`
+	ID     string `json:"id"`
 	Member struct {
 		ID        string `json:"id"`
 		FirstName string `json:"first_name"`

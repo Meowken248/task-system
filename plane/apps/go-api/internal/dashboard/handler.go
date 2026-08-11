@@ -43,7 +43,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			month = parsedMonth
 		}
 	}
-	
+
 	payload, err := h.Store.GetWorkspaceDashboard(r.Context(), sessionKey, slug, month)
 	if err != nil {
 		switch {
@@ -58,7 +58,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	
+
 	w.Header().Set("Cache-Control", "private, max-age=60")
 	w.Header().Add("Vary", "Cookie")
 	writeJSON(w, http.StatusOK, payload)

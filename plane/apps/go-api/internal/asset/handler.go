@@ -93,18 +93,18 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
-		
+
 		entityType := r.FormValue("entity_type")
-		
+
 		asset, err := h.Store.Create(r.Context(), sessionKey, slug, projectID, file, header.Filename, entityType, header.Size)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(asset)
-		
+
 	case http.MethodPatch:
 		if assetID == "" {
 			http.Error(w, "Asset ID required", http.StatusBadRequest)

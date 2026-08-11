@@ -117,10 +117,10 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	defer rows.Close()
 
 	type rawRel struct {
-		id        string
-		issueID   string
-		relIssue  string
-		relType   string
+		id       string
+		issueID  string
+		relIssue string
+		relType  string
 	}
 	var rawRels []rawRel
 	for rows.Next() {

@@ -21,25 +21,25 @@ var (
 )
 
 type ModuleItem struct {
-	ID               string          `json:"id"`
-	WorkspaceID      string          `json:"workspace"`
-	ProjectID        string          `json:"project"`
-	Name             string          `json:"name"`
-	Description      string          `json:"description"`
-	StartDate        *time.Time      `json:"start_date"`
-	TargetDate       *time.Time      `json:"target_date"`
-	Status           string          `json:"status"`
-	Lead             *string         `json:"lead"`
-	ViewProps        json.RawMessage `json:"view_props"`
-	SortOrder        float64         `json:"sort_order"`
-	LogoProps        json.RawMessage `json:"logo_props"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
-	CreatedBy        string          `json:"created_by"`
-	UpdatedBy        string          `json:"updated_by"`
-	IsFavorite       bool            `json:"is_favorite"`
-	TotalIssues      int             `json:"total_issues"`
-	CompletedIssues  int             `json:"completed_issues"`
+	ID              string          `json:"id"`
+	WorkspaceID     string          `json:"workspace"`
+	ProjectID       string          `json:"project"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	StartDate       *time.Time      `json:"start_date"`
+	TargetDate      *time.Time      `json:"target_date"`
+	Status          string          `json:"status"`
+	Lead            *string         `json:"lead"`
+	ViewProps       json.RawMessage `json:"view_props"`
+	SortOrder       float64         `json:"sort_order"`
+	LogoProps       json.RawMessage `json:"logo_props"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	CreatedBy       string          `json:"created_by"`
+	UpdatedBy       string          `json:"updated_by"`
+	IsFavorite      bool            `json:"is_favorite"`
+	TotalIssues     int             `json:"total_issues"`
+	CompletedIssues int             `json:"completed_issues"`
 }
 
 type WritePayload struct {

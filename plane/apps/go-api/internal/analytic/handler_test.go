@@ -8,9 +8,9 @@ import (
 )
 
 type storeStub struct {
-	views   []AnalyticView
-	stats   []map[string]any
-	err     error
+	views []AnalyticView
+	stats []map[string]any
+	err   error
 }
 
 func (s storeStub) ListForSession(context.Context, string, string) ([]AnalyticView, error) {

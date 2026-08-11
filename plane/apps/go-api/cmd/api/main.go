@@ -358,8 +358,14 @@ func main() {
 			Cycles: cycle.Handler{
 				Store: cycle.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
+			CycleIssues: cycle.CycleIssueHandler{
+				Store: cycle.PostgreSQLCycleIssueStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
 			Modules: module.Handler{
 				Store: module.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			ModuleIssues: module.ModuleIssueHandler{
+				Store: module.PostgreSQLModuleIssueStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Views: view.Handler{
 				Store: view.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
@@ -380,6 +386,9 @@ func main() {
 					Pool: db.Native(), FallbackKey: cfg.UnsplashAccessKey, UseDatabaseKey: cfg.SkipEnvVar,
 				},
 				SessionCookieName: cfg.SessionCookie,
+			},
+			WorkspaceSlugCheck: workspace.SlugCheckHandler{
+				Store: instance.PostgreSQLStore{Pool: db.Native()},
 			},
 			Pages: page.Handler{
 				Store: page.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,

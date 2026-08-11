@@ -3,9 +3,11 @@ package instance
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/smtp"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,23 +83,23 @@ func getAdminFrontendBase(r *http.Request) string {
 	return origin + "/god-mode"
 }
 
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) error {
+func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*InstanceAdmin, error) {
 	cookie, err := r.Cookie(h.SessionCookieName)
 	if err != nil || cookie.Value == "" {
 		w.WriteHeader(http.StatusUnauthorized)
-		return errors.New("unauthorized")
+		return nil, errors.New("unauthorized")
 	}
 	userID, err := h.Store.GetUserIDBySessionKey(r.Context(), cookie.Value)
 	if err != nil || userID == "" {
 		w.WriteHeader(http.StatusUnauthorized)
-		return errors.New("unauthorized")
+		return nil, errors.New("unauthorized")
 	}
-	_, err = h.Store.GetInstanceAdminByUserID(r.Context(), userID)
+	admin, err := h.Store.GetInstanceAdminByUserID(r.Context(), userID)
 	if err != nil {
 		w.WriteHeader(http.StatusForbidden)
-		return errors.New("forbidden")
+		return nil, errors.New("forbidden")
 	}
-	return nil
+	return admin, nil
 }
 
 func (h *Handler) GetInstance(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +137,7 @@ func (h *Handler) GetInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateInstance(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	instance, err := h.Store.GetInstance(r.Context())
@@ -149,7 +151,7 @@ func (h *Handler) UpdateInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListAdmins(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	admins, _ := h.Store.GetInstanceAdmins(r.Context())
@@ -182,7 +184,7 @@ func (h *Handler) ListAdmins(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateAdmin(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	// Need body parsing: email, role
@@ -209,7 +211,7 @@ func (h *Handler) CreateAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteAdmin(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	id := r.PathValue("id")
@@ -218,21 +220,11 @@ func (h *Handler) DeleteAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetAdminMe(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(h.SessionCookieName)
-	if err != nil || cookie.Value == "" {
-		w.WriteHeader(http.StatusUnauthorized)
+	admin, err := h.requireAdmin(w, r)
+	if err != nil {
 		return
 	}
-	userID, err := h.Store.GetUserIDBySessionKey(r.Context(), cookie.Value)
-	if err != nil || userID == "" {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	if _, err = h.Store.GetInstanceAdminByUserID(r.Context(), userID); err != nil {
-		w.WriteHeader(http.StatusForbidden)
-		return
-	}
-	user, err := h.Store.GetUserByID(r.Context(), userID)
+	user, err := h.Store.GetUserByID(r.Context(), admin.UserID)
 	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -366,7 +358,7 @@ func (h *Handler) AdminSignOut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetConfigurations(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	configs, _ := h.Store.GetConfigurations(r.Context())
@@ -377,7 +369,7 @@ func (h *Handler) GetConfigurations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateConfigurations(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	var req map[string]interface{}
@@ -398,7 +390,7 @@ func (h *Handler) UpdateConfigurations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DisableEmailFeature(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	if err := h.Store.UpdateEmailConfigurationDisabled(r.Context()); err != nil {
@@ -470,7 +462,7 @@ func (h *Handler) EmailCredentialsCheck(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) WorkspaceSlugCheck(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	slug := r.URL.Query().Get("slug")
@@ -492,23 +484,67 @@ func (h *Handler) WorkspaceSlugCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	search := r.URL.Query().Get("search")
-	limit := 10
+	perPage := 10
+	if pp := r.URL.Query().Get("per_page"); pp != "" {
+		if p, err := strconv.Atoi(pp); err == nil && p > 0 {
+			perPage = p
+		}
+	}
+	if perPage > 1000 {
+		perPage = 1000
+	}
+
 	offset := 0
-	// Minimal pagination for now
-	workspaces, _, err := h.Store.ListWorkspaces(r.Context(), search, limit, offset)
+	cursorStr := r.URL.Query().Get("cursor")
+	if cursorStr != "" {
+		parts := strings.Split(cursorStr, ":")
+		if len(parts) == 3 {
+			if o, err := strconv.Atoi(parts[1]); err == nil && o >= 0 {
+				offset = o
+			}
+		}
+	}
+
+	workspaces, totalCount, err := h.Store.ListWorkspaces(r.Context(), search, perPage, offset)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"results": workspaces})
+
+	totalPages := 0
+	if perPage > 0 {
+		totalPages = (totalCount + perPage - 1) / perPage
+	}
+
+	nextOffset := offset + perPage
+	nextCursor := fmt.Sprintf("%d:%d:0", perPage, nextOffset)
+	nextPageResults := nextOffset < totalCount
+
+	prevOffset := offset - perPage
+	if prevOffset < 0 {
+		prevOffset = 0
+	}
+	prevCursor := fmt.Sprintf("%d:%d:1", perPage, prevOffset)
+	prevPageResults := offset > 0
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"next_cursor":       nextCursor,
+		"prev_cursor":       prevCursor,
+		"next_page_results": nextPageResults,
+		"prev_page_results": prevPageResults,
+		"count":             len(workspaces),
+		"total_pages":       totalPages,
+		"total_results":     totalCount,
+		"results":           workspaces,
+	})
 }
 
 func (h *Handler) GetAdmin(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
 	// Simplification: we don't have GetInstanceAdminByID yet, so just list and find.
@@ -524,10 +560,41 @@ func (h *Handler) GetAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateAdmin(w http.ResponseWriter, r *http.Request) {
-	if err := h.requireAdmin(w, r); err != nil {
+	currentAdmin, err := h.requireAdmin(w, r)
+	if err != nil {
 		return
 	}
-	// Dummy implementation to satisfy the route
-	w.WriteHeader(http.StatusNotImplemented)
-}
+	if currentAdmin.Role < 15 {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Only admins with role >= 15 can update other admins."})
+		return
+	}
 
+	var req map[string]int
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	role, ok := req["role"]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Role is required"})
+		return
+	}
+
+	pk := r.PathValue("pk")
+	if err := h.Store.UpdateInstanceAdmin(r.Context(), pk, role); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch updated admin to return
+	admins, _ := h.Store.GetInstanceAdmins(r.Context())
+	for _, a := range admins {
+		if a.ID == pk {
+			json.NewEncoder(w).Encode(a)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+}

@@ -144,7 +144,7 @@ func (s PostgreSQLStore) ProjectStatsForSession(ctx context.Context, sessionKey,
 		}
 		item := make(map[string]any)
 		item["id"] = values[0]
-		
+
 		idx := 1
 		if requestedFields["total_issues"] {
 			item["total_issues"] = values[idx]

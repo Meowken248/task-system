@@ -46,7 +46,7 @@ func (p *Pool) applyMigration(ctx context.Context, name string) error {
 		if applied {
 			return nil
 		}
-		
+
 		// Compatibility: skip 000_initial_schema.sql if it's already a Django database
 		if name == "migrations/000_initial_schema.sql" {
 			var hasDjango bool

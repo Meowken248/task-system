@@ -118,7 +118,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(statusCode)
 		return
 	}
-	
+
 	if r.Method == http.MethodGet {
 		w.Header().Set("Cache-Control", "private, max-age=10")
 		w.Header().Add("Vary", "Cookie")

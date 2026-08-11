@@ -101,7 +101,7 @@ func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug,
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_home_preferences WHERE key = $1 AND workspace_id = $2 AND user_id = $3 AND deleted_at IS NULL FOR UPDATE)`, key, workspaceID, userID).Scan(&exists); err != nil {
 		return WorkspaceHomePreference{}, err
 	}
-	
+
 	if !exists {
 		// Create if it doesn't exist
 		isEnabled := true

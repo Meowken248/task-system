@@ -28,7 +28,9 @@ func (f *fakeStore) UpdateRole(_ context.Context, _, _, _ string, role int16) (m
 }
 func (f *fakeStore) Remove(context.Context, string, string, string) error { return f.err }
 func (f *fakeStore) Leave(context.Context, string, string) error          { return f.err }
-func (f *fakeStore) UpdateViewProps(context.Context, string, string, map[string]any) error { return f.err }
+func (f *fakeStore) UpdateViewProps(context.Context, string, string, map[string]any) error {
+	return f.err
+}
 
 func request(method, path, body string) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))

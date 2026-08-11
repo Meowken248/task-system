@@ -20,9 +20,9 @@ func TestGetWorkspaceDashboard(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
 	req.SetPathValue("slug", "demo")
 	res := httptest.NewRecorder()
-	
+
 	Handler{Store: readerStub{payload: map[string]any{"ok": true}}}.ServeHTTP(res, req)
-	
+
 	if res.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", res.Code)
 	}
@@ -37,7 +37,7 @@ func TestDashboardErrors(t *testing.T) {
 		{ErrForbidden, http.StatusForbidden},
 		{ErrNotFound, http.StatusNotFound},
 	}
-	
+
 	for _, tc := range tests {
 		req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
 		res := httptest.NewRecorder()

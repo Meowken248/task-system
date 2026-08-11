@@ -75,7 +75,25 @@ type writeIdentity struct {
 	Role        int
 }
 
-type PostgreSQLStore struct{ Pool *pgxpool.Pool }
+type Store interface {
+	ListForSession(ctx context.Context, sessionKey, slug string) ([]FavoriteItem, error)
+	ListGroupForSession(ctx context.Context, sessionKey, slug, parentID string) ([]FavoriteItem, error)
+	CreateForSession(ctx context.Context, sessionKey, slug string, input WritePayload) (FavoriteItem, error)
+	UpdateForSession(ctx context.Context, sessionKey, slug, favoriteID string, input WritePayload) (FavoriteItem, error)
+	DeleteForSession(ctx context.Context, sessionKey, slug, favoriteID string) error
+	ListProjectFavoritesForSession(ctx context.Context, sessionKey, slug, projectID, entityType string) ([]FavoriteItem, error)
+	CreateProjectFavoriteForSession(ctx context.Context, sessionKey, slug, projectID, entityType, entityIdentifier string) error
+	DeleteProjectFavoriteForSession(ctx context.Context, sessionKey, slug, projectID, entityType, entityIdentifier string) error
+	Available() bool
+}
+
+type PostgreSQLStore struct {
+	Pool *pgxpool.Pool
+}
+
+func (s PostgreSQLStore) Available() bool {
+	return s.Pool != nil
+}
 
 func (s PostgreSQLStore) writeIdentity(ctx context.Context, sessionKey, slug string) (writeIdentity, error) {
 	if s.Pool == nil {
@@ -386,7 +404,7 @@ func (s PostgreSQLStore) CreateProjectFavoriteForSession(ctx context.Context, se
 	if err != nil {
 		return err
 	}
-	
+
 	// Ensure the user is a member of the project
 	var memberExists bool
 	err = s.Pool.QueryRow(ctx, `SELECT EXISTS(

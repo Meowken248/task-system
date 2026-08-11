@@ -278,12 +278,24 @@ func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug,
 	}
 
 	qp, fp, dfp, dpp, rfp, lp := "{}", "{}", "{}", "{}", "{}", "{}"
-	if input.has("query") && len(input.Query) > 0 { qp = string(input.Query) }
-	if input.has("filters") && len(input.Filters) > 0 { fp = string(input.Filters) }
-	if input.has("display_filters") && len(input.DisplayFilters) > 0 { dfp = string(input.DisplayFilters) }
-	if input.has("display_properties") && len(input.DisplayProperties) > 0 { dpp = string(input.DisplayProperties) }
-	if input.has("rich_filters") && len(input.RichFilters) > 0 { rfp = string(input.RichFilters) }
-	if input.has("logo_props") && len(input.LogoProps) > 0 { lp = string(input.LogoProps) }
+	if input.has("query") && len(input.Query) > 0 {
+		qp = string(input.Query)
+	}
+	if input.has("filters") && len(input.Filters) > 0 {
+		fp = string(input.Filters)
+	}
+	if input.has("display_filters") && len(input.DisplayFilters) > 0 {
+		dfp = string(input.DisplayFilters)
+	}
+	if input.has("display_properties") && len(input.DisplayProperties) > 0 {
+		dpp = string(input.DisplayProperties)
+	}
+	if input.has("rich_filters") && len(input.RichFilters) > 0 {
+		rfp = string(input.RichFilters)
+	}
+	if input.has("logo_props") && len(input.LogoProps) > 0 {
+		lp = string(input.LogoProps)
+	}
 
 	_, err = tx.Exec(ctx, `UPDATE issue_views SET
 		name=CASE WHEN $4 THEN $5 ELSE name END,

@@ -41,15 +41,15 @@ type Config struct {
 	SkipEnvVar                bool
 	ShutdownTimeout           time.Duration
 	// S3/MinIO Configuration
-	AWSAccessKeyID            string
-	AWSSecretAccessKey        string
-	AWSS3BucketName           string
-	AWSRegion                 string
-	AWSS3EndpointURL          string
-	AWSS3PublicEndpointURL    string
-	UseMinio                  bool
-	MinioEndpointSSL          bool
-	SignedURLExpiration       time.Duration
+	AWSAccessKeyID         string
+	AWSSecretAccessKey     string
+	AWSS3BucketName        string
+	AWSRegion              string
+	AWSS3EndpointURL       string
+	AWSS3PublicEndpointURL string
+	UseMinio               bool
+	MinioEndpointSSL       bool
+	SignedURLExpiration    time.Duration
 }
 
 func Load() (Config, error) {

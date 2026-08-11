@@ -116,3 +116,29 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }
+
+type SlugCheckStore interface {
+	CheckWorkspaceSlug(context.Context, string) (bool, error)
+}
+
+type SlugCheckHandler struct {
+	Store SlugCheckStore
+}
+
+func (h SlugCheckHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slug := r.URL.Query().Get("slug")
+	if slug == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Workspace Slug is required"})
+		return
+	}
+	exists, err := h.Store.CheckWorkspaceSlug(r.Context(), slug)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	// simplified RESTRICTED_WORKSPACE_SLUGS check
+	if slug == "api" || slug == "admin" || slug == "god-mode" {
+		exists = true
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"status": !exists})
+}

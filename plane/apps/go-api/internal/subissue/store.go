@@ -16,36 +16,36 @@ var (
 )
 
 type SubIssueItem struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	StateID         string    `json:"state_id"`
-	SortOrder       float64   `json:"sort_order"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	StateID         string     `json:"state_id"`
+	SortOrder       float64    `json:"sort_order"`
 	CompletedAt     *time.Time `json:"completed_at"`
-	EstimatePoint   *int      `json:"estimate_point"`
-	Priority        string    `json:"priority"`
+	EstimatePoint   *int       `json:"estimate_point"`
+	Priority        string     `json:"priority"`
 	StartDate       *time.Time `json:"start_date"`
 	TargetDate      *time.Time `json:"target_date"`
-	SequenceID      int       `json:"sequence_id"`
-	ProjectID       string    `json:"project_id"`
-	ParentID        string    `json:"parent_id"`
-	CycleID         *string   `json:"cycle_id"`
-	ModuleIDs       []string  `json:"module_ids"`
-	LabelIDs        []string  `json:"label_ids"`
-	AssigneeIDs     []string  `json:"assignee_ids"`
-	SubIssuesCount  int       `json:"sub_issues_count"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	CreatedBy       *string   `json:"created_by"`
-	UpdatedBy       *string   `json:"updated_by"`
-	AttachmentCount int       `json:"attachment_count"`
-	LinkCount       int       `json:"link_count"`
-	IsDraft         bool      `json:"is_draft"`
+	SequenceID      int        `json:"sequence_id"`
+	ProjectID       string     `json:"project_id"`
+	ParentID        string     `json:"parent_id"`
+	CycleID         *string    `json:"cycle_id"`
+	ModuleIDs       []string   `json:"module_ids"`
+	LabelIDs        []string   `json:"label_ids"`
+	AssigneeIDs     []string   `json:"assignee_ids"`
+	SubIssuesCount  int        `json:"sub_issues_count"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	CreatedBy       *string    `json:"created_by"`
+	UpdatedBy       *string    `json:"updated_by"`
+	AttachmentCount int        `json:"attachment_count"`
+	LinkCount       int        `json:"link_count"`
+	IsDraft         bool       `json:"is_draft"`
 	ArchivedAt      *time.Time `json:"archived_at"`
-	StateGroup      string    `json:"state_group"`
+	StateGroup      string     `json:"state_group"`
 }
 
 type ListResponse struct {
-	SubIssues         any              `json:"sub_issues"` // can be array or object (grouped)
+	SubIssues         any                 `json:"sub_issues"` // can be array or object (grouped)
 	StateDistribution map[string][]string `json:"state_distribution"`
 }
 

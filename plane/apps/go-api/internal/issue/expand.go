@@ -2,9 +2,9 @@ package issue
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"strings"
 	"time"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func expandItems(ctx context.Context, pool *pgxpool.Pool, items []Item, expandStr string) ([]Item, error) {
@@ -145,7 +145,7 @@ func expandItems(ctx context.Context, pool *pgxpool.Pool, items []Item, expandSt
 			}
 		}
 	}
-	
+
 	if wants["issue_attachments"] {
 		issueIDs := make([]string, len(items))
 		for i, item := range items {
@@ -175,7 +175,7 @@ func expandItems(ctx context.Context, pool *pgxpool.Pool, items []Item, expandSt
 			}
 		}
 	}
-	
+
 	if wants["issue_link"] {
 		issueIDs := make([]string, len(items))
 		for i, item := range items {
@@ -247,7 +247,7 @@ func expandItems(ctx context.Context, pool *pgxpool.Pool, items []Item, expandSt
 		for i, item := range items {
 			issueIDs[i] = item.ID
 		}
-		
+
 		// issue_relation: items where this issue is the 'issue_id', related is 'related_issue_id'
 		if wants["issue_relation"] {
 			rows, err := pool.Query(ctx, `SELECT ir.related_issue_id::text, ir.relation_type,

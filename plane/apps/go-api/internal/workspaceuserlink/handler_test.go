@@ -37,9 +37,9 @@ func TestListLinks(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/quick-links/", nil)
 	req.SetPathValue("slug", "demo")
 	res := httptest.NewRecorder()
-	
+
 	Handler{Store: storeStub{payload: WorkspaceUserLink{ID: "link-1"}}}.ServeHTTP(res, req)
-	
+
 	if res.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", res.Code)
 	}
@@ -49,9 +49,9 @@ func TestCreateLink(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/quick-links/", strings.NewReader(`{"url":"https://example.com"}`))
 	req.SetPathValue("slug", "demo")
 	res := httptest.NewRecorder()
-	
+
 	Handler{Store: storeStub{payload: WorkspaceUserLink{ID: "link-2"}}}.ServeHTTP(res, req)
-	
+
 	if res.Code != http.StatusCreated {
 		t.Fatalf("status=%d, want 201", res.Code)
 	}
@@ -67,7 +67,7 @@ func TestErrors(t *testing.T) {
 		{ErrNotFound, http.StatusNotFound},
 		{ErrInvalid, http.StatusBadRequest},
 	}
-	
+
 	for _, tc := range tests {
 		req := httptest.NewRequest(http.MethodGet, "/quick-links/", nil)
 		res := httptest.NewRecorder()

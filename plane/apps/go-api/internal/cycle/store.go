@@ -21,30 +21,30 @@ var (
 )
 
 type CycleItem struct {
-	ID               string          `json:"id"`
-	WorkspaceID      string          `json:"workspace"`
-	ProjectID        string          `json:"project"`
-	Name             string          `json:"name"`
-	Description      string          `json:"description"`
-	StartDate        *time.Time      `json:"start_date"`
-	EndDate          *time.Time      `json:"end_date"`
-	OwnedBy          string          `json:"owned_by"`
-	ViewProps        json.RawMessage `json:"view_props"`
-	SortOrder        float64         `json:"sort_order"`
-	ExternalSource   *string         `json:"external_source"`
-	ExternalID       *string         `json:"external_id"`
-	ProgressSnapshot json.RawMessage `json:"progress_snapshot"`
-	LogoProps        json.RawMessage `json:"logo_props"`
-	Timezone         string          `json:"timezone"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
-	CreatedBy        string          `json:"created_by"`
-	UpdatedBy        string          `json:"updated_by"`
-	IsFavorite       bool            `json:"is_favorite"`
-	TotalIssues      int             `json:"total_issues"`
-	CompletedIssues  int             `json:"completed_issues"`
-	TotalEstimates   float64         `json:"total_estimates"`
-	CompletedEstimates float64       `json:"completed_estimates"`
+	ID                 string          `json:"id"`
+	WorkspaceID        string          `json:"workspace"`
+	ProjectID          string          `json:"project"`
+	Name               string          `json:"name"`
+	Description        string          `json:"description"`
+	StartDate          *time.Time      `json:"start_date"`
+	EndDate            *time.Time      `json:"end_date"`
+	OwnedBy            string          `json:"owned_by"`
+	ViewProps          json.RawMessage `json:"view_props"`
+	SortOrder          float64         `json:"sort_order"`
+	ExternalSource     *string         `json:"external_source"`
+	ExternalID         *string         `json:"external_id"`
+	ProgressSnapshot   json.RawMessage `json:"progress_snapshot"`
+	LogoProps          json.RawMessage `json:"logo_props"`
+	Timezone           string          `json:"timezone"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
+	CreatedBy          string          `json:"created_by"`
+	UpdatedBy          string          `json:"updated_by"`
+	IsFavorite         bool            `json:"is_favorite"`
+	TotalIssues        int             `json:"total_issues"`
+	CompletedIssues    int             `json:"completed_issues"`
+	TotalEstimates     float64         `json:"total_estimates"`
+	CompletedEstimates float64         `json:"completed_estimates"`
 }
 
 type WritePayload struct {

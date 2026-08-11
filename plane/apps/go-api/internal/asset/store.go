@@ -72,10 +72,10 @@ func (s PostgreSQLStore) Create(ctx context.Context, sessionKey, slug, projectID
 	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
 		return FileAsset{}, err
 	}
-	
+
 	// Determine paths based on entityType
 	key := fmt.Sprintf("%s/%s-%s", slug, "random_uuid", filename) // simplified UUID generation
-	
+
 	// Upload to storage provider
 	assetPath, err := s.Provider.Upload(ctx, key, data, size, "")
 	if err != nil {
@@ -87,7 +87,7 @@ func (s PostgreSQLStore) Create(ctx context.Context, sessionKey, slug, projectID
 	err = s.Pool.QueryRow(ctx, `INSERT INTO file_assets (asset, entity_type, size, is_uploaded, workspace_id, project_id, created_at, updated_at) 
 		VALUES ($1, $2, $3, $4, (SELECT id FROM workspaces WHERE slug=$5 LIMIT 1), $6, NOW(), NOW()) RETURNING id`,
 		assetPath, entityType, size, true, slug, projectID).Scan(&id)
-	
+
 	if err != nil {
 		return FileAsset{}, fmt.Errorf("insert error: %w", err)
 	}
@@ -164,7 +164,7 @@ func (s PostgreSQLStore) ConfirmUpload(ctx context.Context, sessionKey, slug, as
 		_, err := s.Pool.Exec(ctx, `UPDATE file_assets SET is_uploaded = true, updated_at = NOW() WHERE id = $1 AND workspace_id = (SELECT id FROM workspaces WHERE slug=$2)`, assetID, slug)
 		return err
 	}
-	
+
 	// User assets (no workspace)
 	if sessionKey == "" {
 		return ErrUnauthorized

@@ -9,12 +9,12 @@ import (
 )
 
 type Handler struct {
-	Store             PostgreSQLStore
+	Store             Store
 	SessionCookieName string
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.Store.Pool == nil {
+	if h.Store == nil || !h.Store.Available() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "favorite storage is unavailable"})
 		return
 	}
@@ -113,13 +113,13 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 type ProjectFavoriteHandler struct {
-	Store             PostgreSQLStore
+	Store             Store
 	SessionCookieName string
 	EntityType        string
 }
 
 func (h ProjectFavoriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.Store.Pool == nil {
+	if h.Store == nil || !h.Store.Available() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "favorite storage is unavailable"})
 		return
 	}
@@ -149,13 +149,13 @@ func (h ProjectFavoriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid payload."})
 			return
 		}
-		
+
 		entityIdentifier, ok := input[h.EntityType].(string)
 		if !ok || entityIdentifier == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Entity identifier required."})
 			return
 		}
-		
+
 		err = h.Store.CreateProjectFavoriteForSession(r.Context(), sessionKey, slug, projectID, h.EntityType, entityIdentifier)
 		statusCode = http.StatusNoContent
 	case http.MethodDelete:

@@ -42,11 +42,11 @@ func TestHandler_Get(t *testing.T) {
 	mux.Handle("GET /api/workspaces/{slug}/project-identifiers/", handler)
 
 	tests := []struct {
-		name         string
-		slug         string
-		query        string
+		name          string
+		slug          string
+		query         string
 		sessionCookie string
-		expectedCode int
+		expectedCode  int
 	}{
 		{
 			name:         "no session",
@@ -55,32 +55,32 @@ func TestHandler_Get(t *testing.T) {
 			expectedCode: http.StatusUnauthorized,
 		},
 		{
-			name:         "forbidden",
-			slug:         "invalid",
-			query:        "name=TEST",
+			name:          "forbidden",
+			slug:          "invalid",
+			query:         "name=TEST",
 			sessionCookie: "valid",
-			expectedCode: http.StatusForbidden,
+			expectedCode:  http.StatusForbidden,
 		},
 		{
-			name:         "missing name",
-			slug:         "plane",
-			query:        "",
+			name:          "missing name",
+			slug:          "plane",
+			query:         "",
 			sessionCookie: "valid",
-			expectedCode: http.StatusBadRequest,
+			expectedCode:  http.StatusBadRequest,
 		},
 		{
-			name:         "not found name",
-			slug:         "plane",
-			query:        "name=NOTFOUND",
+			name:          "not found name",
+			slug:          "plane",
+			query:         "name=NOTFOUND",
 			sessionCookie: "valid",
-			expectedCode: http.StatusOK,
+			expectedCode:  http.StatusOK,
 		},
 		{
-			name:         "found name",
-			slug:         "plane",
-			query:        "name=FOUND",
+			name:          "found name",
+			slug:          "plane",
+			query:         "name=FOUND",
 			sessionCookie: "valid",
-			expectedCode: http.StatusOK,
+			expectedCode:  http.StatusOK,
 		},
 	}
 
@@ -120,11 +120,11 @@ func TestHandler_Delete(t *testing.T) {
 	mux.Handle("DELETE /api/workspaces/{slug}/project-identifiers/", handler)
 
 	tests := []struct {
-		name         string
-		slug         string
-		payload      map[string]any
+		name          string
+		slug          string
+		payload       map[string]any
 		sessionCookie string
-		expectedCode int
+		expectedCode  int
 	}{
 		{
 			name:         "no session",
@@ -133,32 +133,32 @@ func TestHandler_Delete(t *testing.T) {
 			expectedCode: http.StatusUnauthorized,
 		},
 		{
-			name:         "forbidden",
-			slug:         "invalid",
-			payload:      map[string]any{"name": "TEST"},
+			name:          "forbidden",
+			slug:          "invalid",
+			payload:       map[string]any{"name": "TEST"},
 			sessionCookie: "valid",
-			expectedCode: http.StatusForbidden,
+			expectedCode:  http.StatusForbidden,
 		},
 		{
-			name:         "missing name",
-			slug:         "plane",
-			payload:      map[string]any{},
+			name:          "missing name",
+			slug:          "plane",
+			payload:       map[string]any{},
 			sessionCookie: "valid",
-			expectedCode: http.StatusBadRequest,
+			expectedCode:  http.StatusBadRequest,
 		},
 		{
-			name:         "in use",
-			slug:         "plane",
-			payload:      map[string]any{"name": "INUSE"},
+			name:          "in use",
+			slug:          "plane",
+			payload:       map[string]any{"name": "INUSE"},
 			sessionCookie: "valid",
-			expectedCode: http.StatusBadRequest,
+			expectedCode:  http.StatusBadRequest,
 		},
 		{
-			name:         "success",
-			slug:         "plane",
-			payload:      map[string]any{"name": "TEST"},
+			name:          "success",
+			slug:          "plane",
+			payload:       map[string]any{"name": "TEST"},
 			sessionCookie: "valid",
-			expectedCode: http.StatusNoContent,
+			expectedCode:  http.StatusNoContent,
 		},
 	}
 

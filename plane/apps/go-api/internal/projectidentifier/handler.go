@@ -76,7 +76,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid payload."})
 			return
 		}
-		
+
 		nameStr := ""
 		if val, ok := input["name"].(string); ok {
 			nameStr = val
@@ -87,7 +87,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Name is required"})
 			return
 		}
-		
+
 		err = h.Store.Delete(r.Context(), sessionKey, slug, name)
 		statusCode = http.StatusNoContent
 	default:

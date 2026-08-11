@@ -136,11 +136,11 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
 		return Page{}, err
 	}
-	
+
 	baseQuery := ` FROM issues i JOIN states st ON st.id=i.state_id WHERE i.project_id::text=$1 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`
 	args := []any{projectID}
 	argIdx := 2
-	
+
 	if filter.State != "" && filter.State != "null" {
 		baseQuery += fmt.Sprintf(` AND i.state_id::text = ANY(string_to_array($%d, ','))`, argIdx)
 		args = append(args, filter.State)
@@ -182,13 +182,13 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	}
 
 	var total int
-	if err := s.Pool.QueryRow(ctx, `SELECT COUNT(*)` + baseQuery, args...).Scan(&total); err != nil {
+	if err := s.Pool.QueryRow(ctx, `SELECT COUNT(*)`+baseQuery, args...).Scan(&total); err != nil {
 		return Page{}, fmt.Errorf("count work items: %w", err)
 	}
-	
+
 	query := `SELECT ` + itemColumns + baseQuery + ` ` + orderBy + fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
 	args = append(args, filter.Limit, filter.Offset)
-	
+
 	rows, err := s.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return Page{}, fmt.Errorf("list work items: %w", err)
@@ -264,7 +264,7 @@ func (s PostgreSQLStore) groupItems(ctx context.Context, projectID string, filte
 		return Page{}, fmt.Errorf("list work items for grouping: %w", err)
 	}
 	defer rows.Close()
-	
+
 	items := make([]Item, 0)
 	for rows.Next() {
 		item, scanErr := scan(rows)

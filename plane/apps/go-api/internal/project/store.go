@@ -318,17 +318,17 @@ func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug,
 
 	// Map of allowed update fields
 	allowedFields := map[string]string{
-		"name":                     "name",
-		"description":              "description",
-		"network":                  "network",
-		"cycle_view":               "cycle_view",
-		"module_view":              "module_view",
-		"issue_views_view":         "issue_views_view",
-		"page_view":                "page_view",
-		"inbox_view":               "intake_view",
-		"guest_view_all_features":  "guest_view_all_features",
-		"project_lead":             "project_lead_id",
-		"default_assignee":         "default_assignee_id",
+		"name":                    "name",
+		"description":             "description",
+		"network":                 "network",
+		"cycle_view":              "cycle_view",
+		"module_view":             "module_view",
+		"issue_views_view":        "issue_views_view",
+		"page_view":               "page_view",
+		"inbox_view":              "intake_view",
+		"guest_view_all_features": "guest_view_all_features",
+		"project_lead":            "project_lead_id",
+		"default_assignee":        "default_assignee_id",
 	}
 
 	for key, val := range payload {
