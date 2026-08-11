@@ -334,6 +334,15 @@ func main() {
 			Favorites: favorite.Handler{
 				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
+			ProjectFavoriteCycles: favorite.ProjectFavoriteHandler{
+				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, EntityType: "cycle",
+			},
+			ProjectFavoriteModules: favorite.ProjectFavoriteHandler{
+				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, EntityType: "module",
+			},
+			ProjectFavoriteViews: favorite.ProjectFavoriteHandler{
+				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, EntityType: "view",
+			},
 			ProjectIdentifiers: projectidentifier.Handler{
 				Store: &projectidentifier.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},

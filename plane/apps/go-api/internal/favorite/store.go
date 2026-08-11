@@ -354,3 +354,100 @@ func stringValue(val *string) string {
 	}
 	return *val
 }
+
+func (s PostgreSQLStore) ListProjectFavoritesForSession(ctx context.Context, sessionKey, slug, projectID, entityType string) ([]FavoriteItem, error) {
+	identity, err := s.writeIdentity(ctx, sessionKey, slug)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.Pool.Query(ctx, `SELECT `+favColumns+` FROM user_favorites f
+		INNER JOIN project_members pm ON pm.project_id = f.project_id AND pm.member_id::text = $1 AND pm.is_active = TRUE AND pm.deleted_at IS NULL
+		WHERE f.user_id::text=$1 AND f.workspace_id::text=$2 AND f.project_id::text=$3 AND f.entity_type=$4 AND f.deleted_at IS NULL
+		ORDER BY f.sequence ASC, f.created_at DESC`, identity.UserID, identity.WorkspaceID, projectID, entityType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []FavoriteItem
+	for rows.Next() {
+		item, scanErr := scanFavorite(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s PostgreSQLStore) CreateProjectFavoriteForSession(ctx context.Context, sessionKey, slug, projectID, entityType, entityIdentifier string) error {
+	identity, err := s.writeIdentity(ctx, sessionKey, slug)
+	if err != nil {
+		return err
+	}
+	
+	// Ensure the user is a member of the project
+	var memberExists bool
+	err = s.Pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM project_members 
+		WHERE workspace_id::text=$1 AND project_id::text=$2 AND member_id::text=$3 AND is_active=TRUE AND deleted_at IS NULL
+	)`, identity.WorkspaceID, projectID, identity.UserID).Scan(&memberExists)
+	if err != nil {
+		return err
+	}
+	if !memberExists {
+		return ErrForbidden
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var existingID string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM user_favorites
+		WHERE workspace_id::text=$1 AND user_id::text=$2 AND project_id::text=$3 AND entity_type=$4 AND entity_identifier=$5 AND deleted_at IS NULL
+		LIMIT 1`, identity.WorkspaceID, identity.UserID, projectID, entityType, entityIdentifier).Scan(&existingID)
+	if err == nil {
+		// Already exists, just return (similar to Django returning 204 directly)
+		return nil
+	}
+
+	favoriteID := newUUID()
+	var maxSeq float64
+	_ = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence), 0) FROM user_favorites WHERE workspace_id::text=$1 AND user_id::text=$2 AND deleted_at IS NULL`,
+		identity.WorkspaceID, identity.UserID).Scan(&maxSeq)
+	sequence := maxSeq + 10000
+
+	_, err = tx.Exec(ctx, `INSERT INTO user_favorites
+		(id, workspace_id, project_id, parent_id, entity_type, entity_identifier, sequence, name, is_folder, metadata,
+		 user_id, created_by_id, updated_by_id, created_at, updated_at)
+		VALUES ($1,$2::uuid,$3::uuid,NULL,$4,$5,$6,'',FALSE,'{}',
+			$7::uuid,$7::uuid,$7::uuid,NOW(),NOW())`,
+		favoriteID, identity.WorkspaceID, projectID, entityType, entityIdentifier, sequence, identity.UserID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s PostgreSQLStore) DeleteProjectFavoriteForSession(ctx context.Context, sessionKey, slug, projectID, entityType, entityIdentifier string) error {
+	identity, err := s.writeIdentity(ctx, sessionKey, slug)
+	if err != nil {
+		return err
+	}
+
+	result, err := s.Pool.Exec(ctx, `DELETE FROM user_favorites
+		WHERE user_id::text=$1 AND workspace_id::text=$2 AND project_id::text=$3 AND entity_type=$4 AND entity_identifier=$5`,
+		identity.UserID, identity.WorkspaceID, projectID, entityType, entityIdentifier)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

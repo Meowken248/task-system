@@ -70,6 +70,9 @@ type Dependencies struct {
 	Archives                 http.Handler
 	Subissues                http.Handler
 	Favorites                http.Handler
+	ProjectFavoriteCycles    http.Handler
+	ProjectFavoriteModules   http.Handler
+	ProjectFavoriteViews     http.Handler
 	Stickies                 http.Handler
 	Cycles                   http.Handler
 	Modules                  http.Handler
@@ -217,6 +220,15 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Favorites != nil {
 			portedGroups = append(portedGroups, "user-favorites")
 		}
+		if deps.ProjectFavoriteCycles != nil {
+			portedGroups = append(portedGroups, "user-favorite-cycle")
+		}
+		if deps.ProjectFavoriteModules != nil {
+			portedGroups = append(portedGroups, "user-favorite-module")
+		}
+		if deps.ProjectFavoriteViews != nil {
+			portedGroups = append(portedGroups, "user-favorite-view")
+		}
 		if deps.Stickies != nil {
 			portedGroups = append(portedGroups, "workspace-stickies")
 		}
@@ -331,7 +343,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("DELETE /api/workspaces/{slug}/members/{member_id}/", deps.WorkspaceMembers)
 	}
 	if deps.WorkspaceViews != nil {
-		mux.Handle("POST /api/workspaces/{slug}/workspace-views/", deps.WorkspaceViews)
+		mux.Handle("POST /api/workspaces/{slug}/workspace-views/{$}", deps.WorkspaceViews)
 	}
 	if deps.WorkspaceProjectMembers != nil {
 		mux.Handle("GET /api/workspaces/{slug}/project-members/", deps.WorkspaceProjectMembers)
@@ -351,8 +363,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("POST /api/workspaces/{slug}/invitations/{invitation_id}/join/", deps.WorkspaceInvitationJoin)
 	}
 	if deps.UserWorkspaceInvitations != nil {
-		mux.Handle("GET /api/users/me/workspaces/invitations/", deps.UserWorkspaceInvitations)
-		mux.Handle("POST /api/users/me/workspaces/invitations/", deps.UserWorkspaceInvitations)
+		mux.Handle("GET /api/users/me/workspaces/invitations/{$}", deps.UserWorkspaceInvitations)
+		mux.Handle("POST /api/users/me/workspaces/invitations/{$}", deps.UserWorkspaceInvitations)
 	}
 	if deps.APITokens != nil {
 		mux.Handle("GET /api/users/api-tokens/", deps.APITokens)
@@ -416,7 +428,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
 	}
 	if deps.Dashboard != nil {
-		mux.Handle("/api/users/me/workspaces/{slug}/dashboard/", deps.Dashboard)
+		mux.Handle("GET /api/users/me/workspaces/{slug}/dashboard/", deps.Dashboard)
 	}
 	if deps.RecentVisit != nil {
 		mux.Handle("/api/workspaces/{slug}/workspace-views/recent-visits/", deps.RecentVisit)
@@ -425,6 +437,18 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{$}", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/{$}", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/group/{$}", deps.Favorites)
+	}
+	if deps.ProjectFavoriteCycles != nil {
+		mux.Handle("/api/workspaces/{slug}/projects/{project_id}/user-favorite-cycles/{$}", deps.ProjectFavoriteCycles)
+		mux.Handle("/api/workspaces/{slug}/projects/{project_id}/user-favorite-cycles/{cycle_id}/{$}", deps.ProjectFavoriteCycles)
+	}
+	if deps.ProjectFavoriteModules != nil {
+		mux.Handle("/api/workspaces/{slug}/projects/{project_id}/user-favorite-modules/{$}", deps.ProjectFavoriteModules)
+		mux.Handle("/api/workspaces/{slug}/projects/{project_id}/user-favorite-modules/{module_id}/{$}", deps.ProjectFavoriteModules)
+	}
+	if deps.ProjectFavoriteViews != nil {
+		mux.Handle("/api/workspaces/{slug}/projects/{project_id}/user-favorite-views/{$}", deps.ProjectFavoriteViews)
+		mux.Handle("/api/workspaces/{slug}/projects/{project_id}/user-favorite-views/{view_id}/{$}", deps.ProjectFavoriteViews)
 	}
 	if deps.Stickies != nil {
 		mux.Handle("/api/workspaces/{slug}/stickies/{$}", deps.Stickies)

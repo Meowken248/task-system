@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -18,7 +19,22 @@ type S3 struct {
 }
 
 func NewS3(endpoint, accessKey, secretKey, region, bucketName, publicEndpoint string, useSSL bool, expiration time.Duration) (*S3, error) {
-	minioClient, err := minio.New(endpoint, &minio.Options{
+	// minio-go expects host:port, not a full URL.
+	// Strip scheme if present and infer SSL from it when not explicitly set.
+	parsedEndpoint := endpoint
+	if strings.HasPrefix(parsedEndpoint, "https://") {
+		parsedEndpoint = strings.TrimPrefix(parsedEndpoint, "https://")
+		// Only override useSSL if the caller left it false (default) and the URL says https.
+		useSSL = true
+	} else if strings.HasPrefix(parsedEndpoint, "http://") {
+		parsedEndpoint = strings.TrimPrefix(parsedEndpoint, "http://")
+	}
+	// Trim any trailing slashes or paths — minio-go rejects them.
+	if idx := strings.Index(parsedEndpoint, "/"); idx != -1 {
+		parsedEndpoint = parsedEndpoint[:idx]
+	}
+
+	minioClient, err := minio.New(parsedEndpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useSSL,
 		Region: region,
