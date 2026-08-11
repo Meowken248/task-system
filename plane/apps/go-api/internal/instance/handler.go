@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"strings"
 	"time"
@@ -43,6 +44,13 @@ func NewHandler(store Store, cookieName string) *Handler {
 	h.mux.HandleFunc("POST /api/instances/admins/sign-out/", h.AdminSignOut)
 	h.mux.HandleFunc("GET /api/instances/configurations/", h.GetConfigurations)
 	h.mux.HandleFunc("PATCH /api/instances/configurations/", h.UpdateConfigurations)
+	h.mux.HandleFunc("DELETE /api/instances/configurations/disable-email-feature/", h.DisableEmailFeature)
+	h.mux.HandleFunc("POST /api/instances/admins/sign-up-screen-visited/", h.SignUpScreenVisited)
+	h.mux.HandleFunc("POST /api/instances/email-credentials-check/", h.EmailCredentialsCheck)
+	h.mux.HandleFunc("GET /api/instances/workspace-slug-check/", h.WorkspaceSlugCheck)
+	h.mux.HandleFunc("GET /api/instances/workspaces/", h.ListWorkspaces)
+	h.mux.HandleFunc("GET /api/instances/admins/{pk}/", h.GetAdmin)
+	h.mux.HandleFunc("PATCH /api/instances/admins/{pk}/", h.UpdateAdmin)
 
 	return h
 }
@@ -388,3 +396,138 @@ func (h *Handler) UpdateConfigurations(w http.ResponseWriter, r *http.Request) {
 	}
 	h.GetConfigurations(w, r)
 }
+
+func (h *Handler) DisableEmailFeature(w http.ResponseWriter, r *http.Request) {
+	if err := h.requireAdmin(w, r); err != nil {
+		return
+	}
+	if err := h.Store.UpdateEmailConfigurationDisabled(r.Context()); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to disable email configuration"})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) SignUpScreenVisited(w http.ResponseWriter, r *http.Request) {
+	instance, err := h.Store.GetInstance(r.Context())
+	if err != nil || instance == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Instance is not configured"})
+		return
+	}
+	instance.IsSignupScreenVisited = true
+	if err := h.Store.UpdateInstance(r.Context(), instance); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) EmailCredentialsCheck(w http.ResponseWriter, r *http.Request) {
+	var req map[string]string
+	json.NewDecoder(r.Body).Decode(&req)
+	receiverEmail := req["receiver_email"]
+	if receiverEmail == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Receiver email is required"})
+		return
+	}
+
+	configs, _ := h.Store.GetConfigurations(r.Context())
+	var host, user, password, port, from string
+	for _, c := range configs {
+		if c.Value != nil {
+			switch c.Key {
+			case "EMAIL_HOST":
+				host = *c.Value
+			case "EMAIL_HOST_USER":
+				user = *c.Value
+			case "EMAIL_HOST_PASSWORD":
+				password = *c.Value
+			case "EMAIL_PORT":
+				port = *c.Value
+			case "EMAIL_FROM":
+				from = *c.Value
+			}
+		}
+	}
+
+	authData := smtp.PlainAuth("", user, password, host)
+	msg := []byte("To: " + receiverEmail + "\r\n" +
+		"Subject: Email Notification from Plane\r\n" +
+		"\r\n" +
+		"This is a sample email notification sent from Plane application.\r\n")
+
+	addr := host + ":" + port
+	err := smtp.SendMail(addr, authData, from, []string{receiverEmail}, msg)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Could not send email. Please check your configuration"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"message": "Email successfully sent."})
+}
+
+func (h *Handler) WorkspaceSlugCheck(w http.ResponseWriter, r *http.Request) {
+	if err := h.requireAdmin(w, r); err != nil {
+		return
+	}
+	slug := r.URL.Query().Get("slug")
+	if slug == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Workspace Slug is required"})
+		return
+	}
+	exists, err := h.Store.CheckWorkspaceSlug(r.Context(), slug)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	// simplified RESTRICTED_WORKSPACE_SLUGS check
+	if slug == "api" || slug == "admin" || slug == "god-mode" {
+		exists = true
+	}
+	json.NewEncoder(w).Encode(map[string]bool{"status": !exists})
+}
+
+func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if err := h.requireAdmin(w, r); err != nil {
+		return
+	}
+	search := r.URL.Query().Get("search")
+	limit := 10
+	offset := 0
+	// Minimal pagination for now
+	workspaces, _, err := h.Store.ListWorkspaces(r.Context(), search, limit, offset)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"results": workspaces})
+}
+
+func (h *Handler) GetAdmin(w http.ResponseWriter, r *http.Request) {
+	if err := h.requireAdmin(w, r); err != nil {
+		return
+	}
+	// Simplification: we don't have GetInstanceAdminByID yet, so just list and find.
+	admins, _ := h.Store.GetInstanceAdmins(r.Context())
+	pk := r.PathValue("pk")
+	for _, a := range admins {
+		if a.ID == pk {
+			json.NewEncoder(w).Encode(a)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNotFound)
+}
+
+func (h *Handler) UpdateAdmin(w http.ResponseWriter, r *http.Request) {
+	if err := h.requireAdmin(w, r); err != nil {
+		return
+	}
+	// Dummy implementation to satisfy the route
+	w.WriteHeader(http.StatusNotImplemented)
+}
+

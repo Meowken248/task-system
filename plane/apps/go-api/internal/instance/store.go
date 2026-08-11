@@ -3,6 +3,7 @@ package instance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,6 +81,9 @@ type Store interface {
 	DeleteInstanceAdmin(context.Context, string) error
 	GetConfigurations(context.Context) ([]InstanceConfiguration, error)
 	UpdateConfiguration(context.Context, *InstanceConfiguration) error
+	UpdateEmailConfigurationDisabled(context.Context) error
+	CheckWorkspaceSlug(ctx context.Context, slug string) (bool, error)
+	ListWorkspaces(ctx context.Context, search string, limit, offset int) ([]map[string]any, int, error)
 	GetUserIDBySessionKey(context.Context, string) (string, error)
 	CreateLoginSession(context.Context, auth.LoginSession) error
 }
@@ -320,3 +324,92 @@ func (s PostgreSQLStore) UpdateConfiguration(ctx context.Context, c *InstanceCon
 	`
 	return s.Pool.QueryRow(ctx, query, c.Key, c.Value, c.Category, c.IsEncrypted).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
 }
+
+func (s PostgreSQLStore) UpdateEmailConfigurationDisabled(ctx context.Context) error {
+	query := `
+		UPDATE instance_configurations
+		SET value = CASE WHEN key = 'ENABLE_SMTP' THEN '0' ELSE '' END,
+		    updated_at = NOW()
+		WHERE key IN ('EMAIL_HOST', 'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD', 'ENABLE_SMTP', 'EMAIL_PORT', 'EMAIL_FROM')
+	`
+	_, err := s.Pool.Exec(ctx, query)
+	return err
+}
+
+func (s PostgreSQLStore) CheckWorkspaceSlug(ctx context.Context, slug string) (bool, error) {
+	var exists bool
+	err := s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE LOWER(slug) = LOWER($1))", slug).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s PostgreSQLStore) ListWorkspaces(ctx context.Context, search string, limit, offset int) ([]map[string]any, int, error) {
+	queryArgs := []any{}
+	searchCond := ""
+	if search != "" {
+		searchCond = "AND name ILIKE $1"
+		queryArgs = append(queryArgs, "%"+search+"%")
+	}
+
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM workspaces WHERE deleted_at IS NULL %s", searchCond)
+	var total int
+	if err := s.Pool.QueryRow(ctx, countQuery, queryArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	queryArgs = append(queryArgs, limit, offset)
+	query := fmt.Sprintf(`
+		SELECT
+			w.id::text, w.name, w.logo, w.logo_asset_id::text, w.owner_id::text, w.slug,
+			w.organization_size, w.timezone, w.background_color, w.created_at, w.updated_at,
+			w.created_by_id::text, w.updated_by_id::text, w.deleted_at,
+			(SELECT COUNT(*)::int FROM projects p WHERE p.workspace_id = w.id) AS total_projects,
+			(SELECT COUNT(*)::int FROM workspace_members active_wm
+			 JOIN users member_user ON member_user.id = active_wm.member_id
+			 WHERE active_wm.workspace_id = w.id AND active_wm.is_active = TRUE
+			 AND active_wm.deleted_at IS NULL AND member_user.is_bot = FALSE) AS total_members
+		FROM workspaces w
+		WHERE w.deleted_at IS NULL %s
+		ORDER BY w.name ASC
+		LIMIT $%d OFFSET $%d
+	`, searchCond, len(queryArgs)-1, len(queryArgs))
+
+	rows, err := s.Pool.Query(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var result []map[string]any
+	for rows.Next() {
+		var id, name, slug, timezone, background string
+		var logo, logoAsset, organizationSize, createdBy, updatedBy *string
+		var owner string
+		var createdAt, updatedAt any
+		var deletedAt any
+		var totalProjects, totalMembers int
+		if err = rows.Scan(&id, &name, &logo, &logoAsset, &owner, &slug, &organizationSize, &timezone, &background,
+			&createdAt, &updatedAt, &createdBy, &updatedBy, &deletedAt, &totalProjects, &totalMembers); err != nil {
+			return nil, 0, err
+		}
+		item := map[string]any{
+			"id": id, "name": name, "logo": logo, "logo_asset": logoAsset,
+			"owner": owner, "slug": slug, "organization_size": organizationSize, "timezone": timezone,
+			"background_color": background, "created_at": createdAt, "updated_at": updatedAt,
+			"created_by": createdBy, "updated_by": updatedBy, "deleted_at": deletedAt,
+			"total_projects": totalProjects, "total_members": totalMembers,
+		}
+		if logo != nil && *logo != "" {
+			item["logo_url"] = *logo
+		} else if logoAsset != nil && *logoAsset != "" {
+			item["logo_url"] = "/api/assets/v2/static/" + *logoAsset + "/"
+		} else {
+			item["logo_url"] = nil
+		}
+		result = append(result, item)
+	}
+	return result, total, nil
+}
+

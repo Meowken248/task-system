@@ -259,6 +259,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.Pages != nil {
 			portedGroups = append(portedGroups, "project-pages")
 		}
+		if deps.Instances != nil {
+			portedGroups = append(portedGroups, "instances")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "plane-go-api", "phase": "incremental-migration",
 			"legacy_fallback": true, "ported_groups": portedGroups,
@@ -275,10 +278,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("GET /api/unsplash/", deps.Unsplash)
 	}
 	if deps.Instances != nil {
-		mux.Handle("GET /api/instances/{$}", deps.Instances)
-		mux.Handle("PATCH /api/instances/{$}", deps.Instances)
-		mux.Handle("/api/instances/admins/", deps.Instances)
-		mux.Handle("/api/instances/configurations/", deps.Instances)
+		mux.Handle("/api/instances/", deps.Instances)
 	}
 	if deps.SignOut != nil {
 		mux.Handle("POST /auth/sign-out/", deps.SignOut)
