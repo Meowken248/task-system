@@ -28,6 +28,7 @@ func (f *fakeStore) UpdateRole(_ context.Context, _, _, _ string, role int16) (m
 }
 func (f *fakeStore) Remove(context.Context, string, string, string) error { return f.err }
 func (f *fakeStore) Leave(context.Context, string, string) error          { return f.err }
+func (f *fakeStore) UpdateViewProps(context.Context, string, string, map[string]any) error { return f.err }
 
 func request(method, path, body string) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -57,10 +58,20 @@ func TestPatchRole(t *testing.T) {
 }
 
 func TestPatchRejectsInvalidPayload(t *testing.T) {
-	w := httptest.NewRecorder()
-	Handler{Store: &fakeStore{}}.ServeHTTP(w, request(http.MethodPatch, "/", `{}`))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d", w.Code)
+	res := httptest.NewRecorder()
+	Handler{Store: &fakeStore{err: ErrCannotRemoveSelf}, Leave: true}.ServeHTTP(res, request(http.MethodPatch, "/", `{}`))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", res.Code)
+	}
+}
+
+func TestViews(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/views/", strings.NewReader(`{"view_props":{"a":1}}`))
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "session"})
+	res := httptest.NewRecorder()
+	ViewsHandler{Store: &fakeStore{}}.ServeHTTP(res, req)
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("status=%d", res.Code)
 	}
 }
 

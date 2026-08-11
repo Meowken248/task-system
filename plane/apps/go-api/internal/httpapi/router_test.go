@@ -220,18 +220,63 @@ func TestUnportedProjectChildRouteReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestProjectMemberListUsesGoHandlerButMutationUsesLegacy(t *testing.T) {
+func TestProjectMemberCRUDUsesGoHandler(t *testing.T) {
 	members := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	path := "/api/workspaces/demo/projects/project-1/members/"
 	for _, tc := range []struct {
 		method string
+		path   string
 		want   int
-	}{{http.MethodGet, http.StatusOK}, {http.MethodPost, http.StatusNotFound}} {
-		req := httptest.NewRequest(tc.method, path, nil)
+	}{
+		{http.MethodGet, "/api/workspaces/demo/projects/project-1/members/", http.StatusOK},
+		{http.MethodPost, "/api/workspaces/demo/projects/project-1/members/", http.StatusOK},
+		{http.MethodGet, "/api/workspaces/demo/projects/project-1/members/m-1/", http.StatusOK},
+		{http.MethodPatch, "/api/workspaces/demo/projects/project-1/members/m-1/", http.StatusOK},
+		{http.MethodDelete, "/api/workspaces/demo/projects/project-1/members/m-1/", http.StatusOK},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
 		res := httptest.NewRecorder()
 		NewRouter(Dependencies{ProjectMembers: members}).ServeHTTP(res, req)
 		if res.Code != tc.want {
-			t.Fatalf("method=%s status=%d, want %d", tc.method, res.Code, tc.want)
+			t.Fatalf("method=%s path=%s status=%d, want %d", tc.method, tc.path, res.Code, tc.want)
+		}
+	}
+}
+
+func TestProjectMembersLeaveUsesGoHandler(t *testing.T) {
+	leave := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/demo/projects/project-1/members/leave/", nil)
+	res := httptest.NewRecorder()
+	NewRouter(Dependencies{ProjectMembersLeave: leave}).ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", res.Code)
+	}
+}
+
+func TestProjectUserViewsUsesGoHandler(t *testing.T) {
+	views := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/demo/projects/project-1/project-views/", nil)
+	res := httptest.NewRecorder()
+	NewRouter(Dependencies{ProjectUserViews: views}).ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", res.Code)
+	}
+}
+
+func TestProjectDeployBoardsUsesGoHandler(t *testing.T) {
+	boards := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	for _, tc := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{http.MethodGet, "/api/workspaces/demo/projects/project-1/project-deploy-boards/", http.StatusOK},
+		{http.MethodPost, "/api/workspaces/demo/projects/project-1/project-deploy-boards/", http.StatusOK},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		res := httptest.NewRecorder()
+		NewRouter(Dependencies{ProjectDeployBoards: boards}).ServeHTTP(res, req)
+		if res.Code != tc.status {
+			t.Fatalf("%s %s: status=%d, want %d", tc.method, tc.path, res.Code, tc.status)
 		}
 	}
 }

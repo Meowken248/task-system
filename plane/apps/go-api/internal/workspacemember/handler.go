@@ -13,6 +13,7 @@ type Store interface {
 	UpdateRole(context.Context, string, string, string, int16) (map[string]any, error)
 	Remove(context.Context, string, string, string) error
 	Leave(context.Context, string, string) error
+	UpdateViewProps(context.Context, string, string, map[string]any) error
 }
 
 type Handler struct {
@@ -78,6 +79,50 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) writeErrorOrNoContent(w http.ResponseWriter, err error) {
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type ViewsHandler struct {
+	Store             Store
+	SessionCookieName string
+}
+
+func (h ViewsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "workspace member storage is unavailable"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	sessionKey := ""
+	cookieName := h.SessionCookieName
+	if cookieName == "" {
+		cookieName = "sessionid"
+	}
+	if cookie, err := r.Cookie(cookieName); err == nil {
+		sessionKey = cookie.Value
+	}
+
+	var body struct {
+		ViewProps map[string]any `json:"view_props"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	if decodeErr := decoder.Decode(&body); decodeErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+		return
+	}
+	if body.ViewProps == nil {
+		body.ViewProps = make(map[string]any)
+	}
+
+	err := h.Store.UpdateViewProps(r.Context(), sessionKey, r.PathValue("slug"), body.ViewProps)
 	if err != nil {
 		writeStoreError(w, err)
 		return

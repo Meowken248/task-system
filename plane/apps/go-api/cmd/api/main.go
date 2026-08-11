@@ -24,6 +24,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/cycle"
 	"github.com/makeplane/plane/apps/go-api/internal/dashboard"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
+	"github.com/makeplane/plane/apps/go-api/internal/deployboard"
 	"github.com/makeplane/plane/apps/go-api/internal/estimate"
 	"github.com/makeplane/plane/apps/go-api/internal/external"
 	"github.com/makeplane/plane/apps/go-api/internal/favorite"
@@ -37,6 +38,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/notification"
 	"github.com/makeplane/plane/apps/go-api/internal/page"
 	"github.com/makeplane/plane/apps/go-api/internal/project"
+	"github.com/makeplane/plane/apps/go-api/internal/projectidentifier"
 	"github.com/makeplane/plane/apps/go-api/internal/projectmember"
 	"github.com/makeplane/plane/apps/go-api/internal/reaction"
 	"github.com/makeplane/plane/apps/go-api/internal/recentvisit"
@@ -56,8 +58,11 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/worker"
 	"github.com/makeplane/plane/apps/go-api/internal/workspace"
 	"github.com/makeplane/plane/apps/go-api/internal/workspacecontext"
+	"github.com/makeplane/plane/apps/go-api/internal/workspacehomepreference"
 	"github.com/makeplane/plane/apps/go-api/internal/workspaceinvite"
 	"github.com/makeplane/plane/apps/go-api/internal/workspacemember"
+	"github.com/makeplane/plane/apps/go-api/internal/workspacetheme"
+	"github.com/makeplane/plane/apps/go-api/internal/workspaceuserlink"
 )
 
 var version = "dev"
@@ -181,7 +186,12 @@ func main() {
 				Mode: workspacecontext.ModeCurrentMember,
 			},
 			WorkspaceMembers: workspacemember.Handler{
-				Store: workspacemember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Store:             workspacemember.PostgreSQLStore{Pool: db.Native()},
+				SessionCookieName: cfg.SessionCookie,
+			},
+			WorkspaceViews: workspacemember.ViewsHandler{
+				Store:             workspacemember.PostgreSQLStore{Pool: db.Native()},
+				SessionCookieName: cfg.SessionCookie,
 			},
 			WorkspaceLeave: workspacemember.Handler{
 				Store: workspacemember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
@@ -214,6 +224,15 @@ func main() {
 			SidebarPreferences: workspacecontext.Handler{
 				Store: workspacecontext.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 				Mode: workspacecontext.ModeSidebarPreferences,
+			},
+			WorkspaceThemes: workspacetheme.Handler{
+				Store: workspacetheme.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			WorkspaceHomePreferences: workspacehomepreference.Handler{
+				Store: workspacehomepreference.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			WorkspaceUserLinks: workspaceuserlink.Handler{
+				Store: workspaceuserlink.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			UserProperties: workspacecontext.Handler{
 				Store: workspacecontext.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
@@ -257,14 +276,28 @@ func main() {
 			ProjectMembers: projectmember.Handler{
 				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
+			ProjectMembersLeave: projectmember.Handler{
+				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+				Leave: true,
+			},
 			ProjectMemberMe: projectmember.Handler{
 				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 				Current: true,
+			},
+			ProjectUserViews: projectmember.ProjectUserViewsHandler{
+				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			ProjectDeployBoards: deployboard.ProjectDeployBoardHandler{
+				Store: deployboard.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			WorkspaceProjectMembers: projectmember.WorkspaceProjectMembersHandler{
+				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Notification: notification.Handler{Store: notification.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Estimate:     estimate.Handler{Store: estimate.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Search:       search.Handler{Store: search.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Analytic:     analytic.Handler{Store: analytic.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
+			ProjectStats: analytic.ProjectStatsHandler{Store: analytic.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Instances: instance.NewHandler(instance.PostgreSQLStore{Pool: db.Native()}, cfg.AdminSessionCookie).
 				ConfigureSession(cfg.SessionSecret, cfg.CookieDomain, cfg.SessionAge),
 			Intake: intake.Handler{Store: intake.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
@@ -300,6 +333,9 @@ func main() {
 			},
 			Favorites: favorite.Handler{
 				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			ProjectIdentifiers: projectidentifier.Handler{
+				Store: &projectidentifier.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Dashboard: dashboard.Handler{
 				Store: dashboard.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,

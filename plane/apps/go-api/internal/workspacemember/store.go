@@ -226,7 +226,20 @@ func (s PostgreSQLStore) deactivate(ctx context.Context, current session, member
 		return fmt.Errorf("deactivate workspace member: %w", err)
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit workspace member removal: %w", err)
+		return fmt.Errorf("commit deactivate member: %w", err)
+	}
+	return nil
+}
+
+func (s PostgreSQLStore) UpdateViewProps(ctx context.Context, sessionKey, slug string, viewProps map[string]any) error {
+	current, err := s.resolve(ctx, sessionKey, slug)
+	if err != nil {
+		return err
+	}
+	_, err = s.Pool.Exec(ctx, `UPDATE workspace_members SET view_props=$1, updated_at=NOW(), updated_by_id=$2
+		WHERE workspace_id::text=$3 AND member_id::text=$2 AND is_active=TRUE AND deleted_at IS NULL`, viewProps, current.UserID, current.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("update view props: %w", err)
 	}
 	return nil
 }
