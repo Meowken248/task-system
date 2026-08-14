@@ -104,6 +104,24 @@ func (s PostgreSQLStore) writeIdentity(ctx context.Context, sessionKey, slug, pr
 }
 
 func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug, projectID string, input WritePayload) (Item, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return Item{}, fmt.Errorf("begin create work item: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	item, err := s.CreateForSessionTx(ctx, tx, sessionKey, slug, projectID, input)
+	if err != nil {
+		return Item{}, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return Item{}, fmt.Errorf("commit work item: %w", err)
+	}
+	return item, nil
+}
+
+func (s PostgreSQLStore) CreateForSessionTx(ctx context.Context, tx pgx.Tx, sessionKey, slug, projectID string, input WritePayload) (Item, error) {
 	identity, err := s.writeIdentity(ctx, sessionKey, slug, projectID)
 	if err != nil {
 		return Item{}, err
@@ -132,11 +150,6 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug,
 	assignees := firstNonNil(input.Assignees, input.AssigneeIDs)
 	labels := firstNonNil(input.Labels, input.LabelIDs)
 
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return Item{}, fmt.Errorf("begin create work item: %w", err)
-	}
-	defer tx.Rollback(ctx)
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, projectID); err != nil {
 		return Item{}, fmt.Errorf("lock work item sequence: %w", err)
 	}
@@ -200,9 +213,6 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug,
 	item, err := scan(tx.QueryRow(ctx, `SELECT `+itemColumns+` FROM issues i JOIN states st ON st.id=i.state_id WHERE i.id::text=$1`, issueID))
 	if err != nil {
 		return Item{}, fmt.Errorf("read created work item: %w", err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return Item{}, fmt.Errorf("commit work item: %w", err)
 	}
 	return item, nil
 }

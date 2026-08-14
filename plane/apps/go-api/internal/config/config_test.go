@@ -46,3 +46,27 @@ func TestLoadPasswordRecoverySettings(t *testing.T) {
 		t.Fatalf("PasswordResetTimeout=%s", cfg.PasswordResetTimeout)
 	}
 }
+
+func TestGoWorkersEnabledDefaultsFalse(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgresql://plane:plane@plane-db:5432/plane")
+	t.Setenv("GO_WORKERS_ENABLED", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GoWorkersEnabled {
+		t.Fatal("GoWorkersEnabled should default to false")
+	}
+}
+
+func TestGoWorkersEnabledExplicitTrue(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgresql://plane:plane@plane-db:5432/plane")
+	t.Setenv("GO_WORKERS_ENABLED", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.GoWorkersEnabled {
+		t.Fatal("GoWorkersEnabled should be true when GO_WORKERS_ENABLED=true")
+	}
+}

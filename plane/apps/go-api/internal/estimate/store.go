@@ -513,3 +513,32 @@ func (s PostgreSQLStore) DeletePointForSession(ctx context.Context, sessionKey, 
 	}
 	return tx.Commit(ctx)
 }
+
+func (s PostgreSQLStore) ListProjectPointsForSession(ctx context.Context, sessionKey, slug, projectID string) ([]EstimatePoint, error) {
+	if _, err := s.projectIdentity(ctx, sessionKey, slug, projectID); err != nil {
+		return nil, err
+	}
+	var estimateID *string
+	err := s.Pool.QueryRow(ctx, `SELECT estimate_id::text FROM projects WHERE id=$1 AND deleted_at IS NULL`, projectID).Scan(&estimateID)
+	if errors.Is(err, pgx.ErrNoRows) || err != nil {
+		return nil, err
+	}
+	if estimateID == nil {
+		return []EstimatePoint{}, nil
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT `+pointColumns+` FROM estimate_points ep
+		WHERE ep.estimate_id=$1 AND ep.project_id=$2 AND ep.deleted_at IS NULL ORDER BY ep.key`, *estimateID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]EstimatePoint, 0)
+	for rows.Next() {
+		item, scanErr := scanPoint(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}

@@ -50,6 +50,10 @@ type Config struct {
 	UseMinio               bool
 	MinioEndpointSSL       bool
 	SignedURLExpiration    time.Duration
+	// Worker ownership
+	GoWorkersEnabled bool
+
+	BlockchainMode string
 }
 
 func Load() (Config, error) {
@@ -95,10 +99,24 @@ func Load() (Config, error) {
 		UseMinio:                  envBool("USE_MINIO", false),
 		MinioEndpointSSL:          envBool("MINIO_ENDPOINT_SSL", false),
 		SignedURLExpiration:       durationSeconds("SIGNED_URL_EXPIRATION", 3600*time.Second, 24*time.Hour),
+		GoWorkersEnabled:          envBool("GO_WORKERS_ENABLED", false),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
 	}
+
+	hasRPC := cfg.BlockchainRPCURL != ""
+	hasContract := cfg.BlockchainContractAddress != ""
+	hasChainID := cfg.BlockchainChainID != ""
+
+	if hasRPC && hasContract && hasChainID {
+		cfg.BlockchainMode = "online"
+	} else if hasRPC || hasContract || hasChainID {
+		cfg.BlockchainMode = "offline" // partial configuration
+	} else {
+		cfg.BlockchainMode = "disabled"
+	}
+
 	return cfg, nil
 }
 

@@ -70,6 +70,10 @@ func (s *storeStub) DeletePointForSession(_ context.Context, _, _, projectID, es
 	s.capture("point-delete", projectID, estimateID, pointID)
 	return s.err
 }
+func (s *storeStub) ListProjectPointsForSession(_ context.Context, _, _, projectID string) ([]EstimatePoint, error) {
+	s.capture("project-points", projectID, "", "")
+	return []EstimatePoint{{ID: "project-point-1", Key: 1}}, s.err
+}
 
 func estimateMux(store Store) http.Handler {
 	mux := http.NewServeMux()
@@ -83,6 +87,10 @@ func estimateMux(store Store) http.Handler {
 	}))
 	mux.Handle("/api/workspaces/{slug}/projects/{project_id}/estimates/{estimate_id}/estimate-points/{estimate_point_id}/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("estimate_points", "true")
+		handler.ServeHTTP(w, r)
+	}))
+	mux.Handle("/api/workspaces/{slug}/projects/{project_id}/project-estimates/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("project_estimates", "true")
 		handler.ServeHTTP(w, r)
 	}))
 	return mux
@@ -165,5 +173,14 @@ func TestEstimateErrorMapping(t *testing.T) {
 	res = estimateRequest(t, estimateMux(store), http.MethodGet, "/api/workspaces/demo/projects/project-1/estimates/", "", true)
 	if res.Code != http.StatusServiceUnavailable {
 		t.Fatalf("storage status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestProjectEstimates(t *testing.T) {
+	store := &storeStub{}
+	handler := estimateMux(store)
+	res := estimateRequest(t, handler, http.MethodGet, "/api/workspaces/demo/projects/project-1/project-estimates/", "", true)
+	if res.Code != http.StatusOK || store.lastOperation != "project-points" || store.lastProjectID != "project-1" {
+		t.Fatalf("project estimates status=%d operation=%q body=%s", res.Code, store.lastOperation, res.Body.String())
 	}
 }

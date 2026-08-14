@@ -25,6 +25,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/dashboard"
 	"github.com/makeplane/plane/apps/go-api/internal/database"
 	"github.com/makeplane/plane/apps/go-api/internal/deployboard"
+	"github.com/makeplane/plane/apps/go-api/internal/draftissue"
 	"github.com/makeplane/plane/apps/go-api/internal/estimate"
 	"github.com/makeplane/plane/apps/go-api/internal/external"
 	"github.com/makeplane/plane/apps/go-api/internal/favorite"
@@ -89,6 +90,13 @@ func main() {
 		os.Exit(1)
 	}
 	cancelMigrations()
+	schemaCtx, cancelSchema := context.WithTimeout(ctx, 10*time.Second)
+	if err = database.ValidateSchema(schemaCtx, db.Native()); err != nil {
+		cancelSchema()
+		logger.Error("schema validation failed", "error", err)
+		os.Exit(1)
+	}
+	cancelSchema()
 	trackingStore := tracking.PostgreSQLStore{Pool: db.Native()}
 	if cfg.LegacyTrackingDir != "" {
 		importCtx, cancelImport := context.WithTimeout(ctx, 30*time.Second)
@@ -103,7 +111,8 @@ func main() {
 			"added", importStats.Added, "skipped", importStats.Skipped)
 	}
 
-	workerManager := worker.NewManager(db.Native(), logger)
+	workerManager := worker.NewManager(logger, cfg.GoWorkersEnabled, worker.PostgreSQLStore{Pool: db.Native()})
+	workerManager.Register(worker.NewWebhookDispatcher())
 	workerManager.Start()
 	defer workerManager.Stop()
 
@@ -126,6 +135,16 @@ func main() {
 		storageProvider = s3Provider
 	} else {
 		storageProvider = &storage.Local{BaseDir: "./media", BaseURL: cfg.AppBaseURL + "/api/assets/v2"}
+	}
+
+	var verifier *blockchain.Verifier
+	if cfg.BlockchainRPCURL != "" && cfg.BlockchainContractAddress != "" {
+		v := blockchain.Verifier{Config: blockchain.Config{
+			RPCURL: cfg.BlockchainRPCURL, ContractAddress: cfg.BlockchainContractAddress,
+			ChainID: cfg.BlockchainChainID, RPCTimeout: cfg.BlockchainRPCTimeout,
+			ReceiptWait: cfg.BlockchainReceiptWait,
+		}}
+		verifier = &v
 	}
 
 	server := &http.Server{
@@ -170,12 +189,8 @@ func main() {
 				AppBaseURL: cfg.AppBaseURL, SecretKey: cfg.SessionSecret, SessionAge: cfg.SessionAge,
 			},
 			Tracking: tracking.Handler{
-				Store: trackingStore,
-				Verifier: blockchain.Verifier{Config: blockchain.Config{
-					RPCURL: cfg.BlockchainRPCURL, ContractAddress: cfg.BlockchainContractAddress,
-					ChainID: cfg.BlockchainChainID, RPCTimeout: cfg.BlockchainRPCTimeout,
-					ReceiptWait: cfg.BlockchainReceiptWait,
-				}},
+				Store:             trackingStore,
+				Verifier:          verifier,
 				SessionCookieName: cfg.SessionCookie,
 			},
 			Workspaces: workspace.Handler{
@@ -307,6 +322,13 @@ func main() {
 			Issues: issue.Handler{
 				Store: issue.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
+			DraftIssues: draftissue.Handler{
+				Store: draftissue.PostgreSQLStore{
+					Pool:           db.Native(),
+					IssueTxCreator: issue.PostgreSQLStore{Pool: db.Native()},
+				},
+				SessionCookieName: cfg.SessionCookie,
+			},
 			Comments: comment.Handler{
 				Store: comment.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
@@ -393,8 +415,11 @@ func main() {
 			Pages: page.Handler{
 				Store: page.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
-			Version:      version,
-			LegacyAPIURL: cfg.LegacyAPIURL,
+			Version:            version,
+			LegacyAPIURL:       cfg.LegacyAPIURL,
+			GoWorkersEnabled:   cfg.GoWorkersEnabled,
+			BlockchainMode:     cfg.BlockchainMode,
+			BlockchainVerifier: verifier,
 		}),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,

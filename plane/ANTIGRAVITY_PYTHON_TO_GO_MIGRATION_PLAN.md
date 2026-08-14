@@ -1,5 +1,10 @@
 # Kế hoạch chuyển backend Plane từ Python/Django sang Go
 
+> **Cập nhật kiểm chứng ngày 2026-08-14:** Mục 13 ở cuối tài liệu là prompt
+> tiếp tục mới nhất và có độ ưu tiên cao hơn các mô tả hiện trạng cũ trong tài
+> liệu này hoặc trong `ANTIGRAVITY_HANDOFF.md`. Antigravity phải kiểm tra lại
+> mọi kết luận bằng source, git diff và test thực tế trước khi sửa.
+
 ## 1. Mục tiêu
 
 Chuyển toàn bộ chức năng backend hiện có của Plane từ Python/Django sang Go nhưng giữ nguyên tuyệt đối hợp đồng API và luồng nghiệp vụ.
@@ -768,3 +773,343 @@ Một phiên chỉ được xem là dừng an toàn khi:
 - Test fail đã được ghi rõ trong handoff.
 - Route ownership và fallback không bị nhập nhằng.
 - `ANTIGRAVITY_HANDOFF.md` phản ánh đúng git diff hiện tại.
+
+## 13. Prompt tiếp tục migration dành cho Antigravity (bản có thẩm quyền cao nhất)
+
+Sao chép nguyên khối prompt dưới đây và gửi cho Antigravity. Prompt này đã bao
+gồm hiện trạng mới nhất, lỗi đã xác minh, thứ tự triển khai và điều kiện nghiệm
+thu. Không được thay thế bằng câu ngắn như “làm tiếp”.
+
+```text
+Bạn đang tiếp tục chuyển toàn bộ backend Plane từ Python/Django sang Go tại:
+
+  C:\task-system\plane
+
+MỤC TIÊU CUỐI CÙNG
+
+1. Toàn bộ API, authentication, permissions, database side effects,
+   background jobs và integration hiện do Python/Django/Celery xử lý phải có
+   implementation Go tương thích đầy đủ.
+2. Frontend giữ nguyên contract và cuối cùng chỉ cần gọi Go API.
+3. Django API, Celery worker và Celery beat có thể tắt bằng cấu hình mà hệ
+   thống vẫn hoạt động đầy đủ.
+4. KHÔNG xóa bất kỳ mã Python nào. Chủ dự án sẽ tự xóa sau khi nghiệm thu.
+5. Không thay đổi luồng hoạt động, API contract hoặc giao diện để làm migration
+   dễ hơn. Đây là chuyển ngôn ngữ, không phải thiết kế lại sản phẩm.
+
+NGUYÊN TẮC TUYỆT ĐỐI
+
+- Không xóa, đổi tên, di chuyển, format hoặc sửa không cần thiết bất kỳ file
+  Python nào trong apps/api.
+- Không xóa Django/Celery/legacy fallback trước khi toàn bộ điều kiện cutover
+  được đáp ứng.
+- Không đổi URL, HTTP method, query parameter, request body, response JSON,
+  status code, header, cookie, redirect, permission, role hoặc side effect.
+- Không thay đổi database schema hiện hữu chỉ để Go dễ triển khai hơn.
+- Không sửa frontend để che lỗi hoặc bù cho response Go sai contract.
+- Không mock thành công email, webhook, blockchain hoặc background job.
+- Không để Go worker và Celery cùng claim/xử lý một job.
+- Không chạy DROP, TRUNCATE, reset database, xóa volume hoặc destructive SQL.
+- Không log password, token, cookie, private key hoặc payload nhạy cảm.
+- Không tin mù quáng ANTIGRAVITY_HANDOFF.md, route_parity_matrix.md hoặc báo
+  cáo cũ. Luôn đối chiếu source và test.
+- Không commit nếu người dùng chưa yêu cầu. Giữ nguyên thay đổi không liên
+  quan đang có trong working tree.
+- Mỗi nhóm thay đổi phải nhỏ, review được và rollback độc lập.
+
+THỨ TỰ ĐỌC BẮT BUỘC TRƯỚC KHI SỬA
+
+1. AGENTS.md.
+2. ANTIGRAVITY_PYTHON_TO_GO_MIGRATION_PLAN.md, đặc biệt mục 13 này.
+3. ANTIGRAVITY_HANDOFF.md, nhưng xem đó chỉ là ghi chú tham khảo.
+4. git status --short, git diff --stat và toàn bộ git diff liên quan.
+5. route_parity_matrix.md và migration-route-matrix.json.
+6. apps/go-api/cmd/api/main.go.
+7. apps/go-api/internal/httpapi/router.go và router tests.
+8. apps/go-api/internal/database/migrate.go, schema_validator.go và tests.
+9. apps/go-api/internal/worker/manager.go.
+10. apps/go-api/internal/tracking/handler.go.
+11. Module Python tương ứng trước mỗi route được port: URL, view, serializer,
+    permission, model, signal và Celery task liên quan.
+
+BASELINE ĐÃ ĐƯỢC KIỂM CHỨNG
+
+- Branch hiện tại khi lập prompt: chuyen_py_sang_go_2.
+- Working tree có nhiều thay đổi chưa commit: ít nhất 20 file tracked đã sửa,
+  khoảng 1.049 dòng thêm/185 dòng xóa, cùng nhiều file untracked.
+- Không có file Python bị xóa trong đợt thay đổi hiện tại.
+- go test ./...: PASS.
+- go vet ./...: PASS.
+- go build ./cmd/api: PASS.
+- Kết quả xanh mới chỉ chứng minh compile/unit baseline, chưa chứng minh parity
+  với Django hoặc production readiness.
+- Thống kê tạm trong route_parity_matrix.md: khoảng 46/347 route ported,
+  165/347 partial và 136/347 legacy. Cách suy luận method của matrix còn sai
+  ở nhiều Django APIView nên không dùng số này để tuyên bố % hoàn thành.
+- Reverse proxy đã được khởi tạo một lần trong NewRouter và migration-status
+  đã phản ánh runtime config tốt hơn trước.
+- GO_WORKERS_ENABLED mặc định false. Trạng thái này phải giữ nguyên cho đến
+  khi worker Go thực sự gửi/xử lý job và vượt qua integration test.
+- Draft Issues, project favorites, instances, cycle progress/analytics,
+  estimates và intake đã có thêm code Go, nhưng chưa phải tất cả đều đạt parity.
+
+KHÔNG ĐƯỢC TUYÊN BỐ “P0 COMPLETED” Ở TRẠNG THÁI HIỆN TẠI.
+
+BLOCKER P0 PHẢI SỬA TRƯỚC KHI PORT THÊM MODULE
+
+P0.1 - Schema validator kiểm tra sai tên bảng
+
+- apps/go-api/internal/database/schema_validator.go đang yêu cầu bảng
+  project_projectmember.
+- Schema/migration thật tạo bảng project_members và Go stores cũng query bảng
+  project_members.
+- Sửa validator dùng đúng physical table name.
+- Viết test đối chiếu TOÀN BỘ requiredTables/requiredColumns với schema SQL
+  hoặc PostgreSQL test database; không chỉ kiểm tra vài tên tĩnh.
+- Chứng minh Go API startup được trên database Plane hợp lệ sau khi sửa.
+
+P0.2 - PostgreSQL advisory migration lock không giữ cùng connection
+
+- migrate.go đang lock/unlock qua pgxpool.Exec. Session-scoped advisory lock
+  có thể được lấy và nhả trên hai physical connection khác nhau.
+- Acquire đúng một connection từ pool.
+- Lock, đọc migration history, chạy migration transaction và unlock trên cùng
+  connection. Luôn defer unlock/release và xử lý context cancellation.
+- Thêm test cho concurrent migration/startup. Không dùng sleep mong manh nếu
+  có thể đồng bộ bằng channel/barrier.
+- Không tự chạy lại initial schema trên database đã có dữ liệu.
+
+P0.3 - Go workers chưa được implement thật
+
+- worker.Manager.Start khi Enabled=true hiện chỉ log “started”; webhook/email
+  vẫn là TODO và không có processing loop thật.
+- Trước mắt giữ GO_WORKERS_ENABLED=false, log rõ Celery là owner và
+  migration-status/readiness không được mô tả worker là hoạt động.
+- Không bật cờ true ở compose/production.
+- Khi port worker sau này phải có atomic claim, SKIP LOCKED, idempotency,
+  timeout, retry/backoff, dead-letter, structured logging và integration test.
+
+P0.4 - Draft-to-Issue không nguyên tử
+
+- Luồng hiện tạo issue, chuyển file asset rồi xóa draft bằng các operation rời.
+- Lỗi TransferFileAssets và DeleteForSession đang bị nuốt nhưng API vẫn 201.
+- Chuyển toàn bộ create issue + transfer assets + delete draft vào một DB
+  transaction trên cùng connection, hoặc thiết kế idempotency/compensation có
+  test rõ ràng nếu transaction chung thực sự không thể dùng.
+- Không trả 201 khi trạng thái dữ liệu bị dang dở.
+- Test rollback ở từng điểm lỗi và test retry không tạo issue trùng.
+
+P0.5 - Issue router nhận query mà Go chưa hỗ trợ đầy đủ
+
+- Router đang allow cursor, per_page, order_by, group_by, sub_group_by, expand,
+  state, state_group, priority, labels, assignees, created_by và fields.
+- Issue store chưa chứng minh parity cho sub_group_by; fields chưa được truyền
+  đầy đủ; order_by chỉ hỗ trợ rất ít giá trị; grouped pagination/response còn
+  khác Django.
+- Mặc định fallback Django đối với MỌI query/combination chưa có parity test.
+- Chỉ mở từng query sang Go sau khi contract test với Django pass.
+- Query lạ phải fallback, không được silently ignore.
+
+P0.6 - Blockchain readiness/tracking chưa đầy đủ
+
+- /health/ready hiện chủ yếu ping PostgreSQL và vẫn trả HTTP 200 khi blockchain
+  online nhưng verifier không được khởi tạo.
+- tracking handler vẫn có nhánh 501 “on-chain verification has not been
+  migrated”.
+- Phân biệt rõ disabled/offline/online.
+- Online bắt buộc phải kiểm tra RPC reachability, chain ID, contract address,
+  deployed bytecode và verifier readiness.
+- Không ghi verified=true nếu receipt/event không thuộc đúng contract/function.
+- Offline mode phải cho nghiệp vụ Plane tiếp tục theo contract hiện tại.
+- Không đưa RPC credential hoặc secret vào health response/log.
+
+SPRINT A - ỔN ĐỊNH BLOCKER
+
+Thực hiện P0.1 đến P0.6 theo đúng thứ tự. Sau mỗi mục:
+
+1. gofmt các file Go đã chạm.
+2. go test package liên quan.
+3. go test ./...
+4. go vet ./...
+5. go build ./cmd/api
+6. Cập nhật test và route matrix nếu ownership thay đổi.
+7. Ghi bằng chứng thực tế vào ANTIGRAVITY_HANDOFF.md.
+
+Không chuyển sang Sprint B nếu schema validator hoặc migration locking còn sai.
+
+SPRINT B - XÂY PARITY HARNESS TIN CẬY
+
+1. Sửa generator route matrix để đọc đúng method thực sự của Django APIView,
+   ViewSet và nested route; không gán tự động toàn bộ HTTP methods.
+2. Mỗi record phải có method, path, Python view, Go handler, owner,
+   authentication, permission, request/response schema, DB side effects,
+   background side effects, test và known differences.
+3. Tạo contract-test harness gửi cùng fixture/request vào Django và Go rồi so:
+   status, JSON shape/type, header, cookie, redirect và DB state.
+4. Chuẩn hóa chỉ các giá trị động hợp lệ như timestamp, UUID, request ID; không
+   bỏ qua field khác biệt để làm test xanh.
+5. Thêm PostgreSQL integration tests thật cho authorization, transaction,
+   migration và các store trọng yếu.
+6. Test reverse proxy: cookie/header/body/status/streaming phải được bảo toàn.
+7. Thêm metric/header nội bộ để xác định request do Go hay Django xử lý và lý
+   do fallback, nhưng không thay đổi public contract.
+
+SPRINT C - PORT API THEO TỪNG VERTICAL SLICE
+
+Không port theo kiểu chỉ tạo handler cho đủ tên. Mỗi slice phải gồm route,
+permission, serializer contract, store transaction, side effect và tests.
+
+Thứ tự ưu tiên:
+
+1. Authentication còn thiếu: magic link, OAuth Google/GitHub/GitLab/Gitea,
+   Spaces auth variants, cookie/CSRF/session/redirect parity.
+2. Core issue/work item reads và writes nâng cao: filters, expand, fields,
+   grouping, subgrouping, cursor pagination, ordering, activity/version.
+3. Draft issue sau khi transaction safety hoàn tất.
+4. Attachments/file assets/storage, comments, reactions, relations, links,
+   subscribers, sub-issues và archive.
+5. Workspace/project/member/invite/role/settings còn PARTIAL hoặc PROXY.
+6. Cycles, modules, views, pages, estimates, intake và analytics còn partial.
+7. Import/export và long-running workflows.
+8. Public, Space và license endpoints.
+9. Instance/admin routes còn lại.
+10. Mọi route legacy còn trong matrix.
+
+Quy trình bắt buộc cho MỖI route/module:
+
+1. Đọc Python URL/view/serializer/permission/model/signal/task.
+2. Ghi contract và side effects vào route matrix trước khi implement.
+3. Viết Django golden/contract test hoặc fixture mô tả hành vi hiện hữu.
+4. Implement Go với transaction boundary tương đương.
+5. Thêm unit và PostgreSQL integration tests.
+6. So sánh Django-Go bằng cùng input/fixture.
+7. Giữ fallback nếu còn bất kỳ mismatch nào.
+8. Chỉ đổi owner sang GO khi tất cả test pass và không còn known difference.
+9. Chạy full Go checks trước khi sang route kế tiếp.
+
+SPRINT D - PORT BACKGROUND JOBS/CELERY
+
+Lập inventory tự động và thủ công toàn bộ Celery tasks, signals, scheduled jobs
+và nơi enqueue. Port theo thứ tự:
+
+1. Transactional email/invitation.
+2. Webhook delivery.
+3. Notifications.
+4. Issue activity/version/automation.
+5. Import/export.
+6. Storage/file processing/cleanup.
+7. Workspace seed và scheduled maintenance.
+8. Tất cả task còn lại.
+
+Mỗi job Go phải có:
+
+- Một owner duy nhất.
+- Atomic claim với SELECT FOR UPDATE SKIP LOCKED hoặc cơ chế tương đương.
+- Idempotency key và unique constraint phù hợp.
+- Retry giới hạn, exponential backoff, timeout và dead-letter.
+- Xử lý crash giữa chừng, restart và duplicate delivery.
+- Structured log và metrics nhưng không log secret.
+- Test success, transient failure, permanent failure, duplicate, crash và retry.
+- Shadow/canary trước khi tắt Celery task tương ứng.
+
+Chỉ bật GO_WORKERS_ENABLED khi toàn bộ worker được cấu hình thực sự hoạt động.
+Không xóa Python task sau khi chuyển.
+
+SPRINT E - CUTOVER KHÔNG XÓA PYTHON
+
+1. Matrix không còn PARTIAL/PROXY/UNKNOWN.
+2. Contract tests và E2E pass cho toàn bộ critical flows.
+3. Fallback rate bằng 0 trên staging trong thời gian soak 24-48 giờ.
+4. Tắt LEGACY_API_URL/fallback bằng config trên staging.
+5. Tắt Django API/Celery bằng config trên staging, không xóa source/container
+   definition trong repository.
+6. Chạy lại đăng ký/đăng nhập/logout, workspace/project/member, issue/subissue,
+   comment/attachment, import/export, email/webhook, blockchain online/offline,
+   daily report/KPI và admin/instance flows.
+7. Canary production có rollback rõ ràng.
+8. Sau canary ổn định mới báo người dùng rằng Python có thể được tự xóa.
+
+TEST COVERAGE TỐI THIỂU
+
+- Mọi package có handler/store phải có test thực chất.
+- Ưu tiên bổ sung test cho: draftissue, legacy, activity, archive, asset,
+  comment, commentreaction, link, reaction, relation, search, storage,
+  subissue, subscriber và view.
+- Test không được chỉ kiểm tra slice tĩnh hoặc “package compile”.
+- Không dùng mock DB để thay thế toàn bộ integration tests PostgreSQL.
+- Test permission cho owner/admin/member/guest/unauthenticated.
+- Test not-found, conflict, invalid input, database error và rollback.
+
+READINESS/OBSERVABILITY BẮT BUỘC
+
+- Liveness chỉ phản ánh process sống.
+- Readiness phản ánh PostgreSQL/schema, worker ownership, legacy dependency khi
+  còn fallback và blockchain khi mode online yêu cầu nó.
+- Expose version/build commit an toàn.
+- Có request ID xuyên Go và Django proxy.
+- Có route owner, fallback reason, fallback rate và parity mismatch metrics.
+- Không trả “ready” gây hiểu nhầm khi dependency bắt buộc degraded.
+
+GIT VÀ AN TOÀN WORKING TREE
+
+- Trước mỗi nhóm sửa, xem git status/diff để không ghi đè thay đổi người dùng.
+- Không reset --hard, checkout --, clean hoặc xóa file untracked.
+- Hiện có nhiều thay đổi Antigravity chưa commit; phải bảo toàn tất cả.
+- Không tự commit. Nếu người dùng yêu cầu commit, chia thành commit nhỏ theo:
+  database safety, router parity, module port, workers và docs/tests.
+
+ĐIỀU KIỆN ĐƯỢC ĐÁNH DẤU MỘT ROUTE “DONE”
+
+- Cùng URL/method/query/body.
+- Cùng auth/permission/role.
+- Cùng status/header/cookie/redirect.
+- Cùng JSON schema/type/null/default/error.
+- Cùng pagination/filter/order/group behavior.
+- Cùng DB mutation, transaction và rollback.
+- Cùng signals/background side effects.
+- Unit + integration + Django-Go contract tests pass.
+- Không fallback trong staging.
+- Không có known difference chưa được người dùng chấp thuận.
+
+ĐIỀU KIỆN ĐƯỢC TUYÊN BỐ “CHUYỂN XONG PYTHON SANG GO”
+
+- 100% route Python đang sử dụng có Go equivalent đạt định nghĩa DONE.
+- Không còn PROXY/PARTIAL/UNKNOWN trong route matrix.
+- Không còn request fallback trong soak/canary.
+- Tất cả authentication và background jobs chạy bằng Go.
+- GO_WORKERS_ENABLED có processing thật và Celery có thể tắt.
+- Django API/Celery có thể tắt mà toàn bộ E2E vẫn pass.
+- Không còn nhánh 501/not migrated hoặc mock-success.
+- Cold start/migration/schema concurrency test pass.
+- Blockchain online/offline/disabled hoạt động đúng contract.
+- Python vẫn còn nguyên trong repository để người dùng tự xóa.
+
+CÁCH LÀM VIỆC LIÊN TỤC
+
+- Bắt đầu ngay từ Sprint A và tiếp tục qua các sprint theo thứ tự.
+- Không dừng chỉ vì một module đã build hoặc unit test pass.
+- Khi gặp contract Django chưa rõ, giữ fallback, ghi PARTIAL và điều tra source;
+  không tự suy đoán.
+- Khi gần hết context/token, dừng ở điểm an toàn và cập nhật
+  ANTIGRAVITY_HANDOFF.md bằng bằng chứng chính xác để model sau tiếp tục.
+- Handoff cũ đang ghi “P0 completed” và “Draft Issues PASS - no test files”; hai
+  kết luận này không còn hợp lệ. Hãy sửa handoff sau khi xác minh và hoàn thành
+  các blocker thật.
+
+SAU MỖI SPRINT PHẢI BÁO CÁO
+
+1. Files changed và lý do.
+2. Routes chuyển sang Go.
+3. Routes còn Django fallback/partial và lý do.
+4. Contract/side effects đã xác minh.
+5. Tests thêm mới.
+6. Lệnh thực tế đã chạy và PASS/FAIL.
+7. Runtime/config/database changes.
+8. Known differences và rủi ro.
+9. Bước tiếp theo chính xác.
+10. Cập nhật route matrix và ANTIGRAVITY_HANDOFF.md.
+
+Bắt đầu bằng việc xác minh lại baseline, sau đó sửa P0.1 schema table name và
+P0.2 advisory lock. Không port thêm route trước khi hai mục này có test thực
+chất và toàn bộ go test/vet/build đều pass.
+```

@@ -84,6 +84,35 @@ type Verifier struct {
 	Now    func() time.Time
 }
 
+func (v Verifier) PingContext(ctx context.Context) error {
+	parsedURL, err := url.Parse(v.Config.RPCURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || v.Config.ContractAddress == "" || v.Config.ChainID == "" {
+		return fmt.Errorf("verifier not fully configured")
+	}
+
+	result, err := v.RPC.Call(ctx, "eth_chainId", nil)
+	if err != nil {
+		return fmt.Errorf("rpc ping failed: %w", err)
+	}
+
+	// Optionally check if the chain ID matches the configured one
+	chainIDHex, ok := result.(string)
+	if !ok {
+		return fmt.Errorf("rpc ping returned invalid chain ID format")
+	}
+
+	chainIDInt, err := strconv.ParseInt(strings.TrimPrefix(chainIDHex, "0x"), 16, 64)
+	if err != nil {
+		return fmt.Errorf("rpc ping returned invalid chain ID: %s", chainIDHex)
+	}
+	expectedChainIDInt, err := strconv.ParseInt(v.Config.ChainID, 10, 64)
+	if err == nil && chainIDInt != expectedChainIDInt {
+		return fmt.Errorf("rpc ping returned chain ID %d, expected %d", chainIDInt, expectedChainIDInt)
+	}
+
+	return nil
+}
+
 var eventDefinitions = map[string]struct{ signature, topic string }{
 	"create_task":  {"TaskCreated(uint256,bytes32,address,address,uint64,uint8,bytes32)", "0x99a752deb59e73f9aa963354e3dc7ca6376de56f46c30ca28fce492261b7f015"},
 	"assign_task":  {"TaskAssigned(uint256,address,address)", "0xfe58e4bb1e9a69b912e9ef1be9463a03d5d7aa99d2116726abd48e28acc4f91e"},

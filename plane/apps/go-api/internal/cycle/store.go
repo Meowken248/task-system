@@ -331,3 +331,341 @@ func newUUID() string {
 	encoded := hex.EncodeToString(bytes[:])
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
 }
+
+type CycleProgress struct {
+	BacklogEstimatePoints   float64 `json:"backlog_estimate_points"`
+	UnstartedEstimatePoints float64 `json:"unstarted_estimate_points"`
+	StartedEstimatePoints   float64 `json:"started_estimate_points"`
+	CancelledEstimatePoints float64 `json:"cancelled_estimate_points"`
+	CompletedEstimatePoints float64 `json:"completed_estimate_points"`
+	TotalEstimatePoints     float64 `json:"total_estimate_points"`
+	BacklogIssues           int     `json:"backlog_issues"`
+	TotalIssues             int     `json:"total_issues"`
+	CompletedIssues         int     `json:"completed_issues"`
+	CancelledIssues         int     `json:"cancelled_issues"`
+	StartedIssues           int     `json:"started_issues"`
+	UnstartedIssues         int     `json:"unstarted_issues"`
+}
+
+func (s PostgreSQLStore) GetProgressForSession(ctx context.Context, sessionKey, slug, projectID, cycleID string) (any, error) {
+	if _, err := s.writeIdentity(ctx, sessionKey, slug, projectID); err != nil {
+		return nil, err
+	}
+
+	var snapshot []byte
+	err := s.Pool.QueryRow(ctx, `SELECT progress_snapshot FROM cycles WHERE id = $1 AND project_id = $2`, cycleID, projectID).Scan(&snapshot)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+
+	var res CycleProgress
+
+	// Always compute estimates (Django computes aggregate_estimates even if snapshot exists)
+	err = s.Pool.QueryRow(ctx, `
+		SELECT 
+			COALESCE(SUM(CASE WHEN s.group = 'backlog' THEN ep.value ELSE 0 END), 0) AS backlog_estimate_points,
+			COALESCE(SUM(CASE WHEN s.group = 'unstarted' THEN ep.value ELSE 0 END), 0) AS unstarted_estimate_points,
+			COALESCE(SUM(CASE WHEN s.group = 'started' THEN ep.value ELSE 0 END), 0) AS started_estimate_points,
+			COALESCE(SUM(CASE WHEN s.group = 'cancelled' THEN ep.value ELSE 0 END), 0) AS cancelled_estimate_points,
+			COALESCE(SUM(CASE WHEN s.group = 'completed' THEN ep.value ELSE 0 END), 0) AS completed_estimate_points,
+			COALESCE(SUM(ep.value), 0) AS total_estimate_points
+		FROM issues i
+		JOIN states s ON s.id = i.state_id
+		LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id
+		JOIN cycle_issues ci ON ci.issue_id = i.id
+		WHERE ci.cycle_id = $1 AND ci.deleted_at IS NULL AND i.deleted_at IS NULL
+		  AND i.project_id = $2
+	`, cycleID, projectID).Scan(
+		&res.BacklogEstimatePoints,
+		&res.UnstartedEstimatePoints,
+		&res.StartedEstimatePoints,
+		&res.CancelledEstimatePoints,
+		&res.CompletedEstimatePoints,
+		&res.TotalEstimatePoints,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate estimates: %w", err)
+	}
+
+	// Use snapshot for issues if available
+	if len(snapshot) > 0 && string(snapshot) != "null" {
+		var snap map[string]any
+		if err := json.Unmarshal(snapshot, &snap); err == nil {
+			if v, ok := snap["backlog_issues"].(float64); ok { res.BacklogIssues = int(v) }
+			if v, ok := snap["unstarted_issues"].(float64); ok { res.UnstartedIssues = int(v) }
+			if v, ok := snap["started_issues"].(float64); ok { res.StartedIssues = int(v) }
+			if v, ok := snap["cancelled_issues"].(float64); ok { res.CancelledIssues = int(v) }
+			if v, ok := snap["completed_issues"].(float64); ok { res.CompletedIssues = int(v) }
+			if v, ok := snap["total_issues"].(float64); ok { res.TotalIssues = int(v) }
+			return res, nil
+		}
+	}
+
+	// Compute issues manually if no snapshot
+	err = s.Pool.QueryRow(ctx, `
+		SELECT 
+			COUNT(CASE WHEN s.group = 'backlog' THEN 1 END) AS backlog_issues,
+			COUNT(CASE WHEN s.group = 'unstarted' THEN 1 END) AS unstarted_issues,
+			COUNT(CASE WHEN s.group = 'started' THEN 1 END) AS started_issues,
+			COUNT(CASE WHEN s.group = 'cancelled' THEN 1 END) AS cancelled_issues,
+			COUNT(CASE WHEN s.group = 'completed' THEN 1 END) AS completed_issues,
+			COUNT(i.id) AS total_issues
+		FROM issues i
+		JOIN states s ON s.id = i.state_id
+		JOIN cycle_issues ci ON ci.issue_id = i.id
+		WHERE ci.cycle_id = $1 AND ci.deleted_at IS NULL AND i.deleted_at IS NULL
+		  AND i.project_id = $2
+	`, cycleID, projectID).Scan(
+		&res.BacklogIssues,
+		&res.UnstartedIssues,
+		&res.StartedIssues,
+		&res.CancelledIssues,
+		&res.CompletedIssues,
+		&res.TotalIssues,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate issues: %w", err)
+	}
+
+	return res, nil
+}
+
+type CycleAnalytics struct {
+	Labels          []LabelDistribution    `json:"labels"`
+	Assignees       []AssigneeDistribution `json:"assignees"`
+	CompletionChart map[string]*float64    `json:"completion_chart"`
+}
+
+type LabelDistribution struct {
+	LabelName          string  `json:"label_name"`
+	Color              string  `json:"color"`
+	LabelID            string  `json:"label_id"`
+	TotalIssues        int     `json:"total_issues,omitempty"`
+	CompletedIssues    int     `json:"completed_issues,omitempty"`
+	PendingIssues      int     `json:"pending_issues,omitempty"`
+	TotalEstimates     float64 `json:"total_estimates,omitempty"`
+	CompletedEstimates float64 `json:"completed_estimates,omitempty"`
+	PendingEstimates   float64 `json:"pending_estimates,omitempty"`
+}
+
+type AssigneeDistribution struct {
+	DisplayName        string  `json:"display_name"`
+	AssigneeID         string  `json:"assignee_id"`
+	AvatarUrl          *string `json:"avatar_url"`
+	TotalIssues        int     `json:"total_issues,omitempty"`
+	CompletedIssues    int     `json:"completed_issues,omitempty"`
+	PendingIssues      int     `json:"pending_issues,omitempty"`
+	TotalEstimates     float64 `json:"total_estimates,omitempty"`
+	CompletedEstimates float64 `json:"completed_estimates,omitempty"`
+	PendingEstimates   float64 `json:"pending_estimates,omitempty"`
+}
+
+type ChartDataPoint struct {
+	Date          time.Time `json:"date"`
+	TotalEstimate float64   `json:"total_estimate"`
+	TotalCount    int       `json:"total_count"`
+}
+
+func (s PostgreSQLStore) GetAnalyticsForSession(ctx context.Context, sessionKey, slug, projectID, cycleID, analyticType string) (any, error) {
+	if _, err := s.writeIdentity(ctx, sessionKey, slug, projectID); err != nil {
+		return nil, err
+	}
+
+	var snapshot []byte
+	var startDate, endDate *time.Time
+	err := s.Pool.QueryRow(ctx, `SELECT progress_snapshot, start_date, end_date FROM cycles WHERE id = $1 AND project_id = $2`, cycleID, projectID).Scan(&snapshot, &startDate, &endDate)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+
+	if startDate == nil || endDate == nil {
+		return nil, fmt.Errorf("cycle has no start or end date")
+	}
+
+	if len(snapshot) > 0 && string(snapshot) != "null" {
+		var snap map[string]any
+		if err := json.Unmarshal(snapshot, &snap); err == nil {
+			if dist, ok := snap["distribution"].(map[string]any); ok {
+				return dist, nil
+			}
+		}
+	}
+
+	var res CycleAnalytics
+	res.Labels = make([]LabelDistribution, 0)
+	res.Assignees = make([]AssigneeDistribution, 0)
+	res.CompletionChart = make(map[string]*float64)
+
+	var hasPointsEstimate bool
+	err = s.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM projects p 
+			JOIN project_estimates pe ON pe.id = p.estimate_id
+			WHERE p.id = $1 AND pe.type = 'points'
+		)
+	`, projectID).Scan(&hasPointsEstimate)
+
+	if analyticType == "points" && hasPointsEstimate {
+		// Points analytic
+		assigneeRows, _ := s.Pool.Query(ctx, `
+			SELECT
+				u.display_name,
+				u.id AS assignee_id,
+				COALESCE('/api/assets/v2/static/' || u.avatar_asset || '/', u.avatar) AS avatar_url,
+				COALESCE(SUM(ep.value), 0) AS total_estimates,
+				COALESCE(SUM(CASE WHEN i.completed_at IS NOT NULL THEN ep.value ELSE 0 END), 0) AS completed_estimates,
+				COALESCE(SUM(CASE WHEN i.completed_at IS NULL THEN ep.value ELSE 0 END), 0) AS pending_estimates
+			FROM issues i
+			JOIN cycle_issues ci ON ci.issue_id = i.id
+			JOIN issue_assignees ia ON ia.issue_id = i.id
+			JOIN users u ON u.id = ia.user_id
+			LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id
+			WHERE ci.cycle_id = $1 AND ci.deleted_at IS NULL AND i.deleted_at IS NULL AND ia.deleted_at IS NULL
+			GROUP BY u.display_name, u.id, u.avatar_asset, u.avatar
+			ORDER BY u.display_name
+		`, cycleID)
+		defer assigneeRows.Close()
+		for assigneeRows.Next() {
+			var d AssigneeDistribution
+			assigneeRows.Scan(&d.DisplayName, &d.AssigneeID, &d.AvatarUrl, &d.TotalEstimates, &d.CompletedEstimates, &d.PendingEstimates)
+			res.Assignees = append(res.Assignees, d)
+		}
+
+		labelRows, _ := s.Pool.Query(ctx, `
+			SELECT
+				l.name AS label_name,
+				l.color,
+				l.id AS label_id,
+				COALESCE(SUM(ep.value), 0) AS total_estimates,
+				COALESCE(SUM(CASE WHEN i.completed_at IS NOT NULL THEN ep.value ELSE 0 END), 0) AS completed_estimates,
+				COALESCE(SUM(CASE WHEN i.completed_at IS NULL THEN ep.value ELSE 0 END), 0) AS pending_estimates
+			FROM issues i
+			JOIN cycle_issues ci ON ci.issue_id = i.id
+			JOIN issue_labels il ON il.issue_id = i.id
+			JOIN labels l ON l.id = il.label_id
+			LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id
+			WHERE ci.cycle_id = $1 AND ci.deleted_at IS NULL AND i.deleted_at IS NULL AND il.deleted_at IS NULL
+			GROUP BY l.name, l.color, l.id
+			ORDER BY l.name
+		`, cycleID)
+		defer labelRows.Close()
+		for labelRows.Next() {
+			var d LabelDistribution
+			labelRows.Scan(&d.LabelName, &d.Color, &d.LabelID, &d.TotalEstimates, &d.CompletedEstimates, &d.PendingEstimates)
+			res.Labels = append(res.Labels, d)
+		}
+
+	} else {
+		// Issues analytic
+		assigneeRows, _ := s.Pool.Query(ctx, `
+			SELECT
+				u.display_name,
+				u.id AS assignee_id,
+				COALESCE('/api/assets/v2/static/' || u.avatar_asset || '/', u.avatar) AS avatar_url,
+				COUNT(DISTINCT i.id) AS total_issues,
+				COUNT(DISTINCT CASE WHEN i.completed_at IS NOT NULL THEN i.id END) AS completed_issues,
+				COUNT(DISTINCT CASE WHEN i.completed_at IS NULL THEN i.id END) AS pending_issues
+			FROM issues i
+			JOIN cycle_issues ci ON ci.issue_id = i.id
+			JOIN issue_assignees ia ON ia.issue_id = i.id
+			JOIN users u ON u.id = ia.user_id
+			WHERE ci.cycle_id = $1 AND ci.deleted_at IS NULL AND i.deleted_at IS NULL AND ia.deleted_at IS NULL
+			GROUP BY u.display_name, u.id, u.avatar_asset, u.avatar
+			ORDER BY u.display_name
+		`, cycleID)
+		defer assigneeRows.Close()
+		for assigneeRows.Next() {
+			var d AssigneeDistribution
+			assigneeRows.Scan(&d.DisplayName, &d.AssigneeID, &d.AvatarUrl, &d.TotalIssues, &d.CompletedIssues, &d.PendingIssues)
+			res.Assignees = append(res.Assignees, d)
+		}
+
+		labelRows, _ := s.Pool.Query(ctx, `
+			SELECT
+				l.name AS label_name,
+				l.color,
+				l.id AS label_id,
+				COUNT(DISTINCT i.id) AS total_issues,
+				COUNT(DISTINCT CASE WHEN i.completed_at IS NOT NULL THEN i.id END) AS completed_issues,
+				COUNT(DISTINCT CASE WHEN i.completed_at IS NULL THEN i.id END) AS pending_issues
+			FROM issues i
+			JOIN cycle_issues ci ON ci.issue_id = i.id
+			JOIN issue_labels il ON il.issue_id = i.id
+			JOIN labels l ON l.id = il.label_id
+			WHERE ci.cycle_id = $1 AND ci.deleted_at IS NULL AND i.deleted_at IS NULL AND il.deleted_at IS NULL
+			GROUP BY l.name, l.color, l.id
+			ORDER BY l.name
+		`, cycleID)
+		defer labelRows.Close()
+		for labelRows.Next() {
+			var d LabelDistribution
+			labelRows.Scan(&d.LabelName, &d.Color, &d.LabelID, &d.TotalIssues, &d.CompletedIssues, &d.PendingIssues)
+			res.Labels = append(res.Labels, d)
+		}
+	}
+
+	// Build burndown chart
+	var totalEstimate float64
+	var totalCount int
+	s.Pool.QueryRow(ctx, `
+		SELECT 
+			COALESCE(SUM(ep.value), 0),
+			COUNT(i.id)
+		FROM issues i
+		JOIN cycle_issues ci ON ci.issue_id = i.id
+		LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id
+		WHERE ci.cycle_id = $1 AND ci.deleted_at IS NULL AND i.deleted_at IS NULL
+	`, cycleID).Scan(&totalEstimate, &totalCount)
+
+	chartRows, _ := s.Pool.Query(ctx, `
+		SELECT 
+			DATE(i.completed_at) AS date,
+			COALESCE(SUM(ep.value), 0) AS total_estimate,
+			COUNT(i.id) AS total_count
+		FROM issues i
+		JOIN cycle_issues ci ON ci.issue_id = i.id
+		LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id
+		WHERE ci.cycle_id = $1 AND ci.deleted_at IS NULL AND i.deleted_at IS NULL AND i.completed_at IS NOT NULL
+		GROUP BY DATE(i.completed_at)
+		ORDER BY date
+	`, cycleID)
+	defer chartRows.Close()
+
+	completedByDate := make(map[string]ChartDataPoint)
+	for chartRows.Next() {
+		var pt ChartDataPoint
+		chartRows.Scan(&pt.Date, &pt.TotalEstimate, &pt.TotalCount)
+		completedByDate[pt.Date.Format("2006-01-02")] = pt
+	}
+
+	// iterate over dates
+	nowDate := time.Now().UTC().Truncate(24 * time.Hour)
+	currentPendingEstimate := totalEstimate
+	currentPendingCount := totalCount
+
+	for d := *startDate; d.Before(*endDate) || d.Equal(*endDate); d = d.Add(24 * time.Hour) {
+		dateStr := d.Format("2006-01-02")
+		// compute total completed ON or BEFORE this date
+		// actually the logic in python: total_completed is sum of estimates completed <= date
+		// it is easier to just subtract today's completed from running total
+		if pt, ok := completedByDate[dateStr]; ok {
+			currentPendingEstimate -= pt.TotalEstimate
+			currentPendingCount -= pt.TotalCount
+		}
+
+		if d.Truncate(24 * time.Hour).After(nowDate) {
+			res.CompletionChart[dateStr] = nil
+		} else {
+			val := currentPendingCount
+			if analyticType == "points" && hasPointsEstimate {
+				valFloat := currentPendingEstimate
+				res.CompletionChart[dateStr] = &valFloat
+			} else {
+				valFloat := float64(val)
+				res.CompletionChart[dateStr] = &valFloat
+			}
+		}
+	}
+
+	return res, nil
+}

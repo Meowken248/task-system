@@ -190,3 +190,35 @@ func TestAdminSignInCreatesPersistentSessionCookie(t *testing.T) {
 		t.Fatalf("location = %q", location)
 	}
 }
+
+func TestUpdateAdmin(t *testing.T) {
+	handler := NewHandler(storeStub{
+		sessionUserID: "user-1",
+		admin:         &InstanceAdmin{ID: "admin-1", UserID: "user-1", Role: 20}, // Admin role >= 15
+	}, "sessionid")
+	response := httptest.NewRecorder()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/instances/admins/target-id/", strings.NewReader(`{"role": 15}`))
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "valid"})
+
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+}
+
+func TestUpdateAdmin_Forbidden(t *testing.T) {
+	handler := NewHandler(storeStub{
+		sessionUserID: "user-1",
+		admin:         &InstanceAdmin{ID: "admin-1", UserID: "user-1", Role: 5}, // Role < 15
+	}, "sessionid")
+	response := httptest.NewRecorder()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/instances/admins/target-id/", strings.NewReader(`{"role": 15}`))
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "valid"})
+
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", response.Code)
+	}
+}

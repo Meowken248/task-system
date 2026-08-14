@@ -42,7 +42,26 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		payload, err = h.Store.ListForSession(r.Context(), sessionKey, splitFields(r.URL.Query().Get("fields")))
+		results, listErr := h.Store.ListForSession(r.Context(), sessionKey, splitFields(r.URL.Query().Get("fields")))
+		err = listErr
+		if err == nil {
+			if results == nil {
+				results = []map[string]any{}
+			}
+			payload = map[string]any{
+				"grouped_by":        nil,
+				"sub_grouped_by":    nil,
+				"total_count":       len(results),
+				"next_cursor":       "1000:0:0",
+				"prev_cursor":       "1000:0:0",
+				"next_page_results": false,
+				"prev_page_results": false,
+				"count":             len(results),
+				"total_pages":       1,
+				"extra_stats":       nil,
+				"results":           results,
+			}
+		}
 	case http.MethodPost:
 		var input WorkspacePayload
 		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))

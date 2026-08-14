@@ -149,3 +149,24 @@ func TestProjectFavoriteHandler_DeleteNotFound(t *testing.T) {
 		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
+
+func TestProjectFavoriteHandler_Post_View(t *testing.T) {
+	handler := ProjectFavoriteHandler{
+		Store:             storeStub{poolMock: true},
+		SessionCookieName: "sessionid",
+		EntityType:        "view",
+	}
+
+	body := []byte(`{"view": "view-id-123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/test-slug/projects/test-proj/user-favorite-views/", bytes.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "valid-session"})
+	req.SetPathValue("slug", "test-slug")
+	req.SetPathValue("project_id", "test-proj")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", w.Code)
+	}
+}

@@ -28,6 +28,7 @@ type Store interface {
 	CreatePointsForSession(context.Context, string, string, string, string, []EstimatePointInput) ([]EstimatePoint, error)
 	UpdatePointForSession(context.Context, string, string, string, string, string, EstimatePointInput) (EstimatePoint, error)
 	DeletePointForSession(context.Context, string, string, string, string, string) error
+	ListProjectPointsForSession(context.Context, string, string, string) ([]EstimatePoint, error)
 }
 
 type Handler struct {
@@ -62,6 +63,16 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items, err := h.Store.ListWorkspaceForSession(r.Context(), sessionKey, slug)
+		h.writeResult(w, http.StatusOK, items, err)
+		return
+	}
+
+	if r.PathValue("project_estimates") == "true" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
+		items, err := h.Store.ListProjectPointsForSession(r.Context(), sessionKey, slug, projectID)
 		h.writeResult(w, http.StatusOK, items, err)
 		return
 	}

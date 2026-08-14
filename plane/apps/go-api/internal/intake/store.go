@@ -2,8 +2,13 @@ package intake
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Intake struct {
@@ -37,37 +42,181 @@ type IntakeIssue struct {
 }
 type PostgreSQLStore struct{ Pool *pgxpool.Pool }
 
-func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, projectID string) ([]Intake, error) {
+func (s PostgreSQLStore) resolveUser(ctx context.Context, sessionKey, slug, projectID string) (string, error) {
+	if s.Pool == nil {
+		return "", errors.New("intake database unavailable")
+	}
 	if sessionKey == "" {
-		return nil, ErrUnauthorized
+		return "", ErrUnauthorized
 	}
-	var allowed bool
-	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(
-		SELECT 1 FROM sessions session
-		JOIN workspaces w ON w.slug=$2 AND w.deleted_at IS NULL
-		JOIN project_members pm ON pm.project_id::text=$3 AND pm.member_id=NULLIF(session.user_id, '')::uuid
-			AND pm.is_active=TRUE AND pm.deleted_at IS NULL
-		WHERE session.session_key=$1 AND session.expire_date>NOW()
-	)`, sessionKey, slug, projectID).Scan(&allowed)
+	var userID string
+	err := s.Pool.QueryRow(ctx, `SELECT s.user_id FROM sessions s
+		JOIN workspaces w ON w.slug = $2 AND w.deleted_at IS NULL
+		JOIN projects p ON p.id::text = $3 AND p.workspace_id = w.id AND p.archived_at IS NULL AND p.deleted_at IS NULL
+		JOIN project_members pm ON pm.project_id = p.id AND pm.member_id::text = s.user_id
+			AND pm.is_active = TRUE AND pm.deleted_at IS NULL
+		WHERE s.session_key = $1 AND s.expire_date > NOW()`, sessionKey, slug, projectID).Scan(&userID)
+	if err != nil {
+		return "", ErrForbidden
+	}
+	return userID, nil
+}
+
+func scanIntake(row pgx.Row) (map[string]any, error) {
+	var id, workspaceID, projectID, name, description string
+	var isDefault bool
+	var viewProps, logoProps map[string]any
+	var createdAt, updatedAt time.Time
+	if err := row.Scan(&id, &workspaceID, &projectID, &name, &description, &isDefault, &viewProps, &logoProps, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"id": id, "workspace": workspaceID, "project": projectID, "name": name,
+		"description": description, "is_default": isDefault, "view_props": viewProps, "logo_props": logoProps,
+		"created_at": createdAt, "updated_at": updatedAt,
+	}, nil
+}
+
+func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, projectID string) (any, error) {
+	_, err := s.resolveUser(ctx, sessionKey, slug, projectID)
 	if err != nil {
 		return nil, err
 	}
-	if !allowed {
-		return nil, ErrForbidden
+
+	row := s.Pool.QueryRow(ctx, `SELECT id,workspace_id,project_id,name,description,is_default,view_props,logo_props,created_at,updated_at
+		FROM intakes WHERE project_id=$1 AND deleted_at IS NULL ORDER BY name ASC LIMIT 1`, projectID)
+	
+	item, err := scanIntake(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return map[string]any{}, nil
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT id,workspace_id,project_id,name,description,is_default,view_props,logo_props,created_at,updated_at
-		FROM intakes WHERE project_id=$1 AND deleted_at IS NULL ORDER BY name ASC`, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := make([]Intake, 0)
-	for rows.Next() {
-		var i Intake
-		if err := rows.Scan(&i.ID, &i.WorkspaceID, &i.ProjectID, &i.Name, &i.Description, &i.IsDefault, &i.ViewProps, &i.LogoProps, &i.CreatedAt, &i.UpdatedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
+	return item, nil
+}
+
+func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, projectID, intakeID string) (any, error) {
+	_, err := s.resolveUser(ctx, sessionKey, slug, projectID)
+	if err != nil {
+		return nil, err
 	}
-	return items, rows.Err()
+
+	row := s.Pool.QueryRow(ctx, `SELECT id,workspace_id,project_id,name,description,is_default,view_props,logo_props,created_at,updated_at
+		FROM intakes WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL`, intakeID, projectID)
+	
+	item, err := scanIntake(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return item, err
+}
+
+func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug, projectID string, payload WritePayload) (any, error) {
+	_, err := s.resolveUser(ctx, sessionKey, slug, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	var workspaceID string
+	err = s.Pool.QueryRow(ctx, `SELECT workspace_id FROM projects WHERE id::text=$1 AND deleted_at IS NULL`, projectID).Scan(&workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	name := ""
+	if payload.Name != nil {
+		name = *payload.Name
+	}
+	description := ""
+	if payload.Description != nil {
+		description = *payload.Description
+	}
+
+	row := s.Pool.QueryRow(ctx, `
+		INSERT INTO intakes (workspace_id, project_id, name, description, is_default, view_props, logo_props, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, false, '{}', '{}', NOW(), NOW())
+		RETURNING id, workspace_id, project_id, name, description, is_default, view_props, logo_props, created_at, updated_at
+	`, workspaceID, projectID, name, description)
+
+	return scanIntake(row)
+}
+
+func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug, projectID, intakeID string, payload WritePayload) (any, error) {
+	_, err := s.resolveUser(ctx, sessionKey, slug, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	var updates []string
+	var args []any
+	argID := 1
+
+	if payload.Name != nil {
+		updates = append(updates, fmt.Sprintf("name = $%d", argID))
+		args = append(args, *payload.Name)
+		argID++
+	}
+	if payload.Description != nil {
+		updates = append(updates, fmt.Sprintf("description = $%d", argID))
+		args = append(args, *payload.Description)
+		argID++
+	}
+	if payload.ViewProps != nil {
+		updates = append(updates, fmt.Sprintf("view_props = $%d", argID))
+		args = append(args, *payload.ViewProps)
+		argID++
+	}
+	if payload.LogoProps != nil {
+		updates = append(updates, fmt.Sprintf("logo_props = $%d", argID))
+		args = append(args, *payload.LogoProps)
+		argID++
+	}
+	if payload.IsDefault != nil {
+		updates = append(updates, fmt.Sprintf("is_default = $%d", argID))
+		args = append(args, *payload.IsDefault)
+		argID++
+	}
+
+	if len(updates) == 0 {
+		return s.GetForSession(ctx, sessionKey, slug, projectID, intakeID)
+	}
+
+	updates = append(updates, "updated_at = NOW()")
+	query := fmt.Sprintf(`
+		UPDATE intakes SET %s
+		WHERE id=$%d AND project_id=$%d AND deleted_at IS NULL
+		RETURNING id, workspace_id, project_id, name, description, is_default, view_props, logo_props, created_at, updated_at
+	`, strings.Join(updates, ", "), argID, argID+1)
+	
+	args = append(args, intakeID, projectID)
+
+	row := s.Pool.QueryRow(ctx, query, args...)
+	item, err := scanIntake(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return item, err
+}
+
+func (s PostgreSQLStore) DeleteForSession(ctx context.Context, sessionKey, slug, projectID, intakeID string) error {
+	_, err := s.resolveUser(ctx, sessionKey, slug, projectID)
+	if err != nil {
+		return err
+	}
+
+	var isDefault bool
+	err = s.Pool.QueryRow(ctx, `SELECT is_default FROM intakes WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL`, intakeID, projectID).Scan(&isDefault)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if isDefault {
+		return errors.New("You cannot delete the default intake")
+	}
+
+	_, err = s.Pool.Exec(ctx, `UPDATE intakes SET deleted_at=NOW() WHERE id=$1`, intakeID)
+	return err
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,44 @@ func TestReadyFailsWhenDatabaseIsUnavailable(t *testing.T) {
 	NewRouter(Dependencies{Readiness: readinessStub{err: errors.New("down")}}).ServeHTTP(res, req)
 	if res.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", res.Code)
+	}
+}
+
+type blockchainPingStub struct{ err error }
+func (s blockchainPingStub) PingContext(context.Context) error { return s.err }
+
+func TestReadyOnlineBlockchain(t *testing.T) {
+	// 1. Online mode with nil verifier -> 503
+	req := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+	res := httptest.NewRecorder()
+	NewRouter(Dependencies{
+		Readiness:      readinessStub{err: nil},
+		BlockchainMode: "online",
+	}).ServeHTTP(res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for online mode with nil verifier, got %d", res.Code)
+	}
+
+	// 2. Online mode with ping error -> 503
+	res = httptest.NewRecorder()
+	NewRouter(Dependencies{
+		Readiness:          readinessStub{err: nil},
+		BlockchainMode:     "online",
+		BlockchainVerifier: blockchainPingStub{err: errors.New("rpc down")},
+	}).ServeHTTP(res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for online mode with failing verifier, got %d", res.Code)
+	}
+
+	// 3. Online mode with successful ping -> 200
+	res = httptest.NewRecorder()
+	NewRouter(Dependencies{
+		Readiness:          readinessStub{err: nil},
+		BlockchainMode:     "online",
+		BlockchainVerifier: blockchainPingStub{err: nil},
+	}).ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200 for online mode with working verifier, got %d", res.Code)
 	}
 }
 
@@ -421,5 +460,64 @@ func TestStickyRoutesUseGoHandler(t *testing.T) {
 		if res.Code != http.StatusAccepted {
 			t.Fatalf("method=%s path=%s status=%d, want 202", tc.method, tc.path, res.Code)
 		}
+	}
+}
+
+func TestCanServeBasicIssueReadAllowedParams(t *testing.T) {
+	tests := []struct {
+		query string
+		want  bool
+	}{
+		{"", true},
+		{"cursor=abc&per_page=20", true},
+		{"order_by=-created_at", true},
+		{"order_by=created_at", true},
+		{"group_by=state", true},
+		{"group_by=priority", true},
+		{"expand=state,assignees", true},
+		{"state=abc&priority=high&labels=l1&assignees=u1&created_by=u2", true},
+		{"state_group=started", true},
+		// Strict value checking must trigger fallback
+		{"order_by=name", false}, // unsupported sort field
+		{"group_by=assignees", false}, // unsupported group_by field
+		// Removed fields must trigger fallback
+		{"group_by=state&sub_group_by=priority", false}, // sub_group_by removed
+		{"fields=id,name", false}, // fields removed
+		// Unknown parameters must trigger fallback
+		{"type__in=abc", false},
+		{"subscriber=u1", false},
+		{"target_date__gte=2024-01-01", false},
+		{"cursor=abc&unknown_param=1", false},
+		{"expand=state&custom=true", false},
+	}
+	for _, tc := range tests {
+		req := httptest.NewRequest(http.MethodGet, "/api/workspaces/s/projects/p/issues/?"+tc.query, nil)
+		got := canServeBasicIssueRead(req)
+		if got != tc.want {
+			t.Errorf("canServeBasicIssueRead(%q) = %v, want %v", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestMigrationStatusEndpoint(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/go/migration-status", nil)
+	res := httptest.NewRecorder()
+
+	deps := Dependencies{
+		LegacyAPIURL:     "http://legacy:8000",
+		GoWorkersEnabled: true,
+	}
+	NewRouter(deps).ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.Code)
+	}
+
+	body := res.Body.String()
+	if !strings.Contains(body, `"legacy_fallback":true`) {
+		t.Errorf("expected legacy_fallback=true, got %s", body)
+	}
+	if !strings.Contains(body, `"go_workers_enabled":true`) {
+		t.Errorf("expected go_workers_enabled=true, got %s", body)
 	}
 }

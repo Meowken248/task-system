@@ -3,113 +3,105 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Manager struct {
-	Pool   *pgxpool.Pool
-	Logger *slog.Logger
-	stop   chan struct{}
+type Dispatcher interface {
+	QueueName() string
+	Process(ctx context.Context, job Job) error
 }
 
-func NewManager(pool *pgxpool.Pool, logger *slog.Logger) *Manager {
+type Manager struct {
+	Logger      *slog.Logger
+	Enabled     bool
+	Store       Store
+	Dispatchers []Dispatcher
+	stop        chan struct{}
+	wg          sync.WaitGroup
+}
+
+func NewManager(logger *slog.Logger, enabled bool, store Store) *Manager {
 	return &Manager{
-		Pool:   pool,
-		Logger: logger,
-		stop:   make(chan struct{}),
+		Logger:  logger,
+		Enabled: enabled,
+		Store:   store,
+		stop:    make(chan struct{}),
 	}
+}
+
+func (m *Manager) Register(d Dispatcher) {
+	m.Dispatchers = append(m.Dispatchers, d)
 }
 
 func (m *Manager) Start() {
-	m.Logger.Info("Background worker started")
-	go m.processWebhooks()
-	go m.processEmails()
+	if !m.Enabled {
+		m.Logger.Info("Go workers disabled (GO_WORKERS_ENABLED=false); Celery remains the job owner")
+		return
+	}
+	m.Logger.Info("Go background workers started")
+	for _, d := range m.Dispatchers {
+		m.wg.Add(1)
+		go m.poll(d)
+	}
+}
+
+func (m *Manager) poll(d Dispatcher) {
+	defer m.wg.Done()
+	queueName := d.QueueName()
+	m.Logger.Info("Polling queue started", "queue", queueName)
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stop:
+			m.Logger.Info("Polling queue stopped", "queue", queueName)
+			return
+		case <-ticker.C:
+			m.processNextJob(d)
+		}
+	}
+}
+
+func (m *Manager) processNextJob(d Dispatcher) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	job, err := m.Store.Dequeue(ctx, d.QueueName())
+	if err != nil {
+		// pgx.ErrNoRows or custom wrapper means no pending job
+		if err.Error() == "no rows in result set" {
+			return
+		}
+		m.Logger.Error("failed to dequeue job", "queue", d.QueueName(), "error", err)
+		return
+	}
+
+	m.Logger.Info("processing job", "queue", d.QueueName(), "id", job.ID)
+	processErr := d.Process(ctx, job)
+	
+	if processErr != nil {
+		m.Logger.Error("job failed", "queue", d.QueueName(), "id", job.ID, "error", processErr)
+		if job.RetryCount < 3 {
+			// Exponential backoff: 2^retry * 10 seconds
+			backoff := time.Duration(1<<job.RetryCount) * 10 * time.Second
+			_ = m.Store.UpdateStatus(ctx, job.ID, "failed", time.Now().Add(backoff), true)
+		} else {
+			_ = m.Store.UpdateStatus(ctx, job.ID, "dead_letter", time.Now(), false)
+		}
+	} else {
+		m.Logger.Info("job completed", "queue", d.QueueName(), "id", job.ID)
+		_ = m.Store.UpdateStatus(ctx, job.ID, "completed", time.Now(), false)
+	}
 }
 
 func (m *Manager) Stop() {
+	if !m.Enabled {
+		return
+	}
 	close(m.stop)
-	m.Logger.Info("Background worker stopped")
-}
-
-func (m *Manager) processWebhooks() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-m.stop:
-			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			// Query webhook_logs where response_status IS NULL (pending webhooks)
-			query := `
-				SELECT id, webhook, request_body, event_type, retry_count
-				FROM webhook_logs
-				WHERE response_status IS NULL AND retry_count < 3
-				LIMIT 10
-			`
-			rows, err := m.Pool.Query(ctx, query)
-			if err == nil {
-				var ids []string
-				for rows.Next() {
-					var id, webhook, body, event string
-					var retry int
-					if err := rows.Scan(&id, &webhook, &body, &event, &retry); err == nil {
-						ids = append(ids, id)
-					}
-				}
-				rows.Close()
-
-				// Mock processing
-				for _, id := range ids {
-					m.Logger.Info("Processing webhook", "id", id)
-					_, _ = m.Pool.Exec(ctx, `UPDATE webhook_logs SET response_status = '200' WHERE id = $1`, id)
-				}
-			} else {
-				m.Logger.Error("Failed to query webhook_logs", "error", err)
-			}
-			cancel()
-		}
-	}
-}
-
-func (m *Manager) processEmails() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-m.stop:
-			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			// Query email_notification_logs where sent_at IS NULL
-			query := `
-				SELECT id, receiver_id, entity, entity_name
-				FROM email_notification_logs
-				WHERE sent_at IS NULL
-				LIMIT 10
-			`
-			rows, err := m.Pool.Query(ctx, query)
-			if err == nil {
-				var ids []string
-				for rows.Next() {
-					var id, receiverID, entity, entityName string
-					if err := rows.Scan(&id, &receiverID, &entity, &entityName); err == nil {
-						ids = append(ids, id)
-					}
-				}
-				rows.Close()
-
-				// Mock processing
-				for _, id := range ids {
-					m.Logger.Info("Sending email", "log_id", id)
-					_, _ = m.Pool.Exec(ctx, `UPDATE email_notification_logs SET sent_at = NOW(), processed_at = NOW() WHERE id = $1`, id)
-				}
-			} else {
-				m.Logger.Error("Failed to query email_notification_logs", "error", err)
-			}
-			cancel()
-		}
-	}
+	m.wg.Wait()
+	m.Logger.Info("Go background workers stopped")
 }

@@ -99,6 +99,10 @@ func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*Instanc
 		w.WriteHeader(http.StatusForbidden)
 		return nil, errors.New("forbidden")
 	}
+	if admin.Role < 15 {
+		w.WriteHeader(http.StatusForbidden)
+		return nil, errors.New("forbidden")
+	}
 	return admin, nil
 }
 
@@ -187,7 +191,6 @@ func (h *Handler) CreateAdmin(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.requireAdmin(w, r); err != nil {
 		return
 	}
-	// Need body parsing: email, role
 	var req map[string]interface{}
 	json.NewDecoder(r.Body).Decode(&req)
 	email, ok := req["email"].(string)
@@ -211,7 +214,8 @@ func (h *Handler) CreateAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteAdmin(w http.ResponseWriter, r *http.Request) {
-	if _, err := h.requireAdmin(w, r); err != nil {
+	_, err := h.requireAdmin(w, r)
+	if err != nil {
 		return
 	}
 	id := r.PathValue("id")

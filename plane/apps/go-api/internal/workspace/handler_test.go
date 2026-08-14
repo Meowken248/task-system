@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,12 @@ func TestHandlerListsAuthenticatedUserWorkspaces(t *testing.T) {
 	}
 	if store.session != "valid-session" || !reflect.DeepEqual(store.fields, []string{"id", "slug"}) {
 		t.Fatalf("unexpected store call: session=%q fields=%v", store.session, store.fields)
+	}
+
+	// Verify pagination envelope
+	body := res.Body.String()
+	if !strings.Contains(body, `"total_count":1`) || !strings.Contains(body, `"results":[{"id":"workspace-id"`) {
+		t.Fatalf("response not wrapped in pagination format: %s", body)
 	}
 }
 

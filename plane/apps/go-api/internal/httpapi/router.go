@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/makeplane/plane/apps/go-api/internal/legacy"
 )
 
 type ReadinessChecker interface {
@@ -94,11 +94,25 @@ type Dependencies struct {
 	Unsplash                 http.Handler
 	WorkspaceSlugCheck       http.Handler
 	Pages                    http.Handler
+	DraftIssues              http.Handler
 	Version                  string
 	LegacyAPIURL             string
+	GoWorkersEnabled         bool
+	BlockchainMode           string
+	BlockchainVerifier       interface{} // typically *blockchain.Verifier or similar
 }
 
 func NewRouter(deps Dependencies) http.Handler {
+	var proxy http.Handler
+	if deps.LegacyAPIURL != "" {
+		var err error
+		proxy, err = legacy.NewProxy(deps.LegacyAPIURL)
+		if err != nil {
+			// If proxy fails to parse/build, we crash on startup rather than fail on every request
+			panic("invalid LEGACY_API_URL: " + err.Error())
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "plane-go-api", "version": deps.Version})
@@ -114,7 +128,35 @@ func NewRouter(deps Dependencies) http.Handler {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "error": "postgres unavailable"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+
+		response := map[string]string{"status": "ready"}
+		if deps.BlockchainMode == "online" {
+			response["blockchain_mode"] = "online"
+			if deps.BlockchainVerifier == nil {
+				response["status"] = "not_ready"
+				response["blockchain"] = "degraded"
+				response["blockchain_error"] = "verifier not initialized (missing RPC URL or contract address?)"
+				writeJSON(w, http.StatusServiceUnavailable, response)
+				return
+			}
+
+			// Use a shorter timeout just for the RPC ping
+			pingCtx, pingCancel := context.WithTimeout(r.Context(), 1*time.Second)
+			defer pingCancel()
+			if pinger, ok := deps.BlockchainVerifier.(interface{ PingContext(context.Context) error }); ok {
+				if err := pinger.PingContext(pingCtx); err != nil {
+					response["status"] = "not_ready"
+					response["blockchain"] = "degraded"
+					response["blockchain_error"] = "verifier ping failed: " + err.Error()
+					writeJSON(w, http.StatusServiceUnavailable, response)
+					return
+				}
+			}
+		} else if deps.BlockchainMode != "" {
+			response["blockchain_mode"] = deps.BlockchainMode
+		}
+
+		writeJSON(w, http.StatusOK, response)
 	})
 	mux.HandleFunc("GET /api/go/migration-status", func(w http.ResponseWriter, _ *http.Request) {
 		portedGroups := []string{"health"}
@@ -268,9 +310,15 @@ func NewRouter(deps Dependencies) http.Handler {
 		if deps.WorkspaceSlugCheck != nil {
 			portedGroups = append(portedGroups, "workspace-slug-check")
 		}
+		if deps.DraftIssues != nil {
+			portedGroups = append(portedGroups, "draft-issues")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"service": "plane-go-api", "phase": "incremental-migration",
-			"legacy_fallback": true, "ported_groups": portedGroups,
+			"service":            "plane-go-api",
+			"phase":              "incremental-migration",
+			"legacy_fallback":    deps.LegacyAPIURL != "",
+			"go_workers_enabled": deps.GoWorkersEnabled,
+			"ported_groups":      portedGroups,
 		})
 	})
 
@@ -417,6 +465,12 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.Search != nil {
 		mux.Handle("GET /api/workspaces/{slug}/search/", deps.Search)
 	}
+	if deps.DraftIssues != nil {
+		mux.Handle("/api/workspaces/{slug}/draft-issues/", deps.DraftIssues)
+		mux.Handle("/api/workspaces/{slug}/draft-issues/{tail...}", deps.DraftIssues)
+		mux.Handle("/api/workspaces/{slug}/draft-to-issue/", deps.DraftIssues)
+		mux.Handle("/api/workspaces/{slug}/draft-to-issue/{tail...}", deps.DraftIssues)
+	}
 	if deps.Analytic != nil {
 		mux.Handle("GET /api/workspaces/{slug}/analytics/", deps.Analytic)
 	}
@@ -434,7 +488,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("POST /api/workspaces/{slug}/projects/{$}", deps.Projects)
 	}
 	if deps.Projects != nil || deps.Project != nil || deps.States != nil || deps.ProjectMembers != nil || deps.ProjectMembersLeave != nil || deps.ProjectMemberMe != nil || deps.ProjectUserViews != nil || deps.ProjectDeployBoards != nil || deps.Labels != nil || deps.Issues != nil || deps.Tracking != nil || deps.Comments != nil || deps.Activities != nil || deps.Relations != nil || deps.Links != nil || deps.Reactions != nil || deps.Subscribers != nil || deps.Archives != nil || deps.Subissues != nil || deps.Cycles != nil || deps.Modules != nil || deps.Views != nil || deps.CommentReactions != nil || deps.Estimate != nil || deps.Intake != nil || deps.ProjectUserProperties != nil || deps.CycleUserProperties != nil || deps.ModuleUserProperties != nil || deps.Pages != nil {
-		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps})
+		mux.Handle("/api/workspaces/{slug}/projects/{tail...}", projectRoutes{deps: deps, proxy: proxy})
 	}
 	if deps.Dashboard != nil {
 		mux.Handle("GET /api/users/me/workspaces/{slug}/dashboard/", deps.Dashboard)
@@ -476,19 +530,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/assets/v2/user-assets/{asset_id}/", deps.Assets)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if deps.LegacyAPIURL != "" {
-			if legacyURL, err := url.Parse(deps.LegacyAPIURL); err == nil {
-				proxy := httputil.NewSingleHostReverseProxy(legacyURL)
-				proxy.ModifyResponse = func(res *http.Response) error {
-					res.Header.Del("Access-Control-Allow-Origin")
-					res.Header.Del("Access-Control-Allow-Credentials")
-					res.Header.Del("Access-Control-Allow-Headers")
-					res.Header.Del("Access-Control-Allow-Methods")
-					return nil
-				}
-				proxy.ServeHTTP(w, r)
-				return
-			}
+		if proxy != nil {
+			proxy.ServeHTTP(w, r)
+			return
 		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not migrated or does not exist"})
 	})
@@ -516,7 +560,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 type projectRoutes struct {
-	deps Dependencies
+	deps  Dependencies
+	proxy http.Handler
 }
 
 func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -661,6 +706,12 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.States.ServeHTTP(w, r)
 		return
 	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "project-estimates" && h.deps.Estimate != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("project_estimates", "true")
+		h.deps.Estimate.ServeHTTP(w, r)
+		return
+	}
 	if len(parts) >= 2 && len(parts) <= 5 && parts[0] != "" && parts[1] == "estimates" && h.deps.Estimate != nil {
 		r.SetPathValue("project_id", parts[0])
 		if len(parts) >= 3 && parts[2] != "" {
@@ -675,8 +726,11 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.Estimate.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 2 && parts[0] != "" && parts[1] == "intakes" && h.deps.Intake != nil {
+	if len(parts) >= 2 && len(parts) <= 3 && parts[0] != "" && (parts[1] == "intakes" || parts[1] == "inboxes") && h.deps.Intake != nil {
 		r.SetPathValue("project_id", parts[0])
+		if len(parts) == 3 && parts[2] != "" {
+			r.SetPathValue("intake_id", parts[2])
+		}
 		h.deps.Intake.ServeHTTP(w, r)
 		return
 	}
@@ -832,6 +886,15 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.Cycles.ServeHTTP(w, r)
 		return
 	}
+	// Cycles actions: .../cycles/{cycle_id}/progress/ and .../cycles/{cycle_id}/analytics/
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "cycles" && parts[2] != "" &&
+		(parts[3] == "progress" || parts[3] == "analytics") && h.deps.Cycles != nil {
+		r.SetPathValue("project_id", parts[0])
+		r.SetPathValue("cycle_id", parts[2])
+		r.SetPathValue("cycle_action", parts[3])
+		h.deps.Cycles.ServeHTTP(w, r)
+		return
+	}
 	// Cycle issues: .../cycles/{cycle_id}/cycle-issues/
 	if len(parts) == 4 && parts[0] != "" && parts[1] == "cycles" && parts[2] != "" && parts[3] == "cycle-issues" && h.deps.CycleIssues != nil {
 		r.SetPathValue("project_id", parts[0])
@@ -905,30 +968,49 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.CommentReactions.ServeHTTP(w, r)
 		return
 	}
-	if h.deps.LegacyAPIURL != "" {
-		if legacyURL, err := url.Parse(h.deps.LegacyAPIURL); err == nil {
-			proxy := httputil.NewSingleHostReverseProxy(legacyURL)
-			proxy.ServeHTTP(w, r)
-			return
-		}
+	if h.proxy != nil {
+		h.proxy.ServeHTTP(w, r)
+		return
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not migrated"})
 }
 
-// The legacy API still owns expanded work-item reads. Keeping
-// this gate explicit prevents a partial Go response from silently breaking clients.
+// issueQueryAllowlist defines query parameters that the Go issue store
+// is known to handle correctly. Any parameter not in this list triggers
+// a fallback to Django to prevent partial/incorrect responses.
+var issueQueryAllowlist = map[string]bool{
+	"cursor":       true,
+	"per_page":     true,
+	"order_by":     true,
+	"group_by":     true,
+	"expand":       true,
+	"state":        true,
+	"state_group":  true,
+	"priority":     true,
+	"labels":       true,
+	"assignees":    true,
+	"created_by":   true,
+}
+
+// canServeBasicIssueRead returns true only when ALL query parameters
+// are in the allowlist AND their values are known to be perfectly handled by Go.
+// Unknown parameters or unhandled values cause a fallback to Django.
 func canServeBasicIssueRead(r *http.Request) bool {
-	for key, values := range r.URL.Query() {
-		switch key {
-		case "cursor", "per_page", "group_by", "sub_group_by":
-		case "order_by":
-			if len(values) != 1 || (values[0] != "-created_at" && values[0] != "created_at") {
-				return false
-			}
-		default:
-			// We now handle group_by, sub_group_by, expand natively in Go!
+	q := r.URL.Query()
+	for key := range q {
+		if !issueQueryAllowlist[key] {
+			return false
 		}
 	}
+
+	if orderBy := q.Get("order_by"); orderBy != "" && orderBy != "created_at" && orderBy != "-created_at" {
+		return false
+	}
+	
+	if groupBy := q.Get("group_by"); groupBy != "" && groupBy != "state" && groupBy != "state_id" && groupBy != "priority" {
+		return false
+	}
+
 	return true
 }
 
