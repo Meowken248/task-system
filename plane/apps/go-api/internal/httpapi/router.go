@@ -466,9 +466,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("GET /api/workspaces/{slug}/search/", deps.Search)
 	}
 	if deps.DraftIssues != nil {
-		mux.Handle("/api/workspaces/{slug}/draft-issues/", deps.DraftIssues)
 		mux.Handle("/api/workspaces/{slug}/draft-issues/{tail...}", deps.DraftIssues)
-		mux.Handle("/api/workspaces/{slug}/draft-to-issue/", deps.DraftIssues)
 		mux.Handle("/api/workspaces/{slug}/draft-to-issue/{tail...}", deps.DraftIssues)
 	}
 	if deps.Analytic != nil {
@@ -979,17 +977,17 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // is known to handle correctly. Any parameter not in this list triggers
 // a fallback to Django to prevent partial/incorrect responses.
 var issueQueryAllowlist = map[string]bool{
-	"cursor":       true,
-	"per_page":     true,
-	"order_by":     true,
-	"group_by":     true,
-	"expand":       true,
-	"state":        true,
-	"state_group":  true,
-	"priority":     true,
-	"labels":       true,
-	"assignees":    true,
-	"created_by":   true,
+	"cursor":      true,
+	"per_page":    true,
+	"order_by":    true,
+	"group_by":    true,
+	"expand":      true,
+	"state":       true,
+	"state_group": true,
+	"priority":    true,
+	"labels":      true,
+	"assignees":   true,
+	"created_by":  true,
 }
 
 // canServeBasicIssueRead returns true only when ALL query parameters
@@ -1006,7 +1004,7 @@ func canServeBasicIssueRead(r *http.Request) bool {
 	if orderBy := q.Get("order_by"); orderBy != "" && orderBy != "created_at" && orderBy != "-created_at" {
 		return false
 	}
-	
+
 	if groupBy := q.Get("group_by"); groupBy != "" && groupBy != "state" && groupBy != "state_id" && groupBy != "priority" {
 		return false
 	}

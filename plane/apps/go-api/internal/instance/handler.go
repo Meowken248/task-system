@@ -310,7 +310,7 @@ func (h *Handler) AdminSignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if instance == nil || err != nil {
+	if instance == nil {
 		instance = &Instance{
 			InstanceName:          companyName,
 			InstanceID:            uuid.New().String(),
@@ -319,12 +319,18 @@ func (h *Handler) AdminSignUp(w http.ResponseWriter, r *http.Request) {
 			IsSetupDone:           true,
 			IsSignupScreenVisited: true,
 		}
-		h.Store.CreateInstance(r.Context(), instance)
+		if err := h.Store.CreateInstance(r.Context(), instance); err != nil {
+			http.Error(w, "could not create instance: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	} else {
 		instance.InstanceName = companyName
 		instance.IsSetupDone = true
 		instance.IsSignupScreenVisited = true
-		h.Store.UpdateInstance(r.Context(), instance)
+		if err := h.Store.UpdateInstance(r.Context(), instance); err != nil {
+			http.Error(w, "could not update instance: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	err = h.Store.CreateInstanceAdmin(r.Context(), &InstanceAdmin{

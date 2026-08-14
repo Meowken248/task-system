@@ -135,11 +135,13 @@ func (s PostgreSQLStore) GetInstance(ctx context.Context) (*Instance, error) {
 func (s PostgreSQLStore) CreateInstance(ctx context.Context, i *Instance) error {
 	query := `
 		INSERT INTO instances (
-			instance_name, whitelist_emails, instance_id, current_version, latest_version,
+			id, instance_name, whitelist_emails, instance_id, current_version, latest_version,
 			edition, domain, namespace, is_telemetry_enabled, is_support_required,
-			is_setup_done, is_signup_screen_visited, is_verified, is_test, is_current_version_deprecated
+			is_setup_done, is_signup_screen_visited, is_verified, is_test, is_current_version_deprecated,
+			created_at, updated_at, last_checked_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+			NOW(), NOW(), NOW()
 		) RETURNING id, created_at, updated_at, last_checked_at
 	`
 	return s.Pool.QueryRow(ctx, query,
