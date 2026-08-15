@@ -90,7 +90,13 @@ func (v Verifier) PingContext(ctx context.Context) error {
 		return fmt.Errorf("verifier not fully configured")
 	}
 
-	result, err := v.RPC.Call(ctx, "eth_chainId", nil)
+	rpc := v.RPC
+	if rpc == nil {
+		rpc = HTTPRPC{URL: v.Config.RPCURL, Client: &http.Client{Timeout: v.Config.RPCTimeout}}
+	}
+
+	result, err := rpc.Call(ctx, "eth_chainId", nil)
+
 	if err != nil {
 		return fmt.Errorf("rpc ping failed: %w", err)
 	}

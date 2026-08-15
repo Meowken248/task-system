@@ -88,7 +88,7 @@ func (h ProfileHandler) patch(w http.ResponseWriter, r *http.Request) {
 
 func sessionFromRequest(r *http.Request, cookieName string) string {
 	if cookieName == "" {
-		cookieName = "sessionid"
+		cookieName = "session-id"
 	}
 	if cookie, err := r.Cookie(cookieName); err == nil {
 		return cookie.Value
@@ -112,7 +112,7 @@ func (h SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func serveSessionResource(w http.ResponseWriter, r *http.Request, cookieName string, read func(context.Context, string) (map[string]any, error)) {
 	if cookieName == "" {
-		cookieName = "sessionid"
+		cookieName = "session-id"
 	}
 	sessionKey := ""
 	if cookie, err := r.Cookie(cookieName); err == nil {

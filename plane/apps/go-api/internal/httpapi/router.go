@@ -997,15 +997,18 @@ func canServeBasicIssueRead(r *http.Request) bool {
 	q := r.URL.Query()
 	for key := range q {
 		if !issueQueryAllowlist[key] {
+			r.Header.Set("X-Plane-Fallback-Reason", "unsupported_query_param:"+key)
 			return false
 		}
 	}
 
 	if orderBy := q.Get("order_by"); orderBy != "" && orderBy != "created_at" && orderBy != "-created_at" {
+		r.Header.Set("X-Plane-Fallback-Reason", "unsupported_order_by:"+orderBy)
 		return false
 	}
 
 	if groupBy := q.Get("group_by"); groupBy != "" && groupBy != "state" && groupBy != "state_id" && groupBy != "priority" {
+		r.Header.Set("X-Plane-Fallback-Reason", "unsupported_group_by:"+groupBy)
 		return false
 	}
 

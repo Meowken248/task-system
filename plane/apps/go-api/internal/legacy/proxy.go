@@ -20,6 +20,11 @@ func NewProxy(rawURL string) (http.Handler, error) {
 	}
 	proxy.ModifyResponse = func(response *http.Response) error {
 		response.Header.Set("X-Plane-Migration-Fallback", "django")
+		if reason := response.Request.Header.Get("X-Plane-Fallback-Reason"); reason != "" {
+			response.Header.Set("X-Plane-Fallback-Reason", reason)
+		} else {
+			response.Header.Set("X-Plane-Fallback-Reason", "unknown_or_unmatched_route")
+		}
 		return nil
 	}
 	return proxy, nil

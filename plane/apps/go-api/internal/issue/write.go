@@ -3,6 +3,8 @@ package issue
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -150,7 +152,7 @@ func (s PostgreSQLStore) CreateForSessionTx(ctx context.Context, tx pgx.Tx, sess
 	assignees := firstNonNil(input.Assignees, input.AssigneeIDs)
 	labels := firstNonNil(input.Labels, input.LabelIDs)
 
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, projectID); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, uuidLockKey(projectID)); err != nil {
 		return Item{}, fmt.Errorf("lock work item sequence: %w", err)
 	}
 	stateID := cleanPointer(input.StateID)
@@ -516,4 +518,9 @@ func uniqueNonEmpty(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func uuidLockKey(uuidStr string) int64 {
+	h := sha256.Sum256([]byte(uuidStr))
+	return int64(binary.BigEndian.Uint64(h[:8]))
 }
