@@ -87,6 +87,7 @@ type Store interface {
 	ListWorkspaces(ctx context.Context, search string, limit, offset int) ([]map[string]any, int, error)
 	GetUserIDBySessionKey(context.Context, string) (string, error)
 	CreateLoginSession(context.Context, auth.LoginSession) error
+	CreateWorkspace(ctx context.Context, userID, name, slug, companyRole string) (map[string]any, error)
 }
 
 type PostgreSQLStore struct {
@@ -420,4 +421,73 @@ func (s PostgreSQLStore) ListWorkspaces(ctx context.Context, search string, limi
 		result = append(result, item)
 	}
 	return result, total, nil
+}
+func (s PostgreSQLStore) CreateWorkspace(ctx context.Context, userID, name, slug, companyRole string) (map[string]any, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspaces WHERE slug=$1 AND deleted_at IS NULL)`, slug).Scan(&exists)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, errors.New("workspace slug already exists")
+	}
+
+	var workspaceID string
+	orgSize := "5-10"
+
+	err = tx.QueryRow(ctx, `INSERT INTO workspaces
+		(id, name, slug, owner_id, organization_size, timezone, background_color,
+		 created_by_id, updated_by_id, created_at, updated_at)
+		VALUES (gen_random_uuid(),$1,$2,$3::uuid,$4,'UTC','#000000',$3::uuid,$3::uuid,NOW(),NOW()) RETURNING id::text`,
+		name, slug, userID, orgSize).Scan(&workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx, `INSERT INTO workspace_members
+		(id, workspace_id, member_id, role, company_role, is_active,
+		 view_props, default_props, issue_props, explored_features, getting_started_checklist, tips,
+		 created_by_id, updated_by_id, created_at, updated_at)
+		VALUES (gen_random_uuid(),$1::uuid,$2::uuid,20,$3,TRUE,
+		 '{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,
+		 $2::uuid,$2::uuid,NOW(),NOW())`,
+		workspaceID, userID, companyRole)
+
+	var id, nameScan, slugScan, timezone, background string
+	var logo, logoAsset, organizationSize, createdBy, updatedBy *string
+	var owner string
+	var createdAt, updatedAt any
+	var deletedAt any
+	var role, totalMembers int
+
+	err = tx.QueryRow(ctx, `SELECT
+		w.id::text, w.name, w.logo, w.logo_asset_id::text, w.owner_id::text, w.slug,
+		w.organization_size, w.timezone, w.background_color, w.created_at, w.updated_at,
+		w.created_by_id::text, w.updated_by_id::text, w.deleted_at, 20 AS role, 1 AS total_members
+		FROM workspaces w
+		WHERE w.id::text=$1`, workspaceID).Scan(
+		&id, &nameScan, &logo, &logoAsset, &owner, &slugScan, &organizationSize, &timezone, &background,
+		&createdAt, &updatedAt, &createdBy, &updatedBy, &deletedAt, &role, &totalMembers)
+	if err != nil {
+		return nil, err
+	}
+
+	item := map[string]any{
+		"id": id, "name": nameScan, "logo": logo, "logo_asset": logoAsset, "logo_url": logo,
+		"owner": owner, "slug": slugScan, "organization_size": organizationSize, "timezone": timezone,
+		"background_color": background, "created_at": createdAt, "updated_at": updatedAt,
+		"created_by": createdBy, "updated_by": updatedBy, "deleted_at": deletedAt,
+		"role": role, "total_members": totalMembers,
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return item, nil
 }

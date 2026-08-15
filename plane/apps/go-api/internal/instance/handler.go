@@ -51,6 +51,7 @@ func NewHandler(store Store, cookieName string) *Handler {
 	h.mux.HandleFunc("POST /api/instances/email-credentials-check/", h.EmailCredentialsCheck)
 	h.mux.HandleFunc("GET /api/instances/workspace-slug-check/", h.WorkspaceSlugCheck)
 	h.mux.HandleFunc("GET /api/instances/workspaces/", h.ListWorkspaces)
+	h.mux.HandleFunc("POST /api/instances/workspaces/", h.CreateWorkspace)
 	h.mux.HandleFunc("GET /api/instances/admins/{pk}/", h.GetAdmin)
 	h.mux.HandleFunc("PATCH /api/instances/admins/{pk}/", h.UpdateAdmin)
 
@@ -551,6 +552,42 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		"total_results":     totalCount,
 		"results":           workspaces,
 	})
+}
+
+func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	admin, err := h.requireAdmin(w, r)
+	if err != nil {
+		return
+	}
+	var req map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	name, _ := req["name"].(string)
+	slug, _ := req["slug"].(string)
+	companyRole, _ := req["company_role"].(string)
+
+	if name == "" || slug == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Both name and slug are required"})
+		return
+	}
+	if len(name) > 80 || len(slug) > 48 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "The maximum length for name is 80 and for slug is 48"})
+		return
+	}
+
+	workspace, err := h.Store.CreateWorkspace(r.Context(), admin.UserID, name, slug, companyRole)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(workspace)
 }
 
 func (h *Handler) GetAdmin(w http.ResponseWriter, r *http.Request) {
