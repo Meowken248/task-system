@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"path/filepath"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/makeplane/plane/apps/go-api/internal/storage"
@@ -28,8 +31,8 @@ type FileAsset struct {
 	CommentID        *string
 	PageID           *string
 	DraftIssueID     *string
-	EntityType       string
-	EntityIdentifier string
+	EntityType       *string
+	EntityIdentifier *string
 	IsDeleted        bool
 	IsArchived       bool
 	Size             float64
@@ -73,20 +76,39 @@ func (s PostgreSQLStore) Create(ctx context.Context, sessionKey, slug, projectID
 		return FileAsset{}, err
 	}
 
-	// Determine paths based on entityType
-	key := fmt.Sprintf("%s/%s-%s", slug, "random_uuid", filename) // simplified UUID generation
+	fileType := mime.TypeByExtension(filepath.Ext(filename))
+	if fileType == "" {
+		fileType = "application/octet-stream"
+	}
+
+	var wID *string
+	var workspaceID string
+	if slug != "" {
+		err := s.Pool.QueryRow(ctx, `SELECT id FROM workspaces WHERE slug=$1`, slug).Scan(&workspaceID)
+		if err != nil {
+			return FileAsset{}, fmt.Errorf("workspace not found: %w", err)
+		}
+		wID = &workspaceID
+	}
+
+	var pID *string
+	if projectID != "" {
+		pID = &projectID
+	}
+
+	id := uuid.New().String()
+	key := fmt.Sprintf("%s/%s-%s", slug, id, filename)
 
 	// Upload to storage provider
-	assetPath, err := s.Provider.Upload(ctx, key, data, size, "")
+	assetPath, err := s.Provider.Upload(ctx, key, data, size, fileType)
 	if err != nil {
 		return FileAsset{}, fmt.Errorf("upload error: %w", err)
 	}
 
 	// Insert into DB
-	var id string
-	err = s.Pool.QueryRow(ctx, `INSERT INTO file_assets (asset, entity_type, size, is_uploaded, workspace_id, project_id, created_at, updated_at) 
-		VALUES ($1, $2, $3, $4, (SELECT id FROM workspaces WHERE slug=$5 LIMIT 1), $6, NOW(), NOW()) RETURNING id`,
-		assetPath, entityType, size, true, slug, projectID).Scan(&id)
+	err = s.Pool.QueryRow(ctx, `INSERT INTO file_assets (id, asset, attributes, entity_type, size, is_uploaded, is_deleted, is_archived, workspace_id, project_id, created_at, updated_at) 
+		VALUES ($1, $2, $3, $4, $5, true, false, false, $6, $7, NOW(), NOW()) RETURNING id`,
+		id, assetPath, fmt.Sprintf(`{"name": "%s", "type": "%s", "size": %d}`, filename, fileType, size), entityType, size, wID, pID).Scan(&id)
 
 	if err != nil {
 		return FileAsset{}, fmt.Errorf("insert error: %w", err)
@@ -128,10 +150,10 @@ func (s PostgreSQLStore) CreatePresigned(ctx context.Context, sessionKey, slug, 
 		eID = &entityIdentifier
 	}
 
-	var id string
-	err := s.Pool.QueryRow(ctx, `INSERT INTO file_assets (asset, attributes, entity_type, size, is_uploaded, workspace_id, project_id, entity_identifier, created_at, updated_at) 
-		VALUES ($1, $2, $3, $4, false, $5, $6, $7, NOW(), NOW()) RETURNING id`,
-		key, fmt.Sprintf(`{"name": "%s", "type": "%s", "size": %d}`, filename, fileType, size), entityType, size, wID, pID, eID).Scan(&id)
+	id := uuid.New().String()
+	err := s.Pool.QueryRow(ctx, `INSERT INTO file_assets (id, asset, attributes, entity_type, size, is_uploaded, is_deleted, is_archived, workspace_id, project_id, entity_identifier, created_at, updated_at) 
+		VALUES ($1, $2, $3, $4, $5, false, false, false, $6, $7, $8, NOW(), NOW()) RETURNING id`,
+		id, key, fmt.Sprintf(`{"name": "%s", "type": "%s", "size": %d}`, filename, fileType, size), entityType, size, wID, pID, eID).Scan(&id)
 	if err != nil {
 		return FileAsset{}, nil, fmt.Errorf("insert error: %w", err)
 	}

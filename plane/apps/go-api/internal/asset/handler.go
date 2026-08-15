@@ -3,6 +3,7 @@ package asset
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 )
 
@@ -56,6 +57,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				EntityIdentifier string `json:"entity_identifier"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				log.Printf("[ASSET HANDLER ERROR] JSON decode: %v", err)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -68,6 +70,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			asset, uploadData, err := h.Store.CreatePresigned(r.Context(), sessionKey, slug, projectID, req.Name, req.Type, req.EntityType, req.Size, req.EntityIdentifier)
 			if err != nil {
+				log.Printf("[ASSET HANDLER ERROR] CreatePresigned: %v", err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -84,11 +87,13 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Fallback for V1 non-presigned multipart form
 		err := r.ParseMultipartForm(5 << 20) // 5 MB
 		if err != nil {
+			log.Printf("[ASSET HANDLER ERROR] ParseMultipartForm: %v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		file, header, err := r.FormFile("asset")
 		if err != nil {
+			log.Printf("[ASSET HANDLER ERROR] FormFile: %v", err)
 			http.Error(w, "asset field missing", http.StatusBadRequest)
 			return
 		}
@@ -98,6 +103,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		asset, err := h.Store.Create(r.Context(), sessionKey, slug, projectID, file, header.Filename, entityType, header.Size)
 		if err != nil {
+			log.Printf("[ASSET HANDLER ERROR] Create: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -111,6 +117,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.Store.ConfirmUpload(r.Context(), sessionKey, slug, assetID); err != nil {
+			log.Printf("[ASSET HANDLER ERROR] ConfirmUpload: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

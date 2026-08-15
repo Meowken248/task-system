@@ -2,11 +2,11 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -47,10 +47,14 @@ func TestHandlerListsAuthenticatedUserWorkspaces(t *testing.T) {
 		t.Fatalf("unexpected store call: session=%q fields=%v", store.session, store.fields)
 	}
 
-	// Verify pagination envelope
-	body := res.Body.String()
-	if !strings.Contains(body, `"total_count":1`) || !strings.Contains(body, `"results":[{"id":"workspace-id"`) {
-		t.Fatalf("response not wrapped in pagination format: %s", body)
+	// For /api/users/me/workspaces/ it should return an array
+	var output []map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&output); err != nil {
+		t.Fatalf("failed to decode json array: %v", err)
+	}
+
+	if len(output) != 1 || output[0]["id"] != "workspace-id" {
+		t.Fatalf("unexpected response content: %v", output)
 	}
 }
 

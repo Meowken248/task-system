@@ -48,18 +48,25 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if results == nil {
 				results = []map[string]any{}
 			}
-			payload = map[string]any{
-				"grouped_by":        nil,
-				"sub_grouped_by":    nil,
-				"total_count":       len(results),
-				"next_cursor":       "1000:0:0",
-				"prev_cursor":       "1000:0:0",
-				"next_page_results": false,
-				"prev_page_results": false,
-				"count":             len(results),
-				"total_pages":       1,
-				"extra_stats":       nil,
-				"results":           results,
+			
+			// /api/users/me/workspaces/ should return a plain array,
+			// while other endpoints (e.g. /api/workspaces/) expect paginated response
+			if r.URL.Path == "/api/users/me/workspaces/" {
+				payload = results
+			} else {
+				payload = map[string]any{
+					"grouped_by":        nil,
+					"sub_grouped_by":    nil,
+					"total_count":       len(results),
+					"next_cursor":       "1000:0:0",
+					"prev_cursor":       "1000:0:0",
+					"next_page_results": false,
+					"prev_page_results": false,
+					"count":             len(results),
+					"total_pages":       1,
+					"extra_stats":       nil,
+					"results":           results,
+				}
 			}
 		}
 	case http.MethodPost:

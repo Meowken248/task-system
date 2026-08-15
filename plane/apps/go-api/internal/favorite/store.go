@@ -27,15 +27,15 @@ type FavoriteItem struct {
 	ProjectID        *string         `json:"project"`
 	ParentID         *string         `json:"parent"`
 	EntityType       string          `json:"entity_type"`
-	EntityIdentifier string          `json:"entity_identifier"`
+	EntityIdentifier *string         `json:"entity_identifier"`
 	Sequence         float64         `json:"sequence"`
 	Name             string          `json:"name"`
 	IsFolder         bool            `json:"is_folder"`
 	Metadata         json.RawMessage `json:"metadata"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
-	CreatedBy        string          `json:"created_by"`
-	UpdatedBy        string          `json:"updated_by"`
+	CreatedBy        *string         `json:"created_by"`
+	UpdatedBy        *string         `json:"updated_by"`
 }
 
 type WritePayload struct {
@@ -123,7 +123,7 @@ func (s PostgreSQLStore) writeIdentity(ctx context.Context, sessionKey, slug str
 }
 
 const favColumns = `f.id::text, f.workspace_id::text, f.project_id::text, f.parent_id::text,
-	f.entity_type, f.entity_identifier, f.sequence, COALESCE(f.name,''), f.is_folder, f.metadata,
+	f.entity_type, f.entity_identifier::text, f.sequence, COALESCE(f.name,''), f.is_folder, '{}'::jsonb AS metadata,
 	f.created_at, f.updated_at, f.created_by_id::text, f.updated_by_id::text`
 
 func scanFavorite(row rowScanner) (FavoriteItem, error) {
@@ -236,7 +236,6 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug 
 	}
 
 	favoriteID := newUUID()
-	meta := normalizedJSON(input.Metadata)
 
 	isFolder := false
 	if input.IsFolder != nil {
@@ -260,12 +259,12 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug 
 	sequence := maxSeq + 10000
 
 	_, err = tx.Exec(ctx, `INSERT INTO user_favorites
-		(id, workspace_id, project_id, parent_id, entity_type, entity_identifier, sequence, name, is_folder, metadata,
+		(id, workspace_id, project_id, parent_id, entity_type, entity_identifier, sequence, name, is_folder,
 		 user_id, created_by_id, updated_by_id, created_at, updated_at)
-		VALUES ($1,$2::uuid,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,$6,$7,$8,$9,$10,
-			$11::uuid,$11::uuid,$11::uuid,NOW(),NOW())`,
+		VALUES ($1,$2::uuid,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,$6,$7,$8,$9,
+			$10::uuid,$10::uuid,$10::uuid,NOW(),NOW())`,
 		favoriteID, identity.WorkspaceID, stringValue(input.ProjectID), stringValue(input.ParentID),
-		*input.EntityType, entityIdentifier, sequence, name, isFolder, meta, identity.UserID)
+		*input.EntityType, entityIdentifier, sequence, name, isFolder, identity.UserID)
 	if err != nil {
 		return FavoriteItem{}, err
 	}
@@ -303,18 +302,15 @@ func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug,
 		return FavoriteItem{}, ErrNotFound
 	}
 
-	meta := normalizedJSON(input.Metadata)
 
 	_, err = tx.Exec(ctx, `UPDATE user_favorites SET
 		name=CASE WHEN $4 THEN $5 ELSE name END,
 		parent_id=CASE WHEN $6 THEN NULLIF($7,'')::uuid ELSE parent_id END,
-		metadata=CASE WHEN $8 THEN $9 ELSE metadata END,
-		updated_by_id=$10, updated_at=NOW()
-		WHERE id::text=$1 AND user_id::text=$10 AND workspace_id::text=$11 AND deleted_at IS NULL`,
+		updated_by_id=$8, updated_at=NOW()
+		WHERE id::text=$1 AND user_id::text=$8 AND workspace_id::text=$9 AND deleted_at IS NULL`,
 		favoriteID, identity.UserID, identity.WorkspaceID,
 		input.has("name"), input.Name,
 		input.has("parent"), stringValue(input.ParentID),
-		input.has("metadata"), meta,
 		identity.UserID, identity.WorkspaceID)
 	if err != nil {
 		return FavoriteItem{}, err
@@ -440,9 +436,9 @@ func (s PostgreSQLStore) CreateProjectFavoriteForSession(ctx context.Context, se
 	sequence := maxSeq + 10000
 
 	_, err = tx.Exec(ctx, `INSERT INTO user_favorites
-		(id, workspace_id, project_id, parent_id, entity_type, entity_identifier, sequence, name, is_folder, metadata,
+		(id, workspace_id, project_id, parent_id, entity_type, entity_identifier, sequence, name, is_folder,
 		 user_id, created_by_id, updated_by_id, created_at, updated_at)
-		VALUES ($1,$2::uuid,$3::uuid,NULL,$4,$5,$6,'',FALSE,'{}',
+		VALUES ($1,$2::uuid,$3::uuid,NULL,$4,$5,$6,'',FALSE,
 			$7::uuid,$7::uuid,$7::uuid,NOW(),NOW())`,
 		favoriteID, identity.WorkspaceID, projectID, entityType, entityIdentifier, sequence, identity.UserID)
 	if err != nil {

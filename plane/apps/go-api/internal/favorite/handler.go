@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -94,6 +95,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrInvalid):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		default:
+			log.Printf("[FAVORITE HANDLER ERROR] %v", err)
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "favorite storage is unavailable"})
 		}
 		return
