@@ -21,23 +21,56 @@ var (
 )
 
 type FileAsset struct {
-	ID               string
-	Asset            string
-	Attributes       any
-	UserID           *string
-	WorkspaceID      *string
-	ProjectID        *string
-	IssueID          *string
-	CommentID        *string
-	PageID           *string
-	DraftIssueID     *string
-	EntityType       *string
-	EntityIdentifier *string
-	IsDeleted        bool
-	IsArchived       bool
-	Size             float64
-	IsUploaded       bool
-	CreatedAt        time.Time
+	ID               string    `json:"id"`
+	Asset            string    `json:"asset"`
+	Attributes       any       `json:"attributes"`
+	UserID           *string   `json:"user_id,omitempty"`
+	WorkspaceID      *string   `json:"workspace_id,omitempty"`
+	ProjectID        *string   `json:"project_id,omitempty"`
+	IssueID          *string   `json:"issue_id,omitempty"`
+	CommentID        *string   `json:"comment_id,omitempty"`
+	PageID           *string   `json:"page_id,omitempty"`
+	DraftIssueID     *string   `json:"draft_issue_id,omitempty"`
+	EntityType       *string   `json:"entity_type,omitempty"`
+	EntityIdentifier *string   `json:"entity_identifier,omitempty"`
+	IsDeleted        bool      `json:"is_deleted"`
+	IsArchived       bool      `json:"is_archived"`
+	Size             float64   `json:"size"`
+	IsUploaded       bool      `json:"is_uploaded"`
+	CreatedAt        time.Time `json:"created_at"`
+	
+	// Synthetic fields added for Django compatibility
+	AssetURL         string    `json:"asset_url"`
+}
+
+func (a FileAsset) AssetURL_Helper(slug string) string {
+	if a.EntityType == nil {
+		return ""
+	}
+	t := *a.EntityType
+	if t == "WORKSPACE_LOGO" || t == "USER_AVATAR" || t == "USER_COVER" || t == "PROJECT_COVER" {
+		return fmt.Sprintf("/api/assets/v2/static/%s/", a.ID)
+	}
+
+	if t == "ISSUE_ATTACHMENT" {
+		var pID, iID string
+		if a.ProjectID != nil {
+			pID = *a.ProjectID
+		}
+		if a.IssueID != nil {
+			iID = *a.IssueID
+		}
+		return fmt.Sprintf("/api/assets/v2/workspaces/%s/projects/%s/issues/%s/attachments/%s/", slug, pID, iID, a.ID)
+	}
+
+	if t == "ISSUE_DESCRIPTION" || t == "COMMENT_DESCRIPTION" || t == "PAGE_DESCRIPTION" || t == "DRAFT_ISSUE_DESCRIPTION" {
+		var pID string
+		if a.ProjectID != nil {
+			pID = *a.ProjectID
+		}
+		return fmt.Sprintf("/api/assets/v2/workspaces/%s/projects/%s/%s/", slug, pID, a.ID)
+	}
+	return ""
 }
 
 type PostgreSQLStore struct {
@@ -217,16 +250,26 @@ func (s PostgreSQLStore) BulkUpdate(ctx context.Context, sessionKey, slug, proje
 		}
 
 		if entityType == "PROJECT_COVER" {
-			tx.Exec(ctx, "UPDATE file_assets SET project_id=$1 WHERE id=$2", projectID, assetID)
-			tx.Exec(ctx, "UPDATE projects SET cover_image_asset_id=$1 WHERE id=$2", assetID, projectID)
+			_, err = tx.Exec(ctx, "UPDATE file_assets SET project_id=$1 WHERE id=$2", projectID, assetID)
+			if err != nil { fmt.Printf("[ASSET HANDLER ERROR] BulkUpdate file_assets error: %v\n", err); continue }
+			
+			_, err = tx.Exec(ctx, "UPDATE projects SET cover_image_asset_id=$1 WHERE id=$2", assetID, projectID)
+			if err != nil { fmt.Printf("[ASSET HANDLER ERROR] BulkUpdate projects error: %v\n", err); continue }
 		} else if entityType == "ISSUE_DESCRIPTION" {
-			tx.Exec(ctx, "UPDATE file_assets SET issue_id=$1, project_id=$2 WHERE id=$3", entityID, projectID, assetID)
+			_, err = tx.Exec(ctx, "UPDATE file_assets SET issue_id=$1, project_id=$2 WHERE id=$3", entityID, projectID, assetID)
+			if err != nil { fmt.Printf("[ASSET HANDLER ERROR] BulkUpdate issue desc error: %v\n", err); continue }
 		} else if entityType == "COMMENT_DESCRIPTION" {
-			tx.Exec(ctx, "UPDATE file_assets SET comment_id=$1 WHERE id=$2", entityID, assetID)
+			_, err = tx.Exec(ctx, "UPDATE file_assets SET comment_id=$1 WHERE id=$2", entityID, assetID)
+			if err != nil { fmt.Printf("[ASSET HANDLER ERROR] BulkUpdate comment desc error: %v\n", err); continue }
 		} else if entityType == "PAGE_DESCRIPTION" {
-			tx.Exec(ctx, "UPDATE file_assets SET page_id=$1 WHERE id=$2", entityID, assetID)
+			_, err = tx.Exec(ctx, "UPDATE file_assets SET page_id=$1 WHERE id=$2", entityID, assetID)
+			if err != nil { fmt.Printf("[ASSET HANDLER ERROR] BulkUpdate page desc error: %v\n", err); continue }
 		}
 	}
 	
-	return tx.Commit(ctx)
+	err = tx.Commit(ctx)
+	if err != nil {
+		fmt.Printf("[ASSET HANDLER ERROR] BulkUpdate: commit unexpectedly resulted in rollback: %v\n", err)
+	}
+	return err
 }

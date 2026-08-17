@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -116,18 +117,19 @@ func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, pr
 }
 
 type ProjectPayload struct {
-	Name                 string  `json:"name"`
-	Identifier           string  `json:"identifier"`
-	Description          *string `json:"description"`
-	Network              *int    `json:"network"`
-	ProjectLead          *string `json:"project_lead"`
-	DefaultAssignee      *string `json:"default_assignee"`
-	CycleView            *bool   `json:"cycle_view"`
-	ModuleView           *bool   `json:"module_view"`
-	IssueViewsView       *bool   `json:"issue_views_view"`
-	PageView             *bool   `json:"page_view"`
-	InboxView            *bool   `json:"inbox_view"`
-	GuestViewAllFeatures *bool   `json:"guest_view_all_features"`
+	Name                 string          `json:"name"`
+	Identifier           string          `json:"identifier"`
+	Description          *string         `json:"description"`
+	Network              *int            `json:"network"`
+	ProjectLead          *string         `json:"project_lead"`
+	DefaultAssignee      *string         `json:"default_assignee"`
+	CycleView            *bool           `json:"cycle_view"`
+	ModuleView           *bool           `json:"module_view"`
+	IssueViewsView       *bool           `json:"issue_views_view"`
+	PageView             *bool           `json:"page_view"`
+	InboxView            *bool           `json:"inbox_view"`
+	GuestViewAllFeatures *bool           `json:"guest_view_all_features"`
+	LogoProps            *map[string]any `json:"logo_props"`
 }
 
 var defaultStates = []map[string]any{
@@ -202,6 +204,12 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug 
 	if payload.Description != nil {
 		description = *payload.Description
 	}
+	logoProps := "{}"
+	if payload.LogoProps != nil {
+		if b, err := json.Marshal(payload.LogoProps); err == nil {
+			logoProps = string(b)
+		}
+	}
 
 	_, err = tx.Exec(ctx, `INSERT INTO projects
 		(id, name, identifier, description, network, workspace_id,
@@ -212,11 +220,11 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug 
 		VALUES ($1,$2,$3,$4,$5,$6::uuid,
 			$7,$8,$9,$10,$11,$12,
 			NULLIF($13,'')::uuid, NULLIF($14,'')::uuid,
-			0, 0, '{}'::jsonb, FALSE, FALSE, 'UTC',
-			$15::uuid,$15::uuid,NOW(),NOW())`,
+			0, 0, $15::jsonb, FALSE, FALSE, 'UTC',
+			$16::uuid,$16::uuid,NOW(),NOW())`,
 		projectID, payload.Name, payload.Identifier, description, network, a.workspaceID,
 		cycleView, moduleView, issueViewsView, pageView, inboxView, guestViewAll,
-		stringValue(payload.ProjectLead), stringValue(payload.DefaultAssignee), a.userID)
+		stringValue(payload.ProjectLead), stringValue(payload.DefaultAssignee), logoProps, a.userID)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +320,7 @@ func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug,
 	}
 
 	// Update columns dynamically
-	query := `UPDATE projects SET updated_at=NOW(), updated_by_id=$2 `
+	query := `UPDATE projects SET updated_at=NOW(), updated_by_id=$2::uuid `
 	args := []any{projectID, a.userID}
 	placeholderIndex := 3
 
@@ -329,11 +337,18 @@ func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug,
 		"guest_view_all_features": "guest_view_all_features",
 		"project_lead":            "project_lead_id",
 		"default_assignee":        "default_assignee_id",
+		"logo_props":              "logo_props",
 	}
 
 	for key, val := range payload {
 		if dbCol, ok := allowedFields[key]; ok {
-			query += fmt.Sprintf(", %s=$%d ", dbCol, placeholderIndex)
+			if key == "project_lead" || key == "default_assignee" {
+				query += fmt.Sprintf(", %s=$%d::uuid ", dbCol, placeholderIndex)
+			} else if key == "logo_props" {
+				query += fmt.Sprintf(", %s=$%d::jsonb ", dbCol, placeholderIndex)
+			} else {
+				query += fmt.Sprintf(", %s=$%d ", dbCol, placeholderIndex)
+			}
 			if val == nil {
 				args = append(args, nil)
 			} else if key == "project_lead" || key == "default_assignee" {
@@ -344,6 +359,9 @@ func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug,
 				} else {
 					args = append(args, strVal)
 				}
+			} else if key == "logo_props" {
+				b, _ := json.Marshal(val)
+				args = append(args, string(b))
 			} else {
 				args = append(args, val)
 			}
@@ -351,15 +369,10 @@ func (s PostgreSQLStore) UpdateForSession(ctx context.Context, sessionKey, slug,
 		}
 	}
 
-	query += ` WHERE id::text=$1 AND workspace_id::text = (SELECT id FROM workspaces WHERE slug=$12 AND deleted_at IS NULL) AND deleted_at IS NULL`
-	// Map workspace slug using the last positional arg (placeholder 12)
-	for placeholderIndex < 12 {
-		query += fmt.Sprintf(" AND 1=$%d", placeholderIndex)
-		args = append(args, 1)
-		placeholderIndex++
-	}
+	query += fmt.Sprintf(` WHERE id::text=$1 AND workspace_id = (SELECT id FROM workspaces WHERE slug=$%d AND deleted_at IS NULL) AND deleted_at IS NULL`, placeholderIndex)
 	args = append(args, slug)
 
+	log.Printf("[DEBUG UPDATE PROJECT] query: %s\nargs: %+v", query, args)
 	_, err = tx.Exec(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -386,7 +399,7 @@ func (s PostgreSQLStore) DeleteForSession(ctx context.Context, sessionKey, slug,
 		return ErrForbidden
 	}
 
-	result, err := s.Pool.Exec(ctx, `UPDATE projects SET deleted_at=NOW(), updated_by_id=$2, updated_at=NOW()
+	result, err := s.Pool.Exec(ctx, `UPDATE projects SET deleted_at=NOW(), updated_by_id=$2::uuid, updated_at=NOW()
 		WHERE id::text=$1 AND workspace_id::text=$3 AND deleted_at IS NULL`, projectID, a.userID, a.workspaceID)
 	if err != nil {
 		return err

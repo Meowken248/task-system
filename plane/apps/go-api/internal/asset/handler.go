@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 )
 
 type Handler struct {
@@ -19,6 +20,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessionKey := ""
 	if cookie, err := r.Cookie(h.SessionCookieName); err == nil {
 		sessionKey = cookie.Value
+	}
+	if sessionKey == "" {
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			sessionKey = strings.TrimPrefix(authHeader, "Bearer ")
+		}
 	}
 
 	slug := r.PathValue("slug")
@@ -67,8 +74,19 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// V2 API uses JSON to request a presigned URL
+		// V2 API uses JSON to request a presigned URL or confirm upload
 		if r.Header.Get("Content-Type") == "application/json" {
+			if assetID != "" {
+				if err := h.Store.ConfirmUpload(r.Context(), sessionKey, slug, assetID); err != nil {
+					log.Printf("[ASSET HANDLER ERROR] ConfirmUpload: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"message": "Upload confirmed"})
+				return
+			}
+
 			var req struct {
 				Name             string `json:"name"`
 				Type             string `json:"type"`
@@ -95,11 +113,15 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			assetURL := asset.AssetURL_Helper(slug)
+			if assetURL == "" {
+				assetURL = asset.Asset
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"upload_data": uploadData,
 				"asset_id":    asset.ID,
-				"asset_url":   asset.Asset,
+				"asset_url":   assetURL,
 			})
 			return
 		}
@@ -126,6 +148,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[ASSET HANDLER ERROR] Create: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		
+		asset.AssetURL = asset.AssetURL_Helper(slug)
+		if asset.AssetURL == "" {
+			asset.AssetURL = asset.Asset
 		}
 
 		w.Header().Set("Content-Type", "application/json")
