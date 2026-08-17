@@ -6,6 +6,8 @@ import {
 } from "@/services/blockchain/blockchain-tracking.service";
 import { getIssueOnChainProgress, getWalletKPI, type OnChainKPI } from "@/services/blockchain/plane-task-chain.service";
 import { ProjectService } from "@/services/project";
+import { IssueService } from "@/services/issue";
+import type { TIssue } from "@plane/types";
 
 type Props = { workspaceSlug: string };
 type ProjectOption = { id: string; name: string; identifier?: string };
@@ -23,6 +25,7 @@ type AggregateKpi = {
 };
 
 const projectService = new ProjectService();
+const issueService = new IssueService();
 
 function formatDateTime(value?: string): string {
   if (!value) return "Chưa có thời gian";
@@ -117,10 +120,11 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [records, setRecords] = useState<TBlockchainTrackingRecord[]>([]);
+  const [planeTasks, setPlaneTasks] = useState<TIssue[]>([]);
+  const [kpi, setKpi] = useState<OnChainKPI | undefined>();
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(new Set());
   const [onChainProgress, setOnChainProgress] = useState<Record<string, number>>({});
-  const [kpi, setKpi] = useState<OnChainKPI>();
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [loadingKpi, setLoadingKpi] = useState(false);
@@ -153,16 +157,34 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
       if (!record.issue_id) return;
       grouped.set(record.issue_id, [...(grouped.get(record.issue_id) ?? []), record]);
     });
-    return Array.from(grouped, ([id, taskRecords]) => {
+
+    const taskOptions: TaskOption[] = [];
+    const processedIds = new Set<string>();
+
+    planeTasks.forEach((issue) => {
+      processedIds.add(issue.id);
+      const taskRecords = grouped.get(issue.id) ?? [];
+      taskOptions.push({
+        id: issue.id,
+        name: issue.name,
+        parentId: issue.parent_id || undefined,
+        records: taskRecords,
+      });
+    });
+
+    Array.from(grouped).forEach(([id, taskRecords]) => {
+      if (processedIds.has(id)) return;
       const creation = taskRecords.find((record) => record.event_type === "create_task");
-      return {
+      taskOptions.push({
         id,
         name: taskRecords.find((record) => record.issue_name)?.issue_name || id,
         parentId: creation?.parent_issue_id,
         records: taskRecords,
-      };
-    }).filter((task) => !task.records.some((record) => record.event_type === "delete_task"));
-  }, [records]);
+      });
+    });
+
+    return taskOptions.filter((task) => !task.records.some((record) => record.event_type === "delete_task"));
+  }, [records, planeTasks]);
 
   useEffect(() => {
     let active = true;
@@ -234,11 +256,17 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     setSelectedProjectId(projectId);
     setSelectedTaskId("");
     setRecords([]);
+    setPlaneTasks([]);
     setKpi(undefined);
     setError("");
     setLoadingTasks(true);
     try {
-      setRecords(await blockchainTrackingService.getTransactions(workspaceSlug, projectId));
+      const [txRecords, planeIssuesRes] = await Promise.all([
+        blockchainTrackingService.getTransactions(workspaceSlug, projectId).catch(() => [] as TBlockchainTrackingRecord[]),
+        issueService.getIssuesFromServer(workspaceSlug, projectId, {}).catch(() => ({ results: [] as TIssue[] }))
+      ]);
+      setRecords(txRecords);
+      setPlaneTasks(Array.isArray(planeIssuesRes?.results) ? planeIssuesRes.results : []);
     } catch {
       setError("Không tải được task và dữ liệu on-chain của dự án.");
     } finally {
