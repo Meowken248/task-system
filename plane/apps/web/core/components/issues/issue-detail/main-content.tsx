@@ -228,7 +228,7 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
           }).format(recordedAt);
           const transactionText = transactionHash
             ? ` Transaction: <code>${transactionHash}</code>`
-            : " Báo cáo này được lưu trên Plane và chưa đồng bộ on-chain.";
+            : " Báo cáo này được lưu trên Plane";
           const reportDetails = [
             work && `<p><strong>Hôm nay làm gì:</strong> ${escapeCommentHtml(work)}</p>`,
             difficulty && `<p><strong>Khó khăn:</strong> ${escapeCommentHtml(difficulty)}</p>`,
