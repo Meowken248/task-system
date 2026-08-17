@@ -272,9 +272,11 @@ func (s PostgreSQLStore) BulkCreate(ctx context.Context, sessionKey, slug, proje
 
 		// Insert or Update project member
 		_, err = tx.Exec(ctx, `
-			INSERT INTO project_members (workspace_id, project_id, member_id, role, is_active, created_by_id, updated_by_id, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, TRUE, $5, $5, NOW(), NOW())
-			ON CONFLICT (workspace_id, project_id, member_id) DO UPDATE SET
+			INSERT INTO project_members (id, workspace_id, project_id, member_id, role, is_active, created_by_id, updated_by_id, created_at, updated_at,
+				view_props, default_props, sort_order, preferences)
+			VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3::uuid, $4, TRUE, $5::uuid, $5::uuid, NOW(), NOW(),
+				'{}'::jsonb, '{}'::jsonb, 65535, '{}'::jsonb)
+			ON CONFLICT (project_id, member_id) WHERE deleted_at IS NULL DO UPDATE SET
 				role = EXCLUDED.role,
 				is_active = TRUE,
 				deleted_at = NULL,
@@ -287,17 +289,20 @@ func (s PostgreSQLStore) BulkCreate(ctx context.Context, sessionKey, slug, proje
 
 		// Insert or Ignore project user property
 		_, err = tx.Exec(ctx, `
-			INSERT INTO project_user_properties (workspace_id, project_id, user_id, sort_order, created_by_id, updated_by_id, created_at, updated_at)
-			SELECT $1, $2, $3, COALESCE(MIN(sort_order), 65535) - 65535, $4, $4, NOW(), NOW()
-			FROM project_user_properties WHERE workspace_id::text = $1 AND user_id::text = $3
-			ON CONFLICT DO NOTHING
+			INSERT INTO project_user_properties (id, workspace_id, project_id, user_id, sort_order,
+				filters, rich_filters, display_filters, display_properties, preferences,
+				created_by_id, updated_by_id, created_at, updated_at)
+			VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3::uuid, 65535,
+				'{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+				$4::uuid, $4::uuid, NOW(), NOW())
+			ON CONFLICT (user_id, project_id) WHERE deleted_at IS NULL DO NOTHING
 		`, current.WorkspaceID, current.ProjectID, memberID, current.UserID)
 		if err != nil {
 			return fmt.Errorf("insert project user property: %w", err)
 		}
 
 		// Insert email log
-		_, _ = tx.Exec(ctx, `INSERT INTO email_notification_logs (receiver_id, entity, entity_name) VALUES ($1, 'PROJECT', $2)`, memberID, current.ProjectID)
+		_, _ = tx.Exec(ctx, `INSERT INTO email_notification_logs (id, receiver_id, triggered_by_id, entity, entity_name, created_at, updated_at) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, 'PROJECT', $3, NOW(), NOW())`, memberID, current.UserID, current.ProjectID)
 	}
 
 	if err = tx.Commit(ctx); err != nil {

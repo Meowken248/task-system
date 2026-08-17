@@ -178,9 +178,11 @@ func (s PostgreSQLStore) BulkJoin(ctx context.Context, sessionKey, slug string, 
 	// Bulk Insert new ProjectMember entries
 	for _, pid := range validProjects {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO project_members (workspace_id, project_id, member_id, role, is_active, created_by_id, updated_by_id, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, TRUE, $3, $3, NOW(), NOW())
-			ON CONFLICT (workspace_id, project_id, member_id) DO NOTHING
+			INSERT INTO project_members (id, workspace_id, project_id, member_id, role, is_active, created_by_id, updated_by_id, created_at, updated_at,
+				view_props, default_props, sort_order, preferences)
+			VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3::uuid, $4, TRUE, $3::uuid, $3::uuid, NOW(), NOW(),
+				'{}'::jsonb, '{}'::jsonb, 65535, '{}'::jsonb)
+			ON CONFLICT (project_id, member_id) WHERE deleted_at IS NULL DO NOTHING
 		`, current.WorkspaceID, pid, current.UserID, current.WorkspaceRole)
 		if err != nil {
 			return fmt.Errorf("bulk insert project member: %w", err)
@@ -188,10 +190,13 @@ func (s PostgreSQLStore) BulkJoin(ctx context.Context, sessionKey, slug string, 
 
 		// Insert project user property
 		_, err = tx.Exec(ctx, `
-			INSERT INTO project_user_properties (workspace_id, project_id, user_id, sort_order, created_by_id, updated_by_id, created_at, updated_at)
-			SELECT $1, $2, $3, COALESCE(MIN(sort_order), 65535) - 65535, $3, $3, NOW(), NOW()
-			FROM project_user_properties WHERE workspace_id::text = $1 AND user_id::text = $3
-			ON CONFLICT DO NOTHING
+			INSERT INTO project_user_properties (id, workspace_id, project_id, user_id, sort_order,
+				filters, rich_filters, display_filters, display_properties, preferences,
+				created_by_id, updated_by_id, created_at, updated_at)
+			VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3::uuid, 65535,
+				'{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+				$3::uuid, $3::uuid, NOW(), NOW())
+			ON CONFLICT (user_id, project_id) WHERE deleted_at IS NULL DO NOTHING
 		`, current.WorkspaceID, pid, current.UserID)
 		if err != nil {
 			return fmt.Errorf("bulk insert project user property: %w", err)
