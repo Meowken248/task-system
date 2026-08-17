@@ -46,6 +46,9 @@ services:
       GO_API_ADDRESS: ":8080"
     depends_on:
       - plane-db
+    networks:
+      - default
+      - dev_env
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -119,3 +122,8 @@ volumes:
   pgdata:
   redisdata:
   uploads:
+
+networks:
+  dev_env:
+    name: plane_dev_env
+    external: true
