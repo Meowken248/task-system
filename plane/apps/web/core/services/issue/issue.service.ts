@@ -448,6 +448,15 @@ export class IssueService extends APIService {
           .catch((trackingError) => {
             console.warn("Task đã xóa on-chain; audit đang chờ tự đồng bộ.", trackingError);
           });
+      } else {
+        void blockchainTrackingService
+          .recordOfflineTaskDeletion(workspaceSlug, projectId, {
+            issueId: issuesId,
+            issueName: issue.name,
+          })
+          .catch((trackingError) => {
+            console.warn("Task offline đã xóa; audit đang chờ tự đồng bộ.", trackingError);
+          });
       }
     } catch (chainError) {
       console.warn("Không xóa được task on-chain; vẫn tiếp tục xóa task trên Plane.", chainError);

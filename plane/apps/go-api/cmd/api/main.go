@@ -46,6 +46,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/recentvisit"
 	"github.com/makeplane/plane/apps/go-api/internal/relation"
 	"github.com/makeplane/plane/apps/go-api/internal/search"
+	"github.com/makeplane/plane/apps/go-api/internal/space"
 	"github.com/makeplane/plane/apps/go-api/internal/state"
 	"github.com/makeplane/plane/apps/go-api/internal/sticky"
 	"github.com/makeplane/plane/apps/go-api/internal/storage"
@@ -468,6 +469,15 @@ func main() {
 			Pages: page.Handler{
 				Store: page.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
+			Space: space.NewHandler(
+				space.PostgreSQLStore{Pool: db.Native()},
+				issue.PostgreSQLStore{Pool: db.Native()},
+				comment.PostgreSQLStore{Pool: db.Native()},
+				reaction.PostgreSQLStore{Pool: db.Native()},
+				commentreaction.PostgreSQLStore{Pool: db.Native()},
+				intake.PostgreSQLStore{Pool: db.Native()},
+				asset.PostgreSQLStore{Pool: db.Native(), Provider: storageProvider},
+			),
 			Version:            version,
 			LegacyAPIURL:       cfg.LegacyAPIURL,
 			GoWorkersEnabled:   cfg.GoWorkersEnabled,

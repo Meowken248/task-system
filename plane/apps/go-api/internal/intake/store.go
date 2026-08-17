@@ -220,3 +220,222 @@ func (s PostgreSQLStore) DeleteForSession(ctx context.Context, sessionKey, slug,
 	_, err = s.Pool.Exec(ctx, `UPDATE intakes SET deleted_at=NOW() WHERE id=$1`, intakeID)
 	return err
 }
+
+func (s PostgreSQLStore) ListPublic(ctx context.Context, projectID, intakeID string) ([]map[string]any, error) {
+	rows, err := s.Pool.Query(ctx, `
+		SELECT i.id, i.name, i.description_html, i.priority, i.project_id, i.workspace_id, i.state_id, i.created_at, i.updated_at, i.created_by_id, i.updated_by_id, 
+			ii.id AS bridge_id, ii.status AS bridge_status, ii.snoozed_till AS bridge_snoozed_till, ii.duplicate_to_id AS bridge_duplicate_to, ii.source AS bridge_source
+		FROM issues i
+		JOIN intake_issues ii ON i.id = ii.issue_id
+		WHERE ii.intake_id = $1 AND ii.project_id = $2 AND ii.deleted_at IS NULL AND i.deleted_at IS NULL
+		ORDER BY ii.snoozed_till ASC NULLS FIRST, ii.status ASC
+	`, intakeID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list public intake issues: %w", err)
+	}
+	defer rows.Close()
+
+	var issues []map[string]any
+	for rows.Next() {
+		var id, name, description_html, priority, project_id, workspace_id, state_id string
+		var created_at, updated_at time.Time
+		var created_by_id, updated_by_id, bridge_duplicate_to, bridge_source *string
+		var bridge_id string
+		var bridge_status int
+		var bridge_snoozed_till *time.Time
+
+		if err := rows.Scan(&id, &name, &description_html, &priority, &project_id, &workspace_id, &state_id, &created_at, &updated_at, &created_by_id, &updated_by_id,
+			&bridge_id, &bridge_status, &bridge_snoozed_till, &bridge_duplicate_to, &bridge_source); err != nil {
+			return nil, fmt.Errorf("scan intake issue: %w", err)
+		}
+
+		issue := map[string]any{
+			"id":               id,
+			"name":             name,
+			"description_html": description_html,
+			"priority":         priority,
+			"project":          project_id,
+			"workspace":        workspace_id,
+			"state":            state_id,
+			"created_at":       created_at,
+			"updated_at":       updated_at,
+			"created_by":       created_by_id,
+			"updated_by":       updated_by_id,
+			"issue_intake": map[string]any{
+				"id":           bridge_id,
+				"status":       bridge_status,
+				"snoozed_till": bridge_snoozed_till,
+				"duplicate_to": bridge_duplicate_to,
+				"source":       bridge_source,
+			},
+		}
+		issues = append(issues, issue)
+	}
+	return issues, rows.Err()
+}
+
+func (s PostgreSQLStore) GetPublic(ctx context.Context, projectID, intakeID, pk string) (map[string]any, error) {
+	row := s.Pool.QueryRow(ctx, `
+		SELECT i.id, i.name, i.description_html, i.priority, i.project_id, i.workspace_id, i.state_id, i.created_at, i.updated_at, i.created_by_id, i.updated_by_id, 
+			ii.id AS bridge_id, ii.status AS bridge_status, ii.snoozed_till AS bridge_snoozed_till, ii.duplicate_to_id AS bridge_duplicate_to, ii.source AS bridge_source
+		FROM issues i
+		JOIN intake_issues ii ON i.id = ii.issue_id
+		WHERE ii.id = $1 AND ii.intake_id = $2 AND ii.project_id = $3 AND ii.deleted_at IS NULL AND i.deleted_at IS NULL
+	`, pk, intakeID, projectID)
+
+	var id, name, description_html, priority, project_id, workspace_id, state_id string
+	var created_at, updated_at time.Time
+	var created_by_id, updated_by_id, bridge_duplicate_to, bridge_source *string
+	var bridge_id string
+	var bridge_status int
+	var bridge_snoozed_till *time.Time
+
+	if err := row.Scan(&id, &name, &description_html, &priority, &project_id, &workspace_id, &state_id, &created_at, &updated_at, &created_by_id, &updated_by_id,
+		&bridge_id, &bridge_status, &bridge_snoozed_till, &bridge_duplicate_to, &bridge_source); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("scan intake issue: %w", err)
+	}
+
+	return map[string]any{
+		"id":               id,
+		"name":             name,
+		"description_html": description_html,
+		"priority":         priority,
+		"project":          project_id,
+		"workspace":        workspace_id,
+		"state":            state_id,
+		"created_at":       created_at,
+		"updated_at":       updated_at,
+		"created_by":       created_by_id,
+		"updated_by":       updated_by_id,
+		"issue_intake": map[string]any{
+			"id":           bridge_id,
+			"status":       bridge_status,
+			"snoozed_till": bridge_snoozed_till,
+			"duplicate_to": bridge_duplicate_to,
+			"source":       bridge_source,
+		},
+	}, nil
+}
+
+func (s PostgreSQLStore) CreatePublic(ctx context.Context, projectID, intakeID, workspaceID string, issueData map[string]any, userID *string) (map[string]any, error) {
+	name, _ := issueData["name"].(string)
+	if name == "" {
+		return nil, errors.New("name is required")
+	}
+	priority, _ := issueData["priority"].(string)
+	if priority == "" {
+		priority = "low"
+	}
+	descriptionHtml, _ := issueData["description_html"].(string)
+	if descriptionHtml == "" {
+		descriptionHtml = "<p></p>"
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Get or Create Triage state
+	var stateID string
+	err = tx.QueryRow(ctx, `SELECT id FROM states WHERE project_id=$1 AND workspace_id=$2 AND "group"='triage' AND deleted_at IS NULL LIMIT 1`, projectID, workspaceID).Scan(&stateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `INSERT INTO states (name, "group", project_id, workspace_id, color, sequence, is_default, created_at, updated_at)
+			VALUES ('Triage', 'triage', $1, $2, '#4E5355', 65000, false, NOW(), NOW()) RETURNING id`, projectID, workspaceID).Scan(&stateID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("triage state: %w", err)
+	}
+
+	// Create Issue
+	var issueID string
+	err = tx.QueryRow(ctx, `INSERT INTO issues (name, description_html, priority, project_id, workspace_id, state_id, created_by_id, updated_by_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $7, NOW(), NOW()) RETURNING id`, name, descriptionHtml, priority, projectID, workspaceID, stateID, userID).Scan(&issueID)
+	if err != nil {
+		return nil, fmt.Errorf("create issue: %w", err)
+	}
+
+	// Create IntakeIssue
+	var bridgeID string
+	err = tx.QueryRow(ctx, `INSERT INTO intake_issues (intake_id, issue_id, project_id, workspace_id, status, source, created_by_id, updated_by_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, 1, 'in-app', $5, $5, NOW(), NOW()) RETURNING id`, intakeID, issueID, projectID, workspaceID, userID).Scan(&bridgeID)
+	if err != nil {
+		return nil, fmt.Errorf("create intake issue: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return s.GetPublic(ctx, projectID, intakeID, bridgeID)
+}
+
+func (s PostgreSQLStore) UpdatePublic(ctx context.Context, projectID, intakeID, pk string, issueData map[string]any, userID *string) (map[string]any, error) {
+	// First verify ownership
+	var createdBy *string
+	var issueID string
+	err := s.Pool.QueryRow(ctx, `SELECT created_by_id, issue_id FROM intake_issues WHERE id=$1 AND intake_id=$2 AND project_id=$3 AND deleted_at IS NULL`, pk, intakeID, projectID).Scan(&createdBy, &issueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	if userID == nil || createdBy == nil || *userID != *createdBy {
+		return nil, errors.New("you cannot edit intake issues")
+	}
+
+	var updates []string
+	var args []any
+	argID := 1
+
+	if name, ok := issueData["name"].(string); ok {
+		updates = append(updates, fmt.Sprintf("name = $%d", argID))
+		args = append(args, name)
+		argID++
+	}
+	if desc, ok := issueData["description_html"].(string); ok {
+		updates = append(updates, fmt.Sprintf("description_html = $%d", argID))
+		args = append(args, desc)
+		argID++
+	}
+
+	if len(updates) > 0 {
+		updates = append(updates, "updated_at = NOW()")
+		if userID != nil {
+			updates = append(updates, fmt.Sprintf("updated_by_id = $%d", argID))
+			args = append(args, *userID)
+			argID++
+		}
+		args = append(args, issueID)
+		_, err = s.Pool.Exec(ctx, fmt.Sprintf(`UPDATE issues SET %s WHERE id = $%d`, strings.Join(updates, ", "), argID), args...)
+		if err != nil {
+			return nil, fmt.Errorf("update issue: %w", err)
+		}
+	}
+
+	return s.GetPublic(ctx, projectID, intakeID, pk)
+}
+
+func (s PostgreSQLStore) DeletePublic(ctx context.Context, projectID, intakeID, pk string, userID *string) error {
+	var createdBy *string
+	err := s.Pool.QueryRow(ctx, `SELECT created_by_id FROM intake_issues WHERE id=$1 AND intake_id=$2 AND project_id=$3 AND deleted_at IS NULL`, pk, intakeID, projectID).Scan(&createdBy)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+
+	if userID == nil || createdBy == nil || *userID != *createdBy {
+		return errors.New("you cannot delete intake issue")
+	}
+
+	_, err = s.Pool.Exec(ctx, `UPDATE intake_issues SET deleted_at=NOW() WHERE id=$1`, pk)
+	return err
+}

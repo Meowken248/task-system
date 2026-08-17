@@ -198,7 +198,27 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	return comments, rows.Err()
 }
 
-// GetForSession returns a single comment.
+// ListPublic returns all comments for an issue on a public board.
+func (s PostgreSQLStore) ListPublic(ctx context.Context, projectID, issueID string) ([]Comment, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT `+commentColumns+` FROM issue_comments c
+		WHERE c.project_id::text=$1 AND c.issue_id::text=$2 AND c.deleted_at IS NULL
+		ORDER BY c.created_at DESC`, projectID, issueID)
+	if err != nil {
+		return nil, fmt.Errorf("list public comments: %w", err)
+	}
+	defer rows.Close()
+	comments := make([]Comment, 0, 32)
+	for rows.Next() {
+		c, scanErr := scanComment(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan comment: %w", scanErr)
+		}
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+// GetForSession retrieves a specific comment.
 func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, projectID, issueID, commentID string) (Comment, error) {
 	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
 		return Comment{}, err

@@ -2,6 +2,7 @@ package asset
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -271,5 +272,74 @@ func (s PostgreSQLStore) BulkUpdate(ctx context.Context, sessionKey, slug, proje
 	if err != nil {
 		fmt.Printf("[ASSET HANDLER ERROR] BulkUpdate: commit unexpectedly resulted in rollback: %v\n", err)
 	}
+	return err
+}
+
+func (s PostgreSQLStore) GetPublic(ctx context.Context, pk, workspaceID string) (FileAsset, error) {
+	var a FileAsset
+	err := s.Pool.QueryRow(ctx, `SELECT id, asset, attributes, user_id, workspace_id, project_id, issue_id, comment_id, page_id, draft_issue_id, entity_type, entity_identifier, is_deleted, is_archived, size, is_uploaded, created_at FROM file_assets WHERE id=$1 AND workspace_id=$2 AND is_deleted=FALSE AND entity_type IN ('ISSUE_DESCRIPTION', 'COMMENT_DESCRIPTION') AND is_uploaded=TRUE`, pk, workspaceID).Scan(
+		&a.ID, &a.Asset, &a.Attributes, &a.UserID, &a.WorkspaceID, &a.ProjectID, &a.IssueID, &a.CommentID, &a.PageID, &a.DraftIssueID, &a.EntityType, &a.EntityIdentifier, &a.IsDeleted, &a.IsArchived, &a.Size, &a.IsUploaded, &a.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FileAsset{}, ErrNotFound
+	}
+	return a, err
+}
+
+func (s PostgreSQLStore) CreatePresignedPublic(ctx context.Context, workspaceID, projectID, filename, fileType, entityType string, size int64, entityIdentifier, userID string) (FileAsset, map[string]any, error) {
+	id := uuid.New().String()
+	// using workspace_id in place of slug for key path to keep it unique
+	key := fmt.Sprintf("%s/%s-%s", workspaceID, id, filename)
+
+	presigned, err := s.Provider.GeneratePresignedPost(ctx, key, fileType, size)
+	if err != nil {
+		return FileAsset{}, nil, fmt.Errorf("presigned url error: %w", err)
+	}
+
+	var uID *string
+	if userID != "" {
+		uID = &userID
+	}
+	var eID *string
+	if entityIdentifier != "" {
+		eID = &entityIdentifier
+	}
+
+	err = s.Pool.QueryRow(ctx, `INSERT INTO file_assets (id, asset, attributes, entity_type, size, is_uploaded, is_deleted, is_archived, workspace_id, project_id, comment_id, user_id, created_at, updated_at) 
+		VALUES ($1, $2, $3, $4, $5, false, false, false, $6, $7, $8, $9, NOW(), NOW()) RETURNING id`,
+		id, key, fmt.Sprintf(`{"name": "%s", "type": "%s", "size": %d}`, filename, fileType, size), entityType, size, workspaceID, projectID, eID, uID).Scan(&id)
+	
+	if err != nil {
+		return FileAsset{}, nil, fmt.Errorf("insert error: %w", err)
+	}
+
+	asset, err := s.Get(ctx, id) // Get ignores workspaceID but it's okay we just created it
+	return asset, presigned, err
+}
+
+func (s PostgreSQLStore) UpdatePublic(ctx context.Context, pk, workspaceID string, attributes map[string]any) error {
+	var attrJSON []byte
+	var err error
+	if attributes != nil {
+		attrJSON, err = json.Marshal(attributes)
+		if err != nil {
+			return err
+		}
+	}
+	
+	if attrJSON != nil {
+		_, err = s.Pool.Exec(ctx, `UPDATE file_assets SET is_uploaded=TRUE, attributes=$1, updated_at=NOW() WHERE id=$2 AND workspace_id=$3`, attrJSON, pk, workspaceID)
+	} else {
+		_, err = s.Pool.Exec(ctx, `UPDATE file_assets SET is_uploaded=TRUE, updated_at=NOW() WHERE id=$1 AND workspace_id=$2`, pk, workspaceID)
+	}
+	return err
+}
+
+func (s PostgreSQLStore) DeletePublic(ctx context.Context, pk, workspaceID, projectID string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE file_assets SET is_deleted=TRUE, deleted_at=NOW() WHERE id=$1 AND workspace_id=$2 AND project_id=$3`, pk, workspaceID, projectID)
+	return err
+}
+
+func (s PostgreSQLStore) RestorePublic(ctx context.Context, pk, workspaceID string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE file_assets SET is_deleted=FALSE, deleted_at=NULL WHERE id=$1 AND workspace_id=$2`, pk, workspaceID)
 	return err
 }

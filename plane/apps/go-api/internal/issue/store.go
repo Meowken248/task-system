@@ -228,6 +228,95 @@ func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, pr
 	return expanded[0], nil
 }
 
+func (s PostgreSQLStore) ListPublic(ctx context.Context, projectID string, filter IssueFilter) (Page, error) {
+	baseQuery := ` FROM issues i JOIN states st ON st.id=i.state_id WHERE i.project_id::text=$1 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`
+	args := []any{projectID}
+	argIdx := 2
+
+	if filter.State != "" && filter.State != "null" {
+		baseQuery += fmt.Sprintf(` AND i.state_id::text = ANY(string_to_array($%d, ','))`, argIdx)
+		args = append(args, filter.State)
+		argIdx++
+	}
+	if filter.StateGroup != "" && filter.StateGroup != "null" {
+		baseQuery += fmt.Sprintf(` AND st."group" = ANY(string_to_array($%d, ','))`, argIdx)
+		args = append(args, filter.StateGroup)
+		argIdx++
+	}
+	if filter.Priority != "" && filter.Priority != "null" {
+		baseQuery += fmt.Sprintf(` AND i.priority = ANY(string_to_array($%d, ','))`, argIdx)
+		args = append(args, filter.Priority)
+		argIdx++
+	}
+	if filter.Labels != "" && filter.Labels != "null" {
+		baseQuery += fmt.Sprintf(` AND EXISTS(SELECT 1 FROM issue_labels il WHERE il.issue_id=i.id AND il.label_id::text = ANY(string_to_array($%d, ',')) AND il.deleted_at IS NULL)`, argIdx)
+		args = append(args, filter.Labels)
+		argIdx++
+	}
+	if filter.Assignees != "" && filter.Assignees != "null" {
+		baseQuery += fmt.Sprintf(` AND EXISTS(SELECT 1 FROM issue_assignees ia WHERE ia.issue_id=i.id AND ia.assignee_id::text = ANY(string_to_array($%d, ',')) AND ia.deleted_at IS NULL)`, argIdx)
+		args = append(args, filter.Assignees)
+		argIdx++
+	}
+	if filter.CreatedBy != "" && filter.CreatedBy != "null" {
+		baseQuery += fmt.Sprintf(` AND i.created_by_id::text = ANY(string_to_array($%d, ','))`, argIdx)
+		args = append(args, filter.CreatedBy)
+		argIdx++
+	}
+
+	orderBy := "ORDER BY i.created_at DESC"
+	if filter.OrderBy == "created_at" {
+		orderBy = "ORDER BY i.created_at ASC"
+	}
+
+	if filter.GroupBy != "" {
+		return s.groupItems(ctx, projectID, filter, baseQuery, args, argIdx, orderBy)
+	}
+
+	var total int
+	if err := s.Pool.QueryRow(ctx, `SELECT COUNT(*)`+baseQuery, args...).Scan(&total); err != nil {
+		return Page{}, fmt.Errorf("count work items: %w", err)
+	}
+
+	query := `SELECT ` + itemColumns + baseQuery + ` ` + orderBy + fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
+	args = append(args, filter.Limit, filter.Offset)
+
+	rows, err := s.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return Page{}, fmt.Errorf("list work items: %w", err)
+	}
+	defer rows.Close()
+	items := make([]Item, 0, filter.Limit)
+	for rows.Next() {
+		item, scanErr := scan(rows)
+		if scanErr != nil {
+			return Page{}, fmt.Errorf("scan work item: %w", scanErr)
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return Page{}, fmt.Errorf("iterate work items: %w", err)
+	}
+	expanded, err := expandItems(ctx, s.Pool, items, filter.Expand)
+	if err != nil {
+		return Page{}, err
+	}
+	return makePage(expanded, total, filter.Limit, filter.Offset), nil
+}
+
+func (s PostgreSQLStore) GetPublic(ctx context.Context, projectID, issueID, expand string) (Item, error) {
+	item, err := scan(s.Pool.QueryRow(ctx, `SELECT `+itemColumns+` FROM issues i JOIN states st ON st.id=i.state_id
+		WHERE i.project_id::text=$1 AND i.id::text=$2 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`, projectID, issueID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Item{}, ErrNotFound
+	}
+	expanded, err := expandItems(ctx, s.Pool, []Item{item}, expand)
+	if err != nil {
+		return Item{}, err
+	}
+	return expanded[0], nil
+}
+
 type rowScanner interface{ Scan(...any) error }
 
 func scan(row rowScanner) (Item, error) {

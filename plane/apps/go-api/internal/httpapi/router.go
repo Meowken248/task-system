@@ -112,6 +112,7 @@ type Dependencies struct {
 	WorkspaceSlugCheck       http.Handler
 	Pages                    http.Handler
 	DraftIssues              http.Handler
+	Space                    http.Handler
 	Version                  string
 	LegacyAPIURL             string
 	GoWorkersEnabled         bool
@@ -350,6 +351,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	if deps.Instances != nil {
 		mux.Handle("/api/instances/", deps.Instances)
+	}
+	if deps.Space != nil {
+		mux.Handle("/api/public/", deps.Space)
 	}
 	if deps.WorkspaceSlugCheck != nil {
 		mux.Handle("GET /api/workspace-slug-check/", deps.WorkspaceSlugCheck)

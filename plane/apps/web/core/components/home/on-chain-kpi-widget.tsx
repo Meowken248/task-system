@@ -46,9 +46,10 @@ function shortHash(value?: string): string {
 }
 
 function taskProgress(task?: TaskOption, onChainProgress?: Readonly<Record<string, number>>): number {
-  if (task && typeof onChainProgress?.[task.id] === "number") return onChainProgress[task.id];
+  const contractProgress = task && typeof onChainProgress?.[task.id] === "number" ? onChainProgress[task.id] : 0;
   const report = task?.records.find((record) => record.event_type === "daily_report");
-  return typeof report?.progress === "number" ? report.progress : 0;
+  const localProgress = typeof report?.progress === "number" ? report.progress : 0;
+  return Math.max(contractProgress, localProgress);
 }
 
 function aggregateKpi(tasks: TaskOption[], onChainProgress?: Readonly<Record<string, number>>): AggregateKpi {

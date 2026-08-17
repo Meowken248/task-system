@@ -151,7 +151,7 @@ export function OnChainTaskPanel({
       console.warn("Không gửi được báo cáo on-chain; lưu báo cáo trên Plane.", error);
       try {
         await saveOfflineReport(
-          "Đã lưu báo cáo trên Plane. Blockchain chưa sẵn sàng nên báo cáo này chưa được ghi on-chain."
+          "Đã lưu báo cáo trên Plane."
         );
       } catch (localError) {
         setStatus(localError instanceof Error ? localError.message : "Không thể lưu báo cáo trên Plane.");
@@ -164,85 +164,85 @@ export function OnChainTaskPanel({
   const reportDialog =
     typeof document !== "undefined"
       ? createPortal(
-          <dialog
-            ref={dialogRef}
-            className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-subtle bg-surface-1 p-0 text-primary shadow-raised-200 backdrop:bg-black/80 backdrop:backdrop-blur-sm"
-            onCancel={(event) => {
-              event.preventDefault();
-              closeReport();
-            }}
-            onClose={() => setIsReportOpen(false)}
-          >
-            <div className="pointer-events-auto relative isolate bg-surface-1 p-5">
-              <div className="mb-4 text-16 font-semibold text-primary">Báo cáo cuối ngày</div>
-              <div className="space-y-4">
-                <textarea
-                  className="focus:border-accent min-h-24 w-full resize-y rounded-md border border-subtle bg-layer-1 p-3 text-13 text-primary outline-none"
-                  placeholder="Hôm nay làm gì?"
-                  value={work}
-                  onChange={(event) => setWork(event.target.value)}
-                />
-                <textarea
-                  className="focus:border-accent min-h-20 w-full resize-y rounded-md border border-subtle bg-layer-1 p-3 text-13 text-primary outline-none"
-                  placeholder="Khó khăn"
-                  value={difficulty}
-                  onChange={(event) => setDifficulty(event.target.value)}
-                />
-                <input
-                  className="focus:border-accent w-full rounded-md border border-subtle bg-layer-1 px-3 py-2 text-13 text-primary outline-none"
-                  placeholder="Evidence URL / mã file"
-                  value={evidence}
-                  onChange={(event) => setEvidence(event.target.value)}
-                />
-                <div className="rounded-md border border-subtle bg-layer-1 p-3">
-                  <label htmlFor="daily-report-progress" className="block text-12 font-medium text-secondary">
-                    Tiến độ: {progress}%
-                    {subTaskStats?.activeCount
-                      ? ` · ${subTaskStats.completedCount}/${subTaskStats.activeCount} sub-task hoàn thành`
-                      : ""}
-                  </label>
-                  {subTaskStats?.activeCount ? (
-                    <div className="mt-3">
-                      <div className="h-2 overflow-hidden rounded-full bg-layer-3">
-                        <div
-                          className="h-full rounded-full bg-accent-primary transition-[width]"
-                          style={{ width: `${progress}%` }}
-                        />
-                      </div>
-                      <p className="mt-2 text-11 text-tertiary">
-                        Tiến độ task cha được tự động tính từ các task con và không thể kéo thủ công.
-                      </p>
+        <dialog
+          ref={dialogRef}
+          className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-subtle bg-surface-1 p-0 text-primary shadow-raised-200 backdrop:bg-black/80 backdrop:backdrop-blur-sm"
+          onCancel={(event) => {
+            event.preventDefault();
+            closeReport();
+          }}
+          onClose={() => setIsReportOpen(false)}
+        >
+          <div className="pointer-events-auto relative isolate bg-surface-1 p-5">
+            <div className="mb-4 text-16 font-semibold text-primary">Báo cáo cuối ngày</div>
+            <div className="space-y-4">
+              <textarea
+                className="focus:border-accent min-h-24 w-full resize-y rounded-md border border-subtle bg-layer-1 p-3 text-13 text-primary outline-none"
+                placeholder="Hôm nay làm gì?"
+                value={work}
+                onChange={(event) => setWork(event.target.value)}
+              />
+              <textarea
+                className="focus:border-accent min-h-20 w-full resize-y rounded-md border border-subtle bg-layer-1 p-3 text-13 text-primary outline-none"
+                placeholder="Khó khăn"
+                value={difficulty}
+                onChange={(event) => setDifficulty(event.target.value)}
+              />
+              <input
+                className="focus:border-accent w-full rounded-md border border-subtle bg-layer-1 px-3 py-2 text-13 text-primary outline-none"
+                placeholder="Evidence URL / mã file"
+                value={evidence}
+                onChange={(event) => setEvidence(event.target.value)}
+              />
+              <div className="rounded-md border border-subtle bg-layer-1 p-3">
+                <label htmlFor="daily-report-progress" className="block text-12 font-medium text-secondary">
+                  Tiến độ: {progress}%
+                  {subTaskStats?.activeCount
+                    ? ` · ${subTaskStats.completedCount}/${subTaskStats.activeCount} sub-task hoàn thành`
+                    : ""}
+                </label>
+                {subTaskStats?.activeCount ? (
+                  <div className="mt-3">
+                    <div className="h-2 overflow-hidden rounded-full bg-layer-3">
+                      <div
+                        className="h-full rounded-full bg-accent-primary transition-[width]"
+                        style={{ width: `${progress}%` }}
+                      />
                     </div>
-                  ) : (
-                    <input
-                      id="daily-report-progress"
-                      className="accent-blue-500 pointer-events-auto mt-3 block h-6 w-full cursor-pointer"
-                      type="range"
-                      min="0"
-                      max="100"
-                      step="1"
-                      value={progress}
-                      onInput={(event) => setProgress(Number(event.currentTarget.value))}
-                      onChange={(event) => setProgress(Number(event.currentTarget.value))}
-                    />
-                  )}
-                </div>
+                    <p className="mt-2 text-11 text-tertiary">
+                      Tiến độ task cha được tự động tính từ các task con và không thể kéo thủ công.
+                    </p>
+                  </div>
+                ) : (
+                  <input
+                    id="daily-report-progress"
+                    className="accent-blue-500 pointer-events-auto mt-3 block h-6 w-full cursor-pointer"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={progress}
+                    onInput={(event) => setProgress(Number(event.currentTarget.value))}
+                    onChange={(event) => setProgress(Number(event.currentTarget.value))}
+                  />
+                )}
               </div>
-              {status && (
-                <div className="mt-4 rounded-md bg-layer-2 px-3 py-2 text-11 break-all text-secondary">{status}</div>
-              )}
             </div>
-            <div className="pointer-events-auto sticky bottom-0 flex items-center justify-end gap-2 border-t border-subtle bg-surface-1 px-5 py-4">
-              <Button variant="secondary" size="sm" disabled={submitting} onClick={closeReport}>
-                Hủy
-              </Button>
-              <Button variant="primary" size="sm" loading={submitting} onClick={() => void submitReport()}>
-                Xác nhận
-              </Button>
-            </div>
-          </dialog>,
-          document.body
-        )
+            {status && (
+              <div className="mt-4 rounded-md bg-layer-2 px-3 py-2 text-11 break-all text-secondary">{status}</div>
+            )}
+          </div>
+          <div className="pointer-events-auto sticky bottom-0 flex items-center justify-end gap-2 border-t border-subtle bg-surface-1 px-5 py-4">
+            <Button variant="secondary" size="sm" disabled={submitting} onClick={closeReport}>
+              Hủy
+            </Button>
+            <Button variant="primary" size="sm" loading={submitting} onClick={() => void submitReport()}>
+              Xác nhận
+            </Button>
+          </div>
+        </dialog>,
+        document.body
+      )
       : null;
 
   return (
@@ -252,8 +252,8 @@ export function OnChainTaskPanel({
           <div className="text-13 font-semibold text-primary">MetaNode FIAI</div>
           <div className="text-11 text-tertiary">
             {isOnChainTaskSyncEnabled()
-              ? "Ưu tiên xác thực bằng contract; nếu blockchain lỗi, báo cáo vẫn được lưu trên Plane."
-              : "Blockchain chưa sẵn sàng; báo cáo vẫn được lưu trên Plane."}
+              ? ""
+              : ""}
           </div>
         </div>
         <Button

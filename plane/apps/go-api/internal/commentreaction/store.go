@@ -113,6 +113,28 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	return items, rows.Err()
 }
 
+func (s PostgreSQLStore) ListPublic(ctx context.Context, projectID, commentID string) ([]ReactionItem, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT `+reactionCols+`
+		FROM comment_reactions r
+		JOIN users u ON u.id = r.actor_id
+		WHERE r.project_id::text=$1 AND r.comment_id::text=$2 AND r.deleted_at IS NULL
+		ORDER BY r.created_at ASC`, projectID, commentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []ReactionItem
+	for rows.Next() {
+		item, scanErr := scanReaction(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug, projectID, commentID string, input WritePayload) (ReactionItem, error) {
 	identity, err := s.writeIdentity(ctx, sessionKey, slug, projectID)
 	if err != nil {
