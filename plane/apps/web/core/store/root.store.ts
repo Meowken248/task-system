@@ -104,7 +104,7 @@ export class CoreRootStore {
 
   constructor() {
     this.router = new RouterStore();
-    this.commandPalette = new CommandPaletteStore();
+    this.commandPalette = new CommandPaletteStore(this as unknown as RootStore);
     this.instance = new InstanceStore();
     this.user = new UserStore(this as unknown as RootStore);
     this.theme = new ThemeStore();

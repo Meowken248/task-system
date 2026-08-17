@@ -84,6 +84,7 @@ type Store interface {
 	ListProjectFavoritesForSession(ctx context.Context, sessionKey, slug, projectID, entityType string) ([]FavoriteItem, error)
 	CreateProjectFavoriteForSession(ctx context.Context, sessionKey, slug, projectID, entityType, entityIdentifier string) error
 	DeleteProjectFavoriteForSession(ctx context.Context, sessionKey, slug, projectID, entityType, entityIdentifier string) error
+	ListWorkspaceFavoritesForSession(ctx context.Context, sessionKey, slug, entityType string) ([]FavoriteItem, error)
 	Available() bool
 }
 
@@ -464,4 +465,29 @@ func (s PostgreSQLStore) DeleteProjectFavoriteForSession(ctx context.Context, se
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s PostgreSQLStore) ListWorkspaceFavoritesForSession(ctx context.Context, sessionKey, slug, entityType string) ([]FavoriteItem, error) {
+	identity, err := s.writeIdentity(ctx, sessionKey, slug)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.Pool.Query(ctx, `SELECT `+favColumns+` FROM user_favorites f
+		WHERE f.user_id::text=$1 AND f.workspace_id::text=$2 AND f.entity_type=$3 AND f.deleted_at IS NULL
+		ORDER BY f.sequence ASC, f.created_at DESC`, identity.UserID, identity.WorkspaceID, entityType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []FavoriteItem
+	for rows.Next() {
+		item, scanErr := scanFavorite(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }

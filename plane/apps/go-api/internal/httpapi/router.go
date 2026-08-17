@@ -41,6 +41,10 @@ type Dependencies struct {
 	WorkspaceThemes          http.Handler
 	WorkspaceHomePreferences http.Handler
 	WorkspaceUserLinks       http.Handler
+	WorkspaceUserStats       http.Handler
+	WorkspaceUserProfile     http.Handler
+	WorkspaceUserActivity    http.Handler
+	WorkspaceUserIssues      http.Handler
 	ProjectIdentifiers       http.Handler
 	UserProperties           http.Handler
 	ProjectUserProperties    http.Handler
@@ -48,7 +52,17 @@ type Dependencies struct {
 	ModuleUserProperties     http.Handler
 	CurrentUser              http.Handler
 	UserProfile              http.Handler
+	UserAccounts             http.Handler
+	UserActivities           http.Handler
+	UserActivityGraph        http.Handler
+	UserEmail                http.Handler
+	UserInstanceAdmin        http.Handler
+	UserIssuesCompletedGraph http.Handler
 	UserSettings             http.Handler
+	UserSession              http.Handler
+	UpdateUserOnBoarded      http.Handler
+	UpdateUserTourCompleted  http.Handler
+	UserNotificationPreferences http.Handler
 	ProjectsLite             http.Handler
 	Projects                 http.Handler
 	Project                  http.Handler
@@ -58,6 +72,8 @@ type Dependencies struct {
 	ProjectMemberMe          http.Handler
 	WorkspaceProjectMembers  http.Handler
 	ProjectUserViews         http.Handler
+	UserProjectRoles         http.Handler
+	UserProjectInvitations   http.Handler
 	ProjectDeployBoards      http.Handler
 	Labels                   http.Handler
 	Issues                   http.Handler
@@ -73,6 +89,7 @@ type Dependencies struct {
 	ProjectFavoriteCycles    http.Handler
 	ProjectFavoriteModules   http.Handler
 	ProjectFavoriteViews     http.Handler
+	WorkspaceProjectFavorites http.Handler
 	Stickies                 http.Handler
 	Cycles                   http.Handler
 	CycleIssues              http.Handler
@@ -392,7 +409,18 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("PATCH /api/workspaces/{slug}/workspace-user-links/{id}/", deps.WorkspaceUserLinks)
 		mux.Handle("DELETE /api/workspaces/{slug}/workspace-user-links/{id}/", deps.WorkspaceUserLinks)
 	}
-
+	if deps.WorkspaceUserStats != nil {
+		mux.Handle("GET /api/workspaces/{slug}/user-stats/{user_id}/", deps.WorkspaceUserStats)
+	}
+	if deps.WorkspaceUserProfile != nil {
+		mux.Handle("GET /api/workspaces/{slug}/user-profile/{user_id}/", deps.WorkspaceUserProfile)
+	}
+	if deps.WorkspaceUserActivity != nil {
+		mux.Handle("GET /api/workspaces/{slug}/user-activity/{user_id}/", deps.WorkspaceUserActivity)
+	}
+	if deps.WorkspaceUserIssues != nil {
+		mux.Handle("GET /api/workspaces/{slug}/user-issues/{user_id}/", deps.WorkspaceUserIssues)
+	}
 	if deps.WorkspaceMembers != nil {
 		mux.Handle("GET /api/workspaces/{slug}/members/", deps.WorkspaceMembers)
 		mux.Handle("GET /api/workspaces/{slug}/members/{member_id}/", deps.WorkspaceMembers)
@@ -422,6 +450,13 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.UserWorkspaceInvitations != nil {
 		mux.Handle("GET /api/users/me/workspaces/invitations/{$}", deps.UserWorkspaceInvitations)
 		mux.Handle("POST /api/users/me/workspaces/invitations/{$}", deps.UserWorkspaceInvitations)
+	}
+	if deps.UserProjectRoles != nil {
+		mux.Handle("GET /api/users/me/workspaces/{slug}/project-roles/", deps.UserProjectRoles)
+	}
+	if deps.UserProjectInvitations != nil {
+		mux.Handle("GET /api/users/me/workspaces/{slug}/projects/invitations/", deps.UserProjectInvitations)
+		mux.Handle("POST /api/users/me/workspaces/{slug}/projects/invitations/", deps.UserProjectInvitations)
 	}
 	if deps.APITokens != nil {
 		mux.Handle("GET /api/users/api-tokens/", deps.APITokens)
@@ -458,6 +493,39 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.UserProfile != nil {
 		mux.Handle("GET /api/users/me/profile/", deps.UserProfile)
 		mux.Handle("PATCH /api/users/me/profile/", deps.UserProfile)
+	}
+	if deps.UserAccounts != nil {
+		mux.Handle("GET /api/users/me/accounts/", deps.UserAccounts)
+		mux.Handle("DELETE /api/users/me/accounts/{pk}/", deps.UserAccounts)
+	}
+	if deps.UserActivities != nil {
+		mux.Handle("GET /api/users/me/activities/", deps.UserActivities)
+	}
+	if deps.UserActivityGraph != nil {
+		mux.Handle("GET /api/users/me/workspaces/{slug}/activity-graph/", deps.UserActivityGraph)
+	}
+	if deps.UserIssuesCompletedGraph != nil {
+		mux.Handle("GET /api/users/me/workspaces/{slug}/issues-completed-graph/", deps.UserIssuesCompletedGraph)
+	}
+	if deps.UserEmail != nil {
+		mux.Handle("POST /api/users/me/email/generate-code/", deps.UserEmail)
+		mux.Handle("PATCH /api/users/me/email/", deps.UserEmail)
+	}
+	if deps.UserInstanceAdmin != nil {
+		mux.Handle("GET /api/users/me/instance-admin/", deps.UserInstanceAdmin)
+	}
+	if deps.UserSession != nil {
+		mux.Handle("GET /api/users/session/", deps.UserSession)
+	}
+	if deps.UpdateUserOnBoarded != nil {
+		mux.Handle("PATCH /api/users/me/onboard/", deps.UpdateUserOnBoarded)
+	}
+	if deps.UpdateUserTourCompleted != nil {
+		mux.Handle("PATCH /api/users/me/tour-completed/", deps.UpdateUserTourCompleted)
+	}
+	if deps.UserNotificationPreferences != nil {
+		mux.Handle("GET /api/users/me/notification-preferences/", deps.UserNotificationPreferences)
+		mux.Handle("PATCH /api/users/me/notification-preferences/", deps.UserNotificationPreferences)
 	}
 	if deps.UserSettings != nil {
 		mux.Handle("GET /api/users/me/settings/", deps.UserSettings)
@@ -498,6 +566,10 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{$}", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/{$}", deps.Favorites)
 		mux.Handle("/api/workspaces/{slug}/user-favorites/{favorite_id}/group/{$}", deps.Favorites)
+	}
+	if deps.WorkspaceProjectFavorites != nil {
+		mux.Handle("/api/workspaces/{slug}/user-favorite-projects/{$}", deps.WorkspaceProjectFavorites)
+		mux.Handle("/api/workspaces/{slug}/user-favorite-projects/{project_id}/{$}", deps.WorkspaceProjectFavorites)
 	}
 	if deps.ProjectFavoriteCycles != nil {
 		mux.Handle("/api/workspaces/{slug}/projects/{project_id}/user-favorite-cycles/{$}", deps.ProjectFavoriteCycles)

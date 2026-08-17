@@ -41,6 +41,7 @@ import (
 	"github.com/makeplane/plane/apps/go-api/internal/project"
 	"github.com/makeplane/plane/apps/go-api/internal/projectidentifier"
 	"github.com/makeplane/plane/apps/go-api/internal/projectmember"
+	"github.com/makeplane/plane/apps/go-api/internal/projectinvite"
 	"github.com/makeplane/plane/apps/go-api/internal/reaction"
 	"github.com/makeplane/plane/apps/go-api/internal/recentvisit"
 	"github.com/makeplane/plane/apps/go-api/internal/relation"
@@ -259,7 +260,37 @@ func main() {
 			UserProfile: user.ProfileHandler{
 				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
+			UserAccounts: user.AccountHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UserActivities: user.UserActivityHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UserActivityGraph: user.UserActivityGraphHandler{
+				Store: nil, SessionCookieName: cfg.SessionCookie, // Mocked for now
+			},
+			UserIssuesCompletedGraph: user.UserIssuesCompletedGraphHandler{
+				Store: nil, SessionCookieName: cfg.SessionCookie, // Mocked for now
+			},
+			UserEmail: user.EmailHandler{
+				SessionCookieName: cfg.SessionCookie, // Mocked for now
+			},
+			UserInstanceAdmin: user.InstanceAdminHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
 			UserSettings: user.SettingsHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UserSession: user.SessionHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UpdateUserOnBoarded: user.OnBoardedHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UpdateUserTourCompleted: user.TourCompletedHandler{
+				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UserNotificationPreferences: user.NotificationPreferencesHandler{
 				Store: user.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			ProjectsLite: project.Handler{
@@ -307,6 +338,12 @@ func main() {
 			},
 			WorkspaceProjectMembers: projectmember.WorkspaceProjectMembersHandler{
 				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UserProjectRoles: projectmember.UserProjectRolesHandler{
+				Store: projectmember.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			UserProjectInvitations: projectinvite.Handler{
+				Store: projectinvite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
 			},
 			Notification: notification.Handler{Store: notification.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Estimate:     estimate.Handler{Store: estimate.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
@@ -365,6 +402,21 @@ func main() {
 			},
 			ProjectFavoriteViews: favorite.ProjectFavoriteHandler{
 				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie, EntityType: "view",
+			},
+			WorkspaceProjectFavorites: favorite.WorkspaceProjectFavoriteHandler{
+				Store: favorite.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
+			},
+			WorkspaceUserStats: workspace.UserStatsHandler{
+				Store: nil, SessionCookieName: cfg.SessionCookie, // Mocked for now
+			},
+			WorkspaceUserProfile: workspace.UserProfileHandler{
+				Store: nil, SessionCookieName: cfg.SessionCookie, // Mocked for now
+			},
+			WorkspaceUserActivity: workspace.UserActivityHandler{
+				Store: nil, SessionCookieName: cfg.SessionCookie, // Mocked for now
+			},
+			WorkspaceUserIssues: workspace.UserIssuesHandler{
+				Store: nil, SessionCookieName: cfg.SessionCookie, // Mocked for now
 			},
 			ProjectIdentifiers: projectidentifier.Handler{
 				Store: &projectidentifier.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,

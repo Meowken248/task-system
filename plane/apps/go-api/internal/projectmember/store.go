@@ -472,3 +472,53 @@ func (s PostgreSQLStore) UpdateViewProps(ctx context.Context, sessionKey, slug, 
 	}
 	return nil
 }
+
+func (s PostgreSQLStore) UserProjectRoles(ctx context.Context, sessionKey, slug string) (map[string]int16, error) {
+	if s.Pool == nil {
+		return nil, errors.New("project member database unavailable")
+	}
+	if sessionKey == "" {
+		return nil, ErrUnauthorized
+	}
+
+	var userID string
+	err := s.Pool.QueryRow(ctx, `SELECT user_id FROM sessions WHERE session_key = $1 AND expire_date > NOW()`, sessionKey).Scan(&userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUnauthorized
+		}
+		return nil, fmt.Errorf("check session: %w", err)
+	}
+
+	rows, err := s.Pool.Query(ctx, `
+		SELECT pm.project_id::text, pm.role
+		FROM project_members pm
+		JOIN workspace_members wm ON wm.workspace_id = pm.workspace_id AND wm.member_id = pm.member_id
+		JOIN workspaces w ON w.id = pm.workspace_id
+		WHERE w.slug = $1
+		  AND pm.member_id::text = $2
+		  AND pm.is_active = TRUE
+		  AND pm.deleted_at IS NULL
+		  AND wm.is_active = TRUE
+		  AND wm.deleted_at IS NULL
+	`, slug, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query user project roles: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int16)
+	for rows.Next() {
+		var projectID string
+		var role int16
+		if err := rows.Scan(&projectID, &role); err != nil {
+			return nil, fmt.Errorf("scan user project role: %w", err)
+		}
+		result[projectID] = role
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate user project roles: %w", err)
+	}
+	return result, nil
+}
+

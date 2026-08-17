@@ -195,3 +195,77 @@ func (h ProjectFavoriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, statusCode, payload)
 }
+
+type WorkspaceProjectFavoriteHandler struct {
+	Store             Store
+	SessionCookieName string
+}
+
+func (h WorkspaceProjectFavoriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil || !h.Store.Available() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "favorite storage is unavailable"})
+		return
+	}
+	cookieName := h.SessionCookieName
+	if cookieName == "" {
+		cookieName = "sessionid"
+	}
+	sessionKey := ""
+	if cookie, err := r.Cookie(cookieName); err == nil {
+		sessionKey = cookie.Value
+	}
+	slug := r.PathValue("slug")
+	projectID := r.PathValue("project_id") // for DELETE /user-favorite-projects/{project_id}/
+
+	var payload any
+	var err error
+	statusCode := http.StatusOK
+
+	switch r.Method {
+	case http.MethodGet:
+		payload, err = h.Store.ListWorkspaceFavoritesForSession(r.Context(), sessionKey, slug, "project")
+	case http.MethodPost:
+		var input struct {
+			Project string `json:"project"`
+		}
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		if decodeErr := decoder.Decode(&input); decodeErr != nil || input.Project == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid payload. Project ID required."})
+			return
+		}
+		err = h.Store.CreateProjectFavoriteForSession(r.Context(), sessionKey, slug, input.Project, "project", input.Project)
+		statusCode = http.StatusNoContent
+	case http.MethodDelete:
+		if projectID == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project id required"})
+			return
+		}
+		err = h.Store.DeleteProjectFavoriteForSession(r.Context(), sessionKey, slug, projectID, "project", projectID)
+		statusCode = http.StatusNoContent
+	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUnauthorized):
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Authentication credentials were not provided."})
+		case errors.Is(err, ErrForbidden):
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "You do not have permission"})
+		case errors.Is(err, ErrNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Favorite does not exist"})
+		default:
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "favorite storage is unavailable"})
+		}
+		return
+	}
+
+	if statusCode == http.StatusNoContent {
+		w.WriteHeader(statusCode)
+		return
+	}
+	writeJSON(w, statusCode, payload)
+}
+

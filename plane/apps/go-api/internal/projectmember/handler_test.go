@@ -42,6 +42,19 @@ func (s readerStub) UpdateViewProps(context.Context, string, string, string, map
 	return s.err
 }
 
+func (s readerStub) UserProjectRoles(ctx context.Context, sessionKey, slug string) (map[string]int16, error) {
+	return map[string]int16{"project-1": 20}, s.err
+}
+
+func TestUserProjectRoles(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/project-roles/", nil)
+	res := httptest.NewRecorder()
+	UserProjectRolesHandler{Store: readerStub{}}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", res.Code)
+	}
+}
+
 func TestList(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/members/", nil)
 	res := httptest.NewRecorder()

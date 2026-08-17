@@ -210,3 +210,50 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }
+
+type UserProjectRolesStore interface {
+	UserProjectRoles(ctx context.Context, sessionKey, slug string) (map[string]int16, error)
+}
+
+type UserProjectRolesHandler struct {
+	Store             UserProjectRolesStore
+	SessionCookieName string
+}
+
+func (h UserProjectRolesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "project member storage is unavailable"})
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"detail": "Method not allowed"})
+		return
+	}
+	cookieName := h.SessionCookieName
+	if cookieName == "" {
+		cookieName = "sessionid"
+	}
+	sessionKey := ""
+	if cookie, err := r.Cookie(cookieName); err == nil {
+		sessionKey = cookie.Value
+	}
+
+	payload, err := h.Store.UserProjectRoles(r.Context(), sessionKey, r.PathValue("slug"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUnauthorized):
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Authentication credentials were not provided."})
+		case errors.Is(err, ErrForbidden):
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "You do not have permission"})
+		default:
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "project member storage is unavailable"})
+		}
+		return
+	}
+
+	w.Header().Set("Cache-Control", "private, max-age=10")
+	w.Header().Add("Vary", "Cookie")
+	writeJSON(w, http.StatusOK, payload)
+}
+

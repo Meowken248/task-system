@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,15 @@ func (s storeStub) DeleteProjectFavoriteForSession(ctx context.Context, sessionK
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s storeStub) ListWorkspaceFavoritesForSession(ctx context.Context, sessionKey, slug, entityType string) ([]FavoriteItem, error) {
+	if sessionKey == "unauth" {
+		return nil, ErrUnauthorized
+	}
+	return []FavoriteItem{
+		{ID: "fav-1", EntityType: entityType},
+	}, nil
 }
 
 func (s storeStub) Available() bool { return s.poolMock }
@@ -171,3 +181,64 @@ func TestProjectFavoriteHandler_Post_View(t *testing.T) {
 		t.Errorf("expected 204, got %d", w.Code)
 	}
 }
+
+func TestWorkspaceProjectFavoriteHandler_Get(t *testing.T) {
+	handler := WorkspaceProjectFavoriteHandler{
+		Store:             storeStub{poolMock: true},
+		SessionCookieName: "sessionid",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/test-slug/user-favorite-projects/", nil)
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "valid-session"})
+	req.SetPathValue("slug", "test-slug")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "fav-1") {
+		t.Errorf("expected body to contain fav-1, got %s", body)
+	}
+}
+
+func TestWorkspaceProjectFavoriteHandler_Post(t *testing.T) {
+	handler := WorkspaceProjectFavoriteHandler{
+		Store:             storeStub{poolMock: true},
+		SessionCookieName: "sessionid",
+	}
+
+	body := []byte(`{"project": "proj-id-123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/test-slug/user-favorite-projects/", bytes.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "valid-session"})
+	req.SetPathValue("slug", "test-slug")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", w.Code)
+	}
+}
+
+func TestWorkspaceProjectFavoriteHandler_Delete(t *testing.T) {
+	handler := WorkspaceProjectFavoriteHandler{
+		Store:             storeStub{poolMock: true},
+		SessionCookieName: "sessionid",
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces/test-slug/user-favorite-projects/proj-id-123/", nil)
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "valid-session"})
+	req.SetPathValue("slug", "test-slug")
+	req.SetPathValue("project_id", "proj-id-123")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", w.Code)
+	}
+}
+

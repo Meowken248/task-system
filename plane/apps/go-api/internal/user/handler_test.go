@@ -56,6 +56,19 @@ func (s *readerStub) CurrentForSession(_ context.Context, session string) (map[s
 	return s.current, s.err
 }
 
+type notificationPreferencesStoreStub struct {
+	np  NotificationPreferences
+	err error
+}
+
+func (s *notificationPreferencesStoreStub) NotificationPreferencesForSession(_ context.Context, session string) (NotificationPreferences, error) {
+	return s.np, s.err
+}
+
+func (s *notificationPreferencesStoreStub) UpdateNotificationPreferencesForSession(_ context.Context, session string, payload map[string]any) (NotificationPreferences, error) {
+	return s.np, s.err
+}
+
 func TestHandlerReturnsCurrentUser(t *testing.T) {
 	store := &readerStub{current: map[string]any{"id": "user-id"}}
 	req := httptest.NewRequest(http.MethodGet, "/api/users/me/", nil)
@@ -162,3 +175,66 @@ func TestProfileAndSettingsRejectInvalidSession(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionHandler_Get(t *testing.T) {
+	store := &readerStub{current: map[string]any{"id": "user-123"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/users/session/", nil)
+	req.AddCookie(&http.Cookie{Name: "session-id", Value: "valid-session"})
+	res := httptest.NewRecorder()
+	SessionHandler{Store: store, SessionCookieName: "session-id"}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.Code)
+	}
+}
+
+func TestOnBoardedHandler_Patch(t *testing.T) {
+	store := &profileReaderStub{}
+	req := httptest.NewRequest(http.MethodPatch, "/api/users/me/onboard/", bytes.NewBufferString(`{"is_onboarded":true}`))
+	req.AddCookie(&http.Cookie{Name: "session-id", Value: "valid-session"})
+	res := httptest.NewRecorder()
+	OnBoardedHandler{Store: store, SessionCookieName: "session-id"}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.Code)
+	}
+	if val, ok := store.updated["is_onboarded"].(bool); !ok || !val {
+		t.Fatalf("expected is_onboarded=true in store update, got %v", store.updated)
+	}
+}
+
+func TestTourCompletedHandler_Patch(t *testing.T) {
+	store := &profileReaderStub{}
+	req := httptest.NewRequest(http.MethodPatch, "/api/users/me/tour-completed/", bytes.NewBufferString(`{"is_tour_completed":true}`))
+	req.AddCookie(&http.Cookie{Name: "session-id", Value: "valid-session"})
+	res := httptest.NewRecorder()
+	TourCompletedHandler{Store: store, SessionCookieName: "session-id"}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.Code)
+	}
+	if val, ok := store.updated["is_tour_completed"].(bool); !ok || !val {
+		t.Fatalf("expected is_tour_completed=true in store update, got %v", store.updated)
+	}
+}
+
+func TestNotificationPreferencesHandler_Get(t *testing.T) {
+	store := &notificationPreferencesStoreStub{np: NotificationPreferences{ID: "np-1", User: "user-1"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/users/me/notification-preferences/", nil)
+	req.AddCookie(&http.Cookie{Name: "session-id", Value: "valid-session"})
+	res := httptest.NewRecorder()
+	NotificationPreferencesHandler{Store: store, SessionCookieName: "session-id"}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.Code)
+	}
+}
+
+func TestNotificationPreferencesHandler_Patch(t *testing.T) {
+	store := &notificationPreferencesStoreStub{np: NotificationPreferences{ID: "np-1", User: "user-1", Comment: false}}
+	req := httptest.NewRequest(http.MethodPatch, "/api/users/me/notification-preferences/", bytes.NewBufferString(`{"comment":false}`))
+	req.AddCookie(&http.Cookie{Name: "session-id", Value: "valid-session"})
+	res := httptest.NewRecorder()
+	NotificationPreferencesHandler{Store: store, SessionCookieName: "session-id"}.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.Code)
+	}
+}
+
+

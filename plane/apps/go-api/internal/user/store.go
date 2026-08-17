@@ -421,3 +421,259 @@ func (s PostgreSQLStore) CurrentForSession(ctx context.Context, sessionKey strin
 		"metanode_wallet_address": wallet,
 	}, nil
 }
+
+func (s PostgreSQLStore) NotificationPreferencesForSession(ctx context.Context, sessionKey string) (NotificationPreferences, error) {
+	if s.Pool == nil {
+		return NotificationPreferences{}, errors.New("user database unavailable")
+	}
+	userID, err := s.authenticatedUserID(ctx, sessionKey)
+	if err != nil {
+		return NotificationPreferences{}, err
+	}
+
+	var np NotificationPreferences
+	err = s.Pool.QueryRow(ctx, `SELECT id::text, user_id::text, workspace_id::text, project_id::text, property_change, state_change, comment, mention, issue_completed 
+		FROM user_notification_preferences WHERE user_id::text = $1 AND workspace_id IS NULL AND project_id IS NULL LIMIT 1`, userID).Scan(
+			&np.ID, &np.User, &np.Workspace, &np.Project, &np.PropertyChange, &np.StateChange, &np.Comment, &np.Mention, &np.IssueCompleted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		np.ID = uuid.New().String()
+		np.User = userID
+		np.PropertyChange = true
+		np.StateChange = true
+		np.Comment = true
+		np.Mention = true
+		np.IssueCompleted = true
+		_, err = s.Pool.Exec(ctx, `INSERT INTO user_notification_preferences (id, user_id, workspace_id, project_id, property_change, state_change, comment, mention, issue_completed, created_at, updated_at) 
+			VALUES ($1::uuid, $2::uuid, NULL, NULL, TRUE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())`, np.ID, userID)
+		if err != nil {
+			return NotificationPreferences{}, fmt.Errorf("create default notification preferences: %w", err)
+		}
+		return np, nil
+	}
+	return np, err
+}
+
+func (s PostgreSQLStore) UpdateNotificationPreferencesForSession(ctx context.Context, sessionKey string, payload map[string]any) (NotificationPreferences, error) {
+	if s.Pool == nil {
+		return NotificationPreferences{}, errors.New("user database unavailable")
+	}
+	_, err := s.authenticatedUserID(ctx, sessionKey)
+	if err != nil {
+		return NotificationPreferences{}, err
+	}
+
+	np, err := s.NotificationPreferencesForSession(ctx, sessionKey)
+	if err != nil {
+		return NotificationPreferences{}, err
+	}
+
+	sets := make([]string, 0, len(payload)+1)
+	args := make([]any, 0, len(payload)+1)
+	fields := map[string]string{
+		"property_change": "property_change",
+		"state_change":    "state_change",
+		"comment":         "comment",
+		"mention":         "mention",
+		"issue_completed": "issue_completed",
+	}
+	for name, col := range fields {
+		if valVal, ok := payload[name]; ok {
+			val, okBool := valVal.(bool)
+			if okBool {
+				args = append(args, val)
+				sets = append(sets, fmt.Sprintf("%s = $%d", col, len(args)))
+			}
+		}
+	}
+
+	if len(sets) > 0 {
+		sets = append(sets, "updated_at = NOW()")
+		args = append(args, np.ID)
+		query := "UPDATE user_notification_preferences SET " + strings.Join(sets, ", ") + fmt.Sprintf(" WHERE id::text = $%d", len(args))
+		_, err = s.Pool.Exec(ctx, query, args...)
+		if err != nil {
+			return NotificationPreferences{}, fmt.Errorf("update notification preferences: %w", err)
+		}
+	}
+
+	return s.NotificationPreferencesForSession(ctx, sessionKey)
+}
+
+func (s PostgreSQLStore) AccountsForSession(ctx context.Context, sessionKey string) ([]Account, error) {
+	if s.Pool == nil {
+		return nil, errors.New("user database unavailable")
+	}
+	userID, err := s.authenticatedUserID(ctx, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT 
+			id::text, 
+			COALESCE(created_by_id::text, ''), 
+			COALESCE(updated_by_id::text, ''), 
+			created_at, 
+			updated_at, 
+			deleted_at,
+			provider_account_id, 
+			provider, 
+			access_token, 
+			access_token_expired_at, 
+			refresh_token, 
+			refresh_token_expired_at, 
+			last_connected_at, 
+			id_token, 
+			metadata, 
+			user_id::text
+		FROM accounts 
+		WHERE user_id = $1
+		ORDER BY created_at DESC`
+		
+	rows, err := s.Pool.Query(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []Account
+	for rows.Next() {
+		var a Account
+		var metadataStr *string
+		err := rows.Scan(
+			&a.ID,
+			&a.CreatedBy,
+			&a.UpdatedBy,
+			&a.CreatedAt,
+			&a.UpdatedAt,
+			&a.DeletedAt,
+			&a.ProviderAccountID,
+			&a.Provider,
+			&a.AccessToken,
+			&a.AccessTokenExpiredAt,
+			&a.RefreshToken,
+			&a.RefreshTokenExpiredAt,
+			&a.LastConnectedAt,
+			&a.IDToken,
+			&metadataStr,
+			&a.User,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if metadataStr != nil && *metadataStr != "" {
+			_ = json.Unmarshal([]byte(*metadataStr), &a.Metadata)
+		}
+		if a.Metadata == nil {
+			a.Metadata = make(map[string]any)
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts, nil
+}
+
+func (s PostgreSQLStore) DeleteAccountForSession(ctx context.Context, sessionKey string, accountID string) error {
+	if s.Pool == nil {
+		return errors.New("user database unavailable")
+	}
+	userID, err := s.authenticatedUserID(ctx, sessionKey)
+	if err != nil {
+		return err
+	}
+
+	query := `DELETE FROM accounts WHERE id = $1 AND user_id = $2`
+	_, err = s.Pool.Exec(ctx, query, accountID, userID)
+	return err
+}
+
+func (s PostgreSQLStore) IsInstanceAdminForSession(ctx context.Context, sessionKey string) (bool, error) {
+	if s.Pool == nil {
+		return false, errors.New("user database unavailable")
+	}
+	userID, err := s.authenticatedUserID(ctx, sessionKey)
+	if err != nil {
+		return false, err
+	}
+	
+	// Django: 
+	// instance = Instance.objects.first()
+	// is_admin = InstanceAdmin.objects.filter(instance=instance, user=request.user).exists()
+	
+	query := `
+		SELECT EXISTS (
+			SELECT 1 FROM instance_admins ia
+			JOIN instances i ON ia.instance_id = i.id
+			WHERE ia.user_id = $1
+			-- LIMIT 1 for instances is implied by the join or we can just check if any instance admin exists for this user
+		)
+	`
+	var isAdmin bool
+	err = s.Pool.QueryRow(ctx, query, userID).Scan(&isAdmin)
+	if err != nil {
+		return false, err
+	}
+	return isAdmin, nil
+}
+
+func (s PostgreSQLStore) UserActivitiesForSession(ctx context.Context, sessionKey string, limit int, offset int) ([]UserActivity, error) {
+	if s.Pool == nil {
+		return nil, errors.New("user database unavailable")
+	}
+	userID, err := s.authenticatedUserID(ctx, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT 
+			id::text, 
+			actor_id::text,
+			workspace_id::text,
+			project_id::text,
+			issue_id::text,
+			verb,
+			field,
+			old_value,
+			new_value,
+			comment,
+			issue_comment_id::text,
+			created_at,
+			updated_at
+		FROM issue_activities
+		WHERE actor_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3
+	`
+	rows, err := s.Pool.Query(ctx, query, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var activities []UserActivity
+	for rows.Next() {
+		var a UserActivity
+		err := rows.Scan(
+			&a.ID,
+			&a.Actor,
+			&a.Workspace,
+			&a.Project,
+			&a.Issue,
+			&a.Verb,
+			&a.Field,
+			&a.OldValue,
+			&a.NewValue,
+			&a.Comment,
+			&a.IssueCommentID,
+			&a.CreatedAt,
+			&a.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		activities = append(activities, a)
+	}
+	return activities, nil
+}
+
+
