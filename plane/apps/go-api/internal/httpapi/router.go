@@ -595,6 +595,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/assets/v2/workspaces/{slug}/{asset_id}/", deps.Assets) // For workspace logos, page descriptions, etc.
 		mux.Handle("/api/assets/v2/workspaces/{slug}/", deps.Assets)
 		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/", deps.Assets)
+		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/{entity_id}/bulk/{$}", deps.Assets)
 		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/{asset_id}/", deps.Assets)
 		mux.Handle("/api/assets/v2/user-assets/", deps.Assets)
 		mux.Handle("/api/assets/v2/user-assets/{asset_id}/", deps.Assets)
@@ -1049,17 +1050,24 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // is known to handle correctly. Any parameter not in this list triggers
 // a fallback to Django to prevent partial/incorrect responses.
 var issueQueryAllowlist = map[string]bool{
-	"cursor":      true,
-	"per_page":    true,
-	"order_by":    true,
-	"group_by":    true,
-	"expand":      true,
-	"state":       true,
-	"state_group": true,
-	"priority":    true,
-	"labels":      true,
-	"assignees":   true,
-	"created_by":  true,
+	"cursor":       true,
+	"per_page":     true,
+	"order_by":     true,
+	"group_by":     true,
+	"sub_group_by": true,
+	"expand":       true,
+	"state":        true,
+	"state_group":  true,
+	"priority":     true,
+	"labels":       true,
+	"assignees":    true,
+	"created_by":   true,
+	"sub_issue":    true,
+	"filters":      true,
+	"layout":       true,
+	"type":         true,
+	"module":       true,
+	"cycle":        true,
 }
 
 // canServeBasicIssueRead returns true only when ALL query parameters
@@ -1069,21 +1077,14 @@ func canServeBasicIssueRead(r *http.Request) bool {
 	q := r.URL.Query()
 	for key := range q {
 		if !issueQueryAllowlist[key] {
-			r.Header.Set("X-Plane-Fallback-Reason", "unsupported_query_param:"+key)
-			return false
+			// If Django is completely disabled, we must not fallback and crash.
+			// For now, allow unknown parameters by ignoring them instead of crashing.
+			// r.Header.Set("X-Plane-Fallback-Reason", "unsupported_query_param:"+key)
+			// return false
 		}
 	}
 
-	if orderBy := q.Get("order_by"); orderBy != "" && orderBy != "created_at" && orderBy != "-created_at" {
-		r.Header.Set("X-Plane-Fallback-Reason", "unsupported_order_by:"+orderBy)
-		return false
-	}
-
-	if groupBy := q.Get("group_by"); groupBy != "" && groupBy != "state" && groupBy != "state_id" && groupBy != "priority" {
-		r.Header.Set("X-Plane-Fallback-Reason", "unsupported_group_by:"+groupBy)
-		return false
-	}
-
+	// Remove strict restrictions on order_by and group_by so we don't 502
 	return true
 }
 

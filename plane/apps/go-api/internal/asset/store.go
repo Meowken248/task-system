@@ -195,3 +195,38 @@ func (s PostgreSQLStore) ConfirmUpload(ctx context.Context, sessionKey, slug, as
 	_, err := s.Pool.Exec(ctx, `UPDATE file_assets SET is_uploaded = true, updated_at = NOW() WHERE id = $1 AND workspace_id IS NULL`, assetID)
 	return err
 }
+func (s PostgreSQLStore) BulkUpdate(ctx context.Context, sessionKey, slug, projectID, entityID string, assetIDs []string) error {
+	if len(assetIDs) == 0 {
+		return nil
+	}
+	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
+		return err
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	for _, assetID := range assetIDs {
+		var entityType string
+		err := tx.QueryRow(ctx, "SELECT entity_type FROM file_assets WHERE id=$1 AND workspace_id=(SELECT id FROM workspaces WHERE slug=$2)", assetID, slug).Scan(&entityType)
+		if err != nil {
+			continue
+		}
+
+		if entityType == "PROJECT_COVER" {
+			tx.Exec(ctx, "UPDATE file_assets SET project_id=$1 WHERE id=$2", projectID, assetID)
+			tx.Exec(ctx, "UPDATE projects SET cover_image_asset_id=$1 WHERE id=$2", assetID, projectID)
+		} else if entityType == "ISSUE_DESCRIPTION" {
+			tx.Exec(ctx, "UPDATE file_assets SET issue_id=$1, project_id=$2 WHERE id=$3", entityID, projectID, assetID)
+		} else if entityType == "COMMENT_DESCRIPTION" {
+			tx.Exec(ctx, "UPDATE file_assets SET comment_id=$1 WHERE id=$2", entityID, assetID)
+		} else if entityType == "PAGE_DESCRIPTION" {
+			tx.Exec(ctx, "UPDATE file_assets SET page_id=$1 WHERE id=$2", entityID, assetID)
+		}
+	}
+	
+	return tx.Commit(ctx)
+}

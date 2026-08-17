@@ -47,6 +47,26 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.Copy(w, reader)
 
 	case http.MethodPost:
+		entityID := r.PathValue("entity_id")
+		if entityID != "" {
+			var req struct {
+				AssetIDs []string `json:"asset_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				log.Printf("[ASSET HANDLER ERROR] Bulk JSON decode: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := h.Store.BulkUpdate(r.Context(), sessionKey, slug, projectID, entityID, req.AssetIDs); err != nil {
+				log.Printf("[ASSET HANDLER ERROR] BulkUpdate: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"message": "Successfully updated assets."})
+			return
+		}
+
 		// V2 API uses JSON to request a presigned URL
 		if r.Header.Get("Content-Type") == "application/json" {
 			var req struct {
