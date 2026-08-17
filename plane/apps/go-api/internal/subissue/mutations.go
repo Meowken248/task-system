@@ -58,5 +58,14 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug,
 		return nil, err
 	}
 
-	return map[string]any{"message": "Sub-issues created successfully"}, nil
+	listRes, err := s.ListForSession(ctx, sessionKey, slug, projectID, issueID, "")
+	if err != nil {
+		return map[string]any{"message": "Sub-issues created successfully"}, nil
+	}
+
+	return map[string]any{
+		"message":            "Sub-issues created successfully",
+		"sub_issues":         listRes.SubIssues,
+		"state_distribution": listRes.StateDistribution,
+	}, nil
 }

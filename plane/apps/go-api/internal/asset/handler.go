@@ -35,6 +35,34 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if assetID == "" {
+			issueID := r.PathValue("issue_id")
+			if issueID != "" {
+				assets, err := h.Store.ListByIssue(r.Context(), slug, projectID, issueID)
+				if err != nil {
+					log.Printf("[ASSET HANDLER ERROR] ListByIssue: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				attachments := []map[string]any{}
+				for _, asset := range assets {
+					assetURL := asset.AssetURL_Helper(slug)
+					if assetURL == "" {
+						assetURL = asset.Asset
+					}
+					attachments = append(attachments, map[string]any{
+						"id":         asset.ID,
+						"attributes": asset.Attributes,
+						"asset_url":  assetURL,
+						"issue_id":   asset.IssueID,
+						"created_by": asset.UserID,
+						"updated_by": asset.UserID,
+						"updated_at": asset.CreatedAt,
+					})
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(attachments)
+				return
+			}
 			http.Error(w, "Asset ID required", http.StatusBadRequest)
 			return
 		}
@@ -106,7 +134,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				req.Type = "image/jpeg" // default
 			}
 
-			asset, uploadData, err := h.Store.CreatePresigned(r.Context(), sessionKey, slug, projectID, req.Name, req.Type, req.EntityType, req.Size, req.EntityIdentifier)
+			issueID := r.PathValue("issue_id")
+
+			asset, uploadData, err := h.Store.CreatePresigned(r.Context(), sessionKey, slug, projectID, req.Name, req.Type, req.EntityType, req.Size, req.EntityIdentifier, issueID)
 			if err != nil {
 				log.Printf("[ASSET HANDLER ERROR] CreatePresigned: %v", err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -117,12 +147,26 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if assetURL == "" {
 				assetURL = asset.Asset
 			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			response := map[string]any{
 				"upload_data": uploadData,
 				"asset_id":    asset.ID,
 				"asset_url":   assetURL,
-			})
+			}
+
+			if issueID != "" {
+				response["attachment"] = map[string]any{
+					"id":         asset.ID,
+					"attributes": asset.Attributes,
+					"asset_url":  assetURL,
+					"issue_id":   issueID,
+					"created_by": asset.UserID,
+					"updated_by": asset.UserID,
+					"updated_at": asset.CreatedAt,
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 
@@ -165,6 +209,18 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.Store.ConfirmUpload(r.Context(), sessionKey, slug, assetID); err != nil {
 			log.Printf("[ASSET HANDLER ERROR] ConfirmUpload: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	case http.MethodDelete:
+		if assetID == "" {
+			http.Error(w, "Asset ID required", http.StatusBadRequest)
+			return
+		}
+		if err := h.Store.Delete(r.Context(), slug, projectID, assetID); err != nil {
+			log.Printf("[ASSET HANDLER ERROR] Delete: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

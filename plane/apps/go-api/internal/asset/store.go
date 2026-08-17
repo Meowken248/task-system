@@ -99,6 +99,38 @@ func (s PostgreSQLStore) Get(ctx context.Context, id string) (FileAsset, error) 
 	return a, err
 }
 
+// ListByIssue returns all file assets for a given issue
+func (s PostgreSQLStore) ListByIssue(ctx context.Context, slug, projectID, issueID string) ([]FileAsset, error) {
+	rows, err := s.Pool.Query(ctx, `
+		SELECT id, asset, attributes, user_id, workspace_id, project_id, issue_id, comment_id, page_id, draft_issue_id, entity_type, entity_identifier, is_deleted, is_archived, size, is_uploaded, created_at
+		FROM file_assets
+		WHERE workspace_id = (SELECT id FROM workspaces WHERE slug=$1) AND project_id = $2 AND issue_id = $3 AND is_deleted=FALSE AND is_uploaded=TRUE
+		ORDER BY created_at DESC`, slug, projectID, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var assets []FileAsset
+	for rows.Next() {
+		var a FileAsset
+		if err := rows.Scan(&a.ID, &a.Asset, &a.Attributes, &a.UserID, &a.WorkspaceID, &a.ProjectID, &a.IssueID, &a.CommentID, &a.PageID, &a.DraftIssueID, &a.EntityType, &a.EntityIdentifier, &a.IsDeleted, &a.IsArchived, &a.Size, &a.IsUploaded, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		assets = append(assets, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return assets, nil
+}
+
+// Delete marks a file asset as deleted
+func (s PostgreSQLStore) Delete(ctx context.Context, slug, projectID, assetID string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE file_assets SET is_deleted=TRUE, deleted_at=NOW() WHERE id=$1 AND workspace_id=(SELECT id FROM workspaces WHERE slug=$2) AND project_id=$3`, assetID, slug, projectID)
+	return err
+}
+
 // Download streams the asset data
 func (s PostgreSQLStore) Download(ctx context.Context, assetKey string) (io.ReadCloser, error) {
 	return s.Provider.Download(ctx, assetKey)
@@ -152,7 +184,7 @@ func (s PostgreSQLStore) Create(ctx context.Context, sessionKey, slug, projectID
 }
 
 // CreatePresigned creates a DB record with is_uploaded=false and returns a presigned URL
-func (s PostgreSQLStore) CreatePresigned(ctx context.Context, sessionKey, slug, projectID, filename, fileType, entityType string, size int64, entityIdentifier string) (FileAsset, map[string]any, error) {
+func (s PostgreSQLStore) CreatePresigned(ctx context.Context, sessionKey, slug, projectID, filename, fileType, entityType string, size int64, entityIdentifier string, issueID string) (FileAsset, map[string]any, error) {
 	if slug != "" {
 		if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
 			return FileAsset{}, nil, err
@@ -184,10 +216,15 @@ func (s PostgreSQLStore) CreatePresigned(ctx context.Context, sessionKey, slug, 
 		eID = &entityIdentifier
 	}
 
+	var iID *string
+	if issueID != "" {
+		iID = &issueID
+	}
+
 	id := uuid.New().String()
-	err := s.Pool.QueryRow(ctx, `INSERT INTO file_assets (id, asset, attributes, entity_type, size, is_uploaded, is_deleted, is_archived, workspace_id, project_id, entity_identifier, created_at, updated_at) 
-		VALUES ($1, $2, $3, $4, $5, false, false, false, $6, $7, $8, NOW(), NOW()) RETURNING id`,
-		id, key, fmt.Sprintf(`{"name": "%s", "type": "%s", "size": %d}`, filename, fileType, size), entityType, size, wID, pID, eID).Scan(&id)
+	err := s.Pool.QueryRow(ctx, `INSERT INTO file_assets (id, asset, attributes, entity_type, size, is_uploaded, is_deleted, is_archived, workspace_id, project_id, entity_identifier, issue_id, created_at, updated_at) 
+		VALUES ($1, $2, $3, $4, $5, false, false, false, $6, $7, $8, $9, NOW(), NOW()) RETURNING id`,
+		id, key, fmt.Sprintf(`{"name": "%s", "type": "%s", "size": %d}`, filename, fileType, size), entityType, size, wID, pID, eID, iID).Scan(&id)
 	if err != nil {
 		return FileAsset{}, nil, fmt.Errorf("insert error: %w", err)
 	}

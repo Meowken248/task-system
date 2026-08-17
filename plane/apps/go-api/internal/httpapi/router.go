@@ -596,6 +596,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/assets/v2/static/{asset_id}/", deps.Assets)
 		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/", deps.Assets)
 		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/attachments/{asset_id}/", deps.Assets)
+		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/work-items/{issue_id}/attachments/", deps.Assets)
+		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/work-items/{issue_id}/attachments/{asset_id}/", deps.Assets)
 		mux.Handle("/api/assets/v2/workspaces/{slug}/{asset_id}/", deps.Assets) // For workspace logos, page descriptions, etc.
 		mux.Handle("/api/assets/v2/workspaces/{slug}/", deps.Assets)
 		mux.Handle("/api/assets/v2/workspaces/{slug}/projects/{project_id}/", deps.Assets)
@@ -809,13 +811,13 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deps.Intake.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 2 && parts[0] != "" && parts[1] == "issues" && h.deps.Issues != nil &&
+	if len(parts) == 2 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && h.deps.Issues != nil &&
 		((r.Method == http.MethodGet && canServeBasicIssueRead(r)) || r.Method == http.MethodPost) {
 		r.SetPathValue("project_id", parts[0])
 		h.deps.Issues.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 3 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && h.deps.Issues != nil &&
+	if len(parts) == 3 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && h.deps.Issues != nil &&
 		((r.Method == http.MethodGet && canServeBasicIssueRead(r)) || r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -829,14 +831,14 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Issue comments: .../issues/{issue_id}/comments/ and .../issues/{issue_id}/comments/{comment_id}/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "comments" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "comments" &&
 		h.deps.Comments != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		h.deps.Comments.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 5 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "comments" && parts[4] != "" &&
+	if len(parts) == 5 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "comments" && parts[4] != "" &&
 		h.deps.Comments != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -845,7 +847,7 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Issue activity history: .../issues/{issue_id}/history/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "history" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "history" &&
 		r.Method == http.MethodGet && h.deps.Activities != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -853,7 +855,7 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Issue relations: .../issues/{issue_id}/issue-relation/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-relation" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "issue-relation" &&
 		h.deps.Relations != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -861,7 +863,7 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Issue remove relations: .../issues/{issue_id}/remove-relation/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "remove-relation" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "remove-relation" &&
 		h.deps.Relations != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -869,14 +871,14 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Issue links: .../issues/{issue_id}/issue-links/ and .../issues/{issue_id}/issue-links/{link_id}/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-links" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "issue-links" &&
 		h.deps.Links != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		h.deps.Links.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 5 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-links" && parts[4] != "" &&
+	if len(parts) == 5 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "issue-links" && parts[4] != "" &&
 		h.deps.Links != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -885,14 +887,14 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Issue reactions: .../issues/{issue_id}/reactions/ and .../issues/{issue_id}/reactions/{reaction_code}/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "reactions" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "reactions" &&
 		h.deps.Reactions != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		h.deps.Reactions.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 5 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "reactions" && parts[4] != "" &&
+	if len(parts) == 5 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "reactions" && parts[4] != "" &&
 		h.deps.Reactions != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -901,14 +903,14 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Issue subscribers: .../issues/{issue_id}/issue-subscribers/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-subscribers" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "issue-subscribers" &&
 		h.deps.Subscribers != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		h.deps.Subscribers.ServeHTTP(w, r)
 		return
 	}
-	if len(parts) == 5 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "issue-subscribers" && parts[4] != "" &&
+	if len(parts) == 5 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "issue-subscribers" && parts[4] != "" &&
 		h.deps.Subscribers != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -917,7 +919,7 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Issue subscribe: .../issues/{issue_id}/subscribe/ and .../issues/{issue_id}/unsubscribe/ and .../issues/{issue_id}/subscription_status/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" &&
 		(parts[3] == "subscribe" || parts[3] == "unsubscribe" || parts[3] == "subscription_status") &&
 		h.deps.Subscribers != nil {
 		r.SetPathValue("project_id", parts[0])
@@ -926,7 +928,7 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Single archive: .../issues/{issue_id}/archive/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "archive" &&
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "archive" &&
 		h.deps.Archives != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
@@ -941,8 +943,8 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Sub-issues: .../issues/{issue_id}/sub-issues/
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "sub-issues" &&
-		r.Method == http.MethodGet && h.deps.Subissues != nil {
+	if len(parts) == 4 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "sub-issues" &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPost) && h.deps.Subissues != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		h.deps.Subissues.ServeHTTP(w, r)
@@ -1027,7 +1029,7 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Comment reactions list/create: .../issues/{issue_id}/comments/{comment_id}/reactions/
-	if len(parts) == 6 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "comments" && parts[4] != "" && parts[5] == "reactions" && h.deps.CommentReactions != nil {
+	if len(parts) == 6 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "comments" && parts[4] != "" && parts[5] == "reactions" && h.deps.CommentReactions != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		r.SetPathValue("comment_id", parts[4])
@@ -1035,7 +1037,7 @@ func (h projectRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Comment reactions delete: .../issues/{issue_id}/comments/{comment_id}/reactions/{reaction_code}/
-	if len(parts) == 7 && parts[0] != "" && parts[1] == "issues" && parts[2] != "" && parts[3] == "comments" && parts[4] != "" && parts[5] == "reactions" && parts[6] != "" && h.deps.CommentReactions != nil {
+	if len(parts) == 7 && parts[0] != "" && (parts[1] == "issues" || parts[1] == "work-items") && parts[2] != "" && parts[3] == "comments" && parts[4] != "" && parts[5] == "reactions" && parts[6] != "" && h.deps.CommentReactions != nil {
 		r.SetPathValue("project_id", parts[0])
 		r.SetPathValue("issue_id", parts[2])
 		r.SetPathValue("comment_id", parts[4])

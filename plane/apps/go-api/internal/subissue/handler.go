@@ -3,6 +3,7 @@ package subissue
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 )
 
@@ -58,6 +59,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrForbidden):
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "You do not have permission"})
 		default:
+			log.Printf("Subissue error: %v", err)
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "subissue storage is unavailable"})
 		}
 		return

@@ -47,8 +47,9 @@ function shortHash(value?: string): string {
 
 function taskProgress(task?: TaskOption, onChainProgress?: Readonly<Record<string, number>>): number {
   const contractProgress = task && typeof onChainProgress?.[task.id] === "number" ? onChainProgress[task.id] : 0;
-  const report = task?.records.find((record) => record.event_type === "daily_report");
-  const localProgress = typeof report?.progress === "number" ? report.progress : 0;
+  const reports = task?.records.filter((record) => record.event_type === "daily_report") ?? [];
+  const latestReport = reports[reports.length - 1];
+  const localProgress = typeof latestReport?.progress === "number" ? latestReport.progress : 0;
   return Math.max(contractProgress, localProgress);
 }
 
@@ -210,10 +211,12 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     return children.length ? children.flatMap((child) => collectLeafTasks(child, nextVisited)) : [task];
   };
   const displayTaskProgress = (task: TaskOption): number => {
-    const contractProgress = onChainProgress[task.id];
-    if (typeof contractProgress === "number") return contractProgress;
+    const contractProgress = onChainProgress[task.id] ?? 0;
     const leaves = collectLeafTasks(task);
-    return leaves.length ? aggregateKpi(leaves, onChainProgress).averageProgress : taskProgress(task, onChainProgress);
+    if (leaves.length) {
+      return Math.max(contractProgress, aggregateKpi(leaves, onChainProgress).averageProgress);
+    }
+    return taskProgress(task, onChainProgress);
   };
   const projectLeafTasks = rootTasks.flatMap((task) => collectLeafTasks(task));
   const selectedTaskLeafTasks = selectedTask ? collectLeafTasks(selectedTask) : [];

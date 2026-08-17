@@ -21,7 +21,7 @@ type SubIssueItem struct {
 	StateID         string     `json:"state_id"`
 	SortOrder       float64    `json:"sort_order"`
 	CompletedAt     *time.Time `json:"completed_at"`
-	EstimatePoint   *int       `json:"estimate_point"`
+	EstimatePoint   *string    `json:"estimate_point"`
 	Priority        string     `json:"priority"`
 	StartDate       *time.Time `json:"start_date"`
 	TargetDate      *time.Time `json:"target_date"`
@@ -71,7 +71,7 @@ func (s PostgreSQLStore) writeIdentity(ctx context.Context, sessionKey, slug, pr
 		JOIN projects p ON p.id::text=$3 AND p.workspace_id=w.id AND p.deleted_at IS NULL AND p.archived_at IS NULL
 		JOIN project_members pm ON pm.project_id=p.id AND pm.member_id::text=s.user_id
 			AND pm.is_active=TRUE AND pm.deleted_at IS NULL
-		WHERE s.session_key=$1 AND s.expire_date>NOW()`).Scan(&identity.UserID, &identity.WorkspaceID, &identity.Role)
+		WHERE s.session_key=$1 AND s.expire_date>NOW()`, sessionKey, slug, projectID).Scan(&identity.UserID, &identity.WorkspaceID, &identity.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var valid bool
 		if checkErr := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE session_key=$1 AND expire_date>NOW())`, sessionKey).Scan(&valid); checkErr != nil {
@@ -92,7 +92,7 @@ func (s PostgreSQLStore) ListForSession(ctx context.Context, sessionKey, slug, p
 	}
 
 	rows, err := s.Pool.Query(ctx, `SELECT
-		i.id::text, i.name, i.state_id::text, i.sort_order, i.completed_at, i.estimate_point, i.priority,
+		i.id::text, i.name, i.state_id::text, i.sort_order, i.completed_at, i.estimate_point_id::text, i.priority,
 		i.start_date, i.target_date, i.sequence_id, i.project_id::text, COALESCE(i.parent_id::text, ''),
 		(SELECT ci.cycle_id::text FROM cycle_issues ci WHERE ci.issue_id=i.id AND ci.deleted_at IS NULL LIMIT 1),
 		ARRAY(SELECT mi.module_id::text FROM module_issues mi JOIN modules m ON m.id=mi.module_id WHERE mi.issue_id=i.id AND mi.deleted_at IS NULL AND m.archived_at IS NULL),
