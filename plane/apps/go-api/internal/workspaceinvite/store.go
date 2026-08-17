@@ -266,8 +266,10 @@ func (s PostgreSQLStore) Join(ctx context.Context, slug, invitationID, token str
 	}
 	if err == nil {
 		if _, err = tx.Exec(ctx, `INSERT INTO workspace_members
-			(id,role,is_active,workspace_id,member_id,created_by_id,updated_by_id,created_at,updated_at)
-			VALUES($1,$2,TRUE,$3,$4,$4,$4,NOW(),NOW())
+			(id,role,is_active,workspace_id,member_id,created_by_id,updated_by_id,created_at,updated_at,
+			 view_props,default_props,issue_props,explored_features,getting_started_checklist,tips)
+			VALUES($1::uuid,$2,TRUE,$3::uuid,$4::uuid,$4::uuid,$4::uuid,NOW(),NOW(),
+			 '{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb)
 			ON CONFLICT (workspace_id,member_id) WHERE deleted_at IS NULL
 			DO UPDATE SET is_active=TRUE,role=EXCLUDED.role,updated_at=NOW()`, uuid.New().String(), role, workspaceID, userID); err != nil {
 			return "", err
@@ -337,8 +339,10 @@ func (s PostgreSQLStore) JoinForUser(ctx context.Context, sessionKey string, inv
 	rows.Close()
 	for _, item := range items {
 		if _, err = tx.Exec(ctx, `INSERT INTO workspace_members
-			(id,role,is_active,workspace_id,member_id,created_by_id,updated_by_id,created_at,updated_at)
-			VALUES($1,$2,TRUE,$3,$4,$4,$4,NOW(),NOW())
+			(id,role,is_active,workspace_id,member_id,created_by_id,updated_by_id,created_at,updated_at,
+			 view_props,default_props,issue_props,explored_features,getting_started_checklist,tips)
+			VALUES($1::uuid,$2,TRUE,$3::uuid,$4::uuid,$4::uuid,$4::uuid,NOW(),NOW(),
+			 '{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb)
 			ON CONFLICT (workspace_id,member_id) WHERE deleted_at IS NULL
 			DO UPDATE SET is_active=TRUE,role=EXCLUDED.role,updated_at=NOW()`, uuid.New().String(), item.Role, item.WorkspaceID, userID); err != nil {
 			return err

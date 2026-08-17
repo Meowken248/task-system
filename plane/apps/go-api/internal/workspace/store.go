@@ -154,8 +154,10 @@ func (s PostgreSQLStore) Create(ctx context.Context, sessionKey string, payload 
 		companyRole = *payload.CompanyRole
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO workspace_members
-		(id, workspace_id, member_id, role, company_role, is_active, created_by_id, updated_by_id, created_at, updated_at)
-		VALUES ($1,$2::uuid,$3::uuid,20,$4,TRUE,$3::uuid,$3::uuid,NOW(),NOW())`,
+		(id, workspace_id, member_id, role, company_role, is_active, created_by_id, updated_by_id, created_at, updated_at,
+		 view_props, default_props, issue_props, explored_features, getting_started_checklist, tips)
+		VALUES ($1,$2::uuid,$3::uuid,20,$4,TRUE,$3::uuid,$3::uuid,NOW(),NOW(),
+		 '{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb)`,
 		newUUID(), workspaceID, userID, companyRole)
 	if err != nil {
 		return nil, err
