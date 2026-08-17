@@ -33,10 +33,11 @@ func (s storeStub) ListProjectFavoritesForSession(ctx context.Context, sessionKe
 	if sessionKey == "unauth" {
 		return nil, ErrUnauthorized
 	}
+	entID := "ent-1"
 	return []FavoriteItem{
 		{
 			ID:               "fav-1",
-			EntityIdentifier: "ent-1",
+			EntityIdentifier: &entID,
 			ProjectID:        &projectID,
 		},
 	}, nil

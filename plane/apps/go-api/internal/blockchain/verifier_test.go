@@ -77,3 +77,79 @@ func testConfig() Config {
 }
 
 func addressWord(address string) string { return "0x" + strings.Repeat("0", 24) + address[2:] }
+
+type pingRPCStub struct {
+	chainIdVal any
+	chainIdErr error
+	getCodeVal any
+	getCodeErr error
+}
+
+func (s pingRPCStub) Call(_ context.Context, method string, _ []any) (any, error) {
+	if method == "eth_chainId" {
+		if s.chainIdErr != nil {
+			return nil, s.chainIdErr
+		}
+		return s.chainIdVal, nil
+	}
+	if method == "eth_getCode" {
+		if s.getCodeErr != nil {
+			return nil, s.getCodeErr
+		}
+		return s.getCodeVal, nil
+	}
+	return nil, fmt.Errorf("unknown method: %s", method)
+}
+
+func TestPingContextSuccess(t *testing.T) {
+	verifier := Verifier{
+		Config: Config{RPCURL: "https://rpc.invalid", ContractAddress: testContract, ChainID: "991"},
+		RPC: pingRPCStub{
+			chainIdVal: "0x3df", // 991 decimal
+			getCodeVal: "0x60806040",
+		},
+	}
+	if err := verifier.PingContext(context.Background()); err != nil {
+		t.Fatalf("expected success, got err: %v", err)
+	}
+}
+
+func TestPingContextRPCUnreachable(t *testing.T) {
+	verifier := Verifier{
+		Config: Config{RPCURL: "https://rpc.invalid", ContractAddress: testContract, ChainID: "991"},
+		RPC: pingRPCStub{
+			chainIdErr: fmt.Errorf("connection refused"),
+		},
+	}
+	err := verifier.PingContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "RPC unreachable") {
+		t.Fatalf("expected RPC unreachable error, got: %v", err)
+	}
+}
+
+func TestPingContextWrongChainID(t *testing.T) {
+	verifier := Verifier{
+		Config: Config{RPCURL: "https://rpc.invalid", ContractAddress: testContract, ChainID: "991"},
+		RPC: pingRPCStub{
+			chainIdVal: "0x1", // chain ID 1
+		},
+	}
+	err := verifier.PingContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Wrong Chain ID") {
+		t.Fatalf("expected Wrong Chain ID error, got: %v", err)
+	}
+}
+
+func TestPingContextContractNotDeployed(t *testing.T) {
+	verifier := Verifier{
+		Config: Config{RPCURL: "https://rpc.invalid", ContractAddress: testContract, ChainID: "991"},
+		RPC: pingRPCStub{
+			chainIdVal: "0x3df",
+			getCodeVal: "0x", // empty bytecode
+		},
+	}
+	err := verifier.PingContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Contract not deployed") {
+		t.Fatalf("expected Contract not deployed error, got: %v", err)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/makeplane/plane/apps/go-api/internal/auth"
+	"github.com/makeplane/plane/apps/go-api/internal/blockchain"
 )
 
 type storeStub struct {
@@ -65,6 +66,9 @@ func (s storeStub) CheckWorkspaceSlug(ctx context.Context, slug string) (bool, e
 }
 func (s storeStub) ListWorkspaces(ctx context.Context, search string, limit, offset int) ([]map[string]any, int, error) {
 	return nil, 0, nil
+}
+func (s storeStub) CreateWorkspace(ctx context.Context, userID, name, slug, companyRole string) (map[string]any, error) {
+	return nil, nil
 }
 func (s storeStub) UpdateInstanceAdmin(ctx context.Context, id string, role int) error { return nil }
 
@@ -220,5 +224,64 @@ func TestUpdateAdmin_Forbidden(t *testing.T) {
 	handler.ServeHTTP(response, req)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", response.Code)
+	}
+}
+
+type mockRPC struct {
+	chainIdVal any
+	getCodeVal any
+}
+
+func (m mockRPC) Call(_ context.Context, method string, _ []any) (any, error) {
+	if method == "eth_chainId" {
+		return m.chainIdVal, nil
+	}
+	if method == "eth_getCode" {
+		return m.getCodeVal, nil
+	}
+	return nil, nil
+}
+
+func TestHandlerReturnsBlockchainStatus(t *testing.T) {
+	const testContract = "0x1111111111111111111111111111111111111111"
+	verifier := &blockchain.Verifier{
+		Config: blockchain.Config{
+			RPCURL: "https://rpc.invalid", ContractAddress: testContract, ChainID: "991",
+		},
+		RPC: mockRPC{
+			chainIdVal: "0x3df", // 991
+			getCodeVal: "0x60806040",
+		},
+	}
+	handler := NewHandler(storeStub{
+		instance: &Instance{ID: "instance-1", InstanceName: "Plane", IsSetupDone: true},
+	}, "sessionid").ConfigureBlockchain("online", verifier)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/instances/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	bcPayload, ok := payload["blockchain"].(map[string]any)
+	if !ok {
+		t.Fatalf("blockchain payload = %#v, want object", payload["blockchain"])
+	}
+	if bcPayload["status"] != "online" {
+		t.Fatalf("status = %q, want online", bcPayload["status"])
+	}
+	if bcPayload["chain_id"] != "991" {
+		t.Fatalf("chain_id = %q, want 991", bcPayload["chain_id"])
+	}
+	if bcPayload["contract_address"] != testContract {
+		t.Fatalf("contract_address = %q, want %s", bcPayload["contract_address"], testContract)
+	}
+	if _, ok := bcPayload["rpc_url"]; ok {
+		t.Fatalf("security leak: rpc_url returned in payload")
 	}
 }

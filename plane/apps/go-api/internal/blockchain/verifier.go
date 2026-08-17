@@ -96,24 +96,38 @@ func (v Verifier) PingContext(ctx context.Context) error {
 	}
 
 	result, err := rpc.Call(ctx, "eth_chainId", nil)
-
 	if err != nil {
-		return fmt.Errorf("rpc ping failed: %w", err)
+		return fmt.Errorf("RPC unreachable: %w", err)
 	}
 
-	// Optionally check if the chain ID matches the configured one
+	// Check if the chain ID matches the configured one
 	chainIDHex, ok := result.(string)
 	if !ok {
-		return fmt.Errorf("rpc ping returned invalid chain ID format")
+		return fmt.Errorf("Wrong Chain ID: invalid format returned by RPC")
 	}
 
 	chainIDInt, err := strconv.ParseInt(strings.TrimPrefix(chainIDHex, "0x"), 16, 64)
 	if err != nil {
-		return fmt.Errorf("rpc ping returned invalid chain ID: %s", chainIDHex)
+		return fmt.Errorf("Wrong Chain ID: invalid value %s returned by RPC", chainIDHex)
 	}
 	expectedChainIDInt, err := strconv.ParseInt(v.Config.ChainID, 10, 64)
 	if err == nil && chainIDInt != expectedChainIDInt {
-		return fmt.Errorf("rpc ping returned chain ID %d, expected %d", chainIDInt, expectedChainIDInt)
+		return fmt.Errorf("Wrong Chain ID: expected %d, got %d", expectedChainIDInt, chainIDInt)
+	}
+
+	// Verify that the contract is deployed
+	codeResult, err := rpc.Call(ctx, "eth_getCode", []any{v.Config.ContractAddress, "latest"})
+	if err != nil {
+		return fmt.Errorf("RPC unreachable: eth_getCode failed: %w", err)
+	}
+
+	code, ok := codeResult.(string)
+	if !ok {
+		return fmt.Errorf("Contract not deployed: invalid code format returned by RPC")
+	}
+
+	if code == "" || code == "0x" || code == "0x0" {
+		return fmt.Errorf("Contract not deployed: no bytecode at address %s", v.Config.ContractAddress)
 	}
 
 	return nil

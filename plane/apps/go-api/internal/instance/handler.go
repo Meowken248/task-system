@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/makeplane/plane/apps/go-api/internal/auth"
+	"github.com/makeplane/plane/apps/go-api/internal/blockchain"
 )
 
 type Handler struct {
@@ -23,6 +25,8 @@ type Handler struct {
 	SessionAge        time.Duration
 	CookieDomain      string
 	mux               *http.ServeMux
+	BlockchainMode    string
+	Verifier          *blockchain.Verifier
 }
 
 func NewHandler(store Store, cookieName string) *Handler {
@@ -62,6 +66,12 @@ func (h *Handler) ConfigureSession(secret, cookieDomain string, age time.Duratio
 	h.SessionSecret = secret
 	h.CookieDomain = cookieDomain
 	h.SessionAge = age
+	return h
+}
+
+func (h *Handler) ConfigureBlockchain(mode string, verifier *blockchain.Verifier) *Handler {
+	h.BlockchainMode = mode
+	h.Verifier = verifier
 	return h
 }
 
@@ -124,6 +134,35 @@ func (h *Handler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		configMap["is_email_password_enabled"] = true
 	}
 
+	blockchainStatus := map[string]any{
+		"status": "disabled",
+	}
+
+	if h.BlockchainMode == "online" {
+		blockchainStatus["status"] = "offline"
+		blockchainStatus["chain_id"] = ""
+		blockchainStatus["contract_address"] = ""
+
+		if h.Verifier != nil {
+			blockchainStatus["chain_id"] = h.Verifier.Config.ChainID
+			blockchainStatus["contract_address"] = h.Verifier.Config.ContractAddress
+
+			pingCtx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+			defer cancel()
+			if err := h.Verifier.PingContext(pingCtx); err == nil {
+				blockchainStatus["status"] = "online"
+			} else {
+				blockchainStatus["error"] = err.Error()
+			}
+		}
+	} else if h.BlockchainMode == "offline" {
+		blockchainStatus["status"] = "offline"
+		if h.Verifier != nil {
+			blockchainStatus["chain_id"] = h.Verifier.Config.ChainID
+			blockchainStatus["contract_address"] = h.Verifier.Config.ContractAddress
+		}
+	}
+
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"config": configMap,
@@ -132,12 +171,14 @@ func (h *Handler) GetInstance(w http.ResponseWriter, r *http.Request) {
 				"is_activated":     false,
 				"workspaces_exist": false,
 			},
+			"blockchain": blockchainStatus,
 		})
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"config":   configMap,
-		"instance": instance,
+		"config":     configMap,
+		"instance":   instance,
+		"blockchain": blockchainStatus,
 	})
 }
 

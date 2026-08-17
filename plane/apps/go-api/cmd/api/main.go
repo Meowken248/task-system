@@ -314,7 +314,8 @@ func main() {
 			Analytic:     analytic.Handler{Store: analytic.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			ProjectStats: analytic.ProjectStatsHandler{Store: analytic.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Instances: instance.NewHandler(instance.PostgreSQLStore{Pool: db.Native()}, cfg.AdminSessionCookie).
-				ConfigureSession(cfg.SessionSecret, cfg.CookieDomain, cfg.SessionAge),
+				ConfigureSession(cfg.SessionSecret, cfg.CookieDomain, cfg.SessionAge).
+				ConfigureBlockchain(cfg.BlockchainMode, verifier),
 			Intake: intake.Handler{Store: intake.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie},
 			Labels: label.Handler{
 				Store: label.PostgreSQLStore{Pool: db.Native()}, SessionCookieName: cfg.SessionCookie,
