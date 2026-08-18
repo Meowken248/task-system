@@ -13,6 +13,7 @@ import (
 type Reader interface {
 	ListForSession(context.Context, string, string, string, IssueFilter) (Page, error)
 	GetForSession(context.Context, string, string, string, string, string) (Item, error)
+	GetWorkItemForSession(ctx context.Context, sessionKey, slug, identifier, expand string) (Item, error)
 }
 
 type Writer interface {

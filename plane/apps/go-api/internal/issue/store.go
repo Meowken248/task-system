@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -216,8 +218,28 @@ func (s PostgreSQLStore) GetForSession(ctx context.Context, sessionKey, slug, pr
 	if err := s.authorize(ctx, sessionKey, slug, projectID); err != nil {
 		return Item{}, err
 	}
+	
+	idCondition := "i.id::text=$2"
+	args := []any{projectID}
+	
+	if len(issueID) != 36 {
+		parts := strings.Split(issueID, "-")
+		if len(parts) >= 2 {
+			seqID, parseErr := strconv.Atoi(parts[len(parts)-1])
+			if parseErr == nil {
+				idCondition = fmt.Sprintf("i.sequence_id=%d", seqID)
+			} else {
+				args = append(args, issueID)
+			}
+		} else {
+			args = append(args, issueID)
+		}
+	} else {
+		args = append(args, issueID)
+	}
+
 	item, err := scan(s.Pool.QueryRow(ctx, `SELECT `+itemColumns+` FROM issues i JOIN states st ON st.id=i.state_id
-		WHERE i.project_id::text=$1 AND i.id::text=$2 AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`, projectID, issueID))
+		WHERE i.project_id::text=$1 AND `+idCondition+` AND i.deleted_at IS NULL AND i.archived_at IS NULL AND i.is_draft=FALSE AND st."group" <> 'triage'`, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, ErrNotFound
 	}
@@ -407,4 +429,25 @@ func (s PostgreSQLStore) groupItems(ctx context.Context, projectID string, filte
 		TotalCount: len(items),
 		Count:      len(items),
 	}, nil
+}
+
+func (s PostgreSQLStore) GetWorkItemForSession(ctx context.Context, sessionKey, slug, identifier, expand string) (Item, error) {
+	parts := strings.Split(identifier, "-")
+	if len(parts) < 2 {
+		return Item{}, ErrNotFound
+	}
+	projectIdentifier := strings.Join(parts[:len(parts)-1], "-")
+	
+	var projectID string
+	err := s.Pool.QueryRow(ctx, `SELECT p.id::text FROM projects p
+		JOIN workspaces w ON w.id=p.workspace_id
+		WHERE w.slug=$1 AND p.identifier=$2 AND p.deleted_at IS NULL AND w.deleted_at IS NULL`, slug, projectIdentifier).Scan(&projectID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Item{}, ErrNotFound
+		}
+		return Item{}, err
+	}
+
+	return s.GetForSession(ctx, sessionKey, slug, projectID, identifier, expand)
 }

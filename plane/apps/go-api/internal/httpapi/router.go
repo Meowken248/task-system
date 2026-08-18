@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/makeplane/plane/apps/go-api/internal/issue"
 	"github.com/makeplane/plane/apps/go-api/internal/legacy"
 )
 
@@ -614,8 +615,48 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/api/workspaces/{slug}/modules/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []any{})
 	})
-	mux.HandleFunc("/api/workspaces/{slug}/projects/{project_id}/intake-state/", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{})
+	mux.HandleFunc("/api/workspaces/{slug}/intake-state/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, []any{})
+	})
+	mux.HandleFunc("/api/workspaces/{slug}/issues/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, []any{})
+	})
+	mux.HandleFunc("/api/workspaces/{slug}/labels/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, []any{})
+	})
+	mux.HandleFunc("/api/workspaces/{slug}/cycles/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, []any{})
+	})
+	mux.HandleFunc("/api/workspaces/{slug}/views/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, []any{})
+	})
+	mux.HandleFunc("/api/workspaces/{slug}/work-items/{issue_id}/", func(w http.ResponseWriter, r *http.Request) {
+		issueHandler, ok := deps.Issues.(issue.Handler)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "handler unavailable"})
+			return
+		}
+		cookieName := issueHandler.SessionCookieName
+		if cookieName == "" {
+			cookieName = "sessionid"
+		}
+		sessionKey := ""
+		if cookie, err := r.Cookie(cookieName); err == nil {
+			sessionKey = cookie.Value
+		}
+		slug := r.PathValue("slug")
+		issueID := r.PathValue("issue_id")
+		expand := r.URL.Query().Get("expand")
+		item, err := issueHandler.Store.GetWorkItemForSession(r.Context(), sessionKey, slug, issueID, expand)
+		if err != nil {
+			if err.Error() == "work item not found" {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			} else {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
