@@ -1,5 +1,0 @@
-./handler.go
-./store.go
-./write.go
-./handler_test.go
-./write_test.go

@@ -9,29 +9,6 @@ services:
     restart: always
 
 
-  admin:
-    container_name: admin
-    build:
-      context: .
-      dockerfile: ./apps/admin/Dockerfile.admin
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: always
-    depends_on:
-      - web
-
-  space:
-    container_name: space
-    build:
-      context: .
-      dockerfile: ./apps/space/Dockerfile.space
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: always
-    depends_on:
-      - web
-
-
   go-api:
     container_name: go-api
     build:
@@ -55,15 +32,6 @@ services:
       timeout: 3s
       retries: 5
 
-
-  live:
-    container_name: plane-live
-    build:
-      context: .
-      dockerfile: ./apps/live/Dockerfile.live
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: always
 
   plane-db:
     container_name: plane-db
@@ -115,8 +83,6 @@ services:
     depends_on:
       - web
       - go-api
-      - space
-      - admin
 
 volumes:
   pgdata:

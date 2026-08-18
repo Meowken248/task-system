@@ -1,5 +1,0 @@
-./handler.go
-./legacy_import.go
-./store.go
-./handler_test.go
-./legacy_import_test.go

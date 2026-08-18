@@ -1,4 +1,0 @@
-./migrate.go
-./postgres.go
-./migrate_test.go
-./postgres_test.go

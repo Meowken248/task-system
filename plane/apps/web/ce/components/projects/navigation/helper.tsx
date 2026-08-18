@@ -38,7 +38,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/cycles`,
     icon: CycleIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER],
-    shouldRender: project.cycle_view,
+    shouldRender: false,
     sortOrder: 2,
   },
   {
@@ -48,7 +48,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/modules`,
     icon: ModuleIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER],
-    shouldRender: project.module_view,
+    shouldRender: false,
     sortOrder: 3,
   },
   {
@@ -58,7 +58,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/views`,
     icon: ViewsIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-    shouldRender: project.issue_views_view,
+    shouldRender: false,
     sortOrder: 4,
   },
   {
@@ -68,7 +68,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/pages`,
     icon: PageIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-    shouldRender: project.page_view,
+    shouldRender: false,
     sortOrder: 5,
   },
   {
@@ -78,7 +78,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/intake`,
     icon: IntakeIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-    shouldRender: project.inbox_view,
+    shouldRender: false,
     sortOrder: 6,
   },
 ];
