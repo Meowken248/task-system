@@ -606,6 +606,18 @@ func NewRouter(deps Dependencies) http.Handler {
 		mux.Handle("/api/assets/v2/user-assets/", deps.Assets)
 		mux.Handle("/api/assets/v2/user-assets/{asset_id}/", deps.Assets)
 	}
+
+	// Mock missing endpoints that frontend expects to prevent 502 proxy errors
+	mux.HandleFunc("/api/workspaces/{slug}/states/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, []any{})
+	})
+	mux.HandleFunc("/api/workspaces/{slug}/modules/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, []any{})
+	})
+	mux.HandleFunc("/api/workspaces/{slug}/projects/{project_id}/intake-state/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{})
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if proxy != nil {
 			proxy.ServeHTTP(w, r)
