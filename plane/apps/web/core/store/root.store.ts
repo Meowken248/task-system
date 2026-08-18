@@ -139,7 +139,7 @@ export class CoreRootStore {
     localStorage.setItem("theme", "system");
     localStorage.setItem(LANGUAGE_STORAGE_KEY, FALLBACK_LANGUAGE);
     this.router = new RouterStore();
-    this.commandPalette = new CommandPaletteStore();
+    this.commandPalette = new CommandPaletteStore(this as unknown as RootStore);
     this.instance = new InstanceStore();
     this.user = new UserStore(this as unknown as RootStore);
     this.workspaceRoot = new WorkspaceRootStore(this as unknown as RootStore);
