@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -160,10 +161,13 @@ func (v Verifier) Verify(ctx context.Context, payload map[string]any) (map[strin
 	}
 	rpc := v.RPC
 	if rpc == nil {
-		rpc = HTTPRPC{URL: v.Config.RPCURL, Client: &http.Client{Timeout: v.Config.RPCTimeout}}
+		customTransport := http.DefaultTransport.(*http.Transport).Clone()
+		customTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		rpc = HTTPRPC{URL: v.Config.RPCURL, Client: &http.Client{Timeout: v.Config.RPCTimeout, Transport: customTransport}}
 	}
 	rpcChainRaw, err := rpc.Call(ctx, "eth_chainId", []any{})
 	if err != nil {
+		fmt.Printf("RPC ERROR eth_chainId: %v\n", err)
 		return nil, unavailableError()
 	}
 	rpcChain, err := parseQuantity(rpcChainRaw)

@@ -136,6 +136,7 @@ func empty(value any) bool {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
+	fmt.Printf("TRACKING ERROR: status=%d message=%s\n", status, message)
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
