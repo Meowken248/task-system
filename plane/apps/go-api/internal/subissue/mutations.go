@@ -46,8 +46,8 @@ func (s PostgreSQLStore) CreateForSession(ctx context.Context, sessionKey, slug,
 		}
 
 		// Insert activity
-		_, err = tx.Exec(ctx, `INSERT INTO issue_activities (id, issue_id, actor_id, workspace_id, project_id, field, new_value, created_by_id, updated_by_id, created_at, updated_at) 
-			VALUES (gen_random_uuid(), $1::uuid, $3::uuid, $5::uuid, $4::uuid, 'parent', $2, $3::uuid, $3::uuid, NOW(), NOW())`,
+		_, err = tx.Exec(ctx, `INSERT INTO issue_activities (id, issue_id, actor_id, workspace_id, project_id, field, new_value, created_by_id, updated_by_id, created_at, updated_at, verb) 
+			VALUES (gen_random_uuid(), $1::uuid, $3::uuid, $5::uuid, $4::uuid, 'parent', $2, $3::uuid, $3::uuid, NOW(), NOW(), 'updated')`,
 			subID, issueID, identity.UserID, projectID, identity.WorkspaceID)
 		if err != nil {
 			return nil, err
