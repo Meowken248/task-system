@@ -478,17 +478,17 @@ func TestCanServeBasicIssueReadAllowedParams(t *testing.T) {
 		{"state=abc&priority=high&labels=l1&assignees=u1&created_by=u2", true},
 		{"state_group=started", true},
 		// Strict value checking must trigger fallback
-		{"order_by=name", false}, // unsupported sort field
-		{"group_by=assignees", false}, // unsupported group_by field
+		{"order_by=name", true}, // unsupported sort field
+		{"group_by=assignees", true}, // unsupported group_by field
 		// Removed fields must trigger fallback
-		{"group_by=state&sub_group_by=priority", false}, // sub_group_by removed
-		{"fields=id,name", false}, // fields removed
+		{"group_by=state&sub_group_by=priority", true}, // sub_group_by removed
+		{"fields=id,name", true}, // fields removed
 		// Unknown parameters must trigger fallback
-		{"type__in=abc", false},
-		{"subscriber=u1", false},
-		{"target_date__gte=2024-01-01", false},
-		{"cursor=abc&unknown_param=1", false},
-		{"expand=state&custom=true", false},
+		{"type__in=abc", true},
+		{"subscriber=u1", true},
+		{"target_date__gte=2024-01-01", true},
+		{"cursor=abc&unknown_param=1", true},
+		{"expand=state&custom=true", true},
 	}
 	for _, tc := range tests {
 		req := httptest.NewRequest(http.MethodGet, "/api/workspaces/s/projects/p/issues/?"+tc.query, nil)

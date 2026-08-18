@@ -262,8 +262,10 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     setLoadingTasks(true);
     try {
       const [txRecords, planeIssuesRes] = await Promise.all([
-        blockchainTrackingService.getTransactions(workspaceSlug, projectId).catch(() => [] as TBlockchainTrackingRecord[]),
-        issueService.getIssuesFromServer(workspaceSlug, projectId, {}).catch(() => ({ results: [] as TIssue[] }))
+        blockchainTrackingService
+          .getTransactions(workspaceSlug, projectId)
+          .catch(() => [] as TBlockchainTrackingRecord[]),
+        issueService.getIssuesFromServer(workspaceSlug, projectId, {}).catch(() => ({ results: [] as TIssue[] })),
       ]);
       setRecords(txRecords);
       setPlaneTasks(Array.isArray(planeIssuesRes?.results) ? planeIssuesRes.results : []);

@@ -28,10 +28,7 @@ export const ProjectEmptyState = observer(function ProjectEmptyState() {
   // derived values
   const projectWorkItemFilter = useWorkItemFilterInstance(EIssuesStoreType.PROJECT, projectId);
 
-  const canPerformEmptyStateActions = allowPermissions(
-    [EUserProjectRoles.ADMIN],
-    EUserPermissionsLevel.PROJECT
-  );
+  const canPerformEmptyStateActions = allowPermissions([EUserProjectRoles.ADMIN], EUserPermissionsLevel.PROJECT);
 
   return (
     <div className="relative h-full w-full overflow-y-auto">
