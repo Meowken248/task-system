@@ -18,4 +18,6 @@ export * from "./workspace";
 export * from "./file";
 export * from "./label";
 export * from "./state";
+export * from "./api.service";
+export * from "./dapp-interceptor";
 export * from "./issue";

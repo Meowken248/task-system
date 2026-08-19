@@ -309,7 +309,9 @@ export class ProjectStore implements IProjectStore {
    */
   fetchPartialProjects = async (workspaceSlug: string) => {
     try {
-      this.loader = "init-loader";
+      runInAction(() => {
+        this.loader = "init-loader";
+      });
       const projectsResponse = await this.projectService.getProjectsLite(workspaceSlug);
       runInAction(() => {
         projectsResponse.forEach((project) => {
@@ -320,8 +322,10 @@ export class ProjectStore implements IProjectStore {
       });
       return projectsResponse;
     } catch (error) {
-      console.log("Failed to fetch project from workspace store");
-      this.loader = "loaded";
+      console.log("Failed to fetch project from workspace store", error);
+      runInAction(() => {
+        this.loader = "loaded";
+      });
       throw error;
     }
   };
@@ -334,11 +338,13 @@ export class ProjectStore implements IProjectStore {
    */
   fetchProjects = async (workspaceSlug: string) => {
     try {
-      if (this.workspaceProjectIds && this.workspaceProjectIds.length > 0) {
-        this.loader = "mutation";
-      } else {
-        this.loader = "init-loader";
-      }
+      runInAction(() => {
+        if (this.workspaceProjectIds && this.workspaceProjectIds.length > 0) {
+          this.loader = "mutation";
+        } else {
+          this.loader = "init-loader";
+        }
+      });
       const projectsResponse = await this.projectService.getProjects(workspaceSlug);
       runInAction(() => {
         projectsResponse.forEach((project) => {
@@ -350,7 +356,9 @@ export class ProjectStore implements IProjectStore {
       return projectsResponse;
     } catch (error) {
       console.log("Failed to fetch project from workspace store");
-      this.loader = "loaded";
+      runInAction(() => {
+        this.loader = "loaded";
+      });
       throw error;
     }
   };

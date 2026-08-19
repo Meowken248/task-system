@@ -6,6 +6,7 @@
 
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
 import axios from "axios";
+import { setupDAppInterceptor } from "./dapp-interceptor";
 
 /**
  * Abstract base class for making HTTP requests using axios
@@ -25,6 +26,9 @@ export abstract class APIService {
       baseURL,
       withCredentials: true,
     });
+    
+    // Intercept all requests for DApp mode
+    setupDAppInterceptor(this.axiosInstance);
   }
 
   /**

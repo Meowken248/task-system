@@ -22,6 +22,10 @@
     "clean": "rm -rf .turbo && rm -rf .next && rm -rf node_modules && rm -rf dist"
   },
   "dependencies": {
+    "@metanodejs/event-log": "catalog:",
+    "@metanodejs/fiai-sdk": "catalog:",
+    "@metanodejs/mtn-contract": "catalog:",
+    "@metanodejs/system-core": "catalog:",
     "@plane/constants": "workspace:*",
     "@plane/types": "workspace:*",
     "axios": "catalog:",

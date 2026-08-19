@@ -235,7 +235,9 @@ export abstract class BaseUserPermissionStore implements IBaseUserPermissionStor
    */
   fetchUserWorkspaceInfo = async (workspaceSlug: string): Promise<IWorkspaceMemberMe> => {
     try {
-      this.loader = true;
+      runInAction(() => {
+        this.loader = true;
+      });
       const response = await workspaceService.workspaceMemberMe(workspaceSlug);
       if (response) {
         runInAction(() => {
@@ -246,7 +248,9 @@ export abstract class BaseUserPermissionStore implements IBaseUserPermissionStor
       return response;
     } catch (error) {
       console.error("Error fetching user workspace information", error);
-      this.loader = false;
+      runInAction(() => {
+        this.loader = false;
+      });
       throw error;
     }
   };

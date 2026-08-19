@@ -101,8 +101,11 @@ func Load() (Config, error) {
 		SignedURLExpiration:       durationSeconds("SIGNED_URL_EXPIRATION", 3600*time.Second, 24*time.Hour),
 		GoWorkersEnabled:          envBool("GO_WORKERS_ENABLED", false),
 	}
-	if cfg.DatabaseURL == "" {
-		return Config{}, errors.New("DATABASE_URL is required")
+
+	if !cfg.SkipEnvVar {
+		if cfg.SessionSecret == "" {
+			return Config{}, errors.New("SECRET_KEY is required")
+		}
 	}
 
 	hasRPC := cfg.BlockchainRPCURL != ""

@@ -1204,6 +1204,18 @@ importers:
 
   packages/services:
     dependencies:
+      '@metanodejs/event-log':
+        specifier: 'catalog:'
+        version: 0.2.1
+      '@metanodejs/fiai-sdk':
+        specifier: 'catalog:'
+        version: 1.0.0
+      '@metanodejs/mtn-contract':
+        specifier: 'catalog:'
+        version: 1.0.4
+      '@metanodejs/system-core':
+        specifier: 'catalog:'
+        version: 1.0.9
       '@plane/constants':
         specifier: workspace:*
         version: link:../constants

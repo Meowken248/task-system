@@ -107,9 +107,12 @@ contract PlaneTaskManager {
     mapping(uint256 => mapping(uint256 => uint256)) private childTaskIdBySubTaskPlusOne;
     mapping(address => uint256[]) private assignedTaskIds;
     mapping(address => mapping(uint256 => bool)) private taskIndexedForAssignee;
+    mapping(string => mapping(string => string)) public dAppRecords;
+
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event AdminUpdated(address indexed account, bool enabled);
+    event DAppRecordUpdated(string indexed collection, string indexed id, address updatedBy);
     event TaskCreated(
         uint256 indexed taskId,
         bytes32 indexed externalId,
@@ -699,5 +702,16 @@ contract PlaneTaskManager {
         if (assignee == address(0) || taskIndexedForAssignee[assignee][taskId]) return;
         taskIndexedForAssignee[assignee][taskId] = true;
         assignedTaskIds[assignee].push(taskId);
+    }
+
+    /// @notice Update a generic JSON record for the DApp
+    function updateDAppRecord(string calldata collection, string calldata id, string calldata jsonPayload) external {
+        dAppRecords[collection][id] = jsonPayload;
+        emit DAppRecordUpdated(collection, id, msg.sender);
+    }
+
+    /// @notice Get a generic JSON record for the DApp
+    function getDAppRecord(string calldata collection, string calldata id) external view returns (string memory) {
+        return dAppRecords[collection][id];
     }
 }
