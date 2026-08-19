@@ -311,23 +311,60 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       id: "mock-member-me",
       member: activeUser?.id,
       role: 20, // Admin role
-      workspace: { id: "mock-workspace-id" },
+      workspace: "mock-workspace-id",
     });
   }
 
-  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/?(?:\?.*)?$/)) {
+  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/members\/?(?:\?.*)?$/)) {
     return ok([
       {
         id: "mock-member-me",
         member: activeUser,
         role: 20,
-        workspace: { id: "mock-workspace-id" },
+        workspace: "mock-workspace-id",
       }
     ]);
   }
 
   if (method === "get" && (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details"))) {
     return ok(localDB.projects || []);
+  }
+
+  // ── Project Members ──────────────────────────────────────────────────
+  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/projects\/[^/]+\/project-members\/me\/?/)) {
+    return ok({
+      id: "mock-proj-member-me",
+      member: activeUser?.id,
+      role: 20, // Admin role
+    });
+  }
+
+  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/projects\/[^/]+\/members\/?(?:\?.*)?$/)) {
+    return ok([
+      {
+        id: "mock-proj-member-me",
+        member: activeUser,
+        role: 20,
+      }
+    ]);
+  }
+
+  // ── Project Archive / Restore ────────────────────────────────────────
+  const archiveMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/archive\/?$/);
+  if (archiveMatch) {
+    const projectId = archiveMatch[1];
+    const project = localDB.projects?.find(p => p.id === projectId);
+    if (project) {
+      if (method === "post") {
+        project.archived_at = new Date().toISOString();
+      } else if (method === "delete") {
+        project.archived_at = null;
+      }
+      saveDB();
+      syncDAppRecord("projects", projectId, project);
+      return ok(project);
+    }
+    return { data: null, status: 404 };
   }
 
   // ── Recent Visits & Favorites ────────────────────────────────────────
