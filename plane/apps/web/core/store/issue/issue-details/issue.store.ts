@@ -118,7 +118,11 @@ export class IssueStore implements IIssueStore {
     // fetch issue attachments
     if (issue.issue_attachments) this.rootIssueDetailStore.addAttachments(issueId, issue.issue_attachments);
 
-    this.rootIssueDetailStore.addSubscription(issueId, issue.is_subscribed);
+    try {
+      this.rootIssueDetailStore.addSubscription(issueId, issue.is_subscribed);
+    } catch {
+      // currentUserId may not be available yet during initial load — safe to ignore
+    }
 
     // fetch issue activity
     this.rootIssueDetailStore.activity.fetchActivities(workspaceSlug, projectId, issueId);

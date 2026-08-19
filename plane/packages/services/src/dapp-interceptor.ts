@@ -308,20 +308,24 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   // ── Projects & Workspace Members ────────────────────────────────────
   if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/me\/?/)) {
     return ok({
-      id: "mock-member-me",
+      id: "mock-ws-member-me",
       member: activeUser?.id,
       role: 20, // Admin role
       workspace: "mock-workspace-id",
+      is_active: true,
+      created_at: new Date().toISOString()
     });
   }
 
   if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/members\/?(?:\?.*)?$/)) {
     return ok([
       {
-        id: "mock-member-me",
+        id: "mock-ws-member-me",
         member: activeUser,
         role: 20,
         workspace: "mock-workspace-id",
+        is_active: true,
+        created_at: new Date().toISOString()
       }
     ]);
   }
@@ -364,7 +368,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       syncDAppRecord("projects", projectId, project);
       return ok(project);
     }
-    return { data: null, status: 404 };
+    console.log('404 for URL:', url, 'method:', method); return { data: null, status: 404 };
   }
 
   // ── Recent Visits & Favorites ────────────────────────────────────────
@@ -400,23 +404,180 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     return ok({ success: true });
   }
 
+  // ── Issue sub-resource endpoints ─────────────────────────────────────
+  // subscribe
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/subscribe\/?$/)) {
+    if (method === "get") return ok({ subscribed: false });
+    if (method === "post") return ok({ subscribed: true });
+    if (method === "delete") return ok({ subscribed: false });
+  }
+
+  // history / activity
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/history\/?/)) {
+    return ok({ results: [], next_cursor: null, prev_cursor: null, next_page_results: false, total_count: 0 });
+  }
+
+  // comments
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/comments\/?$/)) {
+    if (method === "get") return ok([]);
+    if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body, created_at: new Date().toISOString() });
+  }
+
+  // reactions
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/reactions\/?/)) {
+    if (method === "get") return ok([]);
+    if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body });
+    if (method === "delete") return ok({});
+  }
+
+  // sub-issues
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/sub-issues\/?$/)) {
+    return ok({ sub_issues: [], state_distribution: {} });
+  }
+
+  // issue-relation
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/issue-relation\/?$/)) {
+    if (method === "get") return ok({});
+    if (method === "post") return ok({ ...body });
+  }
+
+  // links
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/links\/?$/)) {
+    if (method === "get") return ok([]);
+    if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body });
+  }
+
+  // description-versions
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/description-versions\/?/)) {
+    return ok([]);
+  }
+
+  // modules endpoint for an issue
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/modules\/?$/)) {
+    if (method === "get") return ok([]);
+    if (method === "post") return ok({ ...body });
+  }
+
   // ── Generic CRUD ────────────────────────────────────────────────────
   return handleCRUD(method, url, body);
 }
 
 // ── Generic CRUD handler ─────────────────────────────────────────────────
 function handleCRUD(method: string, url: string, body: Record<string, any>): RouteResult {
-  const { collection, id, isPaginated } = parseApiUrl(url);
+  let { collection, id, isPaginated } = parseApiUrl(url);
+
+  // Alias work-items / issues-detail / work-items-detail to issues
+  if (collection === "work-items" || collection === "issues-detail" || collection === "work-items-detail") {
+    collection = "issues";
+  }
+
+  // Sub-resource collections that don't have persistent storage — return empty stubs
+  const subResourceCollections = ["history", "comments", "reactions", "sub-issues", "issue-relation", "links", "subscriptions", "description-versions", "archive"];
+  if (subResourceCollections.includes(collection) && !localDB[collection]?.length) {
+    if (method === "get") {
+      return ok([]);
+    }
+  }
 
   if (!localDB[collection]) localDB[collection] = [];
 
   if (method === "get") {
     if (id) {
       const item = localDB[collection].find((r) => r.id === id || r.slug === id);
-      return item ? ok(item) : { data: null, status: 404 };
+      if (!item) return { data: null, status: 404 };
+      // Enrich issue/work-item data with defaults expected by the detail store
+      if (collection === "issues") {
+        return ok({
+          is_subscribed: false,
+          issue_reactions: [],
+          issue_link: [],
+          issue_attachments: [],
+          parent: null,
+          ...item,
+        });
+      }
+      return ok(item);
     }
-    const list = localDB[collection];
-    return ok(isPaginated ? { results: list, next_cursor: null, prev_cursor: null } : list);
+    const list = localDB[collection] || [];
+    
+    // Auto-seed states for a project if none exist
+    if (collection === "states" && url.includes("/projects/")) {
+      const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
+      if (projId) {
+        const projStates = list.filter((s: any) => s.project === projId);
+        if (projStates.length === 0) {
+          const match = url.match(/\/api\/workspaces\/([^/]+)\//);
+          const wsSlug = match ? match[1] : "unknown";
+          let wsId = wsSlug;
+          if (localDB.workspaces) {
+            const ws = localDB.workspaces.find((w: any) => w.slug === wsSlug);
+            if (ws) wsId = ws.id;
+          }
+          
+          const defaultStates = [
+            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Backlog", group: "backlog", project: projId, workspace: wsId, sequence: 15000, color: "#a3a3a3", default: true },
+            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Unstarted", group: "unstarted", project: projId, workspace: wsId, sequence: 25000, color: "#3f3f46", default: false },
+            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Started", group: "started", project: projId, workspace: wsId, sequence: 35000, color: "#f59e0b", default: false },
+            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Completed", group: "completed", project: projId, workspace: wsId, sequence: 45000, color: "#16a34a", default: false },
+            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Cancelled", group: "cancelled", project: projId, workspace: wsId, sequence: 55000, color: "#ef4444", default: false },
+          ];
+          list.push(...defaultStates);
+          saveDB();
+        }
+      }
+    }
+
+    const urlObj = new URL(url, "http://localhost");
+    const groupBy = urlObj.searchParams.get("group_by");
+
+    if (groupBy) {
+      const groupedResults: Record<string, any> = {};
+      
+      // Initialize groups if it's states
+      if (groupBy === "state" && collection === "issues") {
+        const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
+        const states = (localDB.states || []).filter((s: any) => s.project === projId);
+        states.forEach((s: any) => {
+          groupedResults[s.id] = { results: [], total_results: 0 };
+        });
+      }
+
+      list.forEach((item) => {
+        const groupKey = item[groupBy] || "None";
+        if (!groupedResults[groupKey]) {
+          groupedResults[groupKey] = { results: [], total_results: 0 };
+        }
+        groupedResults[groupKey].results.push(item);
+        groupedResults[groupKey].total_results++;
+      });
+      return ok({
+        results: groupedResults,
+        grouped_by: groupBy,
+        next_cursor: null,
+        prev_cursor: null,
+        next_page_results: false,
+        prev_page_results: false,
+        total_count: list.length,
+        count: list.length,
+        total_pages: 1,
+        total_results: list.length,
+      });
+    }
+
+    if (isPaginated) {
+      return ok({
+        results: list,
+        next_cursor: null,
+        prev_cursor: null,
+        next_page_results: false,
+        prev_page_results: false,
+        total_count: list.length,
+        count: list.length,
+        total_pages: 1,
+        total_results: list.length,
+      });
+    }
+    return ok(list);
   }
 
   if (method === "post") {
@@ -442,6 +603,17 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         }
       }
       newRecord.member_role = 20;
+      
+      // Seed default states for the new project
+      if (!localDB["states"]) localDB["states"] = [];
+      const defaultStates = [
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Backlog", group: "backlog", project: newRecord.id, workspace: newRecord.workspace, sequence: 15000, color: "#a3a3a3", default: true },
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Unstarted", group: "unstarted", project: newRecord.id, workspace: newRecord.workspace, sequence: 25000, color: "#3f3f46", default: false },
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Started", group: "started", project: newRecord.id, workspace: newRecord.workspace, sequence: 35000, color: "#f59e0b", default: false },
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Completed", group: "completed", project: newRecord.id, workspace: newRecord.workspace, sequence: 45000, color: "#16a34a", default: false },
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Cancelled", group: "cancelled", project: newRecord.id, workspace: newRecord.workspace, sequence: 55000, color: "#ef4444", default: false },
+      ];
+      localDB["states"].push(...defaultStates);
     }
     localDB[collection].push(newRecord);
     saveDB();
@@ -457,7 +629,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       syncDAppRecord(collection, id!, localDB[collection][idx]);
       return ok(localDB[collection][idx]);
     }
-    return { data: null, status: 404 };
+    console.log('404 for URL:', url, 'method:', method); return { data: null, status: 404 };
   }
 
   if (method === "delete") {
@@ -475,28 +647,60 @@ function ok(data: any): RouteResult {
 
 // ── URL → collection parser ──────────────────────────────────────────────
 function parseApiUrl(url: string): { collection: string; id: string | null; isPaginated: boolean } {
-  const clean = url.split("?")[0];
+  const clean = url.split("?")[0].replace(/\/+$/, ""); // strip query and trailing slash
+  const segments = clean.split("/").filter(Boolean);    // e.g. ["api","workspaces","ws","projects","p","issues","id","history"]
 
-  // workspace sub-resources: /api/workspaces/:slug/<resource>/:id
-  const subResource = clean.match(/\/api\/workspaces\/[^/]+\/([^/]+)\/?$/);
-  if (subResource) return { collection: subResource[1], id: null, isPaginated: true };
+  // Must start with "api"
+  const apiIdx = segments.indexOf("api");
+  if (apiIdx === -1) return { collection: "general", id: null, isPaginated: false };
 
-  const subResourceId = clean.match(/\/api\/workspaces\/[^/]+\/([^/]+)\/([^/]+)\/?$/);
-  if (subResourceId) return { collection: subResourceId[1], id: subResourceId[2], isPaginated: false };
+  const rest = segments.slice(apiIdx + 1); // everything after "api"
 
-  // project sub-resources: /api/workspaces/:slug/projects/:id/<resource>/:id
-  const projSub = clean.match(/\/api\/workspaces\/[^/]+\/projects\/[^/]+\/([^/]+)\/?$/);
-  if (projSub) return { collection: projSub[1], id: null, isPaginated: true };
+  // Skip known structural prefixes to find the meaningful resource segments
+  // Pattern: workspaces/:slug/projects/:pid/[v2/]<resource>[/:id[/<sub-resource>[/:subId]]]
+  let i = 0;
 
-  const projSubId = clean.match(/\/api\/workspaces\/[^/]+\/projects\/[^/]+\/([^/]+)\/([^/]+)\/?$/);
-  if (projSubId) return { collection: projSubId[1], id: projSubId[2], isPaginated: false };
+  // skip "workspaces/:slug"
+  if (rest[i] === "workspaces" && rest[i + 1]) i += 2;
+  // skip "projects/:pid"
+  if (rest[i] === "projects" && rest[i + 1]) i += 2;
+  // skip "v2" prefix
+  if (rest[i] === "v2") i += 1;
 
-  // top-level: /api/<collection>/:id
-  const topId = clean.match(/\/api\/([^/]+)\/([^/]+)\/?$/);
-  if (topId) return { collection: topId[1], id: topId[2], isPaginated: false };
+  const resourceSegments = rest.slice(i); // e.g. ["issues","id","history"] or ["issues"] or ["issues","id"]
 
-  const top = clean.match(/\/api\/([^/]+)\/?$/);
-  if (top) return { collection: top[1], id: null, isPaginated: true };
+  if (resourceSegments.length === 0) {
+    return { collection: "general", id: null, isPaginated: false };
+  }
+
+  if (resourceSegments.length === 1) {
+    // /api/.../issues/
+    return { collection: resourceSegments[0], id: null, isPaginated: true };
+  }
+
+  if (resourceSegments.length === 2) {
+    const [resource, idOrSub] = resourceSegments;
+    // Special case: "list" is not an id but a sub-endpoint
+    if (idOrSub === "list") {
+      return { collection: resource, id: null, isPaginated: true };
+    }
+    // /api/.../issues/:id
+    return { collection: resource, id: idOrSub, isPaginated: false };
+  }
+
+  if (resourceSegments.length === 3) {
+    // /api/.../issues/:id/history  or /api/.../issues/:id/comments
+    const [_parentResource, parentId, subResource] = resourceSegments;
+    // Return the sub-resource as collection, with the parent id for context
+    return { collection: subResource, id: parentId, isPaginated: true };
+  }
+
+  if (resourceSegments.length >= 4) {
+    // /api/.../issues/:id/comments/:commentId
+    const subResource = resourceSegments[2];
+    const subId = resourceSegments[3];
+    return { collection: subResource, id: subId, isPaginated: false };
+  }
 
   return { collection: "general", id: null, isPaginated: false };
 }
