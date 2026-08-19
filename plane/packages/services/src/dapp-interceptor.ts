@@ -8,11 +8,23 @@ async function syncDAppRecord(collection: string, id: string, record: any) {
   try {
     const { MtnContract } = await import("@metanodejs/mtn-contract");
     const contract = new MtnContract();
-    contract.setConfigs({ address: PLANE_CONTRACT });
+    contract.setConfigs({ to: PLANE_CONTRACT });
     console.log(`[DApp Sync] Syncing ${collection}/${id} to Smart Contract...`);
     await contract.sendTransaction({
+      abiData: [{
+        name: "updateDAppRecord",
+        type: "function",
+        stateMutability: "nonpayable",
+        inputs: [
+          { name: "collection", type: "string" },
+          { name: "id", type: "string" },
+          { name: "jsonPayload", type: "string" }
+        ],
+        outputs: []
+      }],
       functionName: "updateDAppRecord",
-      args: [collection, id, JSON.stringify(record)],
+      inputArray: [collection, id, JSON.stringify(record)],
+      feeType: "sc",
     });
     console.log(`[DApp Sync] Success!`);
   } catch (err) {
@@ -201,6 +213,9 @@ function parseData(raw: any): Record<string, any> {
 type RouteResult = { data: any; status: number };
 
 function handleRoute(method: string, url: string, body: Record<string, any>): RouteResult {
+  const activeUserId = getLoggedInUserId();
+  const activeUser = localDB.users.find((u: any) => u.id === activeUserId) || MOCK_USER;
+
   // ── Auth endpoints ──────────────────────────────────────────────────
   if (url.includes("/auth/get-csrf-token"))
     return ok({ csrf_token: "dapp-csrf-token" });
@@ -210,7 +225,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 
   if (url.includes("/auth/sign-in") || url.includes("/auth/sign-up") || url.includes("/auth/magic-sign-in")) {
     let email = body?.email || "admin@plane.so";
-    let user = localDB.users.find(u => u.email === email);
+    let user = localDB.users.find((u: any) => u.email === email);
     
     if (!user) {
       // Create a new user based on MOCK_USER but with new email and ID
@@ -252,9 +267,6 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     return ok([MOCK_USER]);
 
   if (url.match(/\/api\/users\/me/)) {
-    const activeUserId = getLoggedInUserId();
-    const activeUser = localDB.users.find(u => u.id === activeUserId) || MOCK_USER;
-
     if (!isLoggedIn()) return { data: { error: "not authenticated" }, status: 401 };
 
     if (url.includes("/api/users/me/profile")) {
@@ -297,10 +309,21 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   if (url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/me\/?/)) {
     return ok({
       id: "mock-member-me",
-      member: "mock-user-id",
+      member: activeUser?.id,
       role: 20, // Admin role
       workspace: { id: "mock-workspace-id" },
     });
+  }
+
+  if (url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/?(?:\?.*)?$/)) {
+    return ok([
+      {
+        id: "mock-member-me",
+        member: activeUser,
+        role: 20,
+        workspace: { id: "mock-workspace-id" },
+      }
+    ]);
   }
 
   if (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details")) {
@@ -312,8 +335,32 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     return ok(localDB["recent-visits"] || []);
   }
 
-  if (url.match(/\/api\/workspaces\/[^/]+\/favorites\/?(?:\?.*)?$/)) {
+  if (url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/?(?:\?.*)?$/)) {
     return ok(localDB.favorites || []);
+  }
+
+  // Assets v2
+  if (url.match(/\/api\/assets\/v2\//) && method === "post") {
+    return ok({
+      asset_id: `asset_${Date.now()}`,
+      asset_url: `mock_asset_url_${Date.now()}`,
+      upload_data: {
+        url: "mock_upload_url",
+        fields: {
+          "Content-Type": "image/jpeg",
+          key: "mock_key",
+          "x-amz-algorithm": "mock_algo",
+          "x-amz-credential": "mock_cred",
+          "x-amz-date": "mock_date",
+          policy: "mock_policy",
+          "x-amz-signature": "mock_sig",
+        }
+      }
+    });
+  }
+
+  if (url.match(/\/api\/assets\/v2\//) && method === "patch") {
+    return ok({ success: true });
   }
 
   // ── Generic CRUD ────────────────────────────────────────────────────

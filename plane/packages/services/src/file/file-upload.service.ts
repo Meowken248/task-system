@@ -53,9 +53,9 @@ export class FileUploadService extends APIService {
 
     try {
       // 1. Extract file from FormData
-      const file = data.get("asset") as File;
+      const file = (data.get("asset") || data.get("file")) as File;
       if (!file) {
-        throw new Error("No file found in FormData under 'asset' key");
+        throw new Error("No file found in FormData under 'asset' or 'file' key");
       }
 
       console.log("[Metanode] Uploading file:", file.name);

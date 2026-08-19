@@ -225,10 +225,10 @@ export class IssueRootStore implements IIssueRootStore {
         if (!isEmpty(rootStore?.state?.projectStates)) this.stateDetails = rootStore?.state?.projectStates;
         if (!isEmpty(rootStore?.state?.workspaceStates)) this.workspaceStateDetails = rootStore?.state?.workspaceStates;
         if (!isEmpty(rootStore?.label?.labelMap)) this.labelMap = rootStore?.label?.labelMap;
-        if (!isEmpty(rootStore?.member?.memberMap)) this.memberMap = rootStore?.member?.memberMap;
-        if (!isEmpty(rootStore?.member?.workSpaceMemberRolesMap))
-          this.workSpaceMemberRolesMap = rootStore?.member?.workSpaceMemberRolesMap;
-        if (!isEmpty(rootStore?.project?.projectMap)) this.projectMap = rootStore?.project?.projectMap;
+        if (!isEmpty(rootStore?.memberRoot?.memberMap)) this.memberMap = rootStore?.memberRoot?.memberMap;
+        if (!isEmpty(rootStore?.memberRoot?.workspace?.memberMap))
+          this.workSpaceMemberRolesMap = rootStore?.memberRoot?.workspace?.memberMap ?? undefined;
+        if (!isEmpty(rootStore?.projectRoot?.project?.projectMap)) this.projectMap = rootStore?.projectRoot?.project?.projectMap;
         if (!isEmpty(rootStore?.module?.moduleMap)) this.moduleMap = rootStore?.module?.moduleMap;
         if (!isEmpty(rootStore?.cycle?.cycleMap)) this.cycleMap = rootStore?.cycle?.cycleMap;
       });
