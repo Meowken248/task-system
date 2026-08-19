@@ -306,7 +306,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   }
 
   // ── Projects & Workspace Members ────────────────────────────────────
-  if (url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/me\/?/)) {
+  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/me\/?/)) {
     return ok({
       id: "mock-member-me",
       member: activeUser?.id,
@@ -315,7 +315,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     });
   }
 
-  if (url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/?(?:\?.*)?$/)) {
+  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/?(?:\?.*)?$/)) {
     return ok([
       {
         id: "mock-member-me",
@@ -326,16 +326,16 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     ]);
   }
 
-  if (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details")) {
+  if (method === "get" && (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details"))) {
     return ok(localDB.projects || []);
   }
 
   // ── Recent Visits & Favorites ────────────────────────────────────────
-  if (url.match(/\/api\/workspaces\/[^/]+\/recent-visits\/?(?:\?.*)?$/)) {
+  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/recent-visits\/?(?:\?.*)?$/)) {
     return ok(localDB["recent-visits"] || []);
   }
 
-  if (url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/?(?:\?.*)?$/)) {
+  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/?(?:\?.*)?$/)) {
     return ok(localDB.favorites || []);
   }
 
@@ -393,6 +393,18 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     if (collection === "workspaces" && !newRecord.owner) {
       newRecord.owner = { id: "me", email: "admin@plane.so", first_name: "Plane", last_name: "Admin", avatar: "" };
       newRecord.created_by = "me";
+    }
+    if (collection === "projects") {
+      const match = url.match(/\/api\/workspaces\/([^/]+)\//);
+      if (match) {
+        const wsSlug = match[1];
+        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug);
+        if (ws) {
+          newRecord.workspace = ws.id;
+          newRecord.workspace_detail = ws;
+        }
+      }
+      newRecord.member_role = 20;
     }
     localDB[collection].push(newRecord);
     saveDB();

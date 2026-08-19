@@ -66,6 +66,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
   const { config } = useInstance();
   // derived values
   const hasUnsplashConfigured = config?.has_unsplash_configured || false;
+  const fiaiSDK = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
   const tabOptions: TTabOption[] = useMemo(
     () => [
       {
@@ -298,8 +299,48 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                   </div>
                 </Tabs.Content>
                 <Tabs.Content value="upload" className="h-full w-full">
-                  <div className="flex h-full w-full flex-col gap-y-2">
-                    <div className="flex w-full flex-1 items-center gap-3">
+                  {fiaiSDK ? (
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-y-6 px-4">
+                      <p className="text-14 text-secondary text-center">
+                        Metanode File Processor is active.
+                        <br />
+                        Click below to select and upload a file securely.
+                      </p>
+                      <Button
+                        variant="primary"
+                        size="md"
+                        loading={isImageUploading}
+                        onClick={async () => {
+                          try {
+                            setIsImageUploading(true);
+                            const result = await fiaiSDK.request("uploadFile", { filename: "upload_image" });
+                            if (result && result.asset) {
+                              onChange(result.asset);
+                              setIsOpen(false);
+                            } else if (typeof result === "string" && result) {
+                              onChange(result);
+                              setIsOpen(false);
+                            } else {
+                              throw new Error("Invalid result from File Processor");
+                            }
+                          } catch (error: any) {
+                            console.error("FiaiSDK upload error:", error);
+                            setToast({ 
+                              message: error?.message || "Failed to upload file via Metanode", 
+                              type: TOAST_TYPE.ERROR,
+                              title: "Image not uploaded"
+                            });
+                          } finally {
+                            setIsImageUploading(false);
+                          }
+                        }}
+                      >
+                        {isImageUploading ? "Uploading..." : "Upload via Metanode"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex h-full w-full flex-col gap-y-2">
+                      <div className="flex w-full flex-1 items-center gap-3">
                       <div
                         {...getRootProps()}
                         className={`relative grid h-full w-full cursor-pointer place-items-center rounded-lg p-12 text-center focus:ring-2 focus:ring-accent-strong focus:ring-offset-2 focus:outline-none ${
@@ -363,7 +404,8 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                         {isImageUploading ? "Uploading" : "Upload & Save"}
                       </Button>
                     </div>
-                  </div>
+                    </div>
+                  )}
                 </Tabs.Content>
               </div>
             </Tabs>
