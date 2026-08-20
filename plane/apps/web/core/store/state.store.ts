@@ -116,7 +116,7 @@ export class StateStore implements IStateStore {
     if (allStates.length > 0) {
       console.log(`[StateStore] get projectStates Sample state project_id: ${allStates[0].project_id}, matching? ${allStates[0].project_id === projectId}`);
     }
-    return sortStates(allStates.filter((state) => (state.project_id || state.project) === projectId));
+    return sortStates(allStates.filter((state) => (state.project_id || (state as any).project) === projectId));
   }
 
   /**
@@ -171,7 +171,7 @@ export class StateStore implements IStateStore {
     if (allStates.length > 0) {
       console.log(`[StateStore] Sample state project_id: ${allStates[0].project_id}, matching? ${allStates[0].project_id === projectId}`);
     }
-    return sortStates(allStates.filter((state) => (state.project_id || state.project) === projectId));
+    return sortStates(allStates.filter((state) => (state.project_id || (state as any).project) === projectId));
   });
 
   /**
