@@ -855,7 +855,9 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
 
   if (resourceSegments.length === 1) {
     // /api/.../issues/
-    return { collection: resourceSegments[0], id: null, isPaginated: true };
+    const unpaginated = ["members", "invitations", "states", "labels", "project-roles", "workspace-members"];
+    const collection = resourceSegments[0];
+    return { collection, id: null, isPaginated: !unpaginated.includes(collection) };
   }
 
   if (resourceSegments.length === 2) {
