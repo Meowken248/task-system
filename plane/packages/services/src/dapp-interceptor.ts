@@ -630,9 +630,6 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           if (!isNaN(seqId)) {
             item = localDB.issues.find((r: any) => {
                const match = (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier) && r.sequence_id === seqId;
-               if (r.project_detail?.identifier === projOrIdentifier) {
-                 console.log(`[DApp Interceptor] Checking issue ${r.id}, seq: ${r.sequence_id} against ${seqId}, matched? ${match}`);
-               }
                return match;
             });
             console.log(`[DApp Interceptor] Fallback seqId result:`, item ? `FOUND ${item.id}` : 'NOT FOUND');
@@ -659,6 +656,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       if (!item) return { data: null, status: 404 };
       // Enrich issue/work-item data with defaults expected by the detail store
       if (collection === "issues") {
+        const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
+        const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
         return ok({
           is_subscribed: false,
           issue_reactions: [],
@@ -672,6 +671,12 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           parent_id: item.parent_id || item.parent,
           cycle_id: item.cycle_id || item.cycle,
           type_id: item.type_id || item.type,
+          assignees: item.assignees || item.assignee_ids || [],
+          assignee_ids: item.assignee_ids || item.assignees || [],
+          labels: item.labels || item.label_ids || [],
+          label_ids: item.label_ids || item.labels || [],
+          state_detail: stateDetail,
+          project_detail: projectDetail,
         });
       }
       return ok(item);
@@ -755,18 +760,26 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
     // Enrich issues with project_id, workspace_id, and other _id fields (required by UI)
     if (collection === "issues") {
-      if (list.length > 0) {
-        console.log("[DAPP Interceptor] GET issues list first item:", list[0]);
-      }
-      list = list.map((item: any) => ({
-        ...item,
-        project_id: item.project_id || item.project,
-        workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
-        state_id: item.state_id || item.state,
-        parent_id: item.parent_id || item.parent,
-        cycle_id: item.cycle_id || item.cycle,
-        type_id: item.type_id || item.type,
-      }));
+      list = list.map((item: any) => {
+        const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
+        const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
+        
+        return {
+          ...item,
+          project_id: item.project_id || item.project,
+          workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
+          state_id: item.state_id || item.state,
+          parent_id: item.parent_id || item.parent,
+          cycle_id: item.cycle_id || item.cycle,
+          type_id: item.type_id || item.type,
+          assignees: item.assignees || item.assignee_ids || [],
+          assignee_ids: item.assignee_ids || item.assignees || [],
+          labels: item.labels || item.label_ids || [],
+          label_ids: item.label_ids || item.labels || [],
+          state_detail: stateDetail,
+          project_detail: projectDetail,
+        };
+      });
     }
     
     // Enrich states with project_id and workspace_id
@@ -925,6 +938,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     if (returnedRecord.workspace && !returnedRecord.workspace_id) returnedRecord.workspace_id = returnedRecord.workspace;
 
     if (collection === "issues") {
+      const stateDetail = returnedRecord.state_detail || (localDB.states || []).find((s: any) => s.id === (returnedRecord.state_id || returnedRecord.state));
+      const projectDetail = returnedRecord.project_detail || (localDB.projects || []).find((p: any) => p.id === (returnedRecord.project_id || returnedRecord.project));
       returnedRecord = {
         ...returnedRecord,
         project_id: returnedRecord.project_id || returnedRecord.project,
@@ -933,6 +948,12 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         parent_id: returnedRecord.parent_id || returnedRecord.parent,
         cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
         type_id: returnedRecord.type_id || returnedRecord.type,
+        assignees: returnedRecord.assignees || returnedRecord.assignee_ids || [],
+        assignee_ids: returnedRecord.assignee_ids || returnedRecord.assignees || [],
+        labels: returnedRecord.labels || returnedRecord.label_ids || [],
+        label_ids: returnedRecord.label_ids || returnedRecord.labels || [],
+        state_detail: stateDetail,
+        project_detail: projectDetail,
       };
     }
 
