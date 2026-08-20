@@ -64,6 +64,8 @@ export const IssueDetailsPage = observer(function IssueDetailsPage({ params }: R
   const issueLoader = !issue || isLoading;
   const pageTitle = project && issue ? `${project?.identifier}-${issue?.sequence_id} ${issue?.name}` : undefined;
 
+  console.log(`[DEBUG ISSUE PAGE] data:`, data, `isLoading:`, isLoading, `error:`, error, `issue:`, issue, `issueLoader:`, issueLoader);
+
   useWorkItemProperties(
     projectId,
     workspaceSlug.toString(),

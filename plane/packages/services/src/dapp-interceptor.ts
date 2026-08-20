@@ -406,56 +406,87 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 
   // ── Issue sub-resource endpoints ─────────────────────────────────────
   // subscribe
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/subscribe\/?$/)) {
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/subscribe\/?(?:\?.*)?$/)) {
     if (method === "get") return ok({ subscribed: false });
     if (method === "post") return ok({ subscribed: true });
     if (method === "delete") return ok({ subscribed: false });
   }
 
   // history / activity
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/history\/?/)) {
-    return ok({ results: [], next_cursor: null, prev_cursor: null, next_page_results: false, total_count: 0 });
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/history\/?(?:\?.*)?$/)) {
+    return ok([]);
   }
 
   // comments
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/comments\/?$/)) {
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/comments\/?(?:\?.*)?$/)) {
     if (method === "get") return ok([]);
     if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body, created_at: new Date().toISOString() });
   }
 
   // reactions
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/reactions\/?/)) {
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/reactions\/?(?:\?.*)?$/)) {
     if (method === "get") return ok([]);
     if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body });
     if (method === "delete") return ok({});
   }
 
   // sub-issues
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/sub-issues\/?$/)) {
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/sub-issues\/?(?:\?.*)?$/)) {
     return ok({ sub_issues: [], state_distribution: {} });
   }
 
   // issue-relation
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/issue-relation\/?$/)) {
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/issue-relation\/?(?:\?.*)?$/)) {
     if (method === "get") return ok({});
     if (method === "post") return ok({ ...body });
   }
 
   // links
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/links\/?$/)) {
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/links\/?(?:\?.*)?$/)) {
     if (method === "get") return ok([]);
     if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body });
   }
 
   // description-versions
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/description-versions\/?/)) {
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/description-versions\/?(?:\?.*)?$/)) {
     return ok([]);
   }
 
   // modules endpoint for an issue
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/modules\/?$/)) {
+  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/modules\/?(?:\?.*)?$/)) {
     if (method === "get") return ok([]);
     if (method === "post") return ok({ ...body });
+  }
+
+  // Project States
+  const stateMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/states\/?(?:\?.*)?$/);
+  if (stateMatch && method === "get") {
+    const projId = stateMatch[1];
+    let statesList = (localDB.states || []).filter((s: any) => s.project === projId);
+    
+    // Auto-seed states for a project if none exist (similar to handleCRUD logic)
+    if (statesList.length === 0) {
+      const match = url.match(/\/api\/workspaces\/([^/]+)\//);
+      const wsSlug = match ? match[1] : "unknown";
+      let wsId = wsSlug;
+      if (localDB.workspaces) {
+        const ws = localDB.workspaces.find((w: any) => w.slug === wsSlug);
+        if (ws) wsId = ws.id;
+      }
+      const defaultStates = [
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Backlog", group: "backlog", project: projId, workspace: wsId, sequence: 15000, color: "#a3a3a3", default: true },
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Unstarted", group: "unstarted", project: projId, workspace: wsId, sequence: 25000, color: "#3f3f46", default: false },
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Started", group: "started", project: projId, workspace: wsId, sequence: 35000, color: "#f59e0b", default: false },
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Completed", group: "completed", project: projId, workspace: wsId, sequence: 45000, color: "#16a34a", default: false },
+        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Cancelled", group: "cancelled", project: projId, workspace: wsId, sequence: 55000, color: "#ef4444", default: false },
+      ];
+      if (!localDB.states) localDB.states = [];
+      localDB.states.push(...defaultStates);
+      saveDB();
+      statesList = defaultStates;
+    }
+    
+    return ok(statesList);
   }
 
   // ── Generic CRUD ────────────────────────────────────────────────────
@@ -481,9 +512,77 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
   if (!localDB[collection]) localDB[collection] = [];
 
+  // Auto-fix missing sequence_id and project_detail for existing issues
+  if (collection === "issues") {
+    let saveNeeded = false;
+    const projectSeqMap: Record<string, number> = {};
+    
+    // First pass: find max sequence_id for each project
+    localDB.issues.forEach((issue: any) => {
+      if (issue.project && issue.sequence_id) {
+        projectSeqMap[issue.project] = Math.max(projectSeqMap[issue.project] || 0, issue.sequence_id);
+      }
+    });
+
+    // Second pass: backfill missing data
+    localDB.issues.forEach((issue: any) => {
+      if (issue.project && (!issue.sequence_id || !issue.project_detail)) {
+        if (!issue.sequence_id) {
+          projectSeqMap[issue.project] = (projectSeqMap[issue.project] || 0) + 1;
+          issue.sequence_id = projectSeqMap[issue.project];
+        }
+        if (!issue.project_detail) {
+          const project = (localDB.projects || []).find((p: any) => p.id === issue.project);
+          if (project) issue.project_detail = project;
+        }
+        saveNeeded = true;
+      }
+    });
+    
+    if (saveNeeded) saveDB();
+  }
+
   if (method === "get") {
     if (id) {
-      const item = localDB[collection].find((r) => r.id === id || r.slug === id);
+      let item = localDB[collection].find((r) => r.id === id || r.slug === id);
+      
+      // Fallback: If id is a number (sequenceId), try finding by project id or identifier
+      if (!item && collection === "issues") {
+        const projMatch = url.match(/\/projects\/([^/]+)\//);
+        console.log(`[DApp Interceptor] Searching for sequence ID ${id}, projMatch:`, projMatch?.[1]);
+        if (projMatch) {
+          const projOrIdentifier = projMatch[1];
+          const seqId = parseInt(id, 10);
+          console.log(`[DApp Interceptor] Project: ${projOrIdentifier}, seqId: ${seqId}`);
+          if (!isNaN(seqId)) {
+            item = localDB.issues.find((r: any) => {
+               const match = (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier) && r.sequence_id === seqId;
+               if (r.project_detail?.identifier === projOrIdentifier) {
+                 console.log(`[DApp Interceptor] Checking issue ${r.id}, seq: ${r.sequence_id} against ${seqId}, matched? ${match}`);
+               }
+               return match;
+            });
+            console.log(`[DApp Interceptor] Fallback seqId result:`, item ? `FOUND ${item.id}` : 'NOT FOUND');
+          } else if (id === "undefined") {
+            item = localDB.issues.find((r: any) => 
+               (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier)
+            );
+          }
+        }
+      }
+
+      // Older fallback for retrieveWithIdentifier (e.g., FIAI-1 or FIAI-undefined)
+      if (!item && collection === "issues" && id.includes("-")) {
+        const [projIdentifier, seqIdStr] = id.split("-");
+        const seqId = parseInt(seqIdStr, 10);
+        if (!isNaN(seqId)) {
+          item = localDB.issues.find((r: any) => r.project_detail?.identifier === projIdentifier && r.sequence_id === seqId);
+        } else if (seqIdStr === "undefined") {
+          // Special fallback if UI still requests undefined
+          item = localDB.issues.find((r: any) => r.project_detail?.identifier === projIdentifier);
+        }
+      }
+
       if (!item) return { data: null, status: 404 };
       // Enrich issue/work-item data with defaults expected by the detail store
       if (collection === "issues") {
@@ -493,12 +592,18 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           issue_link: [],
           issue_attachments: [],
           parent: null,
+          project_id: item.project,
+          workspace_id: item.workspace || item.project_detail?.workspace || "mock-workspace",
+          state_id: item.state,
+          parent_id: item.parent,
+          cycle_id: item.cycle,
+          type_id: item.type,
           ...item,
         });
       }
       return ok(item);
     }
-    const list = localDB[collection] || [];
+    let list = localDB[collection] || [];
     
     // Auto-seed states for a project if none exist
     if (collection === "states" && url.includes("/projects/")) {
@@ -525,6 +630,31 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           saveDB();
         }
       }
+    }
+
+    // Filter issues by project ID if the URL is scoped to a project
+    if (collection === "issues" && url.includes("/projects/")) {
+      const match = url.match(/\/projects\/([^/]+)\//);
+      if (match) {
+        const projId = match[1];
+        list = list.filter((item: any) => item.project === projId);
+      }
+    }
+
+    // Enrich issues with project_id, workspace_id, and other _id fields (required by UI)
+    if (collection === "issues") {
+      if (list.length > 0) {
+        console.log("[DAPP Interceptor] GET issues list first item:", list[0]);
+      }
+      list = list.map((item: any) => ({
+        ...item,
+        project_id: item.project,
+        workspace_id: item.workspace || item.project_detail?.workspace || "mock-workspace",
+        state_id: item.state,
+        parent_id: item.parent,
+        cycle_id: item.cycle,
+        type_id: item.type,
+      }));
     }
 
     const urlObj = new URL(url, "http://localhost");
@@ -575,6 +705,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         count: list.length,
         total_pages: 1,
         total_results: list.length,
+        extra_stats: null,
       });
     }
     return ok(list);
@@ -615,10 +746,42 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       ];
       localDB["states"].push(...defaultStates);
     }
+    if (collection === "issues") {
+      // Find the project ID from the URL: /api/workspaces/.../projects/:projectId/issues/
+      const match = url.match(/\/projects\/([^/]+)\//);
+      if (match) {
+        const projId = match[1];
+        newRecord.project = projId;
+        const project = (localDB.projects || []).find((p: any) => p.id === projId);
+        if (project) {
+          newRecord.project_detail = project;
+        }
+        
+        // Auto-increment sequence_id for the project
+        const projectIssues = (localDB.issues || []).filter((i: any) => i.project === projId);
+        const maxSeq = projectIssues.reduce((max: number, issue: any) => Math.max(max, issue.sequence_id || 0), 0);
+        newRecord.sequence_id = maxSeq + 1;
+      }
+    }
+    
     localDB[collection].push(newRecord);
     saveDB();
     syncDAppRecord(collection, newRecord.id, newRecord);
-    return { data: newRecord, status: 201 };
+
+    let returnedRecord = { ...newRecord };
+    if (collection === "issues") {
+      returnedRecord = {
+        ...returnedRecord,
+        project_id: returnedRecord.project,
+        workspace_id: returnedRecord.workspace || returnedRecord.project_detail?.workspace || "mock-workspace",
+        state_id: returnedRecord.state,
+        parent_id: returnedRecord.parent,
+        cycle_id: returnedRecord.cycle,
+        type_id: returnedRecord.type,
+      };
+    }
+
+    return { data: returnedRecord, status: 201 };
   }
 
   if (method === "patch" || method === "put") {
@@ -627,7 +790,21 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
       saveDB();
       syncDAppRecord(collection, id!, localDB[collection][idx]);
-      return ok(localDB[collection][idx]);
+      
+      let returnedRecord = { ...localDB[collection][idx] };
+      if (collection === "issues") {
+        returnedRecord = {
+          ...returnedRecord,
+          project_id: returnedRecord.project,
+          workspace_id: returnedRecord.workspace || returnedRecord.project_detail?.workspace || "mock-workspace",
+          state_id: returnedRecord.state,
+          parent_id: returnedRecord.parent,
+          cycle_id: returnedRecord.cycle,
+          type_id: returnedRecord.type,
+        };
+      }
+
+      return ok(returnedRecord);
     }
     console.log('404 for URL:', url, 'method:', method); return { data: null, status: 404 };
   }
