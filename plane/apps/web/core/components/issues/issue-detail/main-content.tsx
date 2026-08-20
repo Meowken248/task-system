@@ -241,7 +241,7 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
             external_source: "blockchain-daily-report",
           });
         }}
-        canReport={isEditable && !isAdmin && Boolean(currentUser?.id && issue.assignee_ids.includes(currentUser.id))}
+        canReport={isEditable && (isAdmin || Boolean(currentUser?.id && issue.assignee_ids.includes(currentUser.id)))}
       />
 
       <IssueDetailWidgets

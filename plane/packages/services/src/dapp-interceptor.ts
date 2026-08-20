@@ -5,6 +5,11 @@ const PLANE_CONTRACT = "0x2CB649c0A6338f668F0ADc4AE96c1b2Dc198ed41";
 // ── On-chain sync (fire-and-forget, never blocks UI) ──────────────────────
 async function syncDAppRecord(collection: string, id: string, record: any) {
   if (typeof window === "undefined") return;
+  const address = (window as any).fiaiSDK?.account?.address || (window as any).fiaiSDK?.wallet?.address;
+  if (!address) {
+    console.log(`[DApp Sync] Wallet not connected. Skipping sync for ${collection}/${id}`);
+    return;
+  }
   try {
     const { MtnContract } = await import("@metanodejs/mtn-contract");
     const contract = new MtnContract();
@@ -25,6 +30,7 @@ async function syncDAppRecord(collection: string, id: string, record: any) {
       functionName: "updateDAppRecord",
       inputArray: [collection, id, JSON.stringify(record)],
       feeType: "sc",
+      from: (window as any).fiaiSDK?.account?.address || "0x0000000000000000000000000000000000000000"
     });
     console.log(`[DApp Sync] Success!`);
   } catch (err) {
@@ -415,15 +421,108 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     if (method === "delete") return ok({ subscribed: false });
   }
 
-  // history / activity
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/history\/?(?:\?.*)?$/)) {
-    return ok([]);
+  // history / activity — serves both activities and comments depending on activity_type query param
+  const historyMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/history\/?(?:\?.*)?$/);
+  if (historyMatch && method === "get") {
+    const issueId = historyMatch[2];
+    // Parse activity_type from query string
+    const qsMatch = url.match(/[?&]activity_type=([^&]+)/);
+    const activityType = qsMatch ? decodeURIComponent(qsMatch[1]) : null;
+
+    if (activityType === "issue-comment" || activityType === "epic-comment") {
+      // Return comments for this issue, formatted as the store expects (TIssueComment)
+      const comments = (localDB.comments || []).filter((c: any) => c.issue === issueId || c.issue_id === issueId);
+      const issue = (localDB.issues || []).find((i: any) => i.id === issueId);
+      const enrichedComments = comments.map((c: any) => ({
+        id: c.id,
+        issue: issueId,
+        issue_detail: issue ? { id: issue.id, name: issue.name, sequence_id: issue.sequence_id } : null,
+        comment_html: c.comment_html || c.body || "",
+        comment_stripped: c.comment_stripped || "",
+        comment_json: c.comment_json || null,
+        actor: c.actor || "me",
+        actor_detail: c.actor_detail || { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin", avatar: "" },
+        created_at: c.created_at,
+        updated_at: c.updated_at || c.created_at,
+        edited_at: c.edited_at || null,
+        comment_reactions: c.comment_reactions || [],
+        is_member: true,
+        external_source: c.external_source || null,
+        workspace: c.workspace || issue?.workspace,
+        project: c.project || issue?.project,
+        project_id: c.project_id || c.project || issue?.project,
+        workspace_id: c.workspace_id || c.workspace || issue?.workspace,
+        access: c.access || "INTERNAL",
+      }));
+      return ok(enrichedComments);
+    }
+
+    // Default: return activity history (issue-property type)
+    const history = (localDB.history || []).filter((h: any) => h.issue === issueId || h.issue_id === issueId);
+    return ok(history);
   }
 
   // comments
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/comments\/?(?:\?.*)?$/)) {
-    if (method === "get") return ok([]);
-    if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body, created_at: new Date().toISOString() });
+  const commentMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/comments\/?(?:\?.*)?$/);
+  if (commentMatch) {
+    const issueId = commentMatch[2];
+    if (method === "get") {
+      const comments = (localDB.comments || []).filter((c: any) => c.issue === issueId || c.issue_id === issueId);
+      const issue = localDB.issues?.find((i: any) => i.id === issueId);
+      const enrichedComments = comments.map((c: any) => ({
+        ...c,
+        issue_id: issueId,
+        project_id: c.project_id || c.project || issue?.project,
+        workspace_id: c.workspace_id || c.workspace || issue?.workspace,
+        actor: c.actor || "me",
+        actor_detail: { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin" }
+      }));
+      return ok(enrichedComments);
+    }
+    if (method === "post") {
+      const issue = localDB.issues?.find((i: any) => i.id === issueId);
+      const urlWsMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
+      const urlProjMatch = url.match(/\/projects\/([^/]+)\//);
+      const wsSlug = urlWsMatch ? urlWsMatch[1] : (issue?.workspace || "mock-workspace");
+      const projId = urlProjMatch ? urlProjMatch[1] : (issue?.project || "mock-project");
+
+      const newComment = { 
+        id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), 
+        issue: issueId, 
+        issue_id: issueId,
+        project_id: projId,
+        workspace_id: wsSlug,
+        project: projId,
+        workspace: wsSlug,
+        actor: "me",
+        actor_detail: { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin", avatar: "" },
+        access: "EXTERNAL",
+        reaction_groups: {},
+        created_by: "me",
+        updated_by: "me",
+        comment_html: "",
+        comment_json: {},
+        comment_stripped: "",
+        ...body, 
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      if (!localDB.comments) localDB.comments = [];
+      localDB.comments.push(newComment);
+      saveDB();
+      return ok(newComment);
+    }
+    if (method === "delete") {
+      if (localDB.comments) {
+        const commentIdMatch = url.match(/\/comments\/([^/]+)\/?(?:\?.*)?$/);
+        if (commentIdMatch) {
+          const commentId = commentIdMatch[1];
+          localDB.comments = localDB.comments.filter((c: any) => c.id !== commentId);
+          saveDB();
+        }
+      }
+      return ok({});
+    }
   }
 
   // reactions
@@ -461,36 +560,6 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     if (method === "post") return ok({ ...body });
   }
 
-  // Project States
-  const stateMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/states\/?(?:\?.*)?$/);
-  if (stateMatch && method === "get") {
-    const projId = stateMatch[1];
-    let statesList = (localDB.states || []).filter((s: any) => s.project === projId);
-    
-    // Auto-seed states for a project if none exist (similar to handleCRUD logic)
-    if (statesList.length === 0) {
-      const match = url.match(/\/api\/workspaces\/([^/]+)\//);
-      const wsSlug = match ? match[1] : "unknown";
-      let wsId = wsSlug;
-      if (localDB.workspaces) {
-        const ws = localDB.workspaces.find((w: any) => w.slug === wsSlug);
-        if (ws) wsId = ws.id;
-      }
-      const defaultStates = [
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Backlog", group: "backlog", project: projId, workspace: wsId, sequence: 15000, color: "#a3a3a3", default: true },
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Unstarted", group: "unstarted", project: projId, workspace: wsId, sequence: 25000, color: "#3f3f46", default: false },
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Started", group: "started", project: projId, workspace: wsId, sequence: 35000, color: "#f59e0b", default: false },
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Completed", group: "completed", project: projId, workspace: wsId, sequence: 45000, color: "#16a34a", default: false },
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Cancelled", group: "cancelled", project: projId, workspace: wsId, sequence: 55000, color: "#ef4444", default: false },
-      ];
-      if (!localDB.states) localDB.states = [];
-      localDB.states.push(...defaultStates);
-      saveDB();
-      statesList = defaultStates;
-    }
-    
-    return ok(statesList);
-  }
 
   // ── Generic CRUD ────────────────────────────────────────────────────
   return handleCRUD(method, url, body);
@@ -499,6 +568,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 // ── Generic CRUD handler ─────────────────────────────────────────────────
 function handleCRUD(method: string, url: string, body: Record<string, any>): RouteResult {
   let { collection, id, isPaginated } = parseApiUrl(url);
+  console.log(`[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`);
 
   // Alias work-items / issues-detail / work-items-detail to issues
   if (collection === "work-items" || collection === "issues-detail" || collection === "work-items-detail") {
@@ -595,19 +665,25 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           issue_link: [],
           issue_attachments: [],
           parent: null,
-          project_id: item.project,
-          workspace_id: item.workspace || item.project_detail?.workspace || "mock-workspace",
-          state_id: item.state,
-          parent_id: item.parent,
-          cycle_id: item.cycle,
-          type_id: item.type,
           ...item,
+          project_id: item.project_id || item.project,
+          workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
+          state_id: item.state_id || item.state,
+          parent_id: item.parent_id || item.parent,
+          cycle_id: item.cycle_id || item.cycle,
+          type_id: item.type_id || item.type,
         });
       }
       return ok(item);
     }
     let list = localDB[collection] || [];
     
+    // History endpoint should also return comments
+    if (collection === "history") {
+      const commentsList = localDB["comments"] || [];
+      list = [...list, ...commentsList];
+    }
+
     // Auto-seed states for a project if none exist
     if (collection === "states" && url.includes("/projects/")) {
       const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
@@ -630,18 +706,51 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
             { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Cancelled", group: "cancelled", project: projId, workspace: wsId, sequence: 55000, color: "#ef4444", default: false },
           ];
           list.push(...defaultStates);
+          (localDB as any)["states"] = list;
           saveDB();
         }
       }
     }
 
-    // Filter issues by project ID if the URL is scoped to a project
-    if (collection === "issues" && url.includes("/projects/")) {
+    // Generic _id suffix mapping for all items to satisfy frontend MobX stores
+    list = list.map((item: any) => {
+      if (!item || typeof item !== "object") return item;
+      const res = { ...item };
+      if (res.project && !res.project_id) res.project_id = res.project;
+      if (res.workspace && !res.workspace_id) res.workspace_id = res.workspace;
+      return res;
+    });
+
+    // Filter collections by project ID if the URL is scoped to a project
+    if (url.includes("/projects/")) {
       const match = url.match(/\/projects\/([^/]+)\//);
       if (match) {
         const projId = match[1];
-        list = list.filter((item: any) => item.project === projId);
+        if (["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules"].includes(collection)) {
+          list = list.filter((item: any) => item.project === projId || item.project_id === projId);
+        }
       }
+    }
+
+    // Filter sub-resources by issue ID
+    if (["comments", "history", "issue_reactions"].includes(collection) && id) {
+      list = list.filter((item: any) => item.issue === id || item.issue_id === id);
+    }
+
+    if (collection === "invitations") {
+      // Fix corrupted old records that have `emails: [{ email, role }]` instead of top-level properties
+      list = list.map((item: any) => {
+        if (!item.email && item.emails && Array.isArray(item.emails) && item.emails.length > 0) {
+          return {
+            ...item,
+            email: item.emails[0].email,
+            role: item.emails[0].role,
+          };
+        }
+        return item;
+      });
+      list = list.filter((item: any) => !!item.email);
+      console.log(`[DApp Interceptor] Returning invitations:`, JSON.stringify(list));
     }
 
     // Enrich issues with project_id, workspace_id, and other _id fields (required by UI)
@@ -651,13 +760,23 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
       list = list.map((item: any) => ({
         ...item,
-        project_id: item.project,
-        workspace_id: item.workspace || item.project_detail?.workspace || "mock-workspace",
-        state_id: item.state,
-        parent_id: item.parent,
-        cycle_id: item.cycle,
-        type_id: item.type,
+        project_id: item.project_id || item.project,
+        workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
+        state_id: item.state_id || item.state,
+        parent_id: item.parent_id || item.parent,
+        cycle_id: item.cycle_id || item.cycle,
+        type_id: item.type_id || item.type,
       }));
+    }
+    
+    // Enrich states with project_id and workspace_id
+    if (collection === "states") {
+      list = list.map((item: any) => ({
+        ...item,
+        project_id: item.project_id || item.project,
+        workspace_id: item.workspace_id || item.workspace || "mock-workspace",
+      }));
+      console.log(`[DApp CRUD] States returning ${list.length} items:`, JSON.stringify(list.map((s: any) => ({ id: s.id, name: s.name, project_id: s.project_id }))));
     }
 
     const urlObj = new URL(url, "http://localhost");
@@ -715,6 +834,34 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   }
 
   if (method === "post") {
+    console.log("[DApp Interceptor] POST", collection, body);
+    if (collection === "invitations" && body.emails && Array.isArray(body.emails)) {
+      const match = url.match(/\/api\/workspaces\/([^/]+)\//);
+      const wsSlug = match ? match[1] : "mock-workspace";
+      
+      const newInvites = body.emails.map((e: any) => ({
+        id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        email: e.email,
+        role: e.role,
+        accepted: false,
+        message: "You have been invited.",
+        workspace: {
+          id: wsSlug,
+          name: "Mock Workspace",
+          slug: wsSlug,
+          logo_url: ""
+        }
+      }));
+      
+      if (!localDB[collection]) localDB[collection] = [];
+      localDB[collection].push(...newInvites);
+      saveDB();
+      newInvites.forEach(inv => syncDAppRecord(collection, inv.id, inv));
+      return ok({ message: "Invitations sent successfully" });
+    }
+
     const newRecord: any = {
       id: body.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
       created_at: new Date().toISOString(),
@@ -772,16 +919,26 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     syncDAppRecord(collection, newRecord.id, newRecord);
 
     let returnedRecord = { ...newRecord };
+
+    // Generic mapping for all records
+    if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
+    if (returnedRecord.workspace && !returnedRecord.workspace_id) returnedRecord.workspace_id = returnedRecord.workspace;
+
     if (collection === "issues") {
       returnedRecord = {
         ...returnedRecord,
-        project_id: returnedRecord.project,
-        workspace_id: returnedRecord.workspace || returnedRecord.project_detail?.workspace || "mock-workspace",
-        state_id: returnedRecord.state,
-        parent_id: returnedRecord.parent,
-        cycle_id: returnedRecord.cycle,
-        type_id: returnedRecord.type,
+        project_id: returnedRecord.project_id || returnedRecord.project,
+        workspace_id: returnedRecord.workspace_id || returnedRecord.workspace || returnedRecord.project_detail?.workspace || "mock-workspace",
+        state_id: returnedRecord.state_id || returnedRecord.state,
+        parent_id: returnedRecord.parent_id || returnedRecord.parent,
+        cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
+        type_id: returnedRecord.type_id || returnedRecord.type,
       };
+    }
+
+    if (["comments", "history", "issue_reactions"].includes(collection) && id) {
+      newRecord.issue = id;
+      newRecord.issue_id = id;
     }
 
     return { data: returnedRecord, status: 201 };
@@ -798,14 +955,18 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       if (collection === "issues") {
         returnedRecord = {
           ...returnedRecord,
-          project_id: returnedRecord.project,
-          workspace_id: returnedRecord.workspace || returnedRecord.project_detail?.workspace || "mock-workspace",
-          state_id: returnedRecord.state,
-          parent_id: returnedRecord.parent,
-          cycle_id: returnedRecord.cycle,
-          type_id: returnedRecord.type,
+          project_id: returnedRecord.project_id || returnedRecord.project,
+          workspace_id: returnedRecord.workspace_id || returnedRecord.workspace || returnedRecord.project_detail?.workspace || "mock-workspace",
+          state_id: returnedRecord.state_id || returnedRecord.state,
+          parent_id: returnedRecord.parent_id || returnedRecord.parent,
+          cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
+          type_id: returnedRecord.type_id || returnedRecord.type,
         };
       }
+      
+      // Generic mapping for all other records
+      if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
+      if (returnedRecord.workspace && !returnedRecord.workspace_id) returnedRecord.workspace_id = returnedRecord.workspace;
 
       return ok(returnedRecord);
     }
@@ -855,7 +1016,12 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
 
   if (resourceSegments.length === 1) {
     // /api/.../issues/
-    const unpaginated = ["members", "invitations", "states", "labels", "project-roles", "workspace-members"];
+    const unpaginated = [
+      "members", "invitations", "states", "labels", "project-roles", 
+      "workspace-members", "project-members", "projects", "workspaces", "cycles", 
+      "modules", "views", "pages", "project-identifiers", "project-stats",
+      "blockchain-transactions"
+    ];
     const collection = resourceSegments[0];
     return { collection, id: null, isPaginated: !unpaginated.includes(collection) };
   }
@@ -873,8 +1039,9 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
   if (resourceSegments.length === 3) {
     // /api/.../issues/:id/history  or /api/.../issues/:id/comments
     const [_parentResource, parentId, subResource] = resourceSegments;
+    const unpaginatedSub = ["comments", "history", "issue_reactions"];
     // Return the sub-resource as collection, with the parent id for context
-    return { collection: subResource, id: parentId, isPaginated: true };
+    return { collection: subResource, id: parentId, isPaginated: !unpaginatedSub.includes(subResource) };
   }
 
   if (resourceSegments.length >= 4) {
@@ -891,9 +1058,20 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
 export function setupDAppInterceptor(axiosInstance: AxiosInstance) {
   axiosInstance.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
     config.adapter = async (adapterConfig) => {
-      const url = adapterConfig.url || "";
+      let url = adapterConfig.url || "";
       const method = (adapterConfig.method || "get").toLowerCase();
       const body = parseData(adapterConfig.data);
+
+      // Serialize params into URL so route handlers can read query params
+      if (adapterConfig.params && typeof adapterConfig.params === "object") {
+        const qs = Object.entries(adapterConfig.params)
+          .filter(([, v]) => v !== undefined && v !== null)
+          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+          .join("&");
+        if (qs) {
+          url += (url.indexOf("?") === -1 ? "?" : "&") + qs;
+        }
+      }
 
       const { data, status } = handleRoute(method, url, body);
 

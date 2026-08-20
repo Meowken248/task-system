@@ -47,13 +47,13 @@ type LiteTextEditorWrapperProps = MakeOptional<
   submitButtonText?: string;
 } & (
     | {
-        editable: false;
-      }
+      editable: false;
+    }
     | {
-        editable: true;
-        uploadFile: TFileHandler["upload"];
-        duplicateFile: TFileHandler["duplicate"];
-      }
+      editable: true;
+      uploadFile: TFileHandler["upload"];
+      duplicateFile: TFileHandler["duplicate"];
+    }
   );
 
 export const LiteTextEditor = React.forwardRef(function LiteTextEditor(

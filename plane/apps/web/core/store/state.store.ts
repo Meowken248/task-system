@@ -217,10 +217,15 @@ export class StateStore implements IStateStore {
    */
   fetchProjectStates = async (workspaceSlug: string, projectId: string) => {
     const statesResponse = await this.stateService.getStates(workspaceSlug, projectId);
+    console.log(`[StateStore] fetchProjectStates statesResponse:`, statesResponse);
     runInAction(() => {
-      statesResponse.forEach((state) => {
-        set(this.stateMap, [state.id], state);
-      });
+      if (Array.isArray(statesResponse)) {
+        statesResponse.forEach((state) => {
+          set(this.stateMap, state.id, state);
+        });
+      } else {
+        console.error(`[StateStore] fetchProjectStates statesResponse IS NOT AN ARRAY!`, statesResponse);
+      }
       set(this.fetchedMap, projectId, true);
     });
     return statesResponse;
