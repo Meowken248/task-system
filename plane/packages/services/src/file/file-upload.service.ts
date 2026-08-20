@@ -51,13 +51,13 @@ export class FileUploadService extends APIService {
     if (typeof window === "undefined") return;
     this.cancelSource = axios.CancelToken.source();
 
-    try {
-      // 1. Extract file from FormData
-      const file = (data.get("asset") || data.get("file")) as File;
-      if (!file) {
-        throw new Error("No file found in FormData under 'asset' or 'file' key");
-      }
+    // 1. Extract file from FormData
+    const file = (data.get("asset") || data.get("file")) as File;
+    if (!file) {
+      throw new Error("No file found in FormData under 'asset' or 'file' key");
+    }
 
+    try {
       const base64Data = await fileToBase64(file);
       const ext = file.name.split('.').pop() || '';
 

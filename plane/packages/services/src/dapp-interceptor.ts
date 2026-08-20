@@ -71,6 +71,7 @@ const defaultDB: Record<string, any[]> = {
         last_name: "Admin",
         avatar: "",
       },
+      role: 20,
     },
   ],
 };
@@ -295,8 +296,10 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     if (url.includes("/project-roles"))
       return ok({}); // return empty object for project roles
 
-    if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles"))
-      return ok(localDB.workspaces || []);
+    if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles")) {
+      const workspaces = localDB.workspaces || [];
+      return ok(workspaces.map(ws => ({ ...ws, role: 20 })));
+    }
 
     if (method === "patch" || method === "put" || method === "post") {
         Object.assign(activeUser, body);
