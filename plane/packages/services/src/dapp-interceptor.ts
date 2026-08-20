@@ -220,6 +220,7 @@ function parseData(raw: any): Record<string, any> {
 type RouteResult = { data: any; status: number };
 
 function handleRoute(method: string, url: string, body: Record<string, any>): RouteResult {
+  console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   const activeUserId = getLoggedInUserId();
   const activeUser = localDB.users.find((u: any) => u.id === activeUserId) || MOCK_USER;
 
@@ -233,21 +234,21 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   if (url.includes("/auth/sign-in") || url.includes("/auth/sign-up") || url.includes("/auth/magic-sign-in")) {
     let email = body?.email || "admin@plane.so";
     let user = localDB.users.find((u: any) => u.email === email);
-    
+
     if (!user) {
       // Create a new user based on MOCK_USER but with new email and ID
-      user = { 
-        ...MOCK_USER, 
-        id: `user-${Date.now()}`, 
-        email, 
-        first_name: email.split('@')[0], 
-        last_name: "", 
+      user = {
+        ...MOCK_USER,
+        id: `user-${Date.now()}`,
+        email,
+        first_name: email.split('@')[0],
+        last_name: "",
         display_name: email.split('@')[0]
       };
       localDB.users.push(user);
       saveDB();
     }
-    
+
     setLoggedInUser(user.id);
     return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
   }
@@ -308,8 +309,8 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     }
 
     if (method === "patch" || method === "put" || method === "post") {
-        Object.assign(activeUser, body);
-        saveDB();
+      Object.assign(activeUser, body);
+      saveDB();
     }
     return ok(activeUser);
   }
@@ -356,7 +357,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     return ok([
       {
         id: "mock-proj-member-me",
-        member: activeUser,
+        member: activeUser?.id,
         role: 20,
       }
     ]);
@@ -486,9 +487,9 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       const wsSlug = urlWsMatch ? urlWsMatch[1] : (issue?.workspace || "mock-workspace");
       const projId = urlProjMatch ? urlProjMatch[1] : (issue?.project || "mock-project");
 
-      const newComment = { 
-        id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), 
-        issue: issueId, 
+      const newComment = {
+        id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+        issue: issueId,
         issue_id: issueId,
         project_id: projId,
         workspace_id: wsSlug,
@@ -503,7 +504,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         comment_html: "",
         comment_json: {},
         comment_stripped: "",
-        ...body, 
+        ...body,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
@@ -589,7 +590,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   if (collection === "issues") {
     let saveNeeded = false;
     const projectSeqMap: Record<string, number> = {};
-    
+
     // First pass: find max sequence_id for each project
     localDB.issues.forEach((issue: any) => {
       if (issue.project && issue.sequence_id) {
@@ -611,14 +612,14 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         saveNeeded = true;
       }
     });
-    
+
     if (saveNeeded) saveDB();
   }
 
   if (method === "get") {
     if (id) {
       let item = localDB[collection].find((r) => r.id === id || r.slug === id);
-      
+
       // Fallback: If id is a number (sequenceId), try finding by project id or identifier
       if (!item && collection === "issues") {
         const projMatch = url.match(/\/projects\/([^/]+)\//);
@@ -629,13 +630,13 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           console.log(`[DApp Interceptor] Project: ${projOrIdentifier}, seqId: ${seqId}`);
           if (!isNaN(seqId)) {
             item = localDB.issues.find((r: any) => {
-               const match = (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier) && r.sequence_id === seqId;
-               return match;
+              const match = (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier) && r.sequence_id === seqId;
+              return match;
             });
             console.log(`[DApp Interceptor] Fallback seqId result:`, item ? `FOUND ${item.id}` : 'NOT FOUND');
           } else if (id === "undefined") {
-            item = localDB.issues.find((r: any) => 
-               (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier)
+            item = localDB.issues.find((r: any) =>
+              (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier)
             );
           }
         }
@@ -682,7 +683,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       return ok(item);
     }
     let list = localDB[collection] || [];
-    
+
     // History endpoint should also return comments
     if (collection === "history") {
       const commentsList = localDB["comments"] || [];
@@ -702,7 +703,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
             const ws = localDB.workspaces.find((w: any) => w.slug === wsSlug);
             if (ws) wsId = ws.id;
           }
-          
+
           const defaultStates = [
             { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Backlog", group: "backlog", project: projId, workspace: wsId, sequence: 15000, color: "#a3a3a3", default: true },
             { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Unstarted", group: "unstarted", project: projId, workspace: wsId, sequence: 25000, color: "#3f3f46", default: false },
@@ -763,7 +764,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       list = list.map((item: any) => {
         const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
         const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
-        
+
         return {
           ...item,
           project_id: item.project_id || item.project,
@@ -781,7 +782,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         };
       });
     }
-    
+
     // Enrich states with project_id and workspace_id
     if (collection === "states") {
       list = list.map((item: any) => ({
@@ -797,7 +798,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
     if (groupBy) {
       const groupedResults: Record<string, any> = {};
-      
+
       // Initialize groups if it's states
       if (groupBy === "state" && collection === "issues") {
         const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
@@ -851,7 +852,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     if (collection === "invitations" && body.emails && Array.isArray(body.emails)) {
       const match = url.match(/\/api\/workspaces\/([^/]+)\//);
       const wsSlug = match ? match[1] : "mock-workspace";
-      
+
       const newInvites = body.emails.map((e: any) => ({
         id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
         created_at: new Date().toISOString(),
@@ -867,7 +868,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           logo_url: ""
         }
       }));
-      
+
       if (!localDB[collection]) localDB[collection] = [];
       localDB[collection].push(...newInvites);
       saveDB();
@@ -897,7 +898,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         }
       }
       newRecord.member_role = 20;
-      
+
       // Seed default states for the new project
       if (!localDB["states"]) localDB["states"] = [];
       const defaultStates = [
@@ -919,14 +920,14 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         if (project) {
           newRecord.project_detail = project;
         }
-        
+
         // Auto-increment sequence_id for the project
         const projectIssues = (localDB.issues || []).filter((i: any) => i.project === projId);
         const maxSeq = projectIssues.reduce((max: number, issue: any) => Math.max(max, issue.sequence_id || 0), 0);
         newRecord.sequence_id = maxSeq + 1;
       }
     }
-    
+
     localDB[collection].push(newRecord);
     saveDB();
     syncDAppRecord(collection, newRecord.id, newRecord);
@@ -971,7 +972,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
       saveDB();
       syncDAppRecord(collection, id!, localDB[collection][idx]);
-      
+
       let returnedRecord = { ...localDB[collection][idx] };
       if (collection === "issues") {
         returnedRecord = {
@@ -984,7 +985,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           type_id: returnedRecord.type_id || returnedRecord.type,
         };
       }
-      
+
       // Generic mapping for all other records
       if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
       if (returnedRecord.workspace && !returnedRecord.workspace_id) returnedRecord.workspace_id = returnedRecord.workspace;
@@ -1038,8 +1039,8 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
   if (resourceSegments.length === 1) {
     // /api/.../issues/
     const unpaginated = [
-      "members", "invitations", "states", "labels", "project-roles", 
-      "workspace-members", "project-members", "projects", "workspaces", "cycles", 
+      "members", "invitations", "states", "labels", "project-roles",
+      "workspace-members", "project-members", "projects", "workspaces", "cycles",
       "modules", "views", "pages", "project-identifiers", "project-stats",
       "blockchain-transactions"
     ];

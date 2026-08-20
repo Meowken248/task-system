@@ -145,6 +145,11 @@ export abstract class BaseProjectMemberStore implements IBaseProjectMemberStore 
     const members = Object.values(this.projectMemberMap?.[projectId] ?? {});
     if (members.length === 0) return null;
 
+    console.log("[ProjectMemberStore] get projectMemberIds", {
+      members,
+      rootMemberMap: this.memberRoot?.memberMap
+    });
+
     // Access the filters directly to ensure MobX tracking
     const currentFilters = this.filters.filtersMap[projectId];
 
@@ -293,7 +298,8 @@ export abstract class BaseProjectMemberStore implements IBaseProjectMemberStore 
           unset(this.projectMemberMap, [projectId]);
         }
         response.forEach((member) => {
-          set(this.projectMemberMap, [projectId, member.member], member);
+          const memberId = typeof member.member === "object" ? (member.member as any).id : member.member;
+          set(this.projectMemberMap, [projectId, memberId], { ...member, member: memberId });
         });
         set(this.projectMemberFetchStatusMap, [projectId], true);
       });
