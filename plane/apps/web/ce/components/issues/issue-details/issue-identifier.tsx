@@ -25,7 +25,7 @@ export const IssueIdentifier = observer(function IssueIdentifier(props: TIssueId
   const issue = isUsingStoreData ? getIssueById(props.issueId) : null;
   const projectIdentifier = isUsingStoreData ? getProjectIdentifierById(projectId) : props.projectIdentifier;
   const issueSequenceId = isUsingStoreData ? issue?.sequence_id : props.issueSequenceId;
-  const shouldRenderIssueID = displayProperties ? displayProperties.key : true;
+  const shouldRenderIssueID = displayProperties?.key !== false;
 
   if (!shouldRenderIssueID) return null;
 

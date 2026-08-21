@@ -300,14 +300,14 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
 
   const kpiItems = kpi
     ? [
-        ["Tổng task", kpi.total],
-        ["Đang làm", kpi.inProgress],
-        ["Hoàn thành", kpi.completed],
-        ["Đúng tiến độ", kpi.onSchedule],
-        ["Chậm", kpi.delayed],
-        ["Quá hạn", kpi.overdue],
-        ["Tiến độ TB", `${kpi.averageProgress}%`],
-      ]
+      ["Tổng task", kpi.total],
+      ["Đang làm", kpi.inProgress],
+      ["Hoàn thành", kpi.completed],
+      ["Đúng tiến độ", kpi.onSchedule],
+      ["Chậm", kpi.delayed],
+      ["Quá hạn", kpi.overdue],
+      ["Tiến độ TB", `${kpi.averageProgress}%`],
+    ]
     : [];
 
   const toggleTask = (taskId: string) => {
@@ -326,9 +326,8 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     return (
       <div key={task.id}>
         <div
-          className={`flex rounded-lg transition-colors ${
-            selectedTaskId === task.id ? "bg-accent-primary/10" : "hover:bg-surface-2"
-          }`}
+          className={`flex rounded-lg transition-colors ${selectedTaskId === task.id ? "bg-accent-primary/10" : "hover:bg-surface-2"
+            }`}
           style={{ marginLeft: `${depth * 14}px` }}
         >
           {children.length ? (
@@ -394,11 +393,10 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   key={project.id}
                   type="button"
                   onClick={() => void selectProject(project.id)}
-                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${
-                    selectedProjectId === project.id
+                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${selectedProjectId === project.id
                       ? "bg-accent-primary/10 text-accent-primary"
                       : "text-secondary hover:bg-surface-2"
-                  }`}
+                    }`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-12 font-medium">{project.name}</span>
@@ -685,7 +683,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
 
               <div>
                 <h4 className="text-12 font-semibold text-primary">
-                  Nội dung xác thực on-chain ({contentRecords.length})
+                  Nội dung xác thực({contentRecords.length})
                 </h4>
                 {contentRecords.length === 0 ? (
                   <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">

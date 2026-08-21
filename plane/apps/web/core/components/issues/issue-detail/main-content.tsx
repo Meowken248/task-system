@@ -19,6 +19,7 @@ import { DescriptionInput } from "@/components/editor/rich-text/description-inpu
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useMember } from "@/hooks/store/use-member";
 import { useProject } from "@/hooks/store/use-project";
+import { useProjectState } from "@/hooks/store/use-project-state";
 import { useUser, useUserPermissions } from "@/hooks/store/user";
 import useReloadConfirmations from "@/hooks/use-reload-confirmation";
 import useSize from "@/hooks/use-window-size";
@@ -68,8 +69,10 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
     issue: { getIssueById },
     createComment,
     peekIssue,
+    fetchIssue,
   } = useIssueDetail();
   const { getProjectById } = useProject();
+  const { getProjectStates } = useProjectState();
   const { setShowAlert } = useReloadConfirmations(isSubmitting === "submitting");
   // derived values
   const projectDetails = getProjectById(projectId);

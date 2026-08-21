@@ -13,7 +13,7 @@ import { Tooltip } from "@plane/propel/tooltip";
 import type { TIssue, TIssueServiceType, TSubIssueOperations } from "@plane/types";
 import { EIssueServiceType, EIssuesStoreType } from "@plane/types";
 import { ControlLink, CustomMenu } from "@plane/ui";
-import { cn, generateWorkItemLink } from "@plane/utils";
+import { cn, generateWorkItemLink, getComputedDisplayProperties } from "@plane/utils";
 // helpers
 import { useSubIssueOperations } from "@/components/issues/issue-detail-widgets/sub-issues/helper";
 import { WithDisplayPropertiesHOC } from "@/components/issues/issue-layouts/properties/with-display-properties-HOC";
@@ -85,7 +85,7 @@ export const SubIssuesListItem = observer(function SubIssuesListItem(props: Prop
 
   // derived values
   const subIssueFilters = getSubIssueFilters(parentIssueId);
-  const displayProperties = subIssueFilters?.displayProperties ?? {};
+  const displayProperties = getComputedDisplayProperties(subIssueFilters?.displayProperties ?? {});
 
   //
   const handleIssuePeekOverview = (issue: TIssue) => handleRedirection(workspaceSlug, issue, isMobile);

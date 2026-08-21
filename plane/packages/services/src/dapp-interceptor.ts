@@ -393,9 +393,23 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 
   // Assets v2
   if (url.match(/\/api\/assets\/v2\//) && method === "post") {
+    const assetId = "asset_$(Date.now())";
+    const issueMatch = url.match(/\/(issues|work-items|epics)\/([^\/]+)\/attachments/);
+    const issueId = issueMatch ? issueMatch[2] : null;
+    if (issueId) {
+      if (!localDB["attachments"]) localDB["attachments"] = [];
+      localDB["attachments"].push({
+        id: assetId,
+        asset_id: assetId,
+        issue: issueId,
+        is_uploaded: false,
+        attributes: { name: body?.name || "mock_file.png", size: body?.size || 1024 }
+      });
+      saveDB();
+    }
     return ok({
-      asset_id: `asset_${Date.now()}`,
-      asset_url: `mock_asset_url_${Date.now()}`,
+      asset_id: assetId,
+      asset_url: "mock_asset_url_$(Date.now())",
       upload_data: {
         url: "mock_upload_url",
         fields: {
@@ -412,7 +426,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   }
 
   if (url.match(/\/api\/assets\/v2\//) && method === "patch") {
-    return ok({ success: true });
+    const assetMatch = url.match(/\/attachments\/([^/]+)\/?/); const assetId = assetMatch ? assetMatch[1] : null; const attachment = (localDB["attachments"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId); if (attachment) { attachment.is_uploaded = true; saveDB(); return ok(attachment); } return ok({ success: true });
   }
 
   // ── Issue sub-resource endpoints ─────────────────────────────────────
@@ -604,6 +618,16 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   if (url.match(/\/(issues|work-items|epics)\/[^/]+\/links\/?(?:\?.*)?$/)) {
     if (method === "get") return ok([]);
     if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body });
+  }
+
+  // attachments
+  const attachmentsMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/attachments\/?(?:\?.*)?$/);
+  if (attachmentsMatch) {
+    const issueId = attachmentsMatch[2];
+    if (method === "get") {
+      const attachments = (localDB["attachments"] || []).filter((a: any) => a.issue === issueId || a.issue_id === issueId);
+      return ok(attachments);
+    }
   }
 
   // description-versions
@@ -1718,3 +1742,6 @@ export function setupDAppInterceptor(axiosInstance: AxiosInstance) {
     return config;
   });
 }
+
+
+
