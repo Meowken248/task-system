@@ -8,6 +8,7 @@ import { getIssueOnChainProgress, getWalletKPI, type OnChainKPI } from "@/servic
 import { ProjectService } from "@/services/project";
 import { IssueService } from "@/services/issue";
 import type { TIssue } from "@plane/types";
+import { useUser } from "@/hooks/store/user";
 
 type Props = { workspaceSlug: string };
 type ProjectOption = { id: string; name: string; identifier?: string };
@@ -27,10 +28,11 @@ type AggregateKpi = {
 const projectService = new ProjectService();
 const issueService = new IssueService();
 
-function formatDateTime(value?: string): string {
-  if (!value) return "Chưa có thời gian";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+function formatDateTime(value?: string, fallbackValue?: string): string {
+  const time = value || fallbackValue;
+  if (!time) return "Chưa có thời gian";
+  const date = new Date(time);
+  if (Number.isNaN(date.getTime())) return time;
   return new Intl.DateTimeFormat("vi-VN", {
     day: "2-digit",
     month: "2-digit",
@@ -117,6 +119,7 @@ function KpiGrid({ value }: { value: AggregateKpi }) {
 }
 
 export function OnChainKpiWidget({ workspaceSlug }: Props) {
+  const { data: currentUser } = useUser();
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [records, setRecords] = useState<TBlockchainTrackingRecord[]>([]);
@@ -552,11 +555,11 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   <div className="mt-3 grid gap-2 text-11 sm:grid-cols-2">
                     <div>
                       <span className="text-tertiary">Tên:</span>{" "}
-                      <span className="text-primary">{assignment.assignee_name || assignment.assignee_id}</span>
+                      <span className="text-primary">{assignment.assignee_name || (assignment.assignee_id?.startsWith("user-") ? (currentUser?.display_name || currentUser?.first_name || "Bạn (You)") : assignment.assignee_id)}</span>
                     </div>
                     <div>
                       <span className="text-tertiary">Thời gian giao:</span>{" "}
-                      <span className="text-primary">{formatDateTime(assignment.recorded_at)}</span>
+                      <span className="text-primary">{formatDateTime(assignment.recorded_at, (assignment as any).created_at)}</span>
                     </div>
                     <div className="sm:col-span-2">
                       <span className="text-tertiary">Ví:</span>{" "}
@@ -618,7 +621,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <time className="text-11 font-medium text-secondary">
-                            {formatDateTime(report.recorded_at)}
+                            {formatDateTime(report.recorded_at, (report as any).created_at)}
                           </time>
                           <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">
                             Tiến độ {report.progress ?? 0}%
@@ -633,8 +636,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                           <div>
                             <dt className="text-tertiary">Nhân viên báo cáo</dt>
                             <dd className="mt-0.5 text-primary">
-                              {report.reporter_name ||
-                                report.reporter_id ||
+                              {report.reporter_name || (report.reporter_id?.startsWith("user-") ? (currentUser?.display_name || currentUser?.first_name || "Bạn (You)") : report.reporter_id) ||
                                 assignment?.assignee_name ||
                                 assignment?.assignee_id ||
                                 "Chưa xác định"}
@@ -693,7 +695,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                           <span className="font-medium text-primary">
                             {record.content_kind === "comment" ? "Bình luận" : "Evidence"}
                           </span>
-                          <time className="text-tertiary">{formatDateTime(record.recorded_at)}</time>
+                          <time className="text-tertiary">{formatDateTime(record.recorded_at, (record as any).created_at)}</time>
                         </div>
                         <p className="mt-2 text-tertiary">
                           Tham chiếu:{" "}

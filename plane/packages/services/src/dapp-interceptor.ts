@@ -882,6 +882,19 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       updated_at: new Date().toISOString(),
       ...body,
     };
+    if (collection === "blockchain-transactions") {
+      newRecord.recorded_at = new Date().toISOString();
+      const activeUserId = getLoggedInUserId();
+      const activeUser = localDB.users?.find((u: any) => u.id === activeUserId) || MOCK_USER;
+      if (newRecord.event_type === "assign_task" && !newRecord.assignee_name && newRecord.assignee_id) {
+         const u = localDB.users?.find((u: any) => u.id === newRecord.assignee_id);
+         newRecord.assignee_name = u?.display_name || u?.first_name || newRecord.assignee_id;
+      }
+      if ((newRecord.event_type === "daily_report" || newRecord.event_type === "task_content") && !newRecord.reporter_name) {
+         newRecord.reporter_id = activeUserId;
+         newRecord.reporter_name = activeUser?.display_name || activeUser?.first_name || activeUserId;
+      }
+    }
     if (collection === "workspaces" && !newRecord.slug) newRecord.slug = newRecord.name?.toLowerCase().replace(/\s+/g, "-");
     if (collection === "workspaces" && !newRecord.owner) {
       newRecord.owner = { id: "me", email: "admin@plane.so", first_name: "Plane", last_name: "Admin", avatar: "" };
