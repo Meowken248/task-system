@@ -341,8 +341,18 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     method === "get" &&
     (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details"))
   ) {
-    return ok(localDB.projects || []);
+    const projects = (localDB.projects || []).map((p: any) => {
+      // Calculate next_work_item_sequence from actual issues
+      const projectIssues = (localDB.issues || []).filter((i: any) => i.project === p.id || i.project_id === p.id);
+      const maxSeq = projectIssues.reduce((max: number, i: any) => Math.max(max, i.sequence_id || 0), 0);
+      return {
+        ...p,
+        next_work_item_sequence: maxSeq + 1,
+      };
+    });
+    return ok(projects);
   }
+
 
   // ── Project Members ──────────────────────────────────────────────────
   if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/projects\/[^/]+\/project-members\/me\/?/)) {
