@@ -569,8 +569,28 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       return ok({ sub_issues: enrichedSubIssues, state_distribution: {} });
     }
     if (method === "post") {
-      // Assuming handled by generic CRUD if they create issue first, or just mock ok
-      return ok({});
+      const parentId = subIssuesMatch[2];
+      const subIssueIds = body.sub_issue_ids || [];
+      
+      let updatedSubIssues: any[] = [];
+      if (localDB.issues) {
+        localDB.issues = localDB.issues.map((i: any) => {
+          if (subIssueIds.includes(i.id)) {
+            const updated = { ...i, parent_id: parentId, parent: parentId };
+            updatedSubIssues.push(updated);
+            return updated;
+          }
+          return i;
+        });
+        
+        const parentIdx = localDB.issues.findIndex((i: any) => i.id === parentId);
+        if (parentIdx > -1) {
+          localDB.issues[parentIdx].sub_issues_count = (localDB.issues[parentIdx].sub_issues_count || 0) + updatedSubIssues.length;
+        }
+        saveDB();
+      }
+      
+      return ok({ sub_issues: updatedSubIssues, state_distribution: {} });
     }
   }
 
@@ -740,8 +760,250 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     }
   }
 
+  if (collection === "advance-analytics" && method === "get") {
+    const issues = localDB.issues || [];
+    const states = localDB.states || [];
+    const projectIdMatch = url.match(/\/projects\/([^/]+)/);
+    const projectId = projectIdMatch ? projectIdMatch[1] : null;
+    
+    let filteredIssues = issues;
+    if (projectId) {
+      filteredIssues = issues.filter((i: any) => i.project_id === projectId || i.project === projectId);
+    }
+    
+    let started = 0;
+    let backlog = 0;
+    let unstarted = 0;
+    let completed = 0;
+    
+    filteredIssues.forEach((issue: any) => {
+      const stateId = issue.state_id || issue.state;
+      const state = states.find((s: any) => s.id === stateId);
+      if (state) {
+        if (state.group === "started") started++;
+        else if (state.group === "backlog") backlog++;
+        else if (state.group === "unstarted") unstarted++;
+        else if (state.group === "completed" || state.group === "done") completed++;
+      }
+    });
+
+    return ok({
+      total_work_items: { count: filteredIssues.length },
+      started_work_items: { count: started },
+      backlog_work_items: { count: backlog },
+      un_started_work_items: { count: unstarted },
+      completed_work_items: { count: completed }
+    });
+  }
+
+  if (collection === "advance-analytics-stats" && method === "get") {
+    const isPeekView = url.includes("/projects/");
+    const projectIdMatch = url.match(/\/projects\/([^/]+)/);
+    const projectId = projectIdMatch ? projectIdMatch[1] : null;
+    
+    const issues = localDB.issues || [];
+    const states = localDB.states || [];
+    const users = localDB.users || [];
+    const projects = localDB.projects || [];
+    
+    let filteredIssues = issues;
+    if (isPeekView && projectId) {
+      filteredIssues = issues.filter((i: any) => i.project_id === projectId || i.project === projectId);
+    }
+    
+    if (isPeekView) {
+      // Group by assignee
+      const assigneeMap: Record<string, any> = {};
+      
+      filteredIssues.forEach((issue: any) => {
+        let assignees = issue.assignee_ids || issue.assignees || [];
+        if (!Array.isArray(assignees)) assignees = [assignees];
+        if (assignees.length === 0) assignees = ["unassigned"];
+        
+        assignees.forEach((assigneeId: string) => {
+          if (!assigneeMap[assigneeId]) {
+            let displayName = "Unassigned";
+            let avatarUrl = "";
+            if (assigneeId !== "unassigned") {
+              const user = users.find((u: any) => u.id === assigneeId);
+              if (user) {
+                displayName = user.display_name || user.first_name || user.name || "User";
+                avatarUrl = user.avatar || user.avatar_url || "";
+              }
+            } else {
+                displayName = null as any; // Table displays 'Unassigned' if null
+            }
+            assigneeMap[assigneeId] = {
+              display_name: displayName,
+              avatar_url: avatarUrl,
+              backlog_work_items: 0,
+              started_work_items: 0,
+              un_started_work_items: 0,
+              completed_work_items: 0,
+              cancelled_work_items: 0
+            };
+          }
+          
+          const stateId = issue.state_id || issue.state;
+          const state = states.find((s: any) => s.id === stateId);
+          if (state) {
+            if (state.group === "started") assigneeMap[assigneeId].started_work_items++;
+            else if (state.group === "backlog") assigneeMap[assigneeId].backlog_work_items++;
+            else if (state.group === "unstarted") assigneeMap[assigneeId].un_started_work_items++;
+            else if (state.group === "completed" || state.group === "done") assigneeMap[assigneeId].completed_work_items++;
+            else if (state.group === "cancelled") assigneeMap[assigneeId].cancelled_work_items++;
+          }
+        });
+      });
+      
+      return ok(Object.values(assigneeMap));
+    } else {
+      // Group by project
+      const projectMap: Record<string, any> = {};
+      filteredIssues.forEach((issue: any) => {
+        const pid = issue.project_id || issue.project || "unassigned";
+        if (!projectMap[pid]) {
+          let projectName = "Unknown Project";
+          if (pid !== "unassigned") {
+            const proj = projects.find((p: any) => p.id === pid);
+            if (proj) projectName = proj.name;
+          }
+          projectMap[pid] = {
+            project__name: projectName,
+            backlog_work_items: 0,
+            started_work_items: 0,
+            un_started_work_items: 0,
+            completed_work_items: 0,
+            cancelled_work_items: 0
+          };
+        }
+        
+        const stateId = issue.state_id || issue.state;
+        const state = states.find((s: any) => s.id === stateId);
+        if (state) {
+          if (state.group === "started") projectMap[pid].started_work_items++;
+          else if (state.group === "backlog") projectMap[pid].backlog_work_items++;
+          else if (state.group === "unstarted") projectMap[pid].un_started_work_items++;
+          else if (state.group === "completed" || state.group === "done") projectMap[pid].completed_work_items++;
+          else if (state.group === "cancelled") projectMap[pid].cancelled_work_items++;
+        }
+      });
+      
+      return ok(Object.values(projectMap));
+    }
+  }
+
   if (collection === "advance-analytics-charts" && method === "get") {
-    return ok({ data: [], schema: {} });
+    const params = new URLSearchParams(url.split("?")[1] || "");
+    const type = params.get("type") || "work-items";
+    const xAxis = params.get("x_axis");
+    
+    const issues = localDB.issues || [];
+    const states = localDB.states || [];
+    const users = localDB.users || [];
+    
+    const projectIdMatch = url.match(/\/projects\/([^/]+)/);
+    const projectId = projectIdMatch ? projectIdMatch[1] : null;
+    
+    let filteredIssues = issues;
+    if (projectId) {
+      filteredIssues = issues.filter((i: any) => i.project_id === projectId || i.project === projectId);
+    }
+    
+    if (type === "work-items") {
+      // Created vs Resolved grouped by date
+      const dateMap: Record<string, any> = {};
+      
+      filteredIssues.forEach((issue: any) => {
+        if (issue.created_at) {
+          const createdDate = issue.created_at.split("T")[0];
+          if (!dateMap[createdDate]) dateMap[createdDate] = { created_issues: 0, completed_issues: 0 };
+          dateMap[createdDate].created_issues++;
+        }
+        
+        const stateId = issue.state_id || issue.state;
+        const state = states.find((s: any) => s.id === stateId);
+        if (state && (state.group === "completed" || state.group === "done")) {
+          const completedDate = (issue.completed_at || issue.updated_at || issue.created_at).split("T")[0];
+          if (!dateMap[completedDate]) dateMap[completedDate] = { created_issues: 0, completed_issues: 0 };
+          dateMap[completedDate].completed_issues++;
+        }
+      });
+      
+      const mockData = Object.keys(dateMap).sort().map(dateStr => {
+        return {
+          key: dateStr,
+          name: dateStr,
+          count: dateMap[dateStr].created_issues + dateMap[dateStr].completed_issues,
+          created_issues: dateMap[dateStr].created_issues,
+          completed_issues: dateMap[dateStr].completed_issues
+        };
+      });
+      
+      const schema = { created_issues: "Created", completed_issues: "Completed", count: "Count" };
+      return ok({ data: mockData, schema });
+      
+    } else {
+      // Group by x_axis dynamically
+      let mockDataMap: Record<string, any> = {};
+      let schema: Record<string, string> = { count: "Count" };
+      
+      filteredIssues.forEach((issue: any) => {
+        let key = "unknown";
+        let name = "Unknown";
+        
+        if (xAxis === "priority") {
+          key = issue.priority || "none";
+          name = (key === "none") ? "None" : key;
+        } else if (xAxis === "state_id" || xAxis === "state__group") {
+          const stateId = issue.state_id || issue.state;
+          const state = states.find((s: any) => s.id === stateId);
+          if (state) {
+            key = xAxis === "state__group" ? state.group : state.name;
+            name = state.name;
+          }
+        } else if (xAxis === "assignees__id") {
+          let assignees = issue.assignee_ids || issue.assignees || [];
+          if (!Array.isArray(assignees)) assignees = [assignees];
+          if (assignees.length === 0) assignees = ["unassigned"];
+          
+          if (assignees.length > 0) {
+            key = assignees[0];
+            if (key === "unassigned") {
+              name = "Unassigned";
+            } else {
+              const user = users.find((u: any) => u.id === key);
+              name = user ? (user.display_name || user.first_name || user.name || "User") : key;
+            }
+          }
+        } else if (xAxis === "labels__id") {
+          const labels = Array.isArray(issue.labels) ? issue.labels : (issue.label_ids || []);
+          if (labels.length > 0) {
+             key = labels[0];
+             name = "Label " + key; // Simplified for mock
+          } else {
+             key = "none";
+             name = "None";
+          }
+        }
+        
+        if (!mockDataMap[key]) {
+          mockDataMap[key] = { key, name, count: 0 };
+        }
+        mockDataMap[key].count++;
+        
+        // Also populate the key in the schema
+        if (!schema[key]) {
+          schema[key] = name;
+        }
+        if (mockDataMap[key][key] === undefined) {
+          mockDataMap[key][key] = 0;
+        }
+        mockDataMap[key][key]++;
+      });
+      
+      return ok({ data: Object.values(mockDataMap), schema });
+    }
   }
   if (collection === "user-properties" && method === "get") {
     return ok({
