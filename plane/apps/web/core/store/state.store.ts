@@ -114,7 +114,9 @@ export class StateStore implements IStateStore {
     const allStates = Object.values(this.stateMap);
     console.log(`[StateStore] get projectStates for projectId: ${projectId}, total states: ${allStates.length}`);
     if (allStates.length > 0) {
-      console.log(`[StateStore] get projectStates Sample state project_id: ${allStates[0].project_id}, matching? ${allStates[0].project_id === projectId}`);
+      console.log(
+        `[StateStore] get projectStates Sample state project_id: ${allStates[0].project_id}, matching? ${allStates[0].project_id === projectId}`
+      );
     }
     return sortStates(allStates.filter((state) => (state.project_id || (state as any).project) === projectId));
   }
@@ -169,7 +171,9 @@ export class StateStore implements IStateStore {
     const allStates = Object.values(this.stateMap);
     console.log(`[StateStore] getProjectStates for projectId: ${projectId}, total states: ${allStates.length}`);
     if (allStates.length > 0) {
-      console.log(`[StateStore] Sample state project_id: ${allStates[0].project_id}, matching? ${allStates[0].project_id === projectId}`);
+      console.log(
+        `[StateStore] Sample state project_id: ${allStates[0].project_id}, matching? ${allStates[0].project_id === projectId}`
+      );
     }
     return sortStates(allStates.filter((state) => (state.project_id || (state as any).project) === projectId));
   });

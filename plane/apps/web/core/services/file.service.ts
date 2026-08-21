@@ -203,7 +203,10 @@ export class FileService extends APIService {
       .then(async (response) => {
         const signedURLResponse: TFileSignedURLResponse = response?.data;
         const fileUploadPayload = generateFileUploadPayload(signedURLResponse, file);
-        const uploadResult = await this.fileUploadService.uploadFile(signedURLResponse.upload_data.url, fileUploadPayload);
+        const uploadResult = await this.fileUploadService.uploadFile(
+          signedURLResponse.upload_data.url,
+          fileUploadPayload
+        );
         if (uploadResult && uploadResult.asset) {
           signedURLResponse.asset_url = uploadResult.asset;
         }

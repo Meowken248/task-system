@@ -112,14 +112,16 @@ export class IssueCommentStore implements IIssueCommentStore {
       this.comments[issueId] = uniq(concat(existing, commentIds));
 
       const currentUser = this.rootIssueDetail.rootIssueStore.rootStore.user.data;
-      const defaultActorDetail = currentUser ? {
-        id: currentUser.id,
-        first_name: currentUser.first_name,
-        last_name: currentUser.last_name,
-        is_bot: currentUser.is_bot || false,
-        display_name: currentUser.display_name || currentUser.first_name || "User",
-        avatar_url: currentUser.avatar_url || ""
-      } : { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin" };
+      const defaultActorDetail = currentUser
+        ? {
+            id: currentUser.id,
+            first_name: currentUser.first_name,
+            last_name: currentUser.last_name,
+            is_bot: currentUser.is_bot || false,
+            display_name: currentUser.display_name || currentUser.first_name || "User",
+            avatar_url: currentUser.avatar_url || "",
+          }
+        : { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin" };
 
       comments.forEach((comment) => {
         // Bypassing dapp-interceptor stripping issue
@@ -150,14 +152,16 @@ export class IssueCommentStore implements IIssueCommentStore {
       this.comments[issueId] = uniq(concat(existing, [response.id]));
 
       const currentUser = this.rootIssueDetail.rootIssueStore.rootStore.user.data;
-      const defaultActorDetail = currentUser ? {
-        id: currentUser.id,
-        first_name: currentUser.first_name,
-        last_name: currentUser.last_name,
-        is_bot: currentUser.is_bot || false,
-        display_name: currentUser.display_name || currentUser.first_name || "User",
-        avatar_url: currentUser.avatar_url || ""
-      } : { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin" };
+      const defaultActorDetail = currentUser
+        ? {
+            id: currentUser.id,
+            first_name: currentUser.first_name,
+            last_name: currentUser.last_name,
+            is_bot: currentUser.is_bot || false,
+            display_name: currentUser.display_name || currentUser.first_name || "User",
+            avatar_url: currentUser.avatar_url || "",
+          }
+        : { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin" };
 
       if (!response.workspace) response.workspace = workspaceSlug;
       if (!response.project) response.project = projectId;

@@ -26,7 +26,7 @@ export abstract class APIService {
       baseURL,
       withCredentials: true,
     });
-    
+
     // Intercept all requests for DApp mode
     setupDAppInterceptor(this.axiosInstance);
   }

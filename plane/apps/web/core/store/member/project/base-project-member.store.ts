@@ -147,7 +147,7 @@ export abstract class BaseProjectMemberStore implements IBaseProjectMemberStore 
 
     console.log("[ProjectMemberStore] get projectMemberIds", {
       members,
-      rootMemberMap: this.memberRoot?.memberMap
+      rootMemberMap: this.memberRoot?.memberMap,
     });
 
     // Access the filters directly to ensure MobX tracking

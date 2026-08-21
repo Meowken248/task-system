@@ -16,21 +16,23 @@ async function syncDAppRecord(collection: string, id: string, record: any) {
     contract.setConfigs({ to: PLANE_CONTRACT });
     console.log(`[DApp Sync] Syncing ${collection}/${id} to Smart Contract...`);
     await contract.sendTransaction({
-      abiData: [{
-        name: "updateDAppRecord",
-        type: "function",
-        stateMutability: "nonpayable",
-        inputs: [
-          { name: "collection", type: "string" },
-          { name: "id", type: "string" },
-          { name: "jsonPayload", type: "string" }
-        ],
-        outputs: []
-      }],
+      abiData: [
+        {
+          name: "updateDAppRecord",
+          type: "function",
+          stateMutability: "nonpayable",
+          inputs: [
+            { name: "collection", type: "string" },
+            { name: "id", type: "string" },
+            { name: "jsonPayload", type: "string" },
+          ],
+          outputs: [],
+        },
+      ],
       functionName: "updateDAppRecord",
       inputArray: [collection, id, JSON.stringify(record)],
       feeType: "sc",
-      from: (window as any).fiaiSDK?.account?.address || "0x0000000000000000000000000000000000000000"
+      from: (window as any).fiaiSDK?.account?.address || "0x0000000000000000000000000000000000000000",
     });
     console.log(`[DApp Sync] Success!`);
   } catch (err) {
@@ -102,10 +104,11 @@ if (typeof window !== "undefined") {
   try {
     const saved = localStorage.getItem("plane_dapp_db");
     if (saved) parsedDB = JSON.parse(saved);
-  } catch { /* corrupted – will reset */ }
+  } catch {
+    /* corrupted – will reset */
+  }
 }
-const localDB: Record<string, any[]> =
-  parsedDB && Object.keys(parsedDB).length > 0 ? parsedDB : { ...defaultDB };
+const localDB: Record<string, any[]> = parsedDB && Object.keys(parsedDB).length > 0 ? parsedDB : { ...defaultDB };
 
 // Safety checks for older local storage DBs missing new seed data
 if (!localDB.users) localDB.users = defaultDB.users;
@@ -210,7 +213,11 @@ function getUserSettings() {
 function parseData(raw: any): Record<string, any> {
   if (!raw) return {};
   if (typeof raw === "string") {
-    try { return JSON.parse(raw); } catch { return {}; }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
   }
   if (typeof raw === "object" && !(raw instanceof FormData)) return raw;
   return {};
@@ -225,8 +232,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   const activeUser = localDB.users.find((u: any) => u.id === activeUserId) || MOCK_USER;
 
   // ── Auth endpoints ──────────────────────────────────────────────────
-  if (url.includes("/auth/get-csrf-token"))
-    return ok({ csrf_token: "dapp-csrf-token" });
+  if (url.includes("/auth/get-csrf-token")) return ok({ csrf_token: "dapp-csrf-token" });
 
   if (url.includes("/auth/email-check"))
     return ok({ existing: true, is_password_autoset: false, status: "CREDENTIAL" });
@@ -241,9 +247,9 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         ...MOCK_USER,
         id: `user-${Date.now()}`,
         email,
-        first_name: email.split('@')[0],
+        first_name: email.split("@")[0],
         last_name: "",
-        display_name: email.split('@')[0]
+        display_name: email.split("@")[0],
       };
       localDB.users.push(user);
       saveDB();
@@ -253,8 +259,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
   }
 
-  if (url.includes("/auth/forgot-password") || url.includes("/auth/set-password"))
-    return ok({ message: "success" });
+  if (url.includes("/auth/forgot-password") || url.includes("/auth/set-password")) return ok({ message: "success" });
 
   if (url.includes("/auth/sign-out")) {
     setLoggedInUser(null);
@@ -262,17 +267,14 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   }
 
   // ── Instance ────────────────────────────────────────────────────────
-  if (url.match(/\/api\/instances\/?$/) || url.match(/\/api\/instances\/\?/))
-    return ok(getInstanceInfo());
+  if (url.match(/\/api\/instances\/?$/) || url.match(/\/api\/instances\/\?/)) return ok(getInstanceInfo());
 
-  if (url.includes("/api/instances/configurations"))
-    return ok([]);
+  if (url.includes("/api/instances/configurations")) return ok([]);
 
   if (url.includes("/api/instances/workspaces"))
     return ok({ results: localDB.workspaces || [], next_cursor: null, prev_cursor: null });
 
-  if (url.includes("/api/instances/admins"))
-    return ok([MOCK_USER]);
+  if (url.includes("/api/instances/admins")) return ok([MOCK_USER]);
 
   if (url.match(/\/api\/users\/me/)) {
     if (!isLoggedIn()) return { data: { error: "not authenticated" }, status: 401 };
@@ -284,28 +286,23 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       }
       return ok({
         ...activeUser,
-        workspace: { fallback_workspace_id: "mock-workspace", fallback_workspace_slug: "mock-workspace", invites: 0 }
+        workspace: { fallback_workspace_id: "mock-workspace", fallback_workspace_slug: "mock-workspace", invites: 0 },
       });
     }
 
-    if (url.includes("/api/users/me/settings"))
-      return ok(getUserSettings());
+    if (url.includes("/api/users/me/settings")) return ok(getUserSettings());
 
-    if (url.includes("/api/users/me/instance-admin"))
-      return ok({ is_instance_admin: true });
+    if (url.includes("/api/users/me/instance-admin")) return ok({ is_instance_admin: true });
 
-    if (url.includes("/api/users/me/accounts"))
-      return ok([]);
+    if (url.includes("/api/users/me/accounts")) return ok([]);
 
-    if (url.includes("/api/users/me/notification-preferences"))
-      return ok({});
+    if (url.includes("/api/users/me/notification-preferences")) return ok({});
 
-    if (url.includes("/project-roles"))
-      return ok({}); // return empty object for project roles
+    if (url.includes("/project-roles")) return ok({}); // return empty object for project roles
 
     if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles")) {
       const workspaces = localDB.workspaces || [];
-      return ok(workspaces.map(ws => ({ ...ws, role: 20 })));
+      return ok(workspaces.map((ws) => ({ ...ws, role: 20 })));
     }
 
     if (method === "patch" || method === "put" || method === "post") {
@@ -323,7 +320,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       role: 20, // Admin role
       workspace: "mock-workspace-id",
       is_active: true,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
     });
   }
 
@@ -335,12 +332,15 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         role: 20,
         workspace: "mock-workspace-id",
         is_active: true,
-        created_at: new Date().toISOString()
-      }
+        created_at: new Date().toISOString(),
+      },
     ]);
   }
 
-  if (method === "get" && (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details"))) {
+  if (
+    method === "get" &&
+    (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details"))
+  ) {
     return ok(localDB.projects || []);
   }
 
@@ -359,7 +359,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         id: "mock-proj-member-me",
         member: activeUser?.id,
         role: 20,
-      }
+      },
     ]);
   }
 
@@ -367,7 +367,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   const archiveMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/archive\/?$/);
   if (archiveMatch) {
     const projectId = archiveMatch[1];
-    const project = localDB.projects?.find(p => p.id === projectId);
+    const project = localDB.projects?.find((p) => p.id === projectId);
     if (project) {
       if (method === "post") {
         project.archived_at = new Date().toISOString();
@@ -378,7 +378,8 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       syncDAppRecord("projects", projectId, project);
       return ok(project);
     }
-    console.log('404 for URL:', url, 'method:', method); return { data: null, status: 404 };
+    console.log("404 for URL:", url, "method:", method);
+    return { data: null, status: 404 };
   }
 
   // ── Recent Visits & Favorites ────────────────────────────────────────
@@ -405,8 +406,8 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
           "x-amz-date": "mock_date",
           policy: "mock_policy",
           "x-amz-signature": "mock_sig",
-        }
-      }
+        },
+      },
     });
   }
 
@@ -442,7 +443,14 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         comment_stripped: c.comment_stripped || "",
         comment_json: c.comment_json || null,
         actor: c.actor || "me",
-        actor_detail: c.actor_detail || { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin", avatar: "" },
+        actor_detail: c.actor_detail || {
+          id: "me",
+          first_name: "Plane",
+          last_name: "Admin",
+          is_bot: false,
+          display_name: "Plane Admin",
+          avatar: "",
+        },
         created_at: c.created_at,
         updated_at: c.updated_at || c.created_at,
         edited_at: c.edited_at || null,
@@ -476,7 +484,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         project_id: c.project_id || c.project || issue?.project,
         workspace_id: c.workspace_id || c.workspace || issue?.workspace,
         actor: c.actor || "me",
-        actor_detail: { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin" }
+        actor_detail: { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin" },
       }));
       return ok(enrichedComments);
     }
@@ -484,8 +492,8 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       const issue = localDB.issues?.find((i: any) => i.id === issueId);
       const urlWsMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
       const urlProjMatch = url.match(/\/projects\/([^/]+)\//);
-      const wsSlug = urlWsMatch ? urlWsMatch[1] : (issue?.workspace || "mock-workspace");
-      const projId = urlProjMatch ? urlProjMatch[1] : (issue?.project || "mock-project");
+      const wsSlug = urlWsMatch ? urlWsMatch[1] : issue?.workspace || "mock-workspace";
+      const projId = urlProjMatch ? urlProjMatch[1] : issue?.project || "mock-project";
 
       const newComment = {
         id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
@@ -496,7 +504,14 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         project: projId,
         workspace: wsSlug,
         actor: "me",
-        actor_detail: { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin", avatar: "" },
+        actor_detail: {
+          id: "me",
+          first_name: "Plane",
+          last_name: "Admin",
+          is_bot: false,
+          display_name: "Plane Admin",
+          avatar: "",
+        },
         access: "EXTERNAL",
         reaction_groups: {},
         created_by: "me",
@@ -506,7 +521,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         comment_stripped: "",
         ...body,
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       };
       if (!localDB.comments) localDB.comments = [];
       localDB.comments.push(newComment);
@@ -561,7 +576,6 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     if (method === "post") return ok({ ...body });
   }
 
-
   // ── Generic CRUD ────────────────────────────────────────────────────
   return handleCRUD(method, url, body);
 }
@@ -569,7 +583,9 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 // ── Generic CRUD handler ─────────────────────────────────────────────────
 function handleCRUD(method: string, url: string, body: Record<string, any>): RouteResult {
   let { collection, id, isPaginated } = parseApiUrl(url);
-  console.log(`[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`);
+  console.log(
+    `[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`
+  );
 
   // Alias work-items / issues-detail / work-items-detail to issues
   if (collection === "work-items" || collection === "issues-detail" || collection === "work-items-detail") {
@@ -577,11 +593,45 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   }
 
   // Sub-resource collections that don't have persistent storage — return empty stubs
-  const subResourceCollections = ["history", "comments", "reactions", "sub-issues", "issue-relation", "links", "subscriptions", "description-versions", "archive"];
+  const subResourceCollections = [
+    "history",
+    "comments",
+    "reactions",
+    "sub-issues",
+    "issue-relation",
+    "links",
+    "subscriptions",
+    "description-versions",
+    "archive",
+  ];
   if (subResourceCollections.includes(collection) && !localDB[collection]?.length) {
     if (method === "get") {
       return ok([]);
     }
+  }
+
+  if (collection === "advance-analytics-charts" && method === "get") {
+    return ok({ data: [], schema: {} });
+  }
+  if (collection === "user-properties" && method === "get") {
+    return ok({
+      display_filters: { layout: "list" },
+      display_properties: {
+        assignee: true,
+        attachment_count: true,
+        created_on: true,
+        due_date: true,
+        estimate: true,
+        key: true,
+        labels: true,
+        link: true,
+        priority: true,
+        start_date: true,
+        state: true,
+        sub_issue_count: true,
+        updated_on: true,
+      },
+    });
   }
 
   if (!localDB[collection]) localDB[collection] = [];
@@ -630,13 +680,15 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           console.log(`[DApp Interceptor] Project: ${projOrIdentifier}, seqId: ${seqId}`);
           if (!isNaN(seqId)) {
             item = localDB.issues.find((r: any) => {
-              const match = (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier) && r.sequence_id === seqId;
+              const match =
+                (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier) &&
+                r.sequence_id === seqId;
               return match;
             });
-            console.log(`[DApp Interceptor] Fallback seqId result:`, item ? `FOUND ${item.id}` : 'NOT FOUND');
+            console.log(`[DApp Interceptor] Fallback seqId result:`, item ? `FOUND ${item.id}` : "NOT FOUND");
           } else if (id === "undefined") {
-            item = localDB.issues.find((r: any) =>
-              (r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier)
+            item = localDB.issues.find(
+              (r: any) => r.project === projOrIdentifier || r.project_detail?.identifier === projOrIdentifier
             );
           }
         }
@@ -647,7 +699,9 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         const [projIdentifier, seqIdStr] = id.split("-");
         const seqId = parseInt(seqIdStr, 10);
         if (!isNaN(seqId)) {
-          item = localDB.issues.find((r: any) => r.project_detail?.identifier === projIdentifier && r.sequence_id === seqId);
+          item = localDB.issues.find(
+            (r: any) => r.project_detail?.identifier === projIdentifier && r.sequence_id === seqId
+          );
         } else if (seqIdStr === "undefined") {
           // Special fallback if UI still requests undefined
           item = localDB.issues.find((r: any) => r.project_detail?.identifier === projIdentifier);
@@ -657,8 +711,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       if (!item) return { data: null, status: 404 };
       // Enrich issue/work-item data with defaults expected by the detail store
       if (collection === "issues") {
-        const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
-        const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
+        const stateDetail =
+          item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
+        const projectDetail =
+          item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
         return ok({
           is_subscribed: false,
           issue_reactions: [],
@@ -705,11 +761,56 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           }
 
           const defaultStates = [
-            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Backlog", group: "backlog", project: projId, workspace: wsId, sequence: 15000, color: "#a3a3a3", default: true },
-            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Unstarted", group: "unstarted", project: projId, workspace: wsId, sequence: 25000, color: "#3f3f46", default: false },
-            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Started", group: "started", project: projId, workspace: wsId, sequence: 35000, color: "#f59e0b", default: false },
-            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Completed", group: "completed", project: projId, workspace: wsId, sequence: 45000, color: "#16a34a", default: false },
-            { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Cancelled", group: "cancelled", project: projId, workspace: wsId, sequence: 55000, color: "#ef4444", default: false },
+            {
+              id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+              name: "Backlog",
+              group: "backlog",
+              project: projId,
+              workspace: wsId,
+              sequence: 15000,
+              color: "#a3a3a3",
+              default: true,
+            },
+            {
+              id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+              name: "Unstarted",
+              group: "unstarted",
+              project: projId,
+              workspace: wsId,
+              sequence: 25000,
+              color: "#3f3f46",
+              default: false,
+            },
+            {
+              id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+              name: "Started",
+              group: "started",
+              project: projId,
+              workspace: wsId,
+              sequence: 35000,
+              color: "#f59e0b",
+              default: false,
+            },
+            {
+              id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+              name: "Completed",
+              group: "completed",
+              project: projId,
+              workspace: wsId,
+              sequence: 45000,
+              color: "#16a34a",
+              default: false,
+            },
+            {
+              id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+              name: "Cancelled",
+              group: "cancelled",
+              project: projId,
+              workspace: wsId,
+              sequence: 55000,
+              color: "#ef4444",
+              default: false,
+            },
           ];
           list.push(...defaultStates);
           (localDB as any)["states"] = list;
@@ -732,7 +833,9 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       const match = url.match(/\/projects\/([^/]+)\//);
       if (match) {
         const projId = match[1];
-        if (["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules"].includes(collection)) {
+        if (
+          ["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules"].includes(collection)
+        ) {
           list = list.filter((item: any) => item.project === projId || item.project_id === projId);
         }
       }
@@ -762,8 +865,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     // Enrich issues with project_id, workspace_id, and other _id fields (required by UI)
     if (collection === "issues") {
       list = list.map((item: any) => {
-        const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
-        const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
+        const stateDetail =
+          item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
+        const projectDetail =
+          item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
 
         return {
           ...item,
@@ -790,7 +895,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         project_id: item.project_id || item.project,
         workspace_id: item.workspace_id || item.workspace || "mock-workspace",
       }));
-      console.log(`[DApp CRUD] States returning ${list.length} items:`, JSON.stringify(list.map((s: any) => ({ id: s.id, name: s.name, project_id: s.project_id }))));
+      console.log(
+        `[DApp CRUD] States returning ${list.length} items:`,
+        JSON.stringify(list.map((s: any) => ({ id: s.id, name: s.name, project_id: s.project_id })))
+      );
     }
 
     const urlObj = new URL(url, "http://localhost");
@@ -865,14 +973,14 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           id: wsSlug,
           name: "Mock Workspace",
           slug: wsSlug,
-          logo_url: ""
-        }
+          logo_url: "",
+        },
       }));
 
       if (!localDB[collection]) localDB[collection] = [];
       localDB[collection].push(...newInvites);
       saveDB();
-      newInvites.forEach(inv => syncDAppRecord(collection, inv.id, inv));
+      newInvites.forEach((inv) => syncDAppRecord(collection, inv.id, inv));
       return ok({ message: "Invitations sent successfully" });
     }
 
@@ -887,15 +995,19 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       const activeUserId = getLoggedInUserId();
       const activeUser = localDB.users?.find((u: any) => u.id === activeUserId) || MOCK_USER;
       if (newRecord.event_type === "assign_task" && !newRecord.assignee_name && newRecord.assignee_id) {
-         const u = localDB.users?.find((u: any) => u.id === newRecord.assignee_id);
-         newRecord.assignee_name = u?.display_name || u?.first_name || newRecord.assignee_id;
+        const u = localDB.users?.find((u: any) => u.id === newRecord.assignee_id);
+        newRecord.assignee_name = u?.display_name || u?.first_name || newRecord.assignee_id;
       }
-      if ((newRecord.event_type === "daily_report" || newRecord.event_type === "task_content") && !newRecord.reporter_name) {
-         newRecord.reporter_id = activeUserId;
-         newRecord.reporter_name = activeUser?.display_name || activeUser?.first_name || activeUserId;
+      if (
+        (newRecord.event_type === "daily_report" || newRecord.event_type === "task_content") &&
+        !newRecord.reporter_name
+      ) {
+        newRecord.reporter_id = activeUserId;
+        newRecord.reporter_name = activeUser?.display_name || activeUser?.first_name || activeUserId;
       }
     }
-    if (collection === "workspaces" && !newRecord.slug) newRecord.slug = newRecord.name?.toLowerCase().replace(/\s+/g, "-");
+    if (collection === "workspaces" && !newRecord.slug)
+      newRecord.slug = newRecord.name?.toLowerCase().replace(/\s+/g, "-");
     if (collection === "workspaces" && !newRecord.owner) {
       newRecord.owner = { id: "me", email: "admin@plane.so", first_name: "Plane", last_name: "Admin", avatar: "" };
       newRecord.created_by = "me";
@@ -915,11 +1027,56 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       // Seed default states for the new project
       if (!localDB["states"]) localDB["states"] = [];
       const defaultStates = [
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Backlog", group: "backlog", project: newRecord.id, workspace: newRecord.workspace, sequence: 15000, color: "#a3a3a3", default: true },
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Unstarted", group: "unstarted", project: newRecord.id, workspace: newRecord.workspace, sequence: 25000, color: "#3f3f46", default: false },
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Started", group: "started", project: newRecord.id, workspace: newRecord.workspace, sequence: 35000, color: "#f59e0b", default: false },
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Completed", group: "completed", project: newRecord.id, workspace: newRecord.workspace, sequence: 45000, color: "#16a34a", default: false },
-        { id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), name: "Cancelled", group: "cancelled", project: newRecord.id, workspace: newRecord.workspace, sequence: 55000, color: "#ef4444", default: false },
+        {
+          id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+          name: "Backlog",
+          group: "backlog",
+          project: newRecord.id,
+          workspace: newRecord.workspace,
+          sequence: 15000,
+          color: "#a3a3a3",
+          default: true,
+        },
+        {
+          id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+          name: "Unstarted",
+          group: "unstarted",
+          project: newRecord.id,
+          workspace: newRecord.workspace,
+          sequence: 25000,
+          color: "#3f3f46",
+          default: false,
+        },
+        {
+          id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+          name: "Started",
+          group: "started",
+          project: newRecord.id,
+          workspace: newRecord.workspace,
+          sequence: 35000,
+          color: "#f59e0b",
+          default: false,
+        },
+        {
+          id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+          name: "Completed",
+          group: "completed",
+          project: newRecord.id,
+          workspace: newRecord.workspace,
+          sequence: 45000,
+          color: "#16a34a",
+          default: false,
+        },
+        {
+          id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+          name: "Cancelled",
+          group: "cancelled",
+          project: newRecord.id,
+          workspace: newRecord.workspace,
+          sequence: 55000,
+          color: "#ef4444",
+          default: false,
+        },
       ];
       localDB["states"].push(...defaultStates);
     }
@@ -949,15 +1106,24 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
     // Generic mapping for all records
     if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
-    if (returnedRecord.workspace && !returnedRecord.workspace_id) returnedRecord.workspace_id = returnedRecord.workspace;
+    if (returnedRecord.workspace && !returnedRecord.workspace_id)
+      returnedRecord.workspace_id = returnedRecord.workspace;
 
     if (collection === "issues") {
-      const stateDetail = returnedRecord.state_detail || (localDB.states || []).find((s: any) => s.id === (returnedRecord.state_id || returnedRecord.state));
-      const projectDetail = returnedRecord.project_detail || (localDB.projects || []).find((p: any) => p.id === (returnedRecord.project_id || returnedRecord.project));
+      const stateDetail =
+        returnedRecord.state_detail ||
+        (localDB.states || []).find((s: any) => s.id === (returnedRecord.state_id || returnedRecord.state));
+      const projectDetail =
+        returnedRecord.project_detail ||
+        (localDB.projects || []).find((p: any) => p.id === (returnedRecord.project_id || returnedRecord.project));
       returnedRecord = {
         ...returnedRecord,
         project_id: returnedRecord.project_id || returnedRecord.project,
-        workspace_id: returnedRecord.workspace_id || returnedRecord.workspace || returnedRecord.project_detail?.workspace || "mock-workspace",
+        workspace_id:
+          returnedRecord.workspace_id ||
+          returnedRecord.workspace ||
+          returnedRecord.project_detail?.workspace ||
+          "mock-workspace",
         state_id: returnedRecord.state_id || returnedRecord.state,
         parent_id: returnedRecord.parent_id || returnedRecord.parent,
         cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
@@ -991,7 +1157,11 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         returnedRecord = {
           ...returnedRecord,
           project_id: returnedRecord.project_id || returnedRecord.project,
-          workspace_id: returnedRecord.workspace_id || returnedRecord.workspace || returnedRecord.project_detail?.workspace || "mock-workspace",
+          workspace_id:
+            returnedRecord.workspace_id ||
+            returnedRecord.workspace ||
+            returnedRecord.project_detail?.workspace ||
+            "mock-workspace",
           state_id: returnedRecord.state_id || returnedRecord.state,
           parent_id: returnedRecord.parent_id || returnedRecord.parent,
           cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
@@ -1001,11 +1171,13 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
       // Generic mapping for all other records
       if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
-      if (returnedRecord.workspace && !returnedRecord.workspace_id) returnedRecord.workspace_id = returnedRecord.workspace;
+      if (returnedRecord.workspace && !returnedRecord.workspace_id)
+        returnedRecord.workspace_id = returnedRecord.workspace;
 
       return ok(returnedRecord);
     }
-    console.log('404 for URL:', url, 'method:', method); return { data: null, status: 404 };
+    console.log("404 for URL:", url, "method:", method);
+    return { data: null, status: 404 };
   }
 
   if (method === "delete") {
@@ -1024,7 +1196,7 @@ function ok(data: any): RouteResult {
 // ── URL → collection parser ──────────────────────────────────────────────
 function parseApiUrl(url: string): { collection: string; id: string | null; isPaginated: boolean } {
   const clean = url.split("?")[0].replace(/\/+$/, ""); // strip query and trailing slash
-  const segments = clean.split("/").filter(Boolean);    // e.g. ["api","workspaces","ws","projects","p","issues","id","history"]
+  const segments = clean.split("/").filter(Boolean); // e.g. ["api","workspaces","ws","projects","p","issues","id","history"]
 
   // Must start with "api"
   const apiIdx = segments.indexOf("api");
@@ -1052,10 +1224,22 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
   if (resourceSegments.length === 1) {
     // /api/.../issues/
     const unpaginated = [
-      "members", "invitations", "states", "labels", "project-roles",
-      "workspace-members", "project-members", "projects", "workspaces", "cycles",
-      "modules", "views", "pages", "project-identifiers", "project-stats",
-      "blockchain-transactions"
+      "members",
+      "invitations",
+      "states",
+      "labels",
+      "project-roles",
+      "workspace-members",
+      "project-members",
+      "projects",
+      "workspaces",
+      "cycles",
+      "modules",
+      "views",
+      "pages",
+      "project-identifiers",
+      "project-stats",
+      "blockchain-transactions",
     ];
     const collection = resourceSegments[0];
     return { collection, id: null, isPaginated: !unpaginated.includes(collection) };

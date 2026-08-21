@@ -301,7 +301,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                 <Tabs.Content value="upload" className="h-full w-full">
                   {fiaiSDK ? (
                     <div className="flex h-full w-full flex-col items-center justify-center gap-y-6 px-4">
-                      <p className="text-14 text-secondary text-center">
+                      <p className="text-center text-14 text-secondary">
                         Metanode File Processor is active.
                         <br />
                         Click below to select and upload a file securely.
@@ -325,10 +325,10 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                             }
                           } catch (error: any) {
                             console.error("FiaiSDK upload error:", error);
-                            setToast({ 
-                              message: error?.message || "Failed to upload file via Metanode", 
+                            setToast({
+                              message: error?.message || "Failed to upload file via Metanode",
                               type: TOAST_TYPE.ERROR,
-                              title: "Image not uploaded"
+                              title: "Image not uploaded",
                             });
                           } finally {
                             setIsImageUploading(false);
@@ -341,69 +341,69 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                   ) : (
                     <div className="flex h-full w-full flex-col gap-y-2">
                       <div className="flex w-full flex-1 items-center gap-3">
-                      <div
-                        {...getRootProps()}
-                        className={`relative grid h-full w-full cursor-pointer place-items-center rounded-lg p-12 text-center focus:ring-2 focus:ring-accent-strong focus:ring-offset-2 focus:outline-none ${
-                          (image === null && isDragActive) || !value
-                            ? "border-2 border-dashed border-subtle hover:bg-surface-2"
-                            : ""
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          className="absolute top-0 right-0 z-40 -translate-y-1/2 rounded-sm bg-surface-2 px-2 py-0.5 text-11 font-medium text-secondary"
+                        <div
+                          {...getRootProps()}
+                          className={`relative grid h-full w-full cursor-pointer place-items-center rounded-lg p-12 text-center focus:ring-2 focus:ring-accent-strong focus:ring-offset-2 focus:outline-none ${
+                            (image === null && isDragActive) || !value
+                              ? "border-2 border-dashed border-subtle hover:bg-surface-2"
+                              : ""
+                          }`}
                         >
-                          Edit
-                        </button>
-                        {image !== null || (value && value !== "") ? (
-                          <>
-                            <img
-                              src={image ? URL.createObjectURL(image) : getCoverImageDisplayURL(value, "")}
-                              alt="image"
-                              className="h-full w-full rounded-lg object-cover"
-                            />
-                          </>
-                        ) : (
-                          <div>
-                            <span className="mt-2 block text-13 font-medium text-secondary">
-                              {isDragActive ? "Drop image here to upload" : "Drag & drop image here"}
-                            </span>
-                          </div>
-                        )}
+                          <button
+                            type="button"
+                            className="absolute top-0 right-0 z-40 -translate-y-1/2 rounded-sm bg-surface-2 px-2 py-0.5 text-11 font-medium text-secondary"
+                          >
+                            Edit
+                          </button>
+                          {image !== null || (value && value !== "") ? (
+                            <>
+                              <img
+                                src={image ? URL.createObjectURL(image) : getCoverImageDisplayURL(value, "")}
+                                alt="image"
+                                className="h-full w-full rounded-lg object-cover"
+                              />
+                            </>
+                          ) : (
+                            <div>
+                              <span className="mt-2 block text-13 font-medium text-secondary">
+                                {isDragActive ? "Drop image here to upload" : "Drag & drop image here"}
+                              </span>
+                            </div>
+                          )}
 
-                        <input {...getInputProps()} />
+                          <input {...getInputProps()} />
+                        </div>
                       </div>
-                    </div>
-                    {fileRejections.length > 0 && (
-                      <p className="text-13 text-danger-primary">
-                        {fileRejections[0].errors[0].code === "file-too-large"
-                          ? "The image size cannot exceed 5 MB."
-                          : "Please upload a file in a valid format."}
-                      </p>
-                    )}
+                      {fileRejections.length > 0 && (
+                        <p className="text-13 text-danger-primary">
+                          {fileRejections[0].errors[0].code === "file-too-large"
+                            ? "The image size cannot exceed 5 MB."
+                            : "Please upload a file in a valid format."}
+                        </p>
+                      )}
 
-                    <p className="text-13 text-secondary">File formats supported- .jpeg, .jpg, .png, .webp</p>
+                      <p className="text-13 text-secondary">File formats supported- .jpeg, .jpg, .png, .webp</p>
 
-                    <div className="flex h-12 items-start justify-end gap-2">
-                      <Button
-                        variant="secondary"
-                        onClick={() => {
-                          setIsOpen(false);
-                          setImage(null);
-                        }}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        variant="primary"
-                        className="w-full"
-                        onClick={handleSubmit}
-                        disabled={!image}
-                        loading={isImageUploading}
-                      >
-                        {isImageUploading ? "Uploading" : "Upload & Save"}
-                      </Button>
-                    </div>
+                      <div className="flex h-12 items-start justify-end gap-2">
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            setIsOpen(false);
+                            setImage(null);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          variant="primary"
+                          className="w-full"
+                          onClick={handleSubmit}
+                          disabled={!image}
+                          loading={isImageUploading}
+                        >
+                          {isImageUploading ? "Uploading" : "Upload & Save"}
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </Tabs.Content>

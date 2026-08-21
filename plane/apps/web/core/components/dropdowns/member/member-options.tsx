@@ -109,8 +109,15 @@ export const MemberOptions = observer(function MemberOptions(props: Props) {
                 />
               )}
             </div>
-            <span className={cn("flex-grow truncate", isUserSuspended(userId, workspaceSlug?.toString()) ? "text-placeholder" : "")}>
-              {currentUser?.id === userId ? `${t("you")} (${userDetails?.display_name || "no-name"})` : userDetails?.display_name || `ID: ${userId} - No details`}
+            <span
+              className={cn(
+                "flex-grow truncate",
+                isUserSuspended(userId, workspaceSlug?.toString()) ? "text-placeholder" : ""
+              )}
+            >
+              {currentUser?.id === userId
+                ? `${t("you")} (${userDetails?.display_name || "no-name"})`
+                : userDetails?.display_name || `ID: ${userId} - No details`}
             </span>
           </div>
         ),

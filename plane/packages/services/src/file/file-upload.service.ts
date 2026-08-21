@@ -24,7 +24,7 @@ function fileToBase64(file: File): Promise<string> {
       }
       resolve(encoded);
     };
-    reader.onerror = error => reject(error);
+    reader.onerror = (error) => reject(error);
   });
 }
 
@@ -59,7 +59,7 @@ export class FileUploadService extends APIService {
 
     try {
       const base64Data = await fileToBase64(file);
-      const ext = file.name.split('.').pop() || '';
+      const ext = file.name.split(".").pop() || "";
 
       const sdk = (window as any).fiaiSDK;
       if (!sdk) {
@@ -71,7 +71,7 @@ export class FileUploadService extends APIService {
       const result = await sdk.request("uploadFile", {
         filename: file.name,
         ext: ext,
-        base64: base64Data
+        base64: base64Data,
       });
 
       console.log("[Metanode] Upload success:", result);
@@ -84,9 +84,8 @@ export class FileUploadService extends APIService {
         attributes: {
           name: file.name,
           size: file.size,
-        }
+        },
       };
-
     } catch (error: any) {
       console.error("[Metanode] File Upload Error:", error);
       // Fallback for normal browsers without WebKit handler
@@ -97,7 +96,7 @@ export class FileUploadService extends APIService {
         attributes: {
           name: file.name,
           size: file.size,
-        }
+        },
       };
     }
   }

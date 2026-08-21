@@ -174,11 +174,30 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
   const redirectToIssueDetail = () => router.push(`${workItemLink}#sub-issues`);
 
-  if (!displayProperties || !issue.project_id) return null;
+  const safeDisplayProperties = displayProperties || {
+    assignee: true,
+    attachment_count: true,
+    created_on: true,
+    due_date: true,
+    estimate: true,
+    key: true,
+    labels: true,
+    link: true,
+    priority: true,
+    start_date: true,
+    state: true,
+    sub_issue_count: true,
+    updated_on: true,
+  };
+
+  if (!issue.project_id) {
+    console.warn("IssueProperties missing project_id", issue);
+    return null;
+  }
 
   // date range is enabled only when both dates are available and both dates are enabled
   const isDateRangeEnabled: boolean = Boolean(
-    issue.start_date && issue.target_date && displayProperties.start_date && displayProperties.due_date
+    issue.start_date && issue.target_date && safeDisplayProperties.start_date && safeDisplayProperties.due_date
   );
 
   const defaultLabelOptions = issue?.label_ids?.map((id) => labelMap[id]) || [];
@@ -195,7 +214,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
     <div className={className}>
       {/* basic properties */}
       {/* state */}
-      <WithDisplayPropertiesHOC displayProperties={displayProperties} displayPropertyKey="state">
+      <WithDisplayPropertiesHOC displayProperties={safeDisplayProperties} displayPropertyKey="state">
         <div className="h-5" onFocus={handleEventPropagation} onClick={handleEventPropagation}>
           <StateDropdown
             buttonContainerClassName="truncate max-w-40"
@@ -211,7 +230,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
       </WithDisplayPropertiesHOC>
 
       {/* priority */}
-      <WithDisplayPropertiesHOC displayProperties={displayProperties} displayPropertyKey="priority">
+      <WithDisplayPropertiesHOC displayProperties={safeDisplayProperties} displayPropertyKey="priority">
         <div className="h-5" onFocus={handleEventPropagation} onClick={handleEventPropagation}>
           <PriorityDropdown
             value={issue?.priority}
@@ -226,7 +245,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
       {/* merged dates */}
       <WithDisplayPropertiesHOC
-        displayProperties={displayProperties}
+        displayProperties={safeDisplayProperties}
         displayPropertyKey={["start_date", "due_date"]}
         shouldRenderProperty={() => isDateRangeEnabled}
       >
@@ -261,7 +280,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
       {/* start date */}
       <WithDisplayPropertiesHOC
-        displayProperties={displayProperties}
+        displayProperties={safeDisplayProperties}
         displayPropertyKey="start_date"
         shouldRenderProperty={() => !isDateRangeEnabled}
       >
@@ -284,7 +303,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
       {/* target/due date */}
       <WithDisplayPropertiesHOC
-        displayProperties={displayProperties}
+        displayProperties={safeDisplayProperties}
         displayPropertyKey="due_date"
         shouldRenderProperty={() => !isDateRangeEnabled}
       >
@@ -310,7 +329,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
       </WithDisplayPropertiesHOC>
 
       {/* assignee */}
-      <WithDisplayPropertiesHOC displayProperties={displayProperties} displayPropertyKey="assignee">
+      <WithDisplayPropertiesHOC displayProperties={safeDisplayProperties} displayPropertyKey="assignee">
         <div className="h-5" onFocus={handleEventPropagation} onClick={handleEventPropagation}>
           <MemberDropdown
             projectId={issue?.project_id}
@@ -334,7 +353,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
           <>
             {/* modules */}
             {projectDetails?.module_view && (
-              <WithDisplayPropertiesHOC displayProperties={displayProperties} displayPropertyKey="modules">
+              <WithDisplayPropertiesHOC displayProperties={safeDisplayProperties} displayPropertyKey="modules">
                 <div className="h-5" onFocus={handleEventPropagation} onClick={handleEventPropagation}>
                   <ModuleDropdown
                     buttonContainerClassName="truncate max-w-40"
@@ -354,7 +373,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
             {/* cycles */}
             {projectDetails?.cycle_view && (
-              <WithDisplayPropertiesHOC displayProperties={displayProperties} displayPropertyKey="cycle">
+              <WithDisplayPropertiesHOC displayProperties={safeDisplayProperties} displayPropertyKey="cycle">
                 <div className="h-5" onFocus={handleEventPropagation} onClick={handleEventPropagation}>
                   <CycleDropdown
                     buttonContainerClassName="truncate max-w-40"
@@ -375,7 +394,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
       {/* estimates */}
       {projectId && areEstimateEnabledByProjectId(projectId?.toString()) && (
-        <WithDisplayPropertiesHOC displayProperties={displayProperties} displayPropertyKey="estimate">
+        <WithDisplayPropertiesHOC displayProperties={safeDisplayProperties} displayPropertyKey="estimate">
           <div className="h-5" onFocus={handleEventPropagation} onClick={handleEventPropagation}>
             <EstimateDropdown
               value={issue.estimate_point ?? undefined}
@@ -394,7 +413,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
       {/* sub-issues */}
       {!isEpic && (
         <WithDisplayPropertiesHOC
-          displayProperties={displayProperties}
+          displayProperties={safeDisplayProperties}
           displayPropertyKey="sub_issue_count"
           shouldRenderProperty={(properties) => !!properties.sub_issue_count && !!subIssueCount}
         >
@@ -427,7 +446,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
       {/* attachments */}
       <WithDisplayPropertiesHOC
-        displayProperties={displayProperties}
+        displayProperties={safeDisplayProperties}
         displayPropertyKey="attachment_count"
         shouldRenderProperty={(properties) => !!properties.attachment_count && !!issue.attachment_count}
       >
@@ -450,7 +469,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
       {/* link */}
       <WithDisplayPropertiesHOC
-        displayProperties={displayProperties}
+        displayProperties={safeDisplayProperties}
         displayPropertyKey="link"
         shouldRenderProperty={(properties) => !!properties.link && !!issue.link_count}
       >
@@ -472,10 +491,10 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
       </WithDisplayPropertiesHOC>
 
       {/* Additional Properties */}
-      <WorkItemLayoutAdditionalProperties displayProperties={displayProperties} issue={issue} />
+      <WorkItemLayoutAdditionalProperties displayProperties={safeDisplayProperties} issue={issue} />
 
       {/* label */}
-      <WithDisplayPropertiesHOC displayProperties={displayProperties} displayPropertyKey="labels">
+      <WithDisplayPropertiesHOC displayProperties={safeDisplayProperties} displayPropertyKey="labels">
         <IssuePropertyLabels
           projectId={issue?.project_id || null}
           value={issue?.label_ids || []}

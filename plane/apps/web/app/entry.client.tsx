@@ -15,30 +15,33 @@ if (typeof document !== "undefined") {
   const originalSubmit = HTMLFormElement.prototype.submit;
   HTMLFormElement.prototype.submit = function () {
     const action = this.action || "";
-    
-    if (action.includes("/auth/sign-in") || action.includes("/auth/sign-up") ||
-        action.includes("/auth/magic-sign-in") || action.includes("/auth/magic-sign-up")) {
-      
+
+    if (
+      action.includes("/auth/sign-in") ||
+      action.includes("/auth/sign-up") ||
+      action.includes("/auth/magic-sign-in") ||
+      action.includes("/auth/magic-sign-up")
+    ) {
       const nextPathInput = this.querySelector('input[name="next_path"]') as HTMLInputElement | null;
       const nextPath = nextPathInput?.value;
       const emailInput = this.querySelector('input[name="email"]') as HTMLInputElement | null;
       const email = emailInput?.value || "admin@plane.so";
-      
+
       // Look up or create user in localDB
       let parsedDB = { users: [] as any[] };
       try {
         const saved = localStorage.getItem("plane_dapp_db");
         if (saved) parsedDB = JSON.parse(saved);
       } catch {}
-      
+
       let user = parsedDB.users?.find((u: any) => u.email === email);
       if (!user) {
-        user = { 
-          id: `user-${Date.now()}`, 
-          email, 
-          first_name: email.split('@')[0], 
-          last_name: "", 
-          display_name: email.split('@')[0],
+        user = {
+          id: `user-${Date.now()}`,
+          email,
+          first_name: email.split("@")[0],
+          last_name: "",
+          display_name: email.split("@")[0],
           avatar_url: "",
           is_bot: false,
           is_active: true,
@@ -48,7 +51,7 @@ if (typeof document !== "undefined") {
           mobile_number: null,
           last_workspace_id: "mock-workspace",
           user_timezone: "Asia/Ho_Chi_Minh",
-          username: email.split('@')[0],
+          username: email.split("@")[0],
           last_login_medium: "email",
           cover_image_url: null,
           date_joined: new Date().toISOString(),
@@ -58,20 +61,20 @@ if (typeof document !== "undefined") {
         parsedDB.users.push(user);
         localStorage.setItem("plane_dapp_db", JSON.stringify(parsedDB));
       }
-      
+
       // Simulate successful login
       localStorage.setItem("plane_dapp_auth_user", user.id);
       window.location.href = nextPath || "/mock-workspace";
       return;
     }
-    
+
     if (action.includes("/auth/sign-out")) {
       // Simulate successful logout
       localStorage.removeItem("plane_dapp_auth_user");
       window.location.href = "/";
       return;
     }
-    
+
     originalSubmit.call(this);
   };
 }

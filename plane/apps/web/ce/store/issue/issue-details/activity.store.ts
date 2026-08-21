@@ -94,8 +94,17 @@ export class IssueActivityStore implements IIssueActivityStore {
 
     const activities = this.getActivitiesByIssueId(issueId);
     const comments = currentStore.comment.getCommentsByIssueId(issueId);
-    
-    console.log("[ActivityStore] issueId:", issueId, "activities:", activities, "comments array:", comments, "store comments map:", currentStore.comment.comments);
+
+    console.log(
+      "[ActivityStore] issueId:",
+      issueId,
+      "activities:",
+      activities,
+      "comments array:",
+      comments,
+      "store comments map:",
+      currentStore.comment.comments
+    );
 
     if (!activities || !comments) return undefined;
 
