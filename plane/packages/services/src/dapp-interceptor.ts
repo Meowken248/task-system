@@ -597,6 +597,62 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     if (method === "post") return ok({ ...body });
   }
 
+
+  // search-issues endpoint — return issues in ISearchIssueResponse format
+  if (url.includes("/search-issues") || url.includes("search-issues")) {
+    if (method === "get") {
+      try {
+        const urlObj = new URL(url, "http://localhost");
+        const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
+        const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
+        
+        let list = [...(localDB.issues || [])];
+        console.log(`[DApp] search-issues: total issues in DB = ${list.length}`);
+        
+        // Filter by project if not workspace-level search
+        if (!workspaceSearch) {
+          const projMatch = url.match(/\/projects\/([^/]+)\//);
+          if (projMatch) {
+            const projId = projMatch[1];
+            console.log(`[DApp] search-issues: filtering by project ${projId}`);
+            list = list.filter((item: any) => item.project === projId || item.project_id === projId);
+            console.log(`[DApp] search-issues: after project filter = ${list.length}`);
+          }
+        }
+        
+        // Filter by search term
+        if (searchTerm) {
+          list = list.filter((item: any) => (item.name || "").toLowerCase().includes(searchTerm));
+        }
+        
+        // Map to ISearchIssueResponse format
+        const results = list.map((item: any) => {
+          const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
+          const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
+          return {
+            id: item.id,
+            name: item.name || "",
+            project_id: item.project_id || item.project,
+            project__identifier: projectDetail?.identifier || "PROJ",
+            project__name: projectDetail?.name || "Project",
+            sequence_id: item.sequence_id || 0,
+            start_date: item.start_date || null,
+            state__color: stateDetail?.color || "#a3a3a3",
+            state__group: stateDetail?.group || "backlog",
+            state__name: stateDetail?.name || "Backlog",
+            workspace__slug: item.workspace || "mock-workspace",
+            type_id: item.type_id || item.type || null,
+          };
+        });
+        
+        console.log(`[DApp] search-issues returning ${results.length} results`);
+        return ok(results);
+      } catch (err) {
+        console.error("[DApp] search-issues error:", err);
+        return ok([]);
+      }
+    }
+  }
   // ── Generic CRUD ────────────────────────────────────────────────────
   return handleCRUD(method, url, body);
 }
@@ -608,7 +664,55 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     `[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`
   );
 
-  // Alias work-items / issues-detail / work-items-detail / search-issues to issues
+  // Handle search-issues directly — return ISearchIssueResponse[] format
+  if (collection === "search-issues" && method === "get") {
+    const urlObj = new URL(url, "http://localhost");
+    const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
+    const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
+    
+    let list = [...(localDB.issues || [])];
+    console.log(`[DApp CRUD] search-issues: total issues in DB = ${list.length}`);
+    
+    // Filter by project if not workspace-level search
+    if (!workspaceSearch) {
+      const projMatch = url.match(/\/projects\/([^/]+)\//);
+      if (projMatch) {
+        const projId = projMatch[1];
+        list = list.filter((item: any) => item.project === projId || item.project_id === projId);
+        console.log(`[DApp CRUD] search-issues: after project filter for ${projId} = ${list.length}`);
+      }
+    }
+    
+    // Filter by search term
+    if (searchTerm) {
+      list = list.filter((item: any) => (item.name || "").toLowerCase().includes(searchTerm));
+    }
+    
+    // Map to ISearchIssueResponse format
+    const results = list.map((item: any) => {
+      const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
+      const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
+      return {
+        id: item.id,
+        name: item.name || "",
+        project_id: item.project_id || item.project,
+        project__identifier: projectDetail?.identifier || "PROJ",
+        project__name: projectDetail?.name || "Project",
+        sequence_id: item.sequence_id || 0,
+        start_date: item.start_date || null,
+        state__color: stateDetail?.color || "#a3a3a3",
+        state__group: stateDetail?.group || "backlog",
+        state__name: stateDetail?.name || "Backlog",
+        workspace__slug: item.workspace || "mock-workspace",
+        type_id: item.type_id || item.type || null,
+      };
+    });
+    
+    console.log(`[DApp CRUD] search-issues returning ${results.length} results`);
+    return ok(results);
+  }
+
+  // Alias work-items / issues-detail / work-items-detail to issues
   if (
     collection === "work-items" ||
     collection === "issues-detail" ||
@@ -919,7 +1023,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       // Always exclude issues that have a parent_id from the top-level list when fetching multiple issues
       // But don't exclude them for search-issues so that existing sub-issues can be found
       if (!id && !url.includes("search-issues")) {
-        list = list.filter((item: any) => !item.parent_id);
+        list = list.filter((item: any) => !item.parent_id && !item.parent);
       }
     }
 
@@ -1134,6 +1238,16 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     }
 
     localDB[collection].push(newRecord);
+    
+    // If this is an issue and it has a parent, update the parent's sub_issues_count
+    if (collection === "issues" && newRecord.parent_id) {
+      const parentIdx = localDB[collection].findIndex((i: any) => i.id === newRecord.parent_id);
+      if (parentIdx > -1) {
+        localDB[collection][parentIdx].sub_issues_count = (localDB[collection][parentIdx].sub_issues_count || 0) + 1;
+        // Broadcast the parent update if needed, though for mock DB just saving is enough for next fetch
+      }
+    }
+    
     saveDB();
     syncDAppRecord(collection, newRecord.id, newRecord);
 

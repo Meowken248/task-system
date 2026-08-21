@@ -336,7 +336,7 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
   // debounced duplicate issues swr
   const { duplicateIssues } = useDebouncedDuplicateIssues(
     workspaceSlug?.toString(),
-    projectDetails?.workspace.toString(),
+    projectDetails?.workspace?.toString(),
     projectId ?? undefined,
     {
       name: watch("name"),

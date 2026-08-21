@@ -1143,6 +1143,23 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
       this.rootIssueStore.issues.addIssue([issue]);
     });
 
+    // Sub-issues should not be added to the top-level list
+    if (issue.parent_id || issue.parent) {
+      shouldUpdateList = false;
+      
+      // Update parent's sub_issues_count if parent exists in store
+      const parentId = typeof issue.parent === "string" ? issue.parent : (issue.parent_id || (issue.parent as any)?.id);
+      if (parentId) {
+        const parentIssue = this.rootIssueStore.issues.getIssueById(parentId);
+        if (parentIssue) {
+          runInAction(() => {
+            const currentCount = parentIssue.sub_issues_count || 0;
+            this.rootIssueStore.issues.updateIssue(parentId, { sub_issues_count: currentCount + 1 });
+          });
+        }
+      }
+    }
+
     // if true, add issue id to the list
     if (shouldUpdateList) this.updateIssueList(issue, undefined, EIssueGroupedAction.ADD);
   }
