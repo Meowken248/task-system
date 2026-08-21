@@ -549,8 +549,29 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   }
 
   // sub-issues
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/sub-issues\/?(?:\?.*)?$/)) {
-    return ok({ sub_issues: [], state_distribution: {} });
+  const subIssuesMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/sub-issues\/?(?:\?.*)?$/);
+  if (subIssuesMatch) {
+    if (method === "get") {
+      const parentId = subIssuesMatch[2];
+      const subIssues = (localDB.issues || []).filter((i: any) => i.parent_id === parentId || i.parent === parentId);
+      
+      const enrichedSubIssues = subIssues.map((item: any) => {
+        const children = (localDB.issues || []).filter((i: any) => i.parent_id === item.id || i.parent === item.id);
+        const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
+        const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
+        return { 
+          ...item, 
+          state_detail: stateDetail,
+          project_detail: projectDetail,
+          sub_issues_count: children.length 
+        };
+      });
+      return ok({ sub_issues: enrichedSubIssues, state_distribution: {} });
+    }
+    if (method === "post") {
+      // Assuming handled by generic CRUD if they create issue first, or just mock ok
+      return ok({});
+    }
   }
 
   // issue-relation
@@ -587,8 +608,13 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     `[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`
   );
 
-  // Alias work-items / issues-detail / work-items-detail to issues
-  if (collection === "work-items" || collection === "issues-detail" || collection === "work-items-detail") {
+  // Alias work-items / issues-detail / work-items-detail / search-issues to issues
+  if (
+    collection === "work-items" ||
+    collection === "issues-detail" ||
+    collection === "work-items-detail" ||
+    collection === "search-issues"
+  ) {
     collection = "issues";
   }
 
@@ -870,6 +896,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         const projectDetail =
           item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
 
+        const children = (localDB.issues || []).filter((i: any) => i.parent_id === item.id || i.parent === item.id);
+
         return {
           ...item,
           project_id: item.project_id || item.project,
@@ -884,8 +912,15 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           label_ids: item.label_ids || item.labels || [],
           state_detail: stateDetail,
           project_detail: projectDetail,
+          sub_issues_count: children.length,
         };
       });
+
+      // Always exclude issues that have a parent_id from the top-level list when fetching multiple issues
+      // But don't exclude them for search-issues so that existing sub-issues can be found
+      if (!id && !url.includes("search-issues")) {
+        list = list.filter((item: any) => !item.parent_id);
+      }
     }
 
     // Enrich states with project_id and workspace_id
@@ -1240,6 +1275,7 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
       "project-identifiers",
       "project-stats",
       "blockchain-transactions",
+      "search-issues",
     ];
     const collection = resourceSegments[0];
     return { collection, id: null, isPaginated: !unpaginated.includes(collection) };
