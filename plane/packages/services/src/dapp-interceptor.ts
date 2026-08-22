@@ -4,40 +4,9 @@ const PLANE_CONTRACT = "0x2CB649c0A6338f668F0ADc4AE96c1b2Dc198ed41";
 
 // ── On-chain sync (fire-and-forget, never blocks UI) ──────────────────────
 async function syncDAppRecord(collection: string, id: string, record: any) {
-  if (typeof window === "undefined") return;
-  const address = (window as any).fiaiSDK?.account?.address || (window as any).fiaiSDK?.wallet?.address;
-  if (!address) {
-    console.log(`[DApp Sync] Wallet not connected. Skipping sync for ${collection}/${id}`);
-    return;
-  }
-  try {
-    const { MtnContract } = await import("@metanodejs/mtn-contract");
-    const contract = new MtnContract();
-    contract.setConfigs({ to: PLANE_CONTRACT });
-    console.log(`[DApp Sync] Syncing ${collection}/${id} to Smart Contract...`);
-    await contract.sendTransaction({
-      abiData: [
-        {
-          name: "updateDAppRecord",
-          type: "function",
-          stateMutability: "nonpayable",
-          inputs: [
-            { name: "collection", type: "string" },
-            { name: "id", type: "string" },
-            { name: "jsonPayload", type: "string" },
-          ],
-          outputs: [],
-        },
-      ],
-      functionName: "updateDAppRecord",
-      inputArray: [collection, id, JSON.stringify(record)],
-      feeType: "sc",
-      from: (window as any).fiaiSDK?.account?.address || "0x0000000000000000000000000000000000000000",
-    });
-    console.log(`[DApp Sync] Success!`);
-  } catch (err) {
-    console.error(`[DApp Sync Error]`, err);
-  }
+  // DISABLE generic syncDAppRecord so we don't spam the network with duplicate mock records.
+  // The UI will rely purely on the specialized blockchain service (e.g. createTask)
+  console.log(`[DApp Sync] Generic sync disabled for ${collection}/${id}`);
 }
 
 // ── Default mock user (shared across all seed data) ──────────────────────
@@ -110,13 +79,26 @@ if (typeof window !== "undefined") {
 }
 const localDB: Record<string, any[]> = parsedDB && Object.keys(parsedDB).length > 0 ? parsedDB : { ...defaultDB };
 
+const TRANSIENT_COLLECTIONS = ["issues", "issue_comments", "attachments"];
+
 // Safety checks for older local storage DBs missing new seed data
 if (!localDB.users) localDB.users = defaultDB.users;
 if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
 
+// Clear transient collections on startup to enforce blockchain sync
+TRANSIENT_COLLECTIONS.forEach(col => {
+  localDB[col] = [];
+});
+
 function saveDB() {
   if (typeof window !== "undefined") {
-    localStorage.setItem("plane_dapp_db", JSON.stringify(localDB));
+    const dbToSave: Record<string, any[]> = {};
+    for (const [key, value] of Object.entries(localDB)) {
+      if (!TRANSIENT_COLLECTIONS.includes(key)) {
+        dbToSave[key] = value;
+      }
+    }
+    localStorage.setItem("plane_dapp_db", JSON.stringify(dbToSave));
   }
 }
 
@@ -655,56 +637,8 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   // search-issues endpoint — return issues in ISearchIssueResponse format
   if (url.includes("/search-issues") || url.includes("search-issues")) {
     if (method === "get") {
-      try {
-        const urlObj = new URL(url, "http://localhost");
-        const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
-        const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
-
-        let list = [...(localDB.issues || [])];
-        console.log(`[DApp] search-issues: total issues in DB = ${list.length}`);
-
-        // Filter by project if not workspace-level search
-        if (!workspaceSearch) {
-          const projMatch = url.match(/\/projects\/([^/]+)\//);
-          if (projMatch) {
-            const projId = projMatch[1];
-            console.log(`[DApp] search-issues: filtering by project ${projId}`);
-            list = list.filter((item: any) => item.project === projId || item.project_id === projId);
-            console.log(`[DApp] search-issues: after project filter = ${list.length}`);
-          }
-        }
-
-        // Filter by search term
-        if (searchTerm) {
-          list = list.filter((item: any) => (item.name || "").toLowerCase().includes(searchTerm));
-        }
-
-        // Map to ISearchIssueResponse format
-        const results = list.map((item: any) => {
-          const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
-          const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
-          return {
-            id: item.id,
-            name: item.name || "",
-            project_id: item.project_id || item.project,
-            project__identifier: projectDetail?.identifier || "PROJ",
-            project__name: projectDetail?.name || "Project",
-            sequence_id: item.sequence_id || 0,
-            start_date: item.start_date || null,
-            state__color: stateDetail?.color || "#a3a3a3",
-            state__group: stateDetail?.group || "backlog",
-            state__name: stateDetail?.name || "Backlog",
-            workspace__slug: item.workspace || "mock-workspace",
-            type_id: item.type_id || item.type || null,
-          };
-        });
-
-        console.log(`[DApp] search-issues returning ${results.length} results`);
-        return ok(results);
-      } catch (err) {
-        console.error("[DApp] search-issues error:", err);
-        return ok([]);
-      }
+      // Return empty array so UI is forced to rely on on-chain data
+      return ok([]);
     }
   }
   // ── Generic CRUD ────────────────────────────────────────────────────
@@ -720,50 +654,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
   // Handle search-issues directly — return ISearchIssueResponse[] format
   if (collection === "search-issues" && method === "get") {
-    const urlObj = new URL(url, "http://localhost");
-    const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
-    const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
-
-    let list = [...(localDB.issues || [])];
-    console.log(`[DApp CRUD] search-issues: total issues in DB = ${list.length}`);
-
-    // Filter by project if not workspace-level search
-    if (!workspaceSearch) {
-      const projMatch = url.match(/\/projects\/([^/]+)\//);
-      if (projMatch) {
-        const projId = projMatch[1];
-        list = list.filter((item: any) => item.project === projId || item.project_id === projId);
-        console.log(`[DApp CRUD] search-issues: after project filter for ${projId} = ${list.length}`);
-      }
-    }
-
-    // Filter by search term
-    if (searchTerm) {
-      list = list.filter((item: any) => (item.name || "").toLowerCase().includes(searchTerm));
-    }
-
-    // Map to ISearchIssueResponse format
-    const results = list.map((item: any) => {
-      const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
-      const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
-      return {
-        id: item.id,
-        name: item.name || "",
-        project_id: item.project_id || item.project,
-        project__identifier: projectDetail?.identifier || "PROJ",
-        project__name: projectDetail?.name || "Project",
-        sequence_id: item.sequence_id || 0,
-        start_date: item.start_date || null,
-        state__color: stateDetail?.color || "#a3a3a3",
-        state__group: stateDetail?.group || "backlog",
-        state__name: stateDetail?.name || "Backlog",
-        workspace__slug: item.workspace || "mock-workspace",
-        type_id: item.type_id || item.type || null,
-      };
-    });
-
-    console.log(`[DApp CRUD] search-issues returning ${results.length} results`);
-    return ok(results);
+    // Return empty array so UI is forced to rely on on-chain data
+    return ok([]);
   }
 
   // Alias work-items / issues-detail / work-items-detail to issues

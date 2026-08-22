@@ -120,23 +120,8 @@ export class IssueService extends APIService {
       throw error?.response?.data ?? error;
     }
 
-    const recordOfflineCreation = async () => {
-      try {
-        await blockchainTrackingService.recordOfflineTaskCreation(workspaceSlug, projectId, {
-          issueId: issue.id,
-          issueName: issue.name,
-          parentIssueId: issue.parent_id,
-          targetDate: issue.target_date,
-          priority: issue.priority,
-        });
-      } catch (trackingError) {
-        console.warn("Task đã được tạo trên Plane nhưng chưa ghi được dữ liệu Dashboard.", trackingError);
-      }
-    };
-
     if (!isOnChainTaskSyncAvailable()) {
-      await recordOfflineCreation();
-      return issue;
+      throw new Error("Không thể kết nối với hệ thống Blockchain. Không thể tạo Task.");
     }
 
     let transactionHash: string;
@@ -146,11 +131,8 @@ export class IssueService extends APIService {
       transactionHash = chainResult.transactionHash;
       assigneeWallet = chainResult.assigneeWallet;
     } catch (chainError) {
-      const message =
-        chainError instanceof Error ? chainError.message : "Giao dịch blockchain đã bị hủy hoặc thất bại.";
-      console.warn(`Task đã được tạo trên Plane nhưng chưa đồng bộ on-chain: ${message}`, chainError);
-      await recordOfflineCreation();
-      return issue;
+      const message = chainError instanceof Error ? chainError.message : "Giao dịch blockchain bị hủy hoặc thất bại.";
+      throw { error: message, isChainError: true };
     }
 
     void blockchainTrackingService
@@ -391,7 +373,7 @@ export class IssueService extends APIService {
           await updateIssueMetadataByIssueIdOnChain(updatedIssue as TIssue);
         }
       } catch (chainError) {
-        console.warn("Task đã cập nhật trên Plane nhưng chưa đồng bộ được lên blockchain.", chainError);
+        throw { error: chainError instanceof Error ? chainError.message : "Cập nhật on-chain thất bại.", isChainError: true };
       }
     }
 
@@ -418,7 +400,7 @@ export class IssueService extends APIService {
               console.warn("Giao task đã thành công; audit đang chờ tự đồng bộ.", trackingError);
             });
         } catch (chainError) {
-          console.warn("Task đã giao trên Plane nhưng chưa giao được on-chain.", chainError);
+          throw { error: chainError instanceof Error ? chainError.message : "Giao task on-chain thất bại.", isChainError: true };
         }
       }
     }

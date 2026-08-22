@@ -66,6 +66,17 @@ export class FileUploadService extends APIService {
         throw new Error("FiaiSDK is not initialized on window");
       }
 
+      // Check if file-processor frame is ready, if not wait for it
+      try {
+        const status = sdk.getStatus?.() || {};
+        if (status['file-processor'] !== 'ready') {
+          console.warn("[Metanode] file-processor is not ready. Waiting for it...");
+          await (sdk as any).hostBridge?.waitForReady('file-processor', 60000).catch(() => null);
+        }
+      } catch (e) {
+        // ignore errors reading status
+      }
+
       console.log("[Metanode] Uploading file via FiaiSDK:", file.name);
 
       const result = await sdk.request("uploadFile", {

@@ -14,7 +14,7 @@ import { EIssueServiceType } from "@plane/types";
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isOnChainTaskSyncAvailable, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
-import { FileUploadService } from "@/services/file-upload.service";
+import { FileUploadService } from "@plane/services";
 
 export class IssueAttachmentService extends APIService {
   private fileUploadService: FileUploadService;
@@ -27,21 +27,6 @@ export class IssueAttachmentService extends APIService {
     this.serviceType = serviceType;
   }
 
-  private async updateIssueAttachmentUploadStatus(
-    workspaceSlug: string,
-    projectId: string,
-    issueId: string,
-    attachmentId: string
-  ): Promise<void> {
-    return this.patch(
-      `/api/assets/v2/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/attachments/${attachmentId}/`
-    )
-      .then((response) => response?.data)
-      .catch((error) => {
-        throw error?.response?.data;
-      });
-  }
-
   async uploadIssueAttachment(
     workspaceSlug: string,
     projectId: string,
@@ -49,52 +34,59 @@ export class IssueAttachmentService extends APIService {
     file: File,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TIssueAttachment> {
-    const fileMetaData = await getFileMetaDataForUpload(file);
-    return this.post(
-      `/api/assets/v2/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/attachments/`,
-      fileMetaData
-    )
-      .then(async (response) => {
-        const signedURLResponse: TIssueAttachmentUploadResponse = response?.data;
-        const fileUploadPayload = generateFileUploadPayload(signedURLResponse, file);
-        await this.fileUploadService.uploadFile(
-          signedURLResponse.upload_data.url,
-          fileUploadPayload,
-          uploadProgressHandler
-        );
-        await this.updateIssueAttachmentUploadStatus(workspaceSlug, projectId, issueId, signedURLResponse.asset_id);
-        if (isOnChainTaskSyncAvailable()) {
-          const evidenceReference = `${signedURLResponse.asset_id}:${file.name}:${file.size}:${file.lastModified}`;
-          try {
-            const { transactionHash, contentHash } = await recordIssueContentOnChain(issueId, 2, evidenceReference);
-            void blockchainTrackingService
-              .recordTaskContent(workspaceSlug, projectId, {
-                issueId,
-                transactionHash,
-                kind: "evidence",
-                reference: signedURLResponse.asset_id,
-                contentHash,
-              })
-              .catch((trackingError) => console.warn("Audit tệp đính kèm đang chờ tự đồng bộ.", trackingError));
-          } catch (error) {
-            console.warn("Tệp đã tải lên Plane nhưng chưa đồng bộ bằng chứng on-chain.", error);
-          }
-        }
-        return signedURLResponse.attachment;
-      })
-      .catch((error) => {
-        throw error?.response?.data;
-      });
+    if (!isOnChainTaskSyncAvailable()) {
+      throw new Error("Không thể kết nối với hệ thống Blockchain. Không thể tải file đính kèm.");
+    }
+
+    const formData = new FormData();
+    formData.append("asset", file);
+
+    let uploadResult: any;
+    try {
+      uploadResult = await this.fileUploadService.uploadFile("", formData);
+    } catch (uploadError) {
+      throw { error: uploadError instanceof Error ? uploadError.message : "Tải file lên hệ thống phi tập trung thất bại." };
+    }
+
+    const assetId = uploadResult?.asset || uploadResult?.id || "unknown-asset";
+    const evidenceReference = `${assetId}:${file.name}:${file.size}:${file.lastModified}`;
+
+    try {
+      const { transactionHash, contentHash } = await recordIssueContentOnChain(issueId, 2, evidenceReference);
+      void blockchainTrackingService
+        .recordTaskContent(workspaceSlug, projectId, {
+          issueId,
+          transactionHash,
+          kind: "evidence",
+          reference: assetId,
+          contentHash,
+        })
+        .catch((trackingError) => console.warn("Audit tệp đính kèm đang chờ tự đồng bộ.", trackingError));
+    } catch (chainError) {
+      throw { error: chainError instanceof Error ? chainError.message : "Ghi bằng chứng đính kèm lên blockchain thất bại.", isChainError: true };
+    }
+
+    return {
+      id: uploadResult?.id || Math.random().toString(36).substr(2, 9),
+      asset: assetId,
+      attributes: {
+        name: file.name,
+        size: file.size,
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      created_by: "",
+      updated_by: "",
+      project: projectId,
+      workspace: workspaceSlug,
+      issue: issueId,
+    } as unknown as TIssueAttachment;
   }
 
   async getIssueAttachments(workspaceSlug: string, projectId: string, issueId: string): Promise<TIssueAttachment[]> {
-    return this.get(
-      `/api/assets/v2/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/attachments/`
-    )
-      .then((response) => response?.data)
-      .catch((error) => {
-        throw error?.response?.data;
-      });
+    // TODO: Cần thay bằng gọi Smart Contract thật hoặc indexer.
+    // Tạm thời trả về mảng rỗng để không phụ thuộc vào mock server.
+    return [];
   }
 
   async deleteIssueAttachment(
@@ -103,12 +95,6 @@ export class IssueAttachmentService extends APIService {
     issueId: string,
     assetId: string
   ): Promise<TIssueAttachment> {
-    return this.delete(
-      `/api/assets/v2/workspaces/${workspaceSlug}/projects/${projectId}/${this.serviceType}/${issueId}/attachments/${assetId}/`
-    )
-      .then((response) => response?.data)
-      .catch((error) => {
-        throw error?.response?.data;
-      });
+    throw { error: "Xóa tệp đính kèm trên blockchain chưa được hỗ trợ." };
   }
 }
