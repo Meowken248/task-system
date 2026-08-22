@@ -403,7 +403,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 
   // Assets v2
   if (url.match(/\/api\/assets\/v2\//) && method === "post") {
-    const assetId = "asset_$(Date.now())";
+    const assetId = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const issueMatch = url.match(/\/(issues|work-items|epics)\/([^\/]+)\/attachments/);
     const issueId = issueMatch ? issueMatch[2] : null;
     if (issueId) {
@@ -419,7 +419,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     }
     return ok({
       asset_id: assetId,
-      asset_url: "mock_asset_url_$(Date.now())",
+      asset_url: `mock_asset_url_${assetId}`,
       upload_data: {
         url: "mock_upload_url",
         fields: {
@@ -578,16 +578,16 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     if (method === "get") {
       const parentId = subIssuesMatch[2];
       const subIssues = (localDB.issues || []).filter((i: any) => i.parent_id === parentId || i.parent === parentId);
-      
+
       const enrichedSubIssues = subIssues.map((item: any) => {
         const children = (localDB.issues || []).filter((i: any) => i.parent_id === item.id || i.parent === item.id);
         const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
         const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
-        return { 
-          ...item, 
+        return {
+          ...item,
           state_detail: stateDetail,
           project_detail: projectDetail,
-          sub_issues_count: children.length 
+          sub_issues_count: children.length
         };
       });
       return ok({ sub_issues: enrichedSubIssues, state_distribution: {} });
@@ -595,7 +595,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     if (method === "post") {
       const parentId = subIssuesMatch[2];
       const subIssueIds = body.sub_issue_ids || [];
-      
+
       let updatedSubIssues: any[] = [];
       if (localDB.issues) {
         localDB.issues = localDB.issues.map((i: any) => {
@@ -606,14 +606,14 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
           }
           return i;
         });
-        
+
         const parentIdx = localDB.issues.findIndex((i: any) => i.id === parentId);
         if (parentIdx > -1) {
           localDB.issues[parentIdx].sub_issues_count = (localDB.issues[parentIdx].sub_issues_count || 0) + updatedSubIssues.length;
         }
         saveDB();
       }
-      
+
       return ok({ sub_issues: updatedSubIssues, state_distribution: {} });
     }
   }
@@ -659,10 +659,10 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         const urlObj = new URL(url, "http://localhost");
         const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
         const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
-        
+
         let list = [...(localDB.issues || [])];
         console.log(`[DApp] search-issues: total issues in DB = ${list.length}`);
-        
+
         // Filter by project if not workspace-level search
         if (!workspaceSearch) {
           const projMatch = url.match(/\/projects\/([^/]+)\//);
@@ -673,12 +673,12 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
             console.log(`[DApp] search-issues: after project filter = ${list.length}`);
           }
         }
-        
+
         // Filter by search term
         if (searchTerm) {
           list = list.filter((item: any) => (item.name || "").toLowerCase().includes(searchTerm));
         }
-        
+
         // Map to ISearchIssueResponse format
         const results = list.map((item: any) => {
           const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
@@ -698,7 +698,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
             type_id: item.type_id || item.type || null,
           };
         });
-        
+
         console.log(`[DApp] search-issues returning ${results.length} results`);
         return ok(results);
       } catch (err) {
@@ -723,10 +723,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     const urlObj = new URL(url, "http://localhost");
     const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
     const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
-    
+
     let list = [...(localDB.issues || [])];
     console.log(`[DApp CRUD] search-issues: total issues in DB = ${list.length}`);
-    
+
     // Filter by project if not workspace-level search
     if (!workspaceSearch) {
       const projMatch = url.match(/\/projects\/([^/]+)\//);
@@ -736,12 +736,12 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         console.log(`[DApp CRUD] search-issues: after project filter for ${projId} = ${list.length}`);
       }
     }
-    
+
     // Filter by search term
     if (searchTerm) {
       list = list.filter((item: any) => (item.name || "").toLowerCase().includes(searchTerm));
     }
-    
+
     // Map to ISearchIssueResponse format
     const results = list.map((item: any) => {
       const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
@@ -761,7 +761,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         type_id: item.type_id || item.type || null,
       };
     });
-    
+
     console.log(`[DApp CRUD] search-issues returning ${results.length} results`);
     return ok(results);
   }
@@ -799,17 +799,17 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     const states = localDB.states || [];
     const projectIdMatch = url.match(/\/projects\/([^/]+)/);
     const projectId = projectIdMatch ? projectIdMatch[1] : null;
-    
+
     let filteredIssues = issues;
     if (projectId) {
       filteredIssues = issues.filter((i: any) => i.project_id === projectId || i.project === projectId);
     }
-    
+
     let started = 0;
     let backlog = 0;
     let unstarted = 0;
     let completed = 0;
-    
+
     filteredIssues.forEach((issue: any) => {
       const stateId = issue.state_id || issue.state;
       const state = states.find((s: any) => s.id === stateId);
@@ -834,26 +834,26 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     const isPeekView = url.includes("/projects/");
     const projectIdMatch = url.match(/\/projects\/([^/]+)/);
     const projectId = projectIdMatch ? projectIdMatch[1] : null;
-    
+
     const issues = localDB.issues || [];
     const states = localDB.states || [];
     const users = localDB.users || [];
     const projects = localDB.projects || [];
-    
+
     let filteredIssues = issues;
     if (isPeekView && projectId) {
       filteredIssues = issues.filter((i: any) => i.project_id === projectId || i.project === projectId);
     }
-    
+
     if (isPeekView) {
       // Group by assignee
       const assigneeMap: Record<string, any> = {};
-      
+
       filteredIssues.forEach((issue: any) => {
         let assignees = issue.assignee_ids || issue.assignees || [];
         if (!Array.isArray(assignees)) assignees = [assignees];
         if (assignees.length === 0) assignees = ["unassigned"];
-        
+
         assignees.forEach((assigneeId: string) => {
           if (!assigneeMap[assigneeId]) {
             let displayName = "Unassigned";
@@ -865,7 +865,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
                 avatarUrl = user.avatar || user.avatar_url || "";
               }
             } else {
-                displayName = null as any; // Table displays 'Unassigned' if null
+              displayName = null as any; // Table displays 'Unassigned' if null
             }
             assigneeMap[assigneeId] = {
               display_name: displayName,
@@ -877,7 +877,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
               cancelled_work_items: 0
             };
           }
-          
+
           const stateId = issue.state_id || issue.state;
           const state = states.find((s: any) => s.id === stateId);
           if (state) {
@@ -889,7 +889,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           }
         });
       });
-      
+
       return ok(Object.values(assigneeMap));
     } else {
       // Group by project
@@ -911,7 +911,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
             cancelled_work_items: 0
           };
         }
-        
+
         const stateId = issue.state_id || issue.state;
         const state = states.find((s: any) => s.id === stateId);
         if (state) {
@@ -922,7 +922,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           else if (state.group === "cancelled") projectMap[pid].cancelled_work_items++;
         }
       });
-      
+
       return ok(Object.values(projectMap));
     }
   }
@@ -931,30 +931,30 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     const params = new URLSearchParams(url.split("?")[1] || "");
     const type = params.get("type") || "work-items";
     const xAxis = params.get("x_axis");
-    
+
     const issues = localDB.issues || [];
     const states = localDB.states || [];
     const users = localDB.users || [];
-    
+
     const projectIdMatch = url.match(/\/projects\/([^/]+)/);
     const projectId = projectIdMatch ? projectIdMatch[1] : null;
-    
+
     let filteredIssues = issues;
     if (projectId) {
       filteredIssues = issues.filter((i: any) => i.project_id === projectId || i.project === projectId);
     }
-    
+
     if (type === "work-items") {
       // Created vs Resolved grouped by date
       const dateMap: Record<string, any> = {};
-      
+
       filteredIssues.forEach((issue: any) => {
         if (issue.created_at) {
           const createdDate = issue.created_at.split("T")[0];
           if (!dateMap[createdDate]) dateMap[createdDate] = { created_issues: 0, completed_issues: 0 };
           dateMap[createdDate].created_issues++;
         }
-        
+
         const stateId = issue.state_id || issue.state;
         const state = states.find((s: any) => s.id === stateId);
         if (state && (state.group === "completed" || state.group === "done")) {
@@ -963,7 +963,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           dateMap[completedDate].completed_issues++;
         }
       });
-      
+
       const mockData = Object.keys(dateMap).sort().map(dateStr => {
         return {
           key: dateStr,
@@ -973,19 +973,19 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           completed_issues: dateMap[dateStr].completed_issues
         };
       });
-      
+
       const schema = { created_issues: "Created", completed_issues: "Completed", count: "Count" };
       return ok({ data: mockData, schema });
-      
+
     } else {
       // Group by x_axis dynamically
       let mockDataMap: Record<string, any> = {};
       let schema: Record<string, string> = { count: "Count" };
-      
+
       filteredIssues.forEach((issue: any) => {
         let key = "unknown";
         let name = "Unknown";
-        
+
         if (xAxis === "priority") {
           key = issue.priority || "none";
           name = (key === "none") ? "None" : key;
@@ -1000,7 +1000,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           let assignees = issue.assignee_ids || issue.assignees || [];
           if (!Array.isArray(assignees)) assignees = [assignees];
           if (assignees.length === 0) assignees = ["unassigned"];
-          
+
           if (assignees.length > 0) {
             key = assignees[0];
             if (key === "unassigned") {
@@ -1013,19 +1013,19 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         } else if (xAxis === "labels__id") {
           const labels = Array.isArray(issue.labels) ? issue.labels : (issue.label_ids || []);
           if (labels.length > 0) {
-             key = labels[0];
-             name = "Label " + key; // Simplified for mock
+            key = labels[0];
+            name = "Label " + key; // Simplified for mock
           } else {
-             key = "none";
-             name = "None";
+            key = "none";
+            name = "None";
           }
         }
-        
+
         if (!mockDataMap[key]) {
           mockDataMap[key] = { key, name, count: 0 };
         }
         mockDataMap[key].count++;
-        
+
         // Also populate the key in the schema
         if (!schema[key]) {
           schema[key] = name;
@@ -1035,7 +1035,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         }
         mockDataMap[key][key]++;
       });
-      
+
       return ok({ data: Object.values(mockDataMap), schema });
     }
   }
@@ -1534,7 +1534,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     }
 
     localDB[collection].push(newRecord);
-    
+
     // If this is an issue and it has a parent, update the parent's sub_issues_count
     if (collection === "issues" && newRecord.parent_id) {
       const parentIdx = localDB[collection].findIndex((i: any) => i.id === newRecord.parent_id);
@@ -1543,7 +1543,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         // Broadcast the parent update if needed, though for mock DB just saving is enough for next fetch
       }
     }
-    
+
     saveDB();
     syncDAppRecord(collection, newRecord.id, newRecord);
 
