@@ -9,7 +9,7 @@ import axios from "axios";
 import { APIService } from "../api.service";
 
 /**
- * Converts a File object to a Base64 string
+ * Converts a File object to a Base64 string (without the data URL prefix)
  */
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -17,7 +17,7 @@ function fileToBase64(file: File): Promise<string> {
     reader.readAsDataURL(file);
     reader.onload = () => {
       let encoded = reader.result?.toString() || "";
-      // SystemCore APIs usually expect pure base64 without the data URL prefix
+      // SystemCore APIs expect pure base64 without the data URL prefix
       const commaIdx = encoded.indexOf(",");
       if (commaIdx !== -1) {
         encoded = encoded.substring(commaIdx + 1);
@@ -29,7 +29,12 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 /**
- * Service class for handling file upload operations via Metanode SDK
+ * Service class for handling file upload operations via @metanodejs/system-core
+ *
+ * Uses SystemCore native bridge (WebKit / Electron / postMessage) directly,
+ * which does NOT require any iframe frame (file-processor, crypto-vault, etc.)
+ * to be ready. This eliminates the "No frame found for action" error.
+ *
  * @extends {APIService}
  */
 export class FileUploadService extends APIService {
@@ -41,9 +46,9 @@ export class FileUploadService extends APIService {
 
   /**
    * Uploads a file using @metanodejs/system-core
-   * @param {string} url - Ignored in DApp mode
+   * @param {string} _url - Ignored in DApp mode
    * @param {FormData} data - The form data to upload
-   * @returns {Promise<any>} Promise resolving to upload result (usually a Hash or URL)
+   * @returns {Promise<any>} Promise resolving to upload result with asset hash
    * @throws {Error} If the request fails
    */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -61,37 +66,35 @@ export class FileUploadService extends APIService {
       const base64Data = await fileToBase64(file);
       const ext = file.name.split(".").pop() || "";
 
-      const sdk = (window as any).fiaiSDK;
-      if (!sdk) {
-        throw new Error("FiaiSDK is not initialized on window");
-      }
+      console.log("[Metanode] Processing file via SystemCore:", file.name);
 
-      // Check if file-processor frame is ready, if not wait for it
+      // Dynamically import @metanodejs/system-core to use native bridge
+      const systemCore = await import("@metanodejs/system-core");
+
+      // Step 1: Create hash of the file content for on-chain reference
+      const hash = await systemCore.createHash(base64Data, false);
+      console.log("[Metanode] File hash created:", hash);
+
+      // Step 2: Persist file via SystemCore (createFileWithBase64)
+      let savedPath: string | undefined;
       try {
-        const status = sdk.getStatus?.() || {};
-        if (status['file-processor'] !== 'ready') {
-          console.warn("[Metanode] file-processor is not ready. Waiting for it...");
-          await (sdk as any).hostBridge?.waitForReady('file-processor', 60000).catch(() => null);
-        }
-      } catch (e) {
-        // ignore errors reading status
+        const fileResult = await systemCore.createFileWithBase64({
+          base64: base64Data,
+          name: file.name.replace(/\.[^/.]+$/, ""), // filename without extension
+          ext: ext,
+        });
+        savedPath = (fileResult as any)?.path || fileResult;
+        console.log("[Metanode] File saved at:", savedPath);
+      } catch (saveErr) {
+        // File persistence is optional; hash is what matters for on-chain
+        console.warn("[Metanode] createFileWithBase64 not available, using hash only:", saveErr);
       }
 
-      console.log("[Metanode] Uploading file via FiaiSDK:", file.name);
+      const assetId = typeof hash === "string" ? hash : (hash as any)?.hash || file.name;
 
-      const result = await sdk.request("uploadFile", {
-        filename: file.name,
-        ext: ext,
-        base64: base64Data,
-      });
-
-      console.log("[Metanode] Upload success:", result);
-
-      // MOCK Plane's expected response format:
-      // Typically returns { asset: "https://url.to/file" }
       return {
-        asset: result, // Assuming result is the hash/url
-        id: Math.random().toString(36).substr(2, 9),
+        asset: assetId,
+        id: assetId,
         attributes: {
           name: file.name,
           size: file.size,
@@ -99,16 +102,7 @@ export class FileUploadService extends APIService {
       };
     } catch (error: any) {
       console.error("[Metanode] File Upload Error:", error);
-      // Fallback for normal browsers without WebKit handler
-      console.warn("Falling back to local object URL because Metanode SDK failed.");
-      return {
-        asset: "mock-uploaded-file-url ",
-        id: Math.random().toString(36).substr(2, 9),
-        attributes: {
-          name: file.name,
-          size: file.size,
-        },
-      };
+      throw error;
     }
   }
 

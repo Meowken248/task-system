@@ -3,7 +3,7 @@ import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse } from "a
 const PLANE_CONTRACT = "0x2CB649c0A6338f668F0ADc4AE96c1b2Dc198ed41";
 
 // ── On-chain sync (fire-and-forget, never blocks UI) ──────────────────────
-async function syncDAppRecord(collection: string, id: string, record: any) {
+async function syncDAppRecord(collection: string, id: string, _record?: any) {
   // DISABLE generic syncDAppRecord so we don't spam the network with duplicate mock records.
   // The UI will rely purely on the specialized blockchain service (e.g. createTask)
   console.log(`[DApp Sync] Generic sync disabled for ${collection}/${id}`);

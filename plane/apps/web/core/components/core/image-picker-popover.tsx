@@ -308,23 +308,48 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                       </p>
                       <Button
                         variant="primary"
-                        size="md"
+                        size="base"
                         loading={isImageUploading}
                         onClick={async () => {
                           try {
                             setIsImageUploading(true);
-                            const result = await fiaiSDK.request("uploadFile", { filename: "upload_image" });
-                            if (result && result.asset) {
-                              onChange(result.asset);
-                              setIsOpen(false);
-                            } else if (typeof result === "string" && result) {
-                              onChange(result);
+                            // Use browser file picker
+                            const input = document.createElement("input");
+                            input.type = "file";
+                            input.accept = "image/*";
+                            const filePromise = new Promise<File | null>((resolve) => {
+                              input.onchange = () => resolve(input.files?.[0] || null);
+                              input.oncancel = () => resolve(null);
+                            });
+                            input.click();
+                            const selectedFile = await filePromise;
+                            if (!selectedFile) return;
+
+                            // Convert to base64 and hash via SystemCore
+                            const base64 = await new Promise<string>((resolve, reject) => {
+                              const reader = new FileReader();
+                              reader.readAsDataURL(selectedFile);
+                              reader.onload = () => {
+                                let encoded = reader.result?.toString() || "";
+                                const idx = encoded.indexOf(",");
+                                if (idx !== -1) encoded = encoded.substring(idx + 1);
+                                resolve(encoded);
+                              };
+                              reader.onerror = reject;
+                            });
+
+                            const { createHash } = await import("@metanodejs/system-core");
+                            const hash = await createHash(base64, false);
+                            const assetId = typeof hash === "string" ? hash : (hash as any)?.hash || selectedFile.name;
+
+                            if (assetId) {
+                              onChange(assetId);
                               setIsOpen(false);
                             } else {
-                              throw new Error("Invalid result from File Processor");
+                              throw new Error("Could not generate file hash");
                             }
                           } catch (error: any) {
-                            console.error("FiaiSDK upload error:", error);
+                            console.error("Metanode upload error:", error);
                             setToast({
                               message: error?.message || "Failed to upload file via Metanode",
                               type: TOAST_TYPE.ERROR,
