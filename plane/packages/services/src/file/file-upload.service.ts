@@ -91,10 +91,14 @@ export class FileUploadService extends APIService {
       }
 
       const assetId = typeof hash === "string" ? hash : (hash as any)?.hash || file.name;
+      const dataUrl = `data:${file.type || "application/octet-stream"};base64,${base64Data}`;
 
       return {
         asset: assetId,
         id: assetId,
+        asset_url: dataUrl,
+        base64: base64Data,
+        file_type: file.type || "application/octet-stream",
         attributes: {
           name: file.name,
           size: file.size,

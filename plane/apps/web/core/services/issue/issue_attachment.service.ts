@@ -15,6 +15,7 @@ import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isOnChainTaskSyncAvailable, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
 import { FileUploadService } from "@plane/services";
+import { saveAttachmentToStorage } from "@plane/utils";
 
 export class IssueAttachmentService extends APIService {
   private fileUploadService: FileUploadService;
@@ -66,13 +67,35 @@ export class IssueAttachmentService extends APIService {
       throw { error: chainError instanceof Error ? chainError.message : "Ghi bằng chứng đính kèm lên blockchain thất bại.", isChainError: true };
     }
 
+    const attachmentId = uploadResult?.id || Math.random().toString(36).substr(2, 9);
+    const assetUrl = uploadResult?.asset_url || assetId;
+
+    if (uploadResult?.base64) {
+      void saveAttachmentToStorage(assetId, {
+        name: file.name,
+        base64: uploadResult.base64,
+        type: file.type || "application/octet-stream",
+        size: file.size,
+      }).catch((err) => console.warn("Failed to persist attachment to local IndexedDB:", err));
+
+      if (attachmentId !== assetId) {
+        void saveAttachmentToStorage(attachmentId, {
+          name: file.name,
+          base64: uploadResult.base64,
+          type: file.type || "application/octet-stream",
+          size: file.size,
+        }).catch(() => {});
+      }
+    }
+
     return {
-      id: uploadResult?.id || Math.random().toString(36).substr(2, 9),
-      asset: assetId,
+      id: attachmentId,
+      asset_url: assetUrl,
       attributes: {
         name: file.name,
         size: file.size,
       },
+      issue_id: issueId,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       created_by: "",
