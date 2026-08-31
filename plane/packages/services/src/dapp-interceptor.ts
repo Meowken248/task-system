@@ -22,6 +22,13 @@ const MOCK_USER = {
   is_email_verified: true,
   is_password_autoset: false,
   is_tour_completed: true,
+  is_onboarded: true,
+  onboarding_step: {
+    workspace_join: true,
+    profile_complete: true,
+    workspace_create: true,
+    workspace_invite: true,
+  },
   mobile_number: null,
   last_workspace_id: "mock-workspace",
   user_timezone: "Asia/Ho_Chi_Minh",
@@ -90,19 +97,302 @@ TRANSIENT_COLLECTIONS.forEach(col => {
   localDB[col] = [];
 });
 
+// Enforce onboarding state for mock/local users so they don't get stuck in the onboarding flow
+if (localDB.users) {
+  localDB.users.forEach((u: any) => {
+    u.is_onboarded = true;
+    u.is_tour_completed = true;
+    if (!u.onboarding_step) {
+      u.onboarding_step = {
+        workspace_join: true,
+        profile_complete: true,
+        workspace_create: true,
+        workspace_invite: true,
+      };
+    }
+  });
+}
+
+export let currentUserAddress: string | null = null;
+
 function saveDB() {
-  if (typeof window !== "undefined") {
+  if (typeof window !== "undefined" && currentUserAddress) {
     const dbToSave: Record<string, any[]> = {};
     for (const [key, value] of Object.entries(localDB)) {
       if (!TRANSIENT_COLLECTIONS.includes(key)) {
         dbToSave[key] = value;
       }
     }
-    localStorage.setItem("plane_dapp_db", JSON.stringify(dbToSave));
+    localStorage.setItem(`plane_dapp_db_${currentUserAddress}`, JSON.stringify(dbToSave));
+    localStorage.setItem(`plane_dapp_is_dirty_${currentUserAddress}`, "true");
   }
 }
 
-// ── Static responses for special endpoints ───────────────────────────────
+// Hàm resolve dùng cho db-bootstrap.tsx xử lý UI conflict
+export function resolveDBConflict(choice: "USE_CHAIN" | "USE_LOCAL", cid: string, ipfsDB: any) {
+  if (typeof window === "undefined" || !currentUserAddress) return;
+  
+  if (choice === "USE_CHAIN") {
+    // Ghi đè RAM bằng IPFS
+    for (const key in localDB) delete localDB[key];
+    Object.assign(localDB, ipfsDB);
+    if (!localDB.users) localDB.users = defaultDB.users;
+    if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
+    TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
+    
+    baseCID = cid;
+    
+    // Xóa nháp cũ, tạo nháp sạch mới, XÓA cờ is_dirty
+    localStorage.removeItem(`plane_dapp_is_dirty_${currentUserAddress}`);
+    localStorage.setItem(`plane_dapp_db_${currentUserAddress}`, JSON.stringify(ipfsDB));
+    
+  } else if (choice === "USE_LOCAL") {
+    // Dùng nháp cục bộ
+    const saved = localStorage.getItem(`plane_dapp_db_${currentUserAddress}`);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      for (const key in localDB) delete localDB[key];
+      Object.assign(localDB, parsed);
+      if (!localDB.users) localDB.users = defaultDB.users;
+      if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
+      TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
+    }
+    baseCID = cid; // Đặt baseCID chuẩn để sync sau này có thể chạy check đúng
+  }
+}
+
+// ── Decentralized IPFS + Blockchain Sync ─────────────────────────────────
+
+export let baseCID: string = "";
+
+const GET_CID_ABI = {
+  type: "function",
+  name: "getCID",
+  inputs: [
+    { internalType: "address", name: "user", type: "address" },
+    { internalType: "string", name: "key", type: "string" }
+  ],
+  outputs: [{ internalType: "string", name: "", type: "string" }],
+  stateMutability: "view"
+};
+
+const SET_CID_IF_MATCHES_ABI = {
+  type: "function",
+  name: "setCIDIfMatches",
+  inputs: [
+    { internalType: "string", name: "key", type: "string" },
+    { internalType: "string", name: "expectedOldCid", type: "string" },
+    { internalType: "string", name: "newCid", type: "string" }
+  ],
+  outputs: [],
+  stateMutability: "nonpayable"
+};
+
+const CONTRACT_ADDRESS = "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
+const PROXY_URL = "https://your-worker-url.workers.dev"; // User will configure in .env but here we can read process.env if available, or pass it via UI. Wait, we can't easily read process.env inside packages/services if it's not injected. Let's use window.VITE_PINATA_PROXY_URL or fallback.
+const getProxyUrl = () => {
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PINATA_PROXY_URL) return (import.meta as any).env.VITE_PINATA_PROXY_URL;
+  if (typeof window !== "undefined" && (window as any).__env__?.VITE_PINATA_PROXY_URL) return (window as any).__env__.VITE_PINATA_PROXY_URL;
+  if (typeof process !== "undefined" && process.env?.VITE_PINATA_PROXY_URL) return process.env.VITE_PINATA_PROXY_URL;
+  return PROXY_URL;
+};
+
+// Utils 
+async function getWalletAddress() {
+  const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
+  if (isMock) {
+    return "0xMockUserAddress1234567890abcdef12345678";
+  }
+  
+  console.log(`[DApp DB] Đang kết nối ví...`);
+  const { getActiveWallet } = await import("@metanodejs/system-core");
+  const timeoutMs = 5000;
+  const timeoutTask = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(`Không thể kết nối với ví MetaNode (quá ${timeoutMs / 1000} giây). Lỗi mạng hoặc Bridge không phản hồi.`));
+    }, timeoutMs);
+  });
+  
+  const wallet = await Promise.race([getActiveWallet(), timeoutTask]);
+  console.log(`[DApp DB] Kết nối ví thành công:`, wallet);
+  return (wallet as any)?.address || null;
+}
+
+async function _initDAppDB() {
+  if (typeof window === "undefined") return;
+  const activeWallet = await getWalletAddress().catch(() => null);
+  if (!activeWallet) return { status: "NO_WALLET" };
+  if (currentUserAddress && activeWallet !== currentUserAddress) {
+    for (const key in localDB) delete localDB[key]; // Xoá sạch RAM cũ nếu đổi ví
+  }
+  currentUserAddress = activeWallet;
+
+  try {
+    const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
+    if (isMock) {
+      console.log(`[DApp DB] MOCK MODE: Bỏ qua đọc từ contract.`);
+      return null; // Trả về null để dùng dữ liệu local
+    }
+    
+    const { MtnContract } = await import("@metanodejs/mtn-contract");
+    const contract = new MtnContract({ from: currentUserAddress as string, to: CONTRACT_ADDRESS });
+    const result = await contract.sendTransaction({
+      from: currentUserAddress as string,
+      to: CONTRACT_ADDRESS,
+      abiData: [GET_CID_ABI],
+      functionName: "getCID",
+      feeType: "read",
+      amount: "0",
+      value: "0",
+      gas: "3000000",
+      type: "transaction",
+      inputArray: [
+        { ...GET_CID_ABI.inputs[0], value: currentUserAddress as string },
+        { ...GET_CID_ABI.inputs[1], value: "plane_dapp_db" }
+      ],
+      isReadOnly: true,
+      bundleId: "",
+    });
+
+    const cid = result as string;
+    const isDirty = localStorage.getItem(`plane_dapp_is_dirty_${currentUserAddress}`) === "true";
+
+    if (cid && cid !== "") {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      
+      const response = await fetch(`https://purple-fascinating-quelea-533.mypinata.cloud/ipfs/${cid}`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
+      if (response.ok) {
+        const ipfsDB = await response.json();
+        
+        if (isDirty) {
+          // Trả về UI để user chọn
+          return { status: "CONFLICT", cid, ipfsDB };
+        } else {
+          resolveDBConflict("USE_CHAIN", cid, ipfsDB);
+          return { status: "OK" };
+        }
+      }
+      return { status: "ERROR", message: "Failed to fetch from IPFS" };
+    } else {
+      // User chưa từng sync
+      baseCID = "";
+      if (isDirty) {
+        const saved = localStorage.getItem(`plane_dapp_db_${currentUserAddress}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          Object.assign(localDB, parsed);
+        }
+      }
+      return { status: "OK" };
+    }
+  } catch (err) {
+    console.error("Failed to load DApp DB from chain:", err);
+    throw err;
+  }
+}
+
+export async function initDAppDB() {
+  const timeoutMs = 5000;
+  console.log(`[DApp DB] Bắt đầu init, tự động ngắt sau ${timeoutMs}ms...`);
+  
+  const timeoutTask = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(`Quá thời gian kết nối (${timeoutMs / 1000} giây). Lỗi mạng, SSL, hoặc Bridge không phản hồi.`));
+    }, timeoutMs);
+  });
+  
+  return Promise.race([_initDAppDB(), timeoutTask])
+    .then(res => {
+      console.log(`[DApp DB] Init thành công:`, res);
+      return res;
+    })
+    .catch(err => {
+      console.error(`[DApp DB] Init thất bại hoặc quá timeout:`, err);
+      throw err;
+    });
+}
+
+export async function syncDAppDBToChain() {
+  const activeWallet = await getWalletAddress().catch(() => null);
+  if (!activeWallet) throw new Error("Chưa kết nối ví.");
+  if (currentUserAddress && activeWallet !== currentUserAddress) {
+    throw new Error("Tài khoản ví đã thay đổi. Vui lòng tải lại trang để nạp dữ liệu của ví mới.");
+  }
+  currentUserAddress = activeWallet;
+
+  // Upload IPFS
+  const dbToSave: Record<string, any[]> = {};
+  for (const [key, value] of Object.entries(localDB)) {
+    if (!TRANSIENT_COLLECTIONS.includes(key)) {
+      dbToSave[key] = value;
+    }
+  }
+
+  const response = await fetch(getProxyUrl(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(dbToSave)
+  });
+  if (!response.ok) throw new Error("Lỗi upload IPFS");
+  const { cid } = await response.json();
+  if (!cid) throw new Error("Proxy không trả về CID");
+
+  const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
+  if (!bridge) throw new Error("FiaiSDK is not available.");
+
+  const send = () =>
+    bridge!.request("sendTransaction", {
+      from: currentUserAddress as string,
+      to: CONTRACT_ADDRESS,
+      abiData: [SET_CID_IF_MATCHES_ABI],
+      functionName: "setCIDIfMatches",
+      feeType: "sc",
+      amount: "0",
+      value: "0",
+      gas: "3000000",
+      type: "transaction",
+      inputArray: [
+        { ...SET_CID_IF_MATCHES_ABI.inputs[0], value: "plane_dapp_db" },
+        { ...SET_CID_IF_MATCHES_ABI.inputs[1], value: baseCID },
+        { ...SET_CID_IF_MATCHES_ABI.inputs[2], value: cid }
+      ],
+      isReadOnly: false,
+      bundleId: "",
+    });
+
+  const sendWithWalletRecovery = async (): Promise<unknown> => {
+    try {
+      return await send();
+    } catch (error: any) {
+      console.log(JSON.stringify(error, null, 2)); // Giữ lại log cho dev test
+      
+      const errStr = [
+        error?.message,
+        error?.toString?.(),
+        error?.reason,
+        error?.data?.message,
+        (() => { try { return JSON.stringify(error); } catch { return ""; } })()
+      ].filter(Boolean).join(" | ");
+
+      if (errStr.includes("CID_CONFLICT")) {
+        throw new Error("LỖI XUNG ĐỘT: Dữ liệu đã thay đổi ở nơi khác từ lúc bạn mở trang. Tải lại để lấy bản mới nhất trước khi lưu tiếp, nếu không thay đổi của bạn sẽ bị mất khi ghi đè.");
+      }
+      throw error;
+    }
+  };
+
+  await sendWithWalletRecovery();
+  
+  // Xóa cờ is_dirty CHỈ SAU KHI transaction confirm thành công
+  localStorage.removeItem(`plane_dapp_is_dirty_${currentUserAddress}`);
+  baseCID = cid;
+  
+  return cid;
+}
+
 function getInstanceInfo() {
   return {
     instance: {
@@ -282,9 +572,13 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 
     if (url.includes("/project-roles")) return ok({}); // return empty object for project roles
 
-    if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles")) {
+    if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles") && !url.includes("/invitations")) {
       const workspaces = localDB.workspaces || [];
       return ok(workspaces.map((ws) => ({ ...ws, role: 20 })));
+    }
+    
+    if (url.includes("/api/users/me/workspaces/invitations") || url.includes("/api/users/me/invitations")) {
+      return ok([]);
     }
 
     if (method === "patch" || method === "put" || method === "post") {

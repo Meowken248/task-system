@@ -97,22 +97,54 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
   if (sdkInstance && !sdkInstance.isDestroyed) return sdkInstance;
   if (initPromise) return initPromise;
 
-  initPromise = FiaiSDK.init({
+  const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
+  if (isMock) {
+    console.log("[FiaiSDK] MOCK MODE enabled. Bypassing real SDK init.");
+    const mockSdk = {
+      on: () => {},
+      request: async (method: string, params: any) => {
+        if (method === "sendTransaction") {
+          console.log("[FiaiSDK Mock] Fake sendTransaction:", params);
+          return { hash: "0xmocktxhash" };
+        }
+        return null;
+      },
+      isDestroyed: false,
+      destroy: () => {}
+    } as unknown as FiaiSDK;
+    sdkInstance = mockSdk;
+    (window as any).fiaiSDK = mockSdk;
+    return mockSdk;
+  }
+
+  const timeoutMs = 5_000;
+  console.log(`[FiaiSDK] Bắt đầu init với timeout ${timeoutMs}ms...`);
+
+  const initTask = FiaiSDK.init({
     container: getOrCreateContainer(),
-    timeout: Number(process.env.VITE_FIAI_TIMEOUT || 60_000),
+    timeout: timeoutMs,
     debug: process.env.NODE_ENV === "development",
     frameUrls: getFrameUrls(),
     onError: (error) => console.error("FiaiSDK error:", error),
-  })
+  });
+
+  const timeoutTask = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(`Khởi tạo MetaNode SDK thất bại (quá ${timeoutMs / 1000} giây). Có thể do domain bridge không phản hồi hoặc lỗi SSL (ERR_SSL_UNRECOGNIZED_NAME). Vui lòng kiểm tra VPN hoặc file hosts.`));
+    }, timeoutMs);
+  });
+
+  initPromise = Promise.race([initTask, timeoutTask])
     .then((sdk) => {
-      registerWalletSelectionBridge(sdk);
-      sdkInstance = sdk;
-      (window as FiaiSdkWindow).fiaiSDK = sdk;
-      return sdk;
+      console.log(`[FiaiSDK] Init thành công!`);
+      registerWalletSelectionBridge(sdk as FiaiSDK);
+      sdkInstance = sdk as FiaiSDK;
+      (window as FiaiSdkWindow).fiaiSDK = sdk as FiaiSDK;
+      return sdk as FiaiSDK;
     })
     .catch((error: unknown) => {
-      console.error("Failed to initialize FiaiSDK:", error);
-      return null;
+      console.error("[FiaiSDK] Init thất bại hoặc quá timeout:", error);
+      throw error;
     })
     .finally(() => {
       initPromise = null;
