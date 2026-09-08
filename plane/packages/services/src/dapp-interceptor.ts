@@ -1,5 +1,7 @@
 import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse } from "axios";
 
+declare const process: { env: Record<string, string | undefined> };
+
 const PLANE_CONTRACT = "0x2CB649c0A6338f668F0ADc4AE96c1b2Dc198ed41";
 
 // ── On-chain sync (fire-and-forget, never blocks UI) ──────────────────────
@@ -197,16 +199,137 @@ const getProxyUrl = () => {
   return PROXY_URL;
 };
 
-// Utils 
+// ── Direct RPC (bypass Bridge iframe for read-only calls) ──────────────
+const GET_CID_SELECTOR = "0xfa3e97e7"; // keccak256("getCID(address,string)")[0:4]
+
+function getRpcUrl(): string {
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_RPC_URL) return (import.meta as any).env.VITE_RPC_URL;
+  if (typeof process !== "undefined" && process.env?.VITE_RPC_URL) return process.env.VITE_RPC_URL;
+  return "https://rpc-proxy-sequoia.iqnb.com:8446";
+}
+
+function padHex(hex: string, bytes: number): string {
+  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  return clean.padStart(bytes * 2, "0");
+}
+
+function utf8ToHex(str: string): string {
+  return Array.from(new TextEncoder().encode(str))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** ABI-encode getCID(address, string) calldata without external libs */
+function abiEncodeGetCID(userAddress: string, key: string): string {
+  // address param (left-padded to 32 bytes)
+  const addressHex = padHex(userAddress, 32);
+  // string is dynamic → offset pointer at position 1 = 0x40 (64)
+  const offsetHex = padHex("40", 32);
+  // string length
+  const keyBytes = utf8ToHex(key);
+  const keyLen = key.length;
+  const keyLenHex = padHex(keyLen.toString(16), 32);
+  // string data (right-padded to 32-byte boundary)
+  const keyDataHex = keyBytes.padEnd(Math.ceil(keyBytes.length / 64) * 64, "0");
+  return GET_CID_SELECTOR + addressHex + offsetHex + keyLenHex + keyDataHex;
+}
+
+/** Decode ABI-encoded string return value from eth_call hex result */
+function decodeAbiString(hexResult: string): string {
+  if (!hexResult || hexResult === "0x" || hexResult.length < 130) return "";
+  const data = hexResult.startsWith("0x") ? hexResult.slice(2) : hexResult;
+  // Skip offset (first 32 bytes) → read length (next 32 bytes) → read string data
+  const length = parseInt(data.slice(64, 128), 16);
+  if (length === 0) return "";
+  const strHex = data.slice(128, 128 + length * 2);
+  const bytes = new Uint8Array(strHex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
+  return new TextDecoder().decode(bytes);
+}
+
+/** Call a read-only contract function directly via JSON-RPC eth_call */
+async function directRpcRead(contractAddr: string, calldata: string, timeoutMs = 15000): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(getRpcUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_call",
+        params: [{ to: contractAddr, data: calldata }, "latest"],
+      }),
+      signal: controller.signal,
+    });
+    const json = await response.json();
+    if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
+    return json.result || "0x";
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// ── Wallet address helpers ─────────────────────────────────────────────
+
+/** Read wallet address from localStorage (stored by metanode-wallet.service) */
+function getStoredWalletAddress(): string | null {
+  if (typeof window === "undefined") return null;
+  // Try the module-level cached address first
+  if (currentUserAddress) return currentUserAddress;
+  // Scan localStorage for a previously saved wallet-keyed DB
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("plane_dapp_db_0x")) {
+        const addr = key.replace("plane_dapp_db_", "");
+        if (/^0x[a-fA-F0-9]{40}$/.test(addr)) return addr;
+      }
+    }
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("plane:metanode-wallet:")) {
+        const addr = localStorage.getItem(key)?.trim() || "";
+        if (/^0x[a-fA-F0-9]{40}$/.test(addr)) return addr;
+      }
+    }
+  } catch { /* localStorage access can throw in sandboxed iframes */ }
+  return null;
+}
+
 async function getWalletAddress() {
   const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
   if (isMock) {
     return "0xMockUserAddress1234567890abcdef12345678";
   }
-  
-  console.log(`[DApp DB] Đang kết nối ví...`);
+
+  // Try localStorage first (instant, no Bridge needed)
+  const stored = getStoredWalletAddress();
+  if (stored) {
+    console.log(`[DApp DB] Wallet từ localStorage: ${stored}`);
+    return stored;
+  }
+
+  // No wallet in localStorage → return null (don't block page load with Bridge)
+  console.log(`[DApp DB] Chưa có wallet trong localStorage. Cần kết nối ví trước.`);
+  return null;
+}
+
+/** Get wallet via Bridge iframe — only used for write operations (Sync to Chain) */
+async function getWalletAddressViaBridge() {
+  const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
+  if (isMock) {
+    return "0xMockUserAddress1234567890abcdef12345678";
+  }
+
+  // 1. Try localStorage first
+  const stored = getStoredWalletAddress();
+  if (stored) return stored;
+
+  // 2. Fallback: connect through Bridge (slow, requires iframe)
+  console.log(`[DApp DB] Đang kết nối ví qua Bridge...`);
   const { getActiveWallet } = await import("@metanodejs/system-core");
-  const timeoutMs = 5000;
+  const timeoutMs = 20000;
   const timeoutTask = new Promise<never>((_, reject) => {
     setTimeout(() => {
       reject(new Error(`Không thể kết nối với ví MetaNode (quá ${timeoutMs / 1000} giây). Lỗi mạng hoặc Bridge không phản hồi.`));
@@ -233,28 +356,15 @@ async function _initDAppDB() {
       console.log(`[DApp DB] MOCK MODE: Bỏ qua đọc từ contract.`);
       return null; // Trả về null để dùng dữ liệu local
     }
-    
-    const { MtnContract } = await import("@metanodejs/mtn-contract");
-    const contract = new MtnContract({ from: currentUserAddress as string, to: CONTRACT_ADDRESS });
-    const result = await contract.sendTransaction({
-      from: currentUserAddress as string,
-      to: CONTRACT_ADDRESS,
-      abiData: [GET_CID_ABI],
-      functionName: "getCID",
-      feeType: "read",
-      amount: "0",
-      value: "0",
-      gas: "3000000",
-      type: "transaction",
-      inputArray: [
-        { ...GET_CID_ABI.inputs[0], value: currentUserAddress as string },
-        { ...GET_CID_ABI.inputs[1], value: "plane_dapp_db" }
-      ],
-      isReadOnly: true,
-      bundleId: "",
-    });
 
-    const cid = result as string;
+    // ── Direct RPC call: getCID(address, "plane_dapp_db") ──────────────
+    // Gọi thẳng qua JSON-RPC eth_call, KHÔNG qua Bridge iframe
+    console.log(`[DApp DB] Đọc CID trực tiếp từ RPC (${getRpcUrl()})...`);
+    const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
+    const rawResult = await directRpcRead(CONTRACT_ADDRESS, calldata, 15000);
+    const cid = decodeAbiString(rawResult);
+    console.log(`[DApp DB] CID từ contract:`, cid || "(trống)");
+
     const isDirty = localStorage.getItem(`plane_dapp_is_dirty_${currentUserAddress}`) === "true";
 
     if (cid && cid !== "") {
@@ -295,7 +405,7 @@ async function _initDAppDB() {
 }
 
 export async function initDAppDB() {
-  const timeoutMs = 5000;
+  const timeoutMs = 20000;
   console.log(`[DApp DB] Bắt đầu init, tự động ngắt sau ${timeoutMs}ms...`);
   
   const timeoutTask = new Promise<never>((_, reject) => {
@@ -316,7 +426,7 @@ export async function initDAppDB() {
 }
 
 export async function syncDAppDBToChain() {
-  const activeWallet = await getWalletAddress().catch(() => null);
+  const activeWallet = await getWalletAddressViaBridge().catch(() => null);
   if (!activeWallet) throw new Error("Chưa kết nối ví.");
   if (currentUserAddress && activeWallet !== currentUserAddress) {
     throw new Error("Tài khoản ví đã thay đổi. Vui lòng tải lại trang để nạp dữ liệu của ví mới.");

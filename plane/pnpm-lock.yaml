@@ -22,8 +22,8 @@ catalogs:
       specifier: 0.2.1
       version: 0.2.1
     '@metanodejs/fiai-sdk':
-      specifier: 1.0.0
-      version: 1.0.0
+      specifier: 2.0.2
+      version: 2.0.2
     '@metanodejs/mtn-contract':
       specifier: 1.0.4
       version: 1.0.4
@@ -629,7 +629,7 @@ importers:
         version: 0.2.1
       '@metanodejs/fiai-sdk':
         specifier: 'catalog:'
-        version: 1.0.0
+        version: 2.0.2
       '@metanodejs/mtn-contract':
         specifier: 'catalog:'
         version: 1.0.4
@@ -1248,7 +1248,7 @@ importers:
         version: 0.2.1
       '@metanodejs/fiai-sdk':
         specifier: 'catalog:'
-        version: 1.0.0
+        version: 2.0.2
       '@metanodejs/mtn-contract':
         specifier: 'catalog:'
         version: 1.0.4
@@ -2565,8 +2565,8 @@ packages:
   '@metanodejs/event-log@0.2.1':
     resolution: {integrity: sha512-9CNMQs/9z2xiJ16jE04T820b9NGaAoHoM/iHq6dqv3+M3LetblRXdDEv2PF5yaTzWs80XlUsYDhoOaOgz6w9Og==}
 
-  '@metanodejs/fiai-sdk@1.0.0':
-    resolution: {integrity: sha512-FkBrfxTYzqxNxJKIbV4Pgr7J7+IW/02HQM2iFaPReajbnsCfmsihnUy9VV3e7m8UINN90rR0rgHfN419sWg9xQ==}
+  '@metanodejs/fiai-sdk@2.0.2':
+    resolution: {integrity: sha512-VTYyQurbqEZOyZZvkbquNzXImN/7rZHLF7E4nwk7Q10LGBIoH9TJBw6IYnHlF1bl9yWeDjaYggv8gE76+I6ylg==}
 
   '@metanodejs/mtn-contract@1.0.4':
     resolution: {integrity: sha512-YClP7bV9DA2YxiMqTPrMI80hHmK8GtyZB0bpGN1zrscjTFV3ALGucnDrYwF9pa9R+eWJh5EV47mhOqJJO/ybsg==}
@@ -11495,7 +11495,7 @@ snapshots:
     dependencies:
       '@metanodejs/system-core': 1.0.7
 
-  '@metanodejs/fiai-sdk@1.0.0':
+  '@metanodejs/fiai-sdk@2.0.2':
     dependencies:
       nanoid: 3.3.8
 

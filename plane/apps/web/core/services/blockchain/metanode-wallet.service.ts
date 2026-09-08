@@ -41,18 +41,27 @@ export function getLinkedMetanodeWalletAddress(): string | null {
   return linkedWalletAddress;
 }
 export function isMetanodeWalletRuntimeSupported(): boolean {
-  return typeof window !== "undefined" && window.isSecureContext && "serviceWorker" in navigator;
+  if (typeof window === "undefined") return false;
+  // On HTTP localhost development, browser prevents subframe iframe TLS connection to external domains.
+  // Using the popup window allows top-level navigation, avoiding ERR_SSL_UNRECOGNIZED_NAME_ALERT.
+  const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  if (isLocalDev) return false;
+  return window.isSecureContext && "serviceWorker" in navigator;
 }
 
 function openConnectWalletPage(): void {
   const connectWalletUrl = process.env.VITE_URL_CONNECT_WALLET?.trim();
   if (!connectWalletUrl) throw new Error("VITE_URL_CONNECT_WALLET is missing.");
-  if (!/^https:\/\//i.test(connectWalletUrl)) {
-    throw new Error("VITE_URL_CONNECT_WALLET must start with https://.");
+  const normalizedUrl = /^https?:\/\//i.test(connectWalletUrl) ? connectWalletUrl : `https://${connectWalletUrl}`;
+  if (connectWalletPopup && !connectWalletPopup.closed) {
+    connectWalletPopup.focus();
+    return;
   }
-  connectWalletPopup = window.open(connectWalletUrl, "metanode-connect-wallet", "popup,width=480,height=760");
-  if (!connectWalletPopup) throw new Error("Connect Wallet popup was blocked by the browser.");
-  connectWalletPopup.focus();
+  connectWalletPopup = window.open(normalizedUrl, "metanode-connect-wallet", "popup,width=480,height=760");
+  if (!connectWalletPopup) {
+    connectWalletPopup = window.open(normalizedUrl, "_blank");
+  }
+  connectWalletPopup?.focus();
 }
 
 export function isWalletAddress(value: string): boolean {
@@ -65,7 +74,14 @@ function normalizeWalletAddress(value: string): string {
 }
 
 function readAddress(value: unknown): string | null {
-  if (typeof value === "string" && isWalletAddress(value)) return value;
+  if (typeof value === "string") {
+    if (isWalletAddress(value)) return value;
+    try {
+      return readAddress(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
   if (!value || typeof value !== "object") return null;
   const address = (value as WalletLike).address;
   if (typeof address === "string" && isWalletAddress(address)) return address;

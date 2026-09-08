@@ -12,6 +12,10 @@ export function DbBootstrap() {
         const res = await initDAppDB();
         if (res?.status === "CONFLICT") {
           setConflict({ cid: res.cid ?? "", ipfsDB: res.ipfsDB });
+        } else if (res?.status === "NO_WALLET") {
+          // No wallet connected yet — proceed with local mock data, no error
+          console.log("[DbBootstrap] No wallet found, using local data.");
+          setLoading(false);
         } else {
           setLoading(false);
         }
@@ -22,22 +26,25 @@ export function DbBootstrap() {
     };
     bootstrap();
 
-    // Lắng nghe sự kiện đổi ví từ MetaNode để nạp lại DB của ví mới
+    // Lắng nghe sự kiện đổi ví từ MetaNode — chỉ đăng ký nếu SDK đã sẵn sàng
     let bridgeInstance: any = null;
     const handleWalletChanged = () => {
       setLoading(true);
       bootstrap();
     };
 
-    import("@plane/services").then(async () => {
-      const { initFiaiSDK, getFiaiSDK } = await import("../../services/blockchain/fiai-sdk.service");
-      bridgeInstance = (await initFiaiSDK().catch(() => null)) ?? getFiaiSDK();
-      if (bridgeInstance) {
-        bridgeInstance.on("wallet-changed", handleWalletChanged);
-      }
-    });
+    // Defer Bridge init — don't block page load
+    const timer = setTimeout(() => {
+      import("../../services/blockchain/fiai-sdk.service").then(async ({ initFiaiSDK, getFiaiSDK }) => {
+        bridgeInstance = (await initFiaiSDK().catch(() => null)) ?? getFiaiSDK();
+        if (bridgeInstance) {
+          bridgeInstance.on("wallet-changed", handleWalletChanged);
+        }
+      });
+    }, 3000); // Delay 3s so page loads first
 
     return () => {
+      clearTimeout(timer);
       if (bridgeInstance) {
         bridgeInstance.off?.("wallet-changed", handleWalletChanged);
       }

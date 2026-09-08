@@ -5,9 +5,9 @@ type FiaiSdkWindow = Window & {
 };
 
 const DEFAULT_FRAME_URLS = {
-  blockchainBridge: "https://blockchain-bridge.fi.ai/",
-  cryptoVault: "https://crypto-vault.fi.ai/",
-  fileProcessor: "https://file-processor.fi.ai/",
+  blockchainBridge: "https://json.iqnb.com/fiai-sdk/blockchain-bridge/",
+  cryptoVault: "https://json.iqnb.com/fiai-sdk/crypto-vault/",
+  fileProcessor: "https://json.iqnb.com/fiai-sdk/file-processor/",
 };
 
 let initPromise: Promise<FiaiSDK | null> | null = null;
@@ -117,7 +117,7 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
     return mockSdk;
   }
 
-  const timeoutMs = 5_000;
+  const timeoutMs = Number(process.env.VITE_FIAI_TIMEOUT) || 60_000;
   console.log(`[FiaiSDK] Bắt đầu init với timeout ${timeoutMs}ms...`);
 
   const initTask = FiaiSDK.init({
@@ -125,6 +125,11 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
     timeout: timeoutMs,
     debug: process.env.NODE_ENV === "development",
     frameUrls: getFrameUrls(),
+    chainConfig: {
+      rpcUrl: process.env.VITE_RPC_URL || "https://rpc-proxy-sequoia.iqnb.com:8446",
+      wsUrl: "",
+      chainId: Number(process.env.VITE_CHAIN_ID || 991),
+    },
     onError: (error) => console.error("FiaiSDK error:", error),
   });
 
