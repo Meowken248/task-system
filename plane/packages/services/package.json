@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@metanodejs/event-log": "catalog:",
-    "@metanodejs/fiai-sdk": "catalog:",
+    "@metanodejs/fiai-sdk": "2.1.0",
     "@metanodejs/mtn-contract": "catalog:",
     "@metanodejs/system-core": "catalog:",
     "@plane/constants": "workspace:*",

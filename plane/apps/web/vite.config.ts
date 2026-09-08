@@ -15,17 +15,26 @@ const viteEnv = Object.keys(process.env)
     return a;
   }, {});
 
-// fiai-sdk@1.0.0 was published with a scheme-less Connect Wallet URL.
-// Keep the workaround at the bundler boundary until the upstream package is fixed.
+const targetConnectWalletDomain = (process.env.VITE_URL_CONNECT_WALLET || "https://connect-wallet-web.iqnb.com")
+  .trim()
+  .replace(/^https?:\/\//i, "");
+const targetConnectWalletUrl = `https://${targetConnectWalletDomain}`;
+
 const fixFiaiConnectWalletUrl = () => ({
   name: "fix-fiai-connect-wallet-url",
   enforce: "pre" as const,
   transform(code: string, id: string) {
-    if (!id.includes("@metanodejs/fiai-sdk")) return null;
-    return code.replaceAll(
-      'urlConnectWallet:"connect-wallet-web.fi.ai"',
-      'urlConnectWallet:"https://connect-wallet-web.fi.ai"'
+    if (!id.includes("@metanodejs")) return null;
+    let transformed = code;
+    transformed = transformed.replaceAll("https://connect-wallet-web.fi.ai", targetConnectWalletUrl);
+    transformed = transformed.replaceAll("connect-wallet-web.fi.ai", targetConnectWalletUrl);
+    transformed = transformed.replaceAll(
+      'urlConnectWallet:"connect-wallet-web.iqnb.com"',
+      `urlConnectWallet:"${targetConnectWalletUrl}"`
     );
+    transformed = transformed.replaceAll("https://img.fi.ai", "https://img.iqnb.com");
+    transformed = transformed.replaceAll("img.fi.ai", "img.iqnb.com");
+    return transformed;
   },
 });
 export default defineConfig(() => ({

@@ -1247,8 +1247,8 @@ importers:
         specifier: 'catalog:'
         version: 0.2.1
       '@metanodejs/fiai-sdk':
-        specifier: 'catalog:'
-        version: 2.0.2
+        specifier: 2.1.0
+        version: 2.1.0
       '@metanodejs/mtn-contract':
         specifier: 'catalog:'
         version: 1.0.4
@@ -2567,6 +2567,9 @@ packages:
 
   '@metanodejs/fiai-sdk@2.0.2':
     resolution: {integrity: sha512-VTYyQurbqEZOyZZvkbquNzXImN/7rZHLF7E4nwk7Q10LGBIoH9TJBw6IYnHlF1bl9yWeDjaYggv8gE76+I6ylg==}
+
+  '@metanodejs/fiai-sdk@2.1.0':
+    resolution: {integrity: sha512-DsyFVN6L8ksHZQgjQKfNYgmFebsMN2py3nrzffW07oyrauHDdtneGRlz3Y35P2/ozMMcJH9MjYB/B6sIhZ888g==}
 
   '@metanodejs/mtn-contract@1.0.4':
     resolution: {integrity: sha512-YClP7bV9DA2YxiMqTPrMI80hHmK8GtyZB0bpGN1zrscjTFV3ALGucnDrYwF9pa9R+eWJh5EV47mhOqJJO/ybsg==}
@@ -11496,6 +11499,10 @@ snapshots:
       '@metanodejs/system-core': 1.0.7
 
   '@metanodejs/fiai-sdk@2.0.2':
+    dependencies:
+      nanoid: 3.3.8
+
+  '@metanodejs/fiai-sdk@2.1.0':
     dependencies:
       nanoid: 3.3.8
 

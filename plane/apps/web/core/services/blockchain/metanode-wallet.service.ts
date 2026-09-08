@@ -254,15 +254,8 @@ export async function openMetanodeWallet(): Promise<unknown> {
   const sdk = await initFiaiSDK();
   if (!sdk) throw new Error("FiaiSDK is not available.");
 
-  // RuntimeSW used by system-core only works in a secure context. LAN development
-  // over plain HTTP must use the hosted HTTPS Connect Wallet page instead.
-  if (!isMetanodeWalletRuntimeSupported()) {
-    openConnectWalletPage();
-    return Promise.resolve();
-  }
-
-  // The module is preloaded by MetanodeBootstrap, so this call remains inside
-  // the user's click and browsers do not block the wallet dialog as a popup.
+  // Luôn dùng connectWallet('light') thay vì window.open popup ngoài,
+  // vì window.open không đồng bộ được dữ liệu ví về FiaiSDK trên localhost.
   if (connectWalletFn) return Promise.resolve(connectWalletFn("light"));
   return preloadMetanodeWallet()?.then((connectWallet) => connectWallet("light")) ?? Promise.resolve();
 }

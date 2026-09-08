@@ -117,17 +117,100 @@ if (localDB.users) {
 
 export let currentUserAddress: string | null = null;
 
-function saveDB() {
-  if (typeof window !== "undefined" && currentUserAddress) {
-    const dbToSave: Record<string, any[]> = {};
-    for (const [key, value] of Object.entries(localDB)) {
-      if (!TRANSIENT_COLLECTIONS.includes(key)) {
-        dbToSave[key] = value;
-      }
+function getDBStorageKey(): string {
+  return currentUserAddress || "local";
+}
+
+// ── Auto-save to IPFS (debounced) ─────────────────────────────────────
+let ipfsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let lastUploadedCID: string | null = null;
+let isUploadingIPFS = false;
+
+/** Get the data object that should be persisted (excludes transient collections) */
+function getDBSnapshot(): Record<string, any[]> {
+  const dbToSave: Record<string, any[]> = {};
+  for (const [key, value] of Object.entries(localDB)) {
+    if (!TRANSIENT_COLLECTIONS.includes(key)) {
+      dbToSave[key] = value;
     }
-    localStorage.setItem(`plane_dapp_db_${currentUserAddress}`, JSON.stringify(dbToSave));
-    localStorage.setItem(`plane_dapp_is_dirty_${currentUserAddress}`, "true");
   }
+  return dbToSave;
+}
+
+/** Upload current DB to IPFS (no wallet needed) */
+async function uploadToIPFS(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  const dbToSave = getDBSnapshot();
+  
+  // Don't upload empty or default-only data
+  const hasUserData = Object.keys(dbToSave).some(key => 
+    key !== "users" && key !== "workspaces" && dbToSave[key]?.length > 0
+  );
+  if (!hasUserData) {
+    console.log("[DApp DB] Bỏ qua IPFS upload — chưa có dữ liệu user.");
+    return null;
+  }
+
+  try {
+    isUploadingIPFS = true;
+    console.log("[DApp DB] Đang tự động upload IPFS...");
+    const response = await fetch(getProxyUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(dbToSave),
+    });
+    if (!response.ok) {
+      console.error("[DApp DB] IPFS upload thất bại:", response.status);
+      return null;
+    }
+    const { cid } = await response.json();
+    if (!cid) {
+      console.error("[DApp DB] Proxy không trả về CID");
+      return null;
+    }
+    lastUploadedCID = cid;
+    const storageKey = getDBStorageKey();
+    localStorage.setItem(`plane_dapp_ipfs_cid_${storageKey}`, cid);
+    console.log(`[DApp DB] ✅ Auto-save IPFS thành công: ${cid}`);
+
+    // Bỏ auto-sync to chain ở đây. On-chain cần chữ ký (popup) nên chỉ nên chạy khi bấm nút Sync.
+    return cid;
+  } catch (err) {
+    console.error("[DApp DB] IPFS upload lỗi:", err);
+    return null;
+  } finally {
+    isUploadingIPFS = false;
+  }
+}
+
+/** Schedule a debounced IPFS upload (5s after last change) */
+function scheduleIPFSUpload() {
+  if (ipfsDebounceTimer) clearTimeout(ipfsDebounceTimer);
+  ipfsDebounceTimer = setTimeout(() => {
+    void uploadToIPFS();
+  }, 5000);
+}
+
+/** Get the last uploaded CID (for syncDAppDBToChain to reuse) */
+export function getLastUploadedCID(): string | null {
+  if (lastUploadedCID) return lastUploadedCID;
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`);
+}
+
+/** Check if IPFS upload is in progress */
+export function isIPFSUploading(): boolean {
+  return isUploadingIPFS;
+}
+
+function saveDB() {
+  if (typeof window === "undefined") return;
+  const storageKey = getDBStorageKey();
+  const dbToSave = getDBSnapshot();
+  localStorage.setItem(`plane_dapp_db_${storageKey}`, JSON.stringify(dbToSave));
+  localStorage.setItem(`plane_dapp_is_dirty_${storageKey}`, "true");
+  // Auto-save to IPFS after debounce
+  scheduleIPFSUpload();
 }
 
 // Hàm resolve dùng cho db-bootstrap.tsx xử lý UI conflict
@@ -338,17 +421,54 @@ async function getWalletAddressViaBridge() {
   
   const wallet = await Promise.race([getActiveWallet(), timeoutTask]);
   console.log(`[DApp DB] Kết nối ví thành công:`, wallet);
+
+  // Ép đóng popup vì system-core đôi khi không tự đóng
+  if (typeof document !== "undefined") {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  }
+
   return (wallet as any)?.address || null;
 }
 
 async function _initDAppDB() {
   if (typeof window === "undefined") return;
   const activeWallet = await getWalletAddress().catch(() => null);
-  if (!activeWallet) return { status: "NO_WALLET" };
+
+  if (!activeWallet) {
+    // Chưa kết nối ví — load dữ liệu local nếu có
+    console.log(`[DApp DB] Chưa có ví. Đọc dữ liệu local...`);
+    try {
+      const saved = localStorage.getItem("plane_dapp_db_local");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        for (const key in localDB) delete localDB[key];
+        Object.assign(localDB, parsed);
+        if (!localDB.users) localDB.users = defaultDB.users;
+        if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
+        TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
+      }
+    } catch { /* ignore parse errors */ }
+    return { status: "OK" };
+  }
+
   if (currentUserAddress && activeWallet !== currentUserAddress) {
     for (const key in localDB) delete localDB[key]; // Xoá sạch RAM cũ nếu đổi ví
   }
   currentUserAddress = activeWallet;
+
+  // Nếu trước đó dùng "local" key, migrate sang wallet key
+  if (!localStorage.getItem(`plane_dapp_db_${activeWallet}`)) {
+    const localData = localStorage.getItem("plane_dapp_db_local");
+    if (localData) {
+      localStorage.setItem(`plane_dapp_db_${activeWallet}`, localData);
+      localStorage.removeItem("plane_dapp_db_local");
+      localStorage.removeItem("plane_dapp_is_dirty_local");
+      console.log(`[DApp DB] Migrated local data to wallet key: ${activeWallet}`);
+    }
+  }
 
   try {
     const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
@@ -425,33 +545,41 @@ export async function initDAppDB() {
     });
 }
 
-export async function syncDAppDBToChain() {
-  const activeWallet = await getWalletAddressViaBridge().catch(() => null);
-  if (!activeWallet) throw new Error("Chưa kết nối ví.");
-  if (currentUserAddress && activeWallet !== currentUserAddress) {
+export async function syncDAppDBToChain(forcedWallet?: string) {
+  const activeWallet = forcedWallet || getStoredWalletAddress();
+  if (!activeWallet) throw new Error("Chưa kết nối ví. Vui lòng kết nối ví từ giao diện.");
+  if (currentUserAddress && activeWallet.toLowerCase() !== currentUserAddress.toLowerCase()) {
     throw new Error("Tài khoản ví đã thay đổi. Vui lòng tải lại trang để nạp dữ liệu của ví mới.");
   }
   currentUserAddress = activeWallet;
 
-  // Upload IPFS
-  const dbToSave: Record<string, any[]> = {};
-  for (const [key, value] of Object.entries(localDB)) {
-    if (!TRANSIENT_COLLECTIONS.includes(key)) {
-      dbToSave[key] = value;
-    }
+  // Upload IPFS — reuse auto-saved CID if available, otherwise upload now
+  let cid = getLastUploadedCID();
+  if (!cid) {
+    console.log("[DApp DB] Không có CID đã cache, upload IPFS mới...");
+    cid = await uploadToIPFS();
   }
-
-  const response = await fetch(getProxyUrl(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(dbToSave)
-  });
-  if (!response.ok) throw new Error("Lỗi upload IPFS");
-  const { cid } = await response.json();
-  if (!cid) throw new Error("Proxy không trả về CID");
+  if (!cid) throw new Error("Không thể upload dữ liệu lên IPFS.");
 
   const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
   if (!bridge) throw new Error("FiaiSDK is not available.");
+
+  // Khởi tạo active wallet trong SDK để tránh popup chọn ví (bị lỗi treo) của Bridge
+  try {
+    const sysCore = await import("@metanodejs/system-core") as any;
+    const { getWallets, setWalletActiveDApp } = sysCore;
+    const wallets = await getWallets().catch(() => []);
+    const walletObj = wallets.find((w: any) => {
+      const addr = w.address || w.Address || "";
+      return addr.toLowerCase() === currentUserAddress?.toLowerCase();
+    });
+    if (walletObj) {
+      await setWalletActiveDApp(walletObj);
+      await bridge.request("setActiveWalletDapp", { ...walletObj, domain: window.location.hostname }).catch(() => null);
+    }
+  } catch (err) {
+    console.warn("[DApp DB] Không thể set active wallet cho SDK:", err);
+  }
 
   const send = () =>
     bridge!.request("sendTransaction", {

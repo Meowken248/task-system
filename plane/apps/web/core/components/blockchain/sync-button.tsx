@@ -1,18 +1,32 @@
 import { useState } from "react";
 import { syncDAppDBToChain } from "@plane/services";
 
+import { resolveMetanodeWalletAddress, promptForMetanodeWalletImport } from "../../services/blockchain/metanode-wallet.service";
+
 export function SyncToChainButton() {
   const [isSyncing, setIsSyncing] = useState(false);
 
   const handleSync = async () => {
     setIsSyncing(true);
     try {
-      await syncDAppDBToChain();
+      // 1. Lấy địa chỉ ví đã liên kết
+      const walletAddress = await resolveMetanodeWalletAddress();
+      
+      // 2. Ép SDK nhận diện ví (mở popup và tự động đóng bằng ESC nếu cần, giống web-book-phong-hop)
+      const imported = await promptForMetanodeWalletImport(walletAddress);
+      if (!imported) {
+        throw new Error("Chưa thêm ví vào MetaNode hoặc đã hủy.");
+      }
+
+      // 3. Gửi transaction (lúc này SDK đã có ví, sẽ bỏ qua popup "Chọn ví" bị lỗi, đi thẳng đến "Ký giao dịch")
+      await syncDAppDBToChain(walletAddress);
       alert("Đồng bộ dữ liệu lên Blockchain thành công!");
     } catch (err: any) {
       if (err.message && err.message.includes("LỖI XUNG ĐỘT")) {
         // Bỏ window.location.reload() tự động để user kịp đọc thông báo và backup
         alert(err.message + "\n\nHãy sao lưu thủ công phần việc đang làm trước khi F5!");
+      } else if (err.message && err.message.includes("Đã hết thời gian chọn ví")) {
+        // User ignored/cancelled wallet picker
       } else {
         alert("Đồng bộ thất bại: " + err.message);
       }
