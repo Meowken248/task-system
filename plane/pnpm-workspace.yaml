@@ -6,7 +6,7 @@ packages:
 
 catalog:
   "@metanodejs/event-log": 0.2.1
-  "@metanodejs/fiai-sdk": 2.0.2
+  "@metanodejs/fiai-sdk": 2.1.0
   "@metanodejs/mtn-contract": 1.0.4
   "@metanodejs/system-core": 1.0.9
   "@atlaskit/pragmatic-drag-and-drop-auto-scroll": 1.4.0

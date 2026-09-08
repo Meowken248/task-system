@@ -4,12 +4,6 @@ type FiaiSdkWindow = Window & {
   fiaiSDK?: FiaiSDK;
 };
 
-const DEFAULT_FRAME_URLS = {
-  blockchainBridge: "https://json.iqnb.com/fiai-sdk/blockchain-bridge/",
-  cryptoVault: "https://json.iqnb.com/fiai-sdk/crypto-vault/",
-  fileProcessor: "https://json.iqnb.com/fiai-sdk/file-processor/",
-};
-
 let initPromise: Promise<FiaiSDK | null> | null = null;
 let sdkInstance: FiaiSDK | null = null;
 let lastSelectedWallet: unknown = null;
@@ -52,14 +46,6 @@ function registerWalletSelectionBridge(sdk: FiaiSDK): void {
 
     return { success: true };
   });
-}
-
-function getFrameUrls() {
-  return {
-    blockchainBridge: process.env.VITE_FIAI_BLOCKCHAIN_BRIDGE_URL || DEFAULT_FRAME_URLS.blockchainBridge,
-    cryptoVault: process.env.VITE_FIAI_CRYPTO_VAULT_URL || DEFAULT_FRAME_URLS.cryptoVault,
-    fileProcessor: process.env.VITE_FIAI_FILE_PROCESSOR_URL || DEFAULT_FRAME_URLS.fileProcessor,
-  };
 }
 
 function getOrCreateContainer(): HTMLElement {

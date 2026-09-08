@@ -15,28 +15,6 @@ const viteEnv = Object.keys(process.env)
     return a;
   }, {});
 
-const targetConnectWalletDomain = (process.env.VITE_URL_CONNECT_WALLET || "https://connect-wallet-web.iqnb.com")
-  .trim()
-  .replace(/^https?:\/\//i, "");
-const targetConnectWalletUrl = `https://${targetConnectWalletDomain}`;
-
-const fixFiaiConnectWalletUrl = () => ({
-  name: "fix-fiai-connect-wallet-url",
-  enforce: "pre" as const,
-  transform(code: string, id: string) {
-    if (!id.includes("@metanodejs")) return null;
-    let transformed = code;
-    transformed = transformed.replaceAll("https://connect-wallet-web.fi.ai", targetConnectWalletUrl);
-    transformed = transformed.replaceAll("connect-wallet-web.fi.ai", targetConnectWalletUrl);
-    transformed = transformed.replaceAll(
-      'urlConnectWallet:"connect-wallet-web.iqnb.com"',
-      `urlConnectWallet:"${targetConnectWalletUrl}"`
-    );
-    transformed = transformed.replaceAll("https://img.fi.ai", "https://img.iqnb.com");
-    transformed = transformed.replaceAll("img.fi.ai", "img.iqnb.com");
-    return transformed;
-  },
-});
 export default defineConfig(() => ({
   define: {
     "process.env": JSON.stringify(viteEnv),
@@ -45,7 +23,6 @@ export default defineConfig(() => ({
     assetsInlineLimit: 0,
   },
   plugins: [
-    fixFiaiConnectWalletUrl(),
     reactRouter(),
     tsconfigPaths({ projects: [path.resolve(__dirname, "tsconfig.json")] }),
   ],

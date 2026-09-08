@@ -273,22 +273,24 @@ const SET_CID_IF_MATCHES_ABI = {
   stateMutability: "nonpayable"
 };
 
+function getEnvVar(name: string): string | undefined {
+  if (typeof process !== "undefined" && process.env?.[name]) return process.env[name];
+  if (typeof window !== "undefined" && (window as any).__env__?.[name]) return (window as any).__env__[name];
+  if (typeof window !== "undefined" && (window as any)[name]) return (window as any)[name];
+  return undefined;
+}
+
 const CONTRACT_ADDRESS = "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
-const PROXY_URL = "https://your-worker-url.workers.dev"; // User will configure in .env but here we can read process.env if available, or pass it via UI. Wait, we can't easily read process.env inside packages/services if it's not injected. Let's use window.VITE_PINATA_PROXY_URL or fallback.
+const PROXY_URL = "https://your-worker-url.workers.dev";
 const getProxyUrl = () => {
-  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PINATA_PROXY_URL) return (import.meta as any).env.VITE_PINATA_PROXY_URL;
-  if (typeof window !== "undefined" && (window as any).__env__?.VITE_PINATA_PROXY_URL) return (window as any).__env__.VITE_PINATA_PROXY_URL;
-  if (typeof process !== "undefined" && process.env?.VITE_PINATA_PROXY_URL) return process.env.VITE_PINATA_PROXY_URL;
-  return PROXY_URL;
+  return getEnvVar("VITE_PINATA_PROXY_URL") || PROXY_URL;
 };
 
 // ── Direct RPC (bypass Bridge iframe for read-only calls) ──────────────
 const GET_CID_SELECTOR = "0xfa3e97e7"; // keccak256("getCID(address,string)")[0:4]
 
 function getRpcUrl(): string {
-  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_RPC_URL) return (import.meta as any).env.VITE_RPC_URL;
-  if (typeof process !== "undefined" && process.env?.VITE_RPC_URL) return process.env.VITE_RPC_URL;
-  return "https://rpc-proxy-sequoia.iqnb.com:8446";
+  return getEnvVar("VITE_RPC_URL") || "https://rpc-proxy-sequoia.iqnb.com:8446";
 }
 
 function padHex(hex: string, bytes: number): string {
@@ -381,7 +383,7 @@ function getStoredWalletAddress(): string | null {
 }
 
 async function getWalletAddress() {
-  const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
+  const isMock = getEnvVar("VITE_MOCK_FIAI") === "true";
   if (isMock) {
     return "0xMockUserAddress1234567890abcdef12345678";
   }
@@ -400,7 +402,7 @@ async function getWalletAddress() {
 
 /** Get wallet via Bridge iframe — only used for write operations (Sync to Chain) */
 async function getWalletAddressViaBridge() {
-  const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
+  const isMock = getEnvVar("VITE_MOCK_FIAI") === "true";
   if (isMock) {
     return "0xMockUserAddress1234567890abcdef12345678";
   }
@@ -471,7 +473,7 @@ async function _initDAppDB() {
   }
 
   try {
-    const isMock = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MOCK_FIAI === "true") || (typeof process !== 'undefined' && process.env?.VITE_MOCK_FIAI === "true");
+    const isMock = getEnvVar("VITE_MOCK_FIAI") === "true";
     if (isMock) {
       console.log(`[DApp DB] MOCK MODE: Bỏ qua đọc từ contract.`);
       return null; // Trả về null để dùng dữ liệu local

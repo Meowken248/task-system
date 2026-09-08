@@ -21,9 +21,6 @@ catalogs:
     '@metanodejs/event-log':
       specifier: 0.2.1
       version: 0.2.1
-    '@metanodejs/fiai-sdk':
-      specifier: 2.0.2
-      version: 2.0.2
     '@metanodejs/mtn-contract':
       specifier: 1.0.4
       version: 1.0.4
@@ -628,8 +625,8 @@ importers:
         specifier: 'catalog:'
         version: 0.2.1
       '@metanodejs/fiai-sdk':
-        specifier: 'catalog:'
-        version: 2.0.2
+        specifier: file:C:/metanode-sdk/packages/fiai-sdk
+        version: file:../../metanode-sdk/packages/fiai-sdk
       '@metanodejs/mtn-contract':
         specifier: 'catalog:'
         version: 1.0.4
@@ -2564,9 +2561,6 @@ packages:
 
   '@metanodejs/event-log@0.2.1':
     resolution: {integrity: sha512-9CNMQs/9z2xiJ16jE04T820b9NGaAoHoM/iHq6dqv3+M3LetblRXdDEv2PF5yaTzWs80XlUsYDhoOaOgz6w9Og==}
-
-  '@metanodejs/fiai-sdk@2.0.2':
-    resolution: {integrity: sha512-VTYyQurbqEZOyZZvkbquNzXImN/7rZHLF7E4nwk7Q10LGBIoH9TJBw6IYnHlF1bl9yWeDjaYggv8gE76+I6ylg==}
 
   '@metanodejs/fiai-sdk@file:../../metanode-sdk/packages/fiai-sdk':
     resolution: {directory: ../../metanode-sdk/packages/fiai-sdk, type: directory}
@@ -11503,10 +11497,6 @@ snapshots:
   '@metanodejs/event-log@0.2.1':
     dependencies:
       '@metanodejs/system-core': 1.0.7
-
-  '@metanodejs/fiai-sdk@2.0.2':
-    dependencies:
-      nanoid: 3.3.8
 
   '@metanodejs/fiai-sdk@file:../../metanode-sdk/packages/fiai-sdk':
     dependencies:

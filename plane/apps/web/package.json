@@ -26,7 +26,7 @@
     "@fontsource/material-symbols-rounded": "5.2.30",
     "@headlessui/react": "^1.7.19",
     "@metanodejs/event-log": "catalog:",
-    "@metanodejs/fiai-sdk": "catalog:",
+    "@metanodejs/fiai-sdk": "file:C:/metanode-sdk/packages/fiai-sdk",
     "@metanodejs/mtn-contract": "catalog:",
     "@metanodejs/system-core": "catalog:",
     "@plane/constants": "workspace:*",
