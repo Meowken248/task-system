@@ -101,7 +101,7 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
   if (isMock) {
     console.log("[FiaiSDK] MOCK MODE enabled. Bypassing real SDK init.");
     const mockSdk = {
-      on: () => {},
+      on: () => { },
       request: async (method: string, params: any) => {
         if (method === "sendTransaction") {
           console.log("[FiaiSDK Mock] Fake sendTransaction:", params);
@@ -110,7 +110,7 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
         return null;
       },
       isDestroyed: false,
-      destroy: () => {}
+      destroy: () => { }
     } as unknown as FiaiSDK;
     sdkInstance = mockSdk;
     (window as any).fiaiSDK = mockSdk;
@@ -120,18 +120,7 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
   const timeoutMs = Number(process.env.VITE_FIAI_TIMEOUT) || 60_000;
   console.log(`[FiaiSDK] Bắt đầu init với timeout ${timeoutMs}ms...`);
 
-  const initTask = FiaiSDK.init({
-    container: getOrCreateContainer(),
-    timeout: timeoutMs,
-    debug: process.env.NODE_ENV === "development",
-    frameUrls: getFrameUrls(),
-    chainConfig: {
-      rpcUrl: process.env.VITE_RPC_URL || "https://rpc-proxy-sequoia.iqnb.com:8446",
-      wsUrl: "",
-      chainId: Number(process.env.VITE_CHAIN_ID || 991),
-    },
-    onError: (error) => console.error("FiaiSDK error:", error),
-  });
+  const initTask = FiaiSDK.init({});
 
   const timeoutTask = new Promise<never>((_, reject) => {
     setTimeout(() => {

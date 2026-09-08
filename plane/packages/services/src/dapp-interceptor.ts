@@ -141,9 +141,9 @@ function getDBSnapshot(): Record<string, any[]> {
 async function uploadToIPFS(): Promise<string | null> {
   if (typeof window === "undefined") return null;
   const dbToSave = getDBSnapshot();
-  
+
   // Don't upload empty or default-only data
-  const hasUserData = Object.keys(dbToSave).some(key => 
+  const hasUserData = Object.keys(dbToSave).some(key =>
     key !== "users" && key !== "workspaces" && dbToSave[key]?.length > 0
   );
   if (!hasUserData) {
@@ -216,7 +216,7 @@ function saveDB() {
 // Hàm resolve dùng cho db-bootstrap.tsx xử lý UI conflict
 export function resolveDBConflict(choice: "USE_CHAIN" | "USE_LOCAL", cid: string, ipfsDB: any) {
   if (typeof window === "undefined" || !currentUserAddress) return;
-  
+
   if (choice === "USE_CHAIN") {
     // Ghi đè RAM bằng IPFS
     for (const key in localDB) delete localDB[key];
@@ -224,13 +224,13 @@ export function resolveDBConflict(choice: "USE_CHAIN" | "USE_LOCAL", cid: string
     if (!localDB.users) localDB.users = defaultDB.users;
     if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
     TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
-    
+
     baseCID = cid;
-    
+
     // Xóa nháp cũ, tạo nháp sạch mới, XÓA cờ is_dirty
     localStorage.removeItem(`plane_dapp_is_dirty_${currentUserAddress}`);
     localStorage.setItem(`plane_dapp_db_${currentUserAddress}`, JSON.stringify(ipfsDB));
-    
+
   } else if (choice === "USE_LOCAL") {
     // Dùng nháp cục bộ
     const saved = localStorage.getItem(`plane_dapp_db_${currentUserAddress}`);
@@ -418,7 +418,7 @@ async function getWalletAddressViaBridge() {
       reject(new Error(`Không thể kết nối với ví MetaNode (quá ${timeoutMs / 1000} giây). Lỗi mạng hoặc Bridge không phản hồi.`));
     }, timeoutMs);
   });
-  
+
   const wallet = await Promise.race([getActiveWallet(), timeoutTask]);
   console.log(`[DApp DB] Kết nối ví thành công:`, wallet);
 
@@ -490,13 +490,13 @@ async function _initDAppDB() {
     if (cid && cid !== "") {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000);
-      
+
       const response = await fetch(`https://purple-fascinating-quelea-533.mypinata.cloud/ipfs/${cid}`, { signal: controller.signal });
       clearTimeout(timeoutId);
-      
+
       if (response.ok) {
         const ipfsDB = await response.json();
-        
+
         if (isDirty) {
           // Trả về UI để user chọn
           return { status: "CONFLICT", cid, ipfsDB };
@@ -527,13 +527,13 @@ async function _initDAppDB() {
 export async function initDAppDB() {
   const timeoutMs = 20000;
   console.log(`[DApp DB] Bắt đầu init, tự động ngắt sau ${timeoutMs}ms...`);
-  
+
   const timeoutTask = new Promise<never>((_, reject) => {
     setTimeout(() => {
       reject(new Error(`Quá thời gian kết nối (${timeoutMs / 1000} giây). Lỗi mạng, SSL, hoặc Bridge không phản hồi.`));
     }, timeoutMs);
   });
-  
+
   return Promise.race([_initDAppDB(), timeoutTask])
     .then(res => {
       console.log(`[DApp DB] Init thành công:`, res);
@@ -606,7 +606,7 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
       return await send();
     } catch (error: any) {
       console.log(JSON.stringify(error, null, 2)); // Giữ lại log cho dev test
-      
+
       const errStr = [
         error?.message,
         error?.toString?.(),
@@ -623,11 +623,11 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   };
 
   await sendWithWalletRecovery();
-  
+
   // Xóa cờ is_dirty CHỈ SAU KHI transaction confirm thành công
   localStorage.removeItem(`plane_dapp_is_dirty_${currentUserAddress}`);
   baseCID = cid;
-  
+
   return cid;
 }
 
@@ -814,7 +814,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       const workspaces = localDB.workspaces || [];
       return ok(workspaces.map((ws) => ({ ...ws, role: 20 })));
     }
-    
+
     if (url.includes("/api/users/me/workspaces/invitations") || url.includes("/api/users/me/invitations")) {
       return ok([]);
     }

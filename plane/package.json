@@ -17,8 +17,7 @@
     "check:lint": "turbo run check:lint",
     "check:format": "turbo run check:format",
     "check:types": "turbo run check:types",
-    "prepare": "husky",
-    "postinstall": "node scripts/patch-metanode-domains.js"
+    "prepare": "husky"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260831.1",
@@ -27,7 +26,7 @@
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@types/chai": "^5.2.3",
     "@types/mocha": "^10.0.10",
-    "@types/node": "catalog:",
+    "@types/node": "^26.5.0",
     "chai": "^6.2.2",
     "ethers": "^6.17.0",
     "hardhat": "^2.22.19",
