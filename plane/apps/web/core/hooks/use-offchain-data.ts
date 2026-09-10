@@ -32,7 +32,9 @@ export function useOffchainData(key: string) {
   const [error, setError] = useState<Error | null>(null);
 
   const contractAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS || "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
-  const proxyUrl = process.env.VITE_PINATA_PROXY_URL || "https://your-worker-url.workers.dev";
+  const DEFAULT_PINATA_PROXY = "https://plane-ipfs-proxy.anh2482006.workers.dev";
+  const rawProxyUrl = process.env.VITE_PINATA_PROXY_URL || DEFAULT_PINATA_PROXY;
+  const proxyUrl = rawProxyUrl && !rawProxyUrl.includes("your-worker") && !rawProxyUrl.includes("your-domain") ? rawProxyUrl : null;
 
   // Thử lần lượt các IPFS Gateway thay vì gọi song song
   const fetchFromIPFS = async (cid: string) => {
@@ -179,6 +181,8 @@ export function useOffchainData(key: string) {
         try {
           const userAddress = await resolveMetanodeWalletAddress();
 
+          if (!proxyUrl) throw new Error("IPFS proxy not configured. Set VITE_PINATA_PROXY_URL.");
+
           const response = await fetch(proxyUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -224,8 +228,15 @@ export async function migrateFromLocalStorage(key: string) {
 
     const rawData = JSON.parse(rawDataStr);
     const userAddress = await resolveMetanodeWalletAddress();
-    const proxyUrl = process.env.VITE_PINATA_PROXY_URL || "https://your-worker.your-domain.workers.dev";
+    const DEFAULT_PINATA_PROXY = "https://plane-ipfs-proxy.anh2482006.workers.dev";
+    const rawProxyUrl = process.env.VITE_PINATA_PROXY_URL || DEFAULT_PINATA_PROXY;
+    const proxyUrl = rawProxyUrl && !rawProxyUrl.includes("your-worker") && !rawProxyUrl.includes("your-domain") ? rawProxyUrl : null;
     const contractAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS || "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
+
+    if (!proxyUrl) {
+      console.warn("[OffchainData] Migration skipped: IPFS proxy not configured.");
+      return false;
+    }
 
     const response = await fetch(proxyUrl, {
       method: "POST",

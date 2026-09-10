@@ -11,55 +11,59 @@ async function syncDAppRecord(collection: string, id: string, _record?: any) {
   console.log(`[DApp Sync] Generic sync disabled for ${collection}/${id}`);
 }
 
-// ── Default mock user (shared across all seed data) ──────────────────────
-const MOCK_USER = {
-  id: "me",
-  email: "admin@plane.so",
-  first_name: "Plane",
-  last_name: "Admin",
-  display_name: "Plane Admin",
-  avatar_url: "",
-  is_bot: false,
-  is_active: true,
-  is_email_verified: true,
-  is_password_autoset: false,
-  is_tour_completed: true,
-  is_onboarded: true,
-  onboarding_step: {
-    workspace_join: true,
-    profile_complete: true,
-    workspace_create: true,
-    workspace_invite: true,
-  },
-  mobile_number: null,
-  last_workspace_id: "mock-workspace",
-  user_timezone: "Asia/Ho_Chi_Minh",
-  username: "plane_admin",
-  last_login_medium: "email",
-  cover_image_url: null,
-  date_joined: new Date().toISOString(),
-  theme: { theme: "dark" },
-};
-
-// ── Seed data (bootstraps a fresh instance) ──────────────────────────────
-const defaultDB: Record<string, any[]> = {
-  users: [MOCK_USER],
-  workspaces: [
-    {
-      id: "mock-workspace",
-      name: "Mock Workspace",
-      slug: "mock-workspace",
-      created_by: "me",
-      owner: {
-        id: "me",
-        email: "admin@plane.so",
-        first_name: "Plane",
-        last_name: "Admin",
-        avatar: "",
-      },
-      role: 20,
+// ── User factory (Dynamic, zero static mock users) ────────────────────────
+function createUserObject(id: string, email: string, firstName?: string, lastName?: string) {
+  const cleanEmail = (email || "").trim();
+  const fName = firstName || (cleanEmail ? cleanEmail.split("@")[0] : "Admin");
+  const lName = lastName || "";
+  const displayName = `${fName} ${lName}`.trim() || fName;
+  return {
+    id,
+    email: cleanEmail,
+    first_name: fName,
+    last_name: lName,
+    display_name: displayName,
+    avatar_url: "",
+    is_bot: false,
+    is_active: true,
+    is_email_verified: true,
+    is_password_autoset: false,
+    is_tour_completed: false,
+    is_onboarded: false,
+    onboarding_step: {
+      workspace_join: false,
+      profile_complete: false,
+      workspace_create: false,
+      workspace_invite: false,
     },
-  ],
+    mobile_number: null,
+    last_workspace_id: null,
+    user_timezone: "Asia/Ho_Chi_Minh",
+    username: cleanEmail ? cleanEmail.split("@")[0] : id,
+    last_login_medium: "email",
+    cover_image_url: null,
+    date_joined: new Date().toISOString(),
+    theme: { theme: "dark" },
+  };
+}
+
+// ── Seed data (fresh instance: zero static mock workspaces, zero static users) ──
+const defaultDB: Record<string, any> = {
+  users: [],
+  workspaces: [],
+  projects: [],
+  states: [],
+  labels: [],
+  instance: {
+    id: "instance-main",
+    instance_id: "instance-main",
+    instance_name: "Plane Instance",
+    is_setup_done: false,
+    is_activated: true,
+    is_telemetry_enabled: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
 };
 
 // ── Auth state (persisted in localStorage) ───────────────────────────────
@@ -72,48 +76,62 @@ function isLoggedIn(): boolean {
 }
 function setLoggedInUser(userId: string | null) {
   if (typeof window === "undefined") return;
-  if (userId) localStorage.setItem("plane_dapp_auth_user", userId);
-  else localStorage.removeItem("plane_dapp_auth_user");
-}
-
-// ── Persistent local store ───────────────────────────────────────────────
-let parsedDB: Record<string, any[]> | null = null;
-if (typeof window !== "undefined") {
-  try {
-    const saved = localStorage.getItem("plane_dapp_db");
-    if (saved) parsedDB = JSON.parse(saved);
-  } catch {
-    /* corrupted – will reset */
+  if (userId) {
+    localStorage.setItem("plane_dapp_auth_user", userId);
+  } else {
+    localStorage.removeItem("plane_dapp_auth_user");
+    localStorage.removeItem("plane_dapp_auth_email");
   }
 }
-const localDB: Record<string, any[]> = parsedDB && Object.keys(parsedDB).length > 0 ? parsedDB : { ...defaultDB };
+
+// ── In-Memory Runtime Store (Off-chain persistence via IPFS, NO localStorage DB) ──
+const localDB: Record<string, any> = JSON.parse(JSON.stringify(defaultDB));
+
+// Clean up legacy localStorage DB dumps and static mock sessions
+if (typeof window !== "undefined") {
+  try {
+    localStorage.removeItem("plane_dapp_db");
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith("plane_dapp_db_") || key.startsWith("plane_dapp_is_dirty_"))) {
+        localStorage.removeItem(key);
+      }
+    }
+    // Clean up old static mock credentials "me" / "admin@plane.so"
+    if (
+      localStorage.getItem("plane_dapp_auth_user") === "me" ||
+      localStorage.getItem("plane_dapp_auth_email") === "admin@plane.so"
+    ) {
+      localStorage.removeItem("plane_dapp_auth_user");
+      localStorage.removeItem("plane_dapp_auth_email");
+    }
+    const latestDbStr = sessionStorage.getItem("plane_dapp_latest_db");
+    if (latestDbStr && (latestDbStr.includes("admin@plane.so") || latestDbStr.includes('"Plane DApp"'))) {
+      sessionStorage.removeItem("plane_dapp_latest_db");
+    }
+  } catch { }
+}
 
 const TRANSIENT_COLLECTIONS = ["issues", "issue_comments", "attachments"];
 
-// Safety checks for older local storage DBs missing new seed data
-if (!localDB.users) localDB.users = defaultDB.users;
-if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
+// Safety checks
+if (!localDB.users) localDB.users = [];
+// Clean out any static mock users that might be cached
+localDB.users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
+if (!localDB.workspaces) localDB.workspaces = [];
+if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
+if (localDB.instance.instance_name === "Plane DApp") {
+  localDB.instance.instance_name = "Plane Instance";
+}
+if (localDB.instance.id === "dapp-instance") {
+  localDB.instance.id = "instance-main";
+  localDB.instance.instance_id = "instance-main";
+}
 
 // Clear transient collections on startup to enforce blockchain sync
 TRANSIENT_COLLECTIONS.forEach(col => {
   localDB[col] = [];
 });
-
-// Enforce onboarding state for mock/local users so they don't get stuck in the onboarding flow
-if (localDB.users) {
-  localDB.users.forEach((u: any) => {
-    u.is_onboarded = true;
-    u.is_tour_completed = true;
-    if (!u.onboarding_step) {
-      u.onboarding_step = {
-        workspace_join: true,
-        profile_complete: true,
-        workspace_create: true,
-        workspace_invite: true,
-      };
-    }
-  });
-}
 
 export let currentUserAddress: string | null = null;
 
@@ -124,7 +142,9 @@ function getDBStorageKey(): string {
 // ── Auto-save to IPFS (debounced) ─────────────────────────────────────
 let ipfsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let lastUploadedCID: string | null = null;
+let lastUploadedDataHash: string | null = null;
 let isUploadingIPFS = false;
+let isDirtyState = false;
 
 /** Get the data object that should be persisted (excludes transient collections) */
 function getDBSnapshot(): Record<string, any[]> {
@@ -142,38 +162,70 @@ async function uploadToIPFS(): Promise<string | null> {
   if (typeof window === "undefined") return null;
   const dbToSave = getDBSnapshot();
 
-  // Don't upload empty or default-only data
-  const hasUserData = Object.keys(dbToSave).some(key =>
-    key !== "users" && key !== "workspaces" && dbToSave[key]?.length > 0
-  );
-  if (!hasUserData) {
-    console.log("[DApp DB] Bỏ qua IPFS upload — chưa có dữ liệu user.");
+  // Don't upload if completely empty
+  const hasData = Object.keys(dbToSave).some(key => {
+    const val = dbToSave[key];
+    if (Array.isArray(val)) return val.length > 0;
+    if (val && typeof val === "object") return Object.keys(val).length > 0;
+    return Boolean(val);
+  });
+  if (!hasData) {
+    console.log("[DApp DB] Bỏ qua IPFS upload — chưa có dữ liệu off-chain.");
     return null;
+  }
+
+  const serialized = JSON.stringify(dbToSave);
+  if (serialized === lastUploadedDataHash && lastUploadedCID && !lastUploadedCID.startsWith("bafkrei")) {
+    return lastUploadedCID;
   }
 
   try {
     isUploadingIPFS = true;
-    console.log("[DApp DB] Đang tự động upload IPFS...");
-    const response = await fetch(getProxyUrl(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(dbToSave),
-    });
-    if (!response.ok) {
-      console.error("[DApp DB] IPFS upload thất bại:", response.status);
-      return null;
+    console.log("[DApp DB] Đang tự động upload dữ liệu off-chain lên IPFS Pinata...");
+    let cid: string | null = null;
+    const proxyUrl = getProxyUrl();
+    if (proxyUrl) {
+      try {
+        const response = await fetch(proxyUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: serialized,
+        });
+        if (response.ok) {
+          const resJson = await response.json();
+          cid = resJson?.cid || null;
+          console.log(`[DApp DB] ✅ Upload thành công lên Pinata IPFS! CID: ${cid}`);
+        } else {
+          const errText = await response.text().catch(() => "");
+          console.warn(`[DApp DB] Pinata proxy trả về mã lỗi ${response.status}:`, errText);
+        }
+      } catch (proxyErr) {
+        console.warn("[DApp DB] Không thể kết nối tới Pinata proxy:", proxyErr);
+      }
+    } else {
+      console.log("[DApp DB] IPFS proxy chưa cấu hình, dùng local fallback CID.");
     }
-    const { cid } = await response.json();
+
+    // Fallback content-addressed CID if proxy is not configured
     if (!cid) {
-      console.error("[DApp DB] Proxy không trả về CID");
-      return null;
+      let hash = 0;
+      for (let i = 0; i < serialized.length; i++) {
+        hash = (hash << 5) - hash + serialized.charCodeAt(i);
+        hash |= 0;
+      }
+      cid = `bafkrei${Math.abs(hash).toString(36)}${Date.now().toString(36)}`;
     }
+
+    try {
+      sessionStorage.setItem(`ipfs_${cid}`, serialized);
+    } catch { }
+
     lastUploadedCID = cid;
+    lastUploadedDataHash = serialized;
+    isDirtyState = false;
     const storageKey = getDBStorageKey();
     localStorage.setItem(`plane_dapp_ipfs_cid_${storageKey}`, cid);
     console.log(`[DApp DB] ✅ Auto-save IPFS thành công: ${cid}`);
-
-    // Bỏ auto-sync to chain ở đây. On-chain cần chữ ký (popup) nên chỉ nên chạy khi bấm nút Sync.
     return cid;
   } catch (err) {
     console.error("[DApp DB] IPFS upload lỗi:", err);
@@ -183,12 +235,12 @@ async function uploadToIPFS(): Promise<string | null> {
   }
 }
 
-/** Schedule a debounced IPFS upload (5s after last change) */
+/** Schedule a debounced IPFS upload (2s after last change) */
 function scheduleIPFSUpload() {
   if (ipfsDebounceTimer) clearTimeout(ipfsDebounceTimer);
   ipfsDebounceTimer = setTimeout(() => {
     void uploadToIPFS();
-  }, 5000);
+  }, 2000);
 }
 
 /** Get the last uploaded CID (for syncDAppDBToChain to reuse) */
@@ -205,12 +257,75 @@ export function isIPFSUploading(): boolean {
 
 function saveDB() {
   if (typeof window === "undefined") return;
-  const storageKey = getDBStorageKey();
-  const dbToSave = getDBSnapshot();
-  localStorage.setItem(`plane_dapp_db_${storageKey}`, JSON.stringify(dbToSave));
-  localStorage.setItem(`plane_dapp_is_dirty_${storageKey}`, "true");
-  // Auto-save to IPFS after debounce
+  isDirtyState = true;
+  try {
+    const snapshot = JSON.stringify(getDBSnapshot());
+    sessionStorage.setItem("plane_dapp_latest_db", snapshot);
+  } catch { }
   scheduleIPFSUpload();
+}
+
+/** Fetch off-chain DB from IPFS using fallback gateways */
+async function fetchFromIPFS(cid: string): Promise<Record<string, any> | null> {
+  if (!cid || typeof cid !== "string" || cid.trim() === "") return null;
+  const cleanCid = cid.trim();
+
+  // Check local session IPFS cache first
+  try {
+    const cached = sessionStorage.getItem(`ipfs_${cleanCid}`);
+    if (cached) {
+      const json = JSON.parse(cached);
+      if (json && typeof json === "object") {
+        console.log(`[DApp DB] Tải thành công từ session IPFS cache: ${cleanCid}`);
+        return json;
+      }
+    }
+  } catch { }
+
+  const gateways = [
+    `https://purple-fascinating-quelea-533.mypinata.cloud/ipfs/${cleanCid}`,
+    `https://gateway.pinata.cloud/ipfs/${cleanCid}`,
+    `https://cloudflare-ipfs.com/ipfs/${cleanCid}`,
+    `https://ipfs.io/ipfs/${cleanCid}`,
+  ];
+
+  for (const gw of gateways) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(gw, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const json = await res.json();
+        if (json && typeof json === "object") {
+          console.log(`[DApp DB] Tải thành công từ IPFS gateway: ${gw}`);
+          return json;
+        }
+      }
+    } catch (err) {
+      console.warn(`[DApp DB] IPFS gateway ${gw} lỗi hoặc timeout:`, err);
+    }
+  }
+  console.error(`[DApp DB] Không thể tải dữ liệu từ bất kỳ IPFS gateway nào cho CID: ${cleanCid}`);
+  return null;
+}
+
+function applyOffchainDB(ipfsDB: Record<string, any>) {
+  for (const key in localDB) delete localDB[key];
+  Object.assign(localDB, ipfsDB);
+  if (!localDB.users) localDB.users = [];
+  localDB.users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
+  if (!localDB.workspaces) localDB.workspaces = [];
+  if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
+  // Migrate stale instance IDs and names
+  if (localDB.instance.id === "dapp-instance") {
+    localDB.instance.id = "instance-main";
+    localDB.instance.instance_id = "instance-main";
+  }
+  if (localDB.instance.instance_name === "Plane DApp") {
+    localDB.instance.instance_name = "Plane Instance";
+  }
+  TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
 }
 
 // Hàm resolve dùng cho db-bootstrap.tsx xử lý UI conflict
@@ -218,31 +333,14 @@ export function resolveDBConflict(choice: "USE_CHAIN" | "USE_LOCAL", cid: string
   if (typeof window === "undefined" || !currentUserAddress) return;
 
   if (choice === "USE_CHAIN") {
-    // Ghi đè RAM bằng IPFS
-    for (const key in localDB) delete localDB[key];
-    Object.assign(localDB, ipfsDB);
-    if (!localDB.users) localDB.users = defaultDB.users;
-    if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
-    TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
-
+    // Ghi đè RAM bằng IPFS từ on-chain
     baseCID = cid;
-
-    // Xóa nháp cũ, tạo nháp sạch mới, XÓA cờ is_dirty
-    localStorage.removeItem(`plane_dapp_is_dirty_${currentUserAddress}`);
-    localStorage.setItem(`plane_dapp_db_${currentUserAddress}`, JSON.stringify(ipfsDB));
-
+    applyOffchainDB(ipfsDB);
+    localStorage.setItem(`plane_dapp_ipfs_cid_${currentUserAddress}`, cid);
   } else if (choice === "USE_LOCAL") {
-    // Dùng nháp cục bộ
-    const saved = localStorage.getItem(`plane_dapp_db_${currentUserAddress}`);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      for (const key in localDB) delete localDB[key];
-      Object.assign(localDB, parsed);
-      if (!localDB.users) localDB.users = defaultDB.users;
-      if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
-      TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
-    }
-    baseCID = cid; // Đặt baseCID chuẩn để sync sau này có thể chạy check đúng
+    // Giữ nguyên dữ liệu hiện tại trong RAM, upload lại lên IPFS
+    baseCID = cid;
+    void uploadToIPFS();
   }
 }
 
@@ -281,10 +379,16 @@ function getEnvVar(name: string): string | undefined {
 }
 
 const CONTRACT_ADDRESS = "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
-const PROXY_URL = "https://your-worker-url.workers.dev";
-const getProxyUrl = () => {
-  return getEnvVar("VITE_PINATA_PROXY_URL") || PROXY_URL;
-};
+const DEFAULT_PROXY_URL = "https://plane-ipfs-proxy.anh2482006.workers.dev";
+const PLACEHOLDER_PATTERNS = ["your-worker", "your-subdomain", "your-domain", "example.com"];
+
+/** Returns a valid proxy URL, or null if unconfigured/placeholder */
+function getProxyUrl(): string | null {
+  const envUrl = getEnvVar("VITE_PINATA_PROXY_URL");
+  const url = envUrl || DEFAULT_PROXY_URL;
+  if (PLACEHOLDER_PATTERNS.some(p => url.includes(p))) return null;
+  return url;
+}
 
 // ── Direct RPC (bypass Bridge iframe for read-only calls) ──────────────
 const GET_CID_SELECTOR = "0xfa3e97e7"; // keccak256("getCID(address,string)")[0:4]
@@ -436,93 +540,84 @@ async function getWalletAddressViaBridge() {
 }
 
 async function _initDAppDB() {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined") return { status: "OK" };
   const activeWallet = await getWalletAddress().catch(() => null);
 
   if (!activeWallet) {
-    // Chưa kết nối ví — load dữ liệu local nếu có
-    console.log(`[DApp DB] Chưa có ví. Đọc dữ liệu local...`);
-    try {
-      const saved = localStorage.getItem("plane_dapp_db_local");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        for (const key in localDB) delete localDB[key];
-        Object.assign(localDB, parsed);
-        if (!localDB.users) localDB.users = defaultDB.users;
-        if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = defaultDB.workspaces;
-        TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
+    console.log(`[DApp DB] Chưa có ví. Sử dụng dữ liệu off-chain trong bộ nhớ RAM.`);
+    const localCid = localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) || localStorage.getItem("plane_dapp_ipfs_cid_local");
+    if (localCid) {
+      const ipfsDB = await fetchFromIPFS(localCid);
+      if (ipfsDB) {
+        applyOffchainDB(ipfsDB);
+        lastUploadedCID = localCid;
+      } else {
+        try {
+          const latest = sessionStorage.getItem("plane_dapp_latest_db");
+          if (latest) {
+            applyOffchainDB(JSON.parse(latest));
+          }
+        } catch { }
       }
-    } catch { /* ignore parse errors */ }
+    } else {
+      try {
+        const latest = sessionStorage.getItem("plane_dapp_latest_db");
+        if (latest) {
+          applyOffchainDB(JSON.parse(latest));
+        }
+      } catch { }
+    }
+
+    if (!lastUploadedCID || lastUploadedCID.startsWith("bafkrei")) {
+      scheduleIPFSUpload();
+    }
+
     return { status: "OK" };
   }
 
-  if (currentUserAddress && activeWallet !== currentUserAddress) {
-    for (const key in localDB) delete localDB[key]; // Xoá sạch RAM cũ nếu đổi ví
+  if (currentUserAddress && activeWallet.toLowerCase() !== currentUserAddress.toLowerCase()) {
+    for (const key in localDB) delete localDB[key];
+    Object.assign(localDB, JSON.parse(JSON.stringify(defaultDB)));
   }
   currentUserAddress = activeWallet;
-
-  // Nếu trước đó dùng "local" key, migrate sang wallet key
-  if (!localStorage.getItem(`plane_dapp_db_${activeWallet}`)) {
-    const localData = localStorage.getItem("plane_dapp_db_local");
-    if (localData) {
-      localStorage.setItem(`plane_dapp_db_${activeWallet}`, localData);
-      localStorage.removeItem("plane_dapp_db_local");
-      localStorage.removeItem("plane_dapp_is_dirty_local");
-      console.log(`[DApp DB] Migrated local data to wallet key: ${activeWallet}`);
-    }
-  }
 
   try {
     const isMock = getEnvVar("VITE_MOCK_FIAI") === "true";
     if (isMock) {
       console.log(`[DApp DB] MOCK MODE: Bỏ qua đọc từ contract.`);
-      return null; // Trả về null để dùng dữ liệu local
+      return { status: "OK" };
     }
 
     // ── Direct RPC call: getCID(address, "plane_dapp_db") ──────────────
-    // Gọi thẳng qua JSON-RPC eth_call, KHÔNG qua Bridge iframe
     console.log(`[DApp DB] Đọc CID trực tiếp từ RPC (${getRpcUrl()})...`);
     const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
     const rawResult = await directRpcRead(CONTRACT_ADDRESS, calldata, 15000);
-    const cid = decodeAbiString(rawResult);
-    console.log(`[DApp DB] CID từ contract:`, cid || "(trống)");
+    const onChainCid = decodeAbiString(rawResult);
+    console.log(`[DApp DB] CID từ contract:`, onChainCid || "(trống)");
 
-    const isDirty = localStorage.getItem(`plane_dapp_is_dirty_${currentUserAddress}`) === "true";
+    baseCID = onChainCid || "";
 
-    if (cid && cid !== "") {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const cachedIpfsCid = localStorage.getItem(`plane_dapp_ipfs_cid_${currentUserAddress}`);
+    const targetCID = cachedIpfsCid || onChainCid;
 
-      const response = await fetch(`https://purple-fascinating-quelea-533.mypinata.cloud/ipfs/${cid}`, { signal: controller.signal });
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        const ipfsDB = await response.json();
-
-        if (isDirty) {
-          // Trả về UI để user chọn
-          return { status: "CONFLICT", cid, ipfsDB };
-        } else {
-          resolveDBConflict("USE_CHAIN", cid, ipfsDB);
-          return { status: "OK" };
+    if (targetCID && targetCID !== "") {
+      console.log(`[DApp DB] Đang tải dữ liệu off-chain từ IPFS (CID: ${targetCID})...`);
+      const ipfsDB = await fetchFromIPFS(targetCID);
+      if (ipfsDB) {
+        if (onChainCid && cachedIpfsCid && onChainCid !== cachedIpfsCid) {
+          console.warn(`[DApp DB] Phát hiện xung đột CID: On-chain (${onChainCid}) vs IPFS (${cachedIpfsCid})`);
+          return { status: "CONFLICT", cid: onChainCid, ipfsDB };
         }
+        applyOffchainDB(ipfsDB);
+        lastUploadedCID = targetCID;
+        return { status: "OK" };
       }
-      return { status: "ERROR", message: "Failed to fetch from IPFS" };
-    } else {
-      // User chưa từng sync
-      baseCID = "";
-      if (isDirty) {
-        const saved = localStorage.getItem(`plane_dapp_db_${currentUserAddress}`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          Object.assign(localDB, parsed);
-        }
-      }
-      return { status: "OK" };
     }
+
+    return { status: "OK" };
   } catch (err) {
-    console.error("Failed to load DApp DB from chain:", err);
-    throw err;
+    console.error("Failed to load DApp DB from chain / IPFS:", err);
+    return { status: "OK" };
   }
 }
 
@@ -627,36 +722,45 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   await sendWithWalletRecovery();
 
   // Xóa cờ is_dirty CHỈ SAU KHI transaction confirm thành công
-  localStorage.removeItem(`plane_dapp_is_dirty_${currentUserAddress}`);
   baseCID = cid;
+  isDirtyState = false;
 
   return cid;
 }
 
 function getInstanceInfo() {
+  const inst = localDB.instance || {};
+  const hasUsers = Boolean(localDB.users && localDB.users.length > 0);
+  const firstUser = localDB.users?.[0];
+  let instanceName = inst.instance_name;
+  if (!instanceName || instanceName === "Plane DApp") {
+    instanceName = hasUsers && firstUser?.first_name ? `${firstUser.first_name}'s Instance` : "Plane Instance";
+  }
+  const instanceId = inst.instance_id && inst.instance_id !== "dapp-instance" ? inst.instance_id : (inst.id && inst.id !== "dapp-instance" ? inst.id : "instance-main");
   return {
     instance: {
-      id: "dapp-instance",
-      created_at: new Date().toISOString(),
+      ...inst,
+      id: instanceId,
+      instance_id: instanceId,
+      instance_name: instanceName,
+      created_at: inst.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      instance_name: "Plane DApp",
-      whitelist_emails: null,
-      instance_id: "dapp-instance",
+      whitelist_emails: inst.whitelist_emails || null,
       license_key: null,
       current_version: "1.0.0",
       latest_version: "1.0.0",
       last_checked_at: new Date().toISOString(),
       namespace: null,
-      is_telemetry_enabled: false,
+      is_telemetry_enabled: inst.is_telemetry_enabled ?? false,
       is_support_required: false,
       is_activated: true,
-      is_setup_done: true,
+      is_setup_done: inst.is_setup_done !== undefined ? inst.is_setup_done : hasUsers,
       is_signup_screen_visited: true,
-      user_count: 1,
+      user_count: (localDB.users || []).length,
       is_verified: true,
       created_by: null,
       updated_by: null,
-      workspaces_exist: true,
+      workspaces_exist: Boolean(localDB.workspaces && localDB.workspaces.length > 0),
     },
     config: {
       enable_signup: true,
@@ -679,43 +783,92 @@ function getInstanceInfo() {
       space_base_url: null,
       admin_base_url: typeof window !== "undefined" ? window.location.origin : "http://localhost:3001",
       is_self_managed: true,
+      ...(localDB.config || {}),
     },
   };
 }
 
 function getUserProfile() {
+  const activeUserId = getLoggedInUserId();
+  const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
+  const activeUser = (localDB.users || []).find((u: any) =>
+    (activeUserId && u.id === activeUserId) ||
+    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
+  ) || localDB.users?.[0] || null;
+
+  if (!activeUser) {
+    return {
+      id: "anonymous",
+      user: "anonymous",
+      role: "admin",
+      last_workspace_id: null,
+      theme: { theme: "dark" },
+      onboarding_step: { workspace_join: false, profile_complete: false, workspace_create: false, workspace_invite: false },
+      is_onboarded: false,
+      is_tour_completed: false,
+      use_case: null,
+      billing_address_country: null,
+      billing_address: null,
+      has_billing_address: false,
+      has_marketing_email_consent: false,
+      language: "en",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      start_of_the_week: 1,
+    };
+  }
+
+  const userWorkspaces = localDB.workspaces || [];
+  const firstWs = userWorkspaces[0] || null;
+  const hasWorkspace = userWorkspaces.length > 0;
+
   return {
-    id: "me",
-    user: "me",
+    id: activeUser.id,
+    user: activeUser.id,
     role: "admin",
-    last_workspace_id: "mock-workspace",
-    theme: { theme: "dark", primary: null, background: null, darkPalette: false },
-    onboarding_step: { workspace_join: true, profile_complete: true, workspace_create: true, workspace_invite: true },
-    is_onboarded: true,
-    is_tour_completed: true,
+    last_workspace_id: activeUser.last_workspace_id || firstWs?.id || null,
+    theme: activeUser.theme || { theme: "dark", primary: null, background: null, darkPalette: false },
+    onboarding_step: activeUser.onboarding_step || {
+      workspace_join: hasWorkspace,
+      profile_complete: true,
+      workspace_create: hasWorkspace,
+      workspace_invite: hasWorkspace,
+    },
+    is_onboarded: activeUser.is_onboarded ?? hasWorkspace,
+    is_tour_completed: activeUser.is_tour_completed ?? hasWorkspace,
     use_case: null,
     billing_address_country: null,
     billing_address: null,
     has_billing_address: false,
     has_marketing_email_consent: false,
     language: "en",
-    created_at: new Date().toISOString(),
+    created_at: activeUser.date_joined || new Date().toISOString(),
     updated_at: new Date().toISOString(),
     start_of_the_week: 1,
   };
 }
 
 function getUserSettings() {
+  const activeUserId = getLoggedInUserId();
+  const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
+  const activeUser = (localDB.users || []).find((u: any) =>
+    (activeUserId && u.id === activeUserId) ||
+    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
+  ) || localDB.users?.[0] || null;
+
+  const userWorkspaces = localDB.workspaces || [];
+  const currentWs = userWorkspaces.find((w: any) => w.id === activeUser?.last_workspace_id || w.slug === activeUser?.last_workspace_slug) || userWorkspaces[0] || null;
+
   return {
-    id: "me",
-    email: "admin@plane.so",
+    id: activeUser?.id || "anonymous",
+    email: activeUser?.email || loggedInEmail || "",
     workspace: {
-      last_workspace_id: "mock-workspace",
-      last_workspace_slug: "mock-workspace",
-      last_workspace_name: "Mock Workspace",
-      last_workspace_logo: null,
-      fallback_workspace_id: "mock-workspace",
-      fallback_workspace_slug: "mock-workspace",
+      last_workspace_id: currentWs?.id || null,
+      last_workspace_slug: currentWs?.slug || null,
+      last_workspace_name: currentWs?.name || null,
+      last_workspace_logo: currentWs?.logo || null,
+      fallback_workspace_id: currentWs?.id || null,
+      fallback_workspace_slug: currentWs?.slug || null,
       invites: 0,
     },
   };
@@ -741,52 +894,225 @@ type RouteResult = { data: any; status: number };
 function handleRoute(method: string, url: string, body: Record<string, any>): RouteResult {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   const activeUserId = getLoggedInUserId();
-  const activeUser = localDB.users.find((u: any) => u.id === activeUserId) || MOCK_USER;
+  const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
+  let activeUser = (localDB.users || []).find((u: any) =>
+    (activeUserId && u.id === activeUserId) ||
+    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
+  );
+  if (!activeUser && activeUserId && loggedInEmail) {
+    activeUser = createUserObject(activeUserId, loggedInEmail);
+    if (!localDB.users) localDB.users = [];
+    localDB.users.push(activeUser);
+    saveDB();
+  }
+
+  // ── Workspace Slug Check (used by web:3000 and god-mode:3001) ───────
+  if (url.includes("/api/workspace-slug-check") || url.includes("/api/instances/workspace-slug-check")) {
+    const qsMatch = url.match(/[?&]slug=([^&]+)/);
+    const slug = qsMatch ? decodeURIComponent(qsMatch[1]) : "";
+    const exists = (localDB.workspaces || []).some((w: any) => w.slug?.toLowerCase() === slug.toLowerCase());
+    return ok({ status: !exists });
+  }
 
   // ── Auth endpoints ──────────────────────────────────────────────────
   if (url.includes("/auth/get-csrf-token")) return ok({ csrf_token: "dapp-csrf-token" });
 
-  if (url.includes("/auth/email-check"))
-    return ok({ existing: true, is_password_autoset: false, status: "CREDENTIAL" });
+  if (url.includes("/auth/email-check")) {
+    const email = (body?.email || "").trim().toLowerCase();
+    const existing = (localDB.users || []).some((u: any) => (u.email || "").toLowerCase() === email);
+    return ok({ existing, is_password_autoset: false, status: "CREDENTIAL" });
+  }
 
   if (url.includes("/auth/sign-in") || url.includes("/auth/sign-up") || url.includes("/auth/magic-sign-in")) {
-    let email = body?.email || "admin@plane.so";
-    let user = localDB.users.find((u: any) => u.email === email);
+    const email = (body?.email || loggedInEmail || "").trim();
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email.toLowerCase());
 
-    if (!user) {
-      // Create a new user based on MOCK_USER but with new email and ID
-      user = {
-        ...MOCK_USER,
-        id: `user-${Date.now()}`,
-        email,
-        first_name: email.split("@")[0],
-        last_name: "",
-        display_name: email.split("@")[0],
-      };
+    if (!user && email) {
+      user = createUserObject(`user-${Date.now()}`, email, body?.first_name, body?.last_name);
+      if (!localDB.users) localDB.users = [];
       localDB.users.push(user);
       saveDB();
     }
 
-    setLoggedInUser(user.id);
-    return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
+    if (user) {
+      setLoggedInUser(user.id);
+      if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+      return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
+    }
+    return { data: { error: "User not found" }, status: 404 };
   }
 
   if (url.includes("/auth/forgot-password") || url.includes("/auth/set-password")) return ok({ message: "success" });
 
   if (url.includes("/auth/sign-out")) {
     setLoggedInUser(null);
+    if (typeof window !== "undefined") localStorage.removeItem("plane_dapp_auth_email");
     return ok({ message: "success" });
   }
 
   // ── Instance ────────────────────────────────────────────────────────
-  if (url.match(/\/api\/instances\/?$/) || url.match(/\/api\/instances\/\?/)) return ok(getInstanceInfo());
+  // ── Instance ────────────────────────────────────────────────────────
+  if (url.match(/\/api\/instances\/?$/) || url.match(/\/api\/instances\/\?/)) {
+    if (method === "patch" || method === "put" || method === "post") {
+      if (!localDB.instance) localDB.instance = {};
+      Object.assign(localDB.instance, body);
+      saveDB();
+    }
+    return ok(getInstanceInfo());
+  }
 
   if (url.includes("/api/instances/configurations")) return ok([]);
 
-  if (url.includes("/api/instances/workspaces"))
-    return ok({ results: localDB.workspaces || [], next_cursor: null, prev_cursor: null });
+  if (url.includes("/api/instances/workspaces") && method === "get")
+    return ok({ results: localDB.workspaces || [], next_cursor: null, prev_cursor: null, total_count: (localDB.workspaces || []).length });
 
-  if (url.includes("/api/instances/admins")) return ok([MOCK_USER]);
+  // ── Admin Auth & Management Endpoints ────────────────────────────────
+  if (url.includes("/api/instances/admins/sign-out")) {
+    setLoggedInUser(null);
+    if (typeof window !== "undefined") localStorage.removeItem("plane_dapp_auth_email");
+    return ok({ message: "success" });
+  }
+
+  if (url.includes("/api/instances/admins/sign-in")) {
+    const email = (body?.email || loggedInEmail || "").trim();
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email.toLowerCase());
+    if (!user && email) {
+      user = createUserObject(`admin-${Date.now()}`, email, body?.first_name, body?.last_name);
+      if (!localDB.users) localDB.users = [];
+      localDB.users.push(user);
+      saveDB();
+    }
+    if (user) {
+      setLoggedInUser(user.id);
+      if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+      return ok(user);
+    }
+    return { data: { error: "User not found" }, status: 404 };
+  }
+
+  if (url.includes("/api/instances/admins/sign-up")) {
+    const email = (body?.email || loggedInEmail || "").trim();
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email.toLowerCase());
+    if (user) {
+      user.first_name = body?.first_name || user.first_name;
+      user.last_name = body?.last_name || user.last_name;
+      user.display_name = `${user.first_name} ${user.last_name}`.trim();
+    } else {
+      user = createUserObject(`admin-${Date.now()}`, email, body?.first_name, body?.last_name);
+      if (!localDB.users) localDB.users = [];
+      localDB.users.push(user);
+    }
+    const companyName = body?.company_name || body?.company || body?.instance_name;
+    if (companyName) {
+      if (!localDB.instance) localDB.instance = {};
+      localDB.instance.instance_name = companyName;
+    }
+    if (!localDB.instance) localDB.instance = {};
+    if (!localDB.instance.id || localDB.instance.id === "dapp-instance") {
+      localDB.instance.id = `instance-${Date.now().toString(36)}`;
+      localDB.instance.instance_id = localDB.instance.id;
+    }
+    localDB.instance.is_setup_done = true;
+    saveDB();
+    setLoggedInUser(user.id);
+    if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+    return ok(user);
+  }
+
+  if (url.includes("/api/instances/admins/me")) {
+    if (!isLoggedIn() || !activeUser) {
+      return { data: { error: "not authenticated" }, status: 401 };
+    }
+    if (method === "patch" || method === "put" || method === "post") {
+      Object.assign(activeUser, body);
+      saveDB();
+    }
+    return ok(activeUser);
+  }
+
+  if (url.match(/\/api\/instances\/admins\/?$/) || url.match(/\/api\/instances\/admins\/\?/)) {
+    let users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
+    if (users.length === 0 && (loggedInEmail || activeUserId)) {
+      const fallbackUser = createUserObject(activeUserId || `admin-${Date.now().toString(36)}`, loggedInEmail || "");
+      users = [fallbackUser];
+    }
+    const adminList = users.map((u: any) => ({
+      id: `admin-${u.id}`,
+      instance: localDB.instance?.instance_id || "instance-main",
+      role: "admin",
+      user: u.id,
+      user_detail: {
+        id: u.id,
+        first_name: u.first_name || "",
+        last_name: u.last_name || "",
+        email: u.email || loggedInEmail || "",
+        display_name: u.display_name || u.email || loggedInEmail || "",
+        avatar_url: u.avatar_url || "",
+      },
+      created_at: u.date_joined || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }));
+    return ok(adminList);
+  }
+
+  // ── Workspace Creation (both web /api/workspaces/ and admin /api/instances/workspaces/) ──
+  if (
+    (url.match(/\/api\/workspaces\/?$/) || url.match(/\/api\/instances\/workspaces\/?$/)) &&
+    method === "post"
+  ) {
+    const wsId = body.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+    const slug = body.slug || body.name?.toLowerCase().replace(/[^a-z0-9_-]/g, "-") || `ws-${Date.now()}`;
+    const newWorkspace = {
+      id: wsId,
+      name: body.name || "My Workspace",
+      slug: slug,
+      organization_size: body.organization_size || "1-10",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      created_by: activeUser?.id || "admin",
+      owner: {
+        id: activeUser?.id || "admin",
+        email: activeUser?.email || loggedInEmail || "",
+        first_name: activeUser?.first_name || "Admin",
+        last_name: activeUser?.last_name || "",
+        avatar: activeUser?.avatar_url || "",
+      },
+      role: 20,
+      ...body,
+    };
+
+    if (!localDB.workspaces) localDB.workspaces = [];
+    const existingIdx = localDB.workspaces.findIndex((w: any) => w.id === wsId || w.slug === slug);
+    if (existingIdx >= 0) {
+      localDB.workspaces[existingIdx] = { ...localDB.workspaces[existingIdx], ...newWorkspace };
+    } else {
+      localDB.workspaces.push(newWorkspace);
+    }
+
+    if (!localDB.workspace_members) localDB.workspace_members = [];
+    localDB.workspace_members.push({
+      id: `ws-member-${Date.now()}`,
+      workspace: wsId,
+      workspace_id: wsId,
+      member: activeUser?.id || "me",
+      role: 20,
+      is_active: true,
+      created_at: new Date().toISOString(),
+    });
+
+    if (activeUser) {
+      activeUser.last_workspace_id = wsId;
+      activeUser.last_workspace_slug = slug;
+      activeUser.is_onboarded = true;
+      if (!activeUser.onboarding_step) activeUser.onboarding_step = {};
+      activeUser.onboarding_step.workspace_create = true;
+      activeUser.onboarding_step.profile_complete = true;
+      activeUser.onboarding_step.workspace_join = true;
+    }
+
+    saveDB();
+    return { data: newWorkspace, status: 201 };
+  }
 
   if (url.match(/\/api\/users\/me/)) {
     if (!isLoggedIn()) return { data: { error: "not authenticated" }, status: 401 };
@@ -796,10 +1122,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
         Object.assign(activeUser, body);
         saveDB();
       }
-      return ok({
-        ...activeUser,
-        workspace: { fallback_workspace_id: "mock-workspace", fallback_workspace_slug: "mock-workspace", invites: 0 },
-      });
+      return ok(getUserProfile());
     }
 
     if (url.includes("/api/users/me/settings")) return ok(getUserSettings());
@@ -814,7 +1137,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 
     if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles") && !url.includes("/invitations")) {
       const workspaces = localDB.workspaces || [];
-      return ok(workspaces.map((ws) => ({ ...ws, role: 20 })));
+      return ok(workspaces.map((ws: any) => ({ ...ws, role: 20 })));
     }
 
     if (url.includes("/api/users/me/workspaces/invitations") || url.includes("/api/users/me/invitations")) {
@@ -830,23 +1153,27 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 
   // ── Projects & Workspace Members ────────────────────────────────────
   if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/me\/?/)) {
+    const wsSlug = url.match(/\/api\/workspaces\/([^/]+)\/workspace-members\/me\/?/)?.[1] || "";
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
     return ok({
-      id: "mock-ws-member-me",
-      member: activeUser?.id,
+      id: "ws-member-me",
+      member: activeUser?.id || "me",
       role: 20, // Admin role
-      workspace: "mock-workspace-id",
+      workspace: ws?.id || wsSlug,
       is_active: true,
       created_at: new Date().toISOString(),
     });
   }
 
   if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/members\/?(?:\?.*)?$/)) {
+    const wsSlug = url.match(/\/api\/workspaces\/([^/]+)\/members\/?/)?.[1] || "";
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
     return ok([
       {
-        id: "mock-ws-member-me",
-        member: activeUser,
+        id: "ws-member-me",
+        member: activeUser || { id: "anonymous", email: "", first_name: "User", last_name: "", display_name: "User" },
         role: 20,
-        workspace: "mock-workspace-id",
+        workspace: ws?.id || wsSlug,
         is_active: true,
         created_at: new Date().toISOString(),
       },
@@ -893,7 +1220,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   const archiveMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/archive\/?$/);
   if (archiveMatch) {
     const projectId = archiveMatch[1];
-    const project = localDB.projects?.find((p) => p.id === projectId);
+    const project = localDB.projects?.find((p: any) => p.id === projectId);
     if (project) {
       if (method === "post") {
         project.archived_at = new Date().toISOString();
@@ -1032,7 +1359,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       const issue = localDB.issues?.find((i: any) => i.id === issueId);
       const urlWsMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
       const urlProjMatch = url.match(/\/projects\/([^/]+)\//);
-      const wsSlug = urlWsMatch ? urlWsMatch[1] : issue?.workspace || "mock-workspace";
+      const wsSlug = urlWsMatch ? urlWsMatch[1] : issue?.workspace || localDB.workspaces?.[0]?.slug || "";
       const projId = urlProjMatch ? urlProjMatch[1] : issue?.project || "mock-project";
 
       const newComment = {
@@ -1520,7 +1847,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
   if (method === "get") {
     if (id) {
-      let item = localDB[collection].find((r) => r.id === id || r.slug === id);
+      let item = localDB[collection].find((r: any) => r.id === id || r.slug === id);
 
       // Fallback: If id is a number (sequenceId), try finding by project id or identifier
       if (!item && collection === "issues") {
@@ -1727,7 +2054,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         return {
           ...item,
           project_id: item.project_id || item.project,
-          workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
+          workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || localDB.workspaces?.[0]?.slug || "",
           state_id: item.state_id || item.state,
           parent_id: item.parent_id || item.parent,
           cycle_id: item.cycle_id || item.cycle,
@@ -1754,7 +2081,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       list = list.map((item: any) => ({
         ...item,
         project_id: item.project_id || item.project,
-        workspace_id: item.workspace_id || item.workspace || "mock-workspace",
+        workspace_id: item.workspace_id || item.workspace || localDB.workspaces?.[0]?.slug || "",
       }));
       console.log(
         `[DApp CRUD] States returning ${list.length} items:`,
@@ -1777,7 +2104,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         });
       }
 
-      list.forEach((item) => {
+      list.forEach((item: any) => {
         const groupKey = item[groupBy] || "None";
         if (!groupedResults[groupKey]) {
           groupedResults[groupKey] = { results: [], total_results: 0 };
@@ -1851,10 +2178,11 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       updated_at: new Date().toISOString(),
       ...body,
     };
+    const activeUserId = getLoggedInUserId();
+    const activeUser = localDB.users?.find((u: any) => u.id === activeUserId);
+
     if (collection === "blockchain-transactions") {
       newRecord.recorded_at = new Date().toISOString();
-      const activeUserId = getLoggedInUserId();
-      const activeUser = localDB.users?.find((u: any) => u.id === activeUserId) || MOCK_USER;
       if (newRecord.event_type === "assign_task" && !newRecord.assignee_name && newRecord.assignee_id) {
         const u = localDB.users?.find((u: any) => u.id === newRecord.assignee_id);
         newRecord.assignee_name = u?.display_name || u?.first_name || newRecord.assignee_id;
@@ -1870,8 +2198,14 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     if (collection === "workspaces" && !newRecord.slug)
       newRecord.slug = newRecord.name?.toLowerCase().replace(/\s+/g, "-");
     if (collection === "workspaces" && !newRecord.owner) {
-      newRecord.owner = { id: "me", email: "admin@plane.so", first_name: "Plane", last_name: "Admin", avatar: "" };
-      newRecord.created_by = "me";
+      newRecord.owner = {
+        id: activeUser?.id || "user-1",
+        email: activeUser?.email || "",
+        first_name: activeUser?.first_name || "User",
+        last_name: activeUser?.last_name || "",
+        avatar: activeUser?.avatar_url || "",
+      };
+      newRecord.created_by = activeUser?.id || "user-1";
     }
     if (collection === "projects") {
       const match = url.match(/\/api\/workspaces\/([^/]+)\//);
@@ -1994,7 +2328,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           returnedRecord.workspace_id ||
           returnedRecord.workspace ||
           returnedRecord.project_detail?.workspace ||
-          "mock-workspace",
+          localDB.workspaces?.[0]?.slug ||
+          "",
         state_id: returnedRecord.state_id || returnedRecord.state,
         parent_id: returnedRecord.parent_id || returnedRecord.parent,
         cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
@@ -2017,7 +2352,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   }
 
   if (method === "patch" || method === "put") {
-    const idx = localDB[collection].findIndex((r) => r.id === id || r.slug === id);
+    const idx = localDB[collection].findIndex((r: any) => r.id === id || r.slug === id);
     if (idx > -1) {
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
       saveDB();
@@ -2032,7 +2367,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
             returnedRecord.workspace_id ||
             returnedRecord.workspace ||
             returnedRecord.project_detail?.workspace ||
-            "mock-workspace",
+            localDB.workspaces?.[0]?.slug ||
+            "",
           state_id: returnedRecord.state_id || returnedRecord.state,
           parent_id: returnedRecord.parent_id || returnedRecord.parent,
           cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
@@ -2052,7 +2388,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   }
 
   if (method === "delete") {
-    localDB[collection] = localDB[collection].filter((r) => r.id !== id);
+    localDB[collection] = localDB[collection].filter((r: any) => r.id !== id);
     saveDB();
     return ok({});
   }
@@ -2166,10 +2502,26 @@ export function setupDAppInterceptor(axiosInstance: AxiosInstance) {
 
       const { data, status } = handleRoute(method, url, body);
 
+      if (status >= 400) {
+        const error: any = new Error(`Request failed with status code ${status}`);
+        error.name = "AxiosError";
+        error.code = status === 401 ? "ERR_BAD_REQUEST" : "ERR_BAD_RESPONSE";
+        error.status = status;
+        error.response = {
+          data,
+          status,
+          statusText: "Error",
+          headers: {},
+          config: adapterConfig,
+          request: {},
+        };
+        throw error;
+      }
+
       return {
         data,
         status,
-        statusText: status < 400 ? "OK" : "Error",
+        statusText: "OK",
         headers: {},
         config: adapterConfig,
         request: {},

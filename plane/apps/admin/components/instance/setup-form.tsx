@@ -57,7 +57,7 @@ const defaultFromData: TFormData = {
   is_telemetry_enabled: true,
 };
 
-export function InstanceSetupForm() {
+export function InstanceSetupForm({ onToggleMode }: { onToggleMode?: (mode: "sign-in" | "sign-up") => void } = {}) {
   // search params
   const searchParams = useSearchParams();
   const firstNameParam = searchParams?.get("first_name") || undefined;
@@ -138,7 +138,7 @@ export function InstanceSetupForm() {
 
   return (
     <>
-      <AuthHeader />
+      <AuthHeader mode="sign-up" onToggleMode={onToggleMode} />
       <div className="mt-10 flex w-full flex-grow flex-col items-center justify-center py-6">
         <div className="relative flex w-full max-w-[22.5rem] flex-col gap-6">
           <FormHeader
@@ -154,7 +154,23 @@ export function InstanceSetupForm() {
             className="space-y-4"
             method="POST"
             action={`${API_BASE_URL}/api/instances/admins/sign-up/`}
-            onSubmit={() => setIsSubmitting(true)}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setIsSubmitting(true);
+              try {
+                const res = await authService.post("/api/instances/admins/sign-up/", formData).catch(() => {});
+                const user = (res as any)?.data || res;
+                if (user?.id) {
+                  localStorage.setItem("plane_dapp_auth_user", user.id);
+                  localStorage.setItem("plane_dapp_auth_email", user.email || formData.email);
+                } else if (formData.email) {
+                  localStorage.setItem("plane_dapp_auth_user", `admin-${Date.now()}`);
+                  localStorage.setItem("plane_dapp_auth_email", formData.email);
+                }
+              } finally {
+                window.location.href = "/god-mode/general";
+              }
+            }}
             onError={() => setIsSubmitting(false)}
           >
             <input type="hidden" name="csrfmiddlewaretoken" value={csrfToken} />
@@ -365,10 +381,22 @@ export function InstanceSetupForm() {
               </label>
             </div>
 
-            <div className="py-2">
+            <div className="py-2 space-y-3">
               <Button type="submit" size="xl" className="w-full" disabled={isButtonDisabled}>
                 {isSubmitting ? <Spinner height="20px" width="20px" /> : "Continue"}
               </Button>
+              {onToggleMode && (
+                <div className="text-center text-13 font-medium text-tertiary">
+                  <span>Already configured your instance? </span>
+                  <button
+                    type="button"
+                    onClick={() => onToggleMode("sign-in")}
+                    className="text-accent-primary hover:underline font-semibold"
+                  >
+                    Sign in
+                  </button>
+                </div>
+              )}
             </div>
           </form>
         </div>

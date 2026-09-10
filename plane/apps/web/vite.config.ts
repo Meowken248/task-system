@@ -35,6 +35,7 @@ export default defineConfig(() => ({
       "next/link": path.resolve(__dirname, "app/compat/next/link.tsx"),
       "next/navigation": path.resolve(__dirname, "app/compat/next/navigation.ts"),
       "next/script": path.resolve(__dirname, "app/compat/next/script.tsx"),
+      "@plane/services": path.resolve(__dirname, "../../packages/services/src/index.ts"),
     },
     dedupe: ["react", "react-dom", "@headlessui/react"],
   },
@@ -53,3 +54,4 @@ export default defineConfig(() => ({
   },
   // No SSR-specific overrides needed; alias resolves to ESM build
 }));
+

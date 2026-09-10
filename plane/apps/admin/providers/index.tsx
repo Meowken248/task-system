@@ -4,10 +4,16 @@
  * See the LICENSE file for details.
  */
 
+import { useEffect } from "react";
+import { initDAppDB } from "@plane/services";
 import { CoreProviders } from "./core";
 import { ExtendedProviders } from "./extended";
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    initDAppDB().catch(() => {});
+  }, []);
+
   return (
     <CoreProviders>
       <ExtendedProviders>{children}</ExtendedProviders>

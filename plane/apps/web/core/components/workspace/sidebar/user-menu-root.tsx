@@ -38,6 +38,8 @@ export const UserMenuRoot = observer(function UserMenuRoot() {
   const { t } = useTranslation();
 
   const handleSignOut = () => {
+    localStorage.removeItem("plane_dapp_auth_user");
+    localStorage.removeItem("plane_dapp_auth_email");
     signOut().catch(() =>
       setToast({
         type: TOAST_TYPE.ERROR,

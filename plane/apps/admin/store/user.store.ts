@@ -64,7 +64,7 @@ export class UserStore implements IUserStore {
     try {
       if (this.currentUser === undefined) this.isLoading = true;
       const currentUser = await this.userService.adminDetails();
-      if (currentUser) {
+      if (currentUser && currentUser.id && !(currentUser as any).error) {
         await this.store.instance.fetchInstanceAdmins();
         runInAction(() => {
           this.isUserLoggedIn = true;
@@ -80,9 +80,12 @@ export class UserStore implements IUserStore {
       }
       return currentUser;
     } catch (error: any) {
-      this.isLoading = false;
-      this.isUserLoggedIn = false;
-      if (error.status === 403)
+      runInAction(() => {
+        this.isLoading = false;
+        this.isUserLoggedIn = false;
+        this.currentUser = undefined;
+      });
+      if (error?.status === 403)
         this.userStatus = {
           status: EUserStatus.AUTHENTICATION_NOT_DONE,
           message: error?.message || "",
@@ -92,7 +95,7 @@ export class UserStore implements IUserStore {
           status: EUserStatus.ERROR,
           message: error?.message || "",
         };
-      throw error;
+      return undefined as any;
     }
   };
 
@@ -104,6 +107,8 @@ export class UserStore implements IUserStore {
   };
 
   signOut = async () => {
+    localStorage.removeItem("plane_dapp_auth_user");
+    localStorage.removeItem("plane_dapp_auth_email");
     this.store.resetOnSignOut();
   };
 }
