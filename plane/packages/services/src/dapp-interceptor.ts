@@ -28,16 +28,17 @@ function createUserObject(id: string, email: string, firstName?: string, lastNam
     is_active: true,
     is_email_verified: true,
     is_password_autoset: false,
-    is_tour_completed: false,
-    is_onboarded: false,
+    is_tour_completed: true,
+    is_onboarded: true,
     onboarding_step: {
-      workspace_join: false,
-      profile_complete: false,
-      workspace_create: false,
-      workspace_invite: false,
+      workspace_join: true,
+      profile_complete: true,
+      workspace_create: true,
+      workspace_invite: true,
     },
     mobile_number: null,
-    last_workspace_id: null,
+    last_workspace_id: "workspace-fiai",
+    last_workspace_slug: "fiai",
     user_timezone: "Asia/Ho_Chi_Minh",
     username: cleanEmail ? cleanEmail.split("@")[0] : id,
     last_login_medium: "email",
@@ -47,10 +48,29 @@ function createUserObject(id: string, email: string, firstName?: string, lastNam
   };
 }
 
-// ── Seed data (fresh instance: zero static mock workspaces, zero static users) ──
+// ── Default Static Seed Data (Ensures system is ready out-of-the-box) ──
+const DEFAULT_WORKSPACE = {
+  id: "workspace-fiai",
+  name: "FIAI",
+  slug: "fiai",
+  organization_size: "5-10",
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  created_by: "user-default",
+  owner: {
+    id: "user-default",
+    email: "user@fiai.network",
+    first_name: "FIAI",
+    last_name: "User",
+    display_name: "FIAI User",
+    avatar: "",
+  },
+  role: 20,
+};
+
 const defaultDB: Record<string, any> = {
   users: [],
-  workspaces: [],
+  workspaces: [DEFAULT_WORKSPACE],
   projects: [],
   states: [],
   labels: [],
@@ -58,7 +78,7 @@ const defaultDB: Record<string, any> = {
     id: "instance-main",
     instance_id: "instance-main",
     instance_name: "Plane Instance",
-    is_setup_done: false,
+    is_setup_done: true,
     is_activated: true,
     is_telemetry_enabled: false,
     created_at: new Date().toISOString(),
@@ -70,6 +90,10 @@ const defaultDB: Record<string, any> = {
 function getLoggedInUserId(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("plane_dapp_auth_user");
+}
+function getLoggedInEmail(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("plane_dapp_auth_email");
 }
 function isLoggedIn(): boolean {
   return !!getLoggedInUserId();
@@ -84,10 +108,50 @@ function setLoggedInUser(userId: string | null) {
   }
 }
 
-// ── In-Memory Runtime Store (Off-chain persistence via IPFS, NO localStorage DB) ──
-const localDB: Record<string, any> = JSON.parse(JSON.stringify(defaultDB));
+// ── In-Memory Runtime Store with Instant Local Cache (0ms on F5) ────────
+function loadInitialDB(): Record<string, any> {
+  if (typeof window !== "undefined") {
+    try {
+      const cachedLocal = localStorage.getItem("plane_dapp_local_db");
+      if (cachedLocal) {
+        const parsed = JSON.parse(cachedLocal);
+        if (parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0) {
+          parsed.projects = (parsed.projects || []).filter((p: any) => p.id !== "project-fiai");
+          parsed.states = (parsed.states || []).filter((s: any) => s.project !== "project-fiai");
+          (parsed.projects || []).forEach((p: any) => {
+            if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
+          });
+          parsed.workspaces = (parsed.workspaces || []).filter((w: any) => w.slug !== "fiai-metanode");
+          if (!parsed.workspaces.some((w: any) => w.slug === "fiai")) parsed.workspaces.unshift(DEFAULT_WORKSPACE);
+          console.log("[DApp DB] Khởi tạo từ localStorage thành công");
+          return parsed;
+        }
+      }
+      const cachedSession = sessionStorage.getItem("plane_dapp_latest_db");
+      if (cachedSession) {
+        const parsed = JSON.parse(cachedSession);
+        if (parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0) {
+          parsed.projects = (parsed.projects || []).filter((p: any) => p.id !== "project-fiai");
+          parsed.states = (parsed.states || []).filter((s: any) => s.project !== "project-fiai");
+          (parsed.projects || []).forEach((p: any) => {
+            if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
+          });
+          parsed.workspaces = (parsed.workspaces || []).filter((w: any) => w.slug !== "fiai-metanode");
+          if (!parsed.workspaces.some((w: any) => w.slug === "fiai")) parsed.workspaces.unshift(DEFAULT_WORKSPACE);
+          console.log("[DApp DB] Khởi tạo từ sessionStorage thành công");
+          return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn("[DApp DB] Không thể đọc cache lúc khởi tạo:", err);
+    }
+  }
+  return JSON.parse(JSON.stringify(defaultDB));
+}
 
-// Clean up legacy localStorage DB dumps and static mock sessions
+const localDB: Record<string, any> = loadInitialDB();
+
+// Clean up legacy localStorage DB dumps, static mock sessions, and fiai-metanode cache
 if (typeof window !== "undefined") {
   try {
     localStorage.removeItem("plane_dapp_db");
@@ -108,18 +172,46 @@ if (typeof window !== "undefined") {
     const latestDbStr = sessionStorage.getItem("plane_dapp_latest_db");
     if (latestDbStr && (latestDbStr.includes("admin@plane.so") || latestDbStr.includes('"Plane DApp"'))) {
       sessionStorage.removeItem("plane_dapp_latest_db");
+      localStorage.removeItem("plane_dapp_local_db");
     }
+    // Clean fiai-metanode from stored caches
+    if (localStorage.getItem("plane_dapp_local_db")?.includes("fiai-metanode")) {
+      const parsed = JSON.parse(localStorage.getItem("plane_dapp_local_db") || "{}");
+      if (parsed.workspaces) {
+        parsed.workspaces = parsed.workspaces.filter((w: any) => w.slug !== "fiai-metanode");
+        localStorage.setItem("plane_dapp_local_db", JSON.stringify(parsed));
+      }
+    }
+    if (sessionStorage.getItem("plane_dapp_latest_db")?.includes("fiai-metanode")) {
+      const parsed = JSON.parse(sessionStorage.getItem("plane_dapp_latest_db") || "{}");
+      if (parsed.workspaces) {
+        parsed.workspaces = parsed.workspaces.filter((w: any) => w.slug !== "fiai-metanode");
+        sessionStorage.setItem("plane_dapp_latest_db", JSON.stringify(parsed));
+      }
+    }
+    document.cookie = "plane_dapp_sync_workspaces=; path=/; max-age=0;";
   } catch { }
 }
-
-const TRANSIENT_COLLECTIONS = ["issues", "issue_comments", "attachments"];
 
 // Safety checks
 if (!localDB.users) localDB.users = [];
 // Clean out any static mock users that might be cached
 localDB.users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
-if (!localDB.workspaces) localDB.workspaces = [];
+localDB.workspaces = (localDB.workspaces || []).filter((w: any) => w.slug !== "fiai-metanode");
+if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
+if (!localDB.workspaces.some((w: any) => w.slug === "fiai")) localDB.workspaces.unshift(DEFAULT_WORKSPACE);
+if (!localDB.projects) localDB.projects = [];
+localDB.projects = localDB.projects.filter((p: any) => p.id !== "project-fiai");
+(localDB.projects || []).forEach((p: any) => {
+  if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
+});
+if (!localDB.states) localDB.states = [];
+localDB.states = localDB.states.filter((s: any) => s.project !== "project-fiai");
+if (!localDB.issues) localDB.issues = [];
+if (!localDB.issue_comments) localDB.issue_comments = [];
+if (!localDB.attachments) localDB.attachments = [];
 if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
+localDB.instance.is_setup_done = true;
 if (localDB.instance.instance_name === "Plane DApp") {
   localDB.instance.instance_name = "Plane Instance";
 }
@@ -128,16 +220,209 @@ if (localDB.instance.id === "dapp-instance") {
   localDB.instance.instance_id = "instance-main";
 }
 
-// Clear transient collections on startup to enforce blockchain sync
-TRANSIENT_COLLECTIONS.forEach(col => {
-  localDB[col] = [];
-});
-
+export let baseCID: string = "";
 export let currentUserAddress: string | null = null;
 
 function getDBStorageKey(): string {
   return currentUserAddress || "local";
 }
+
+// ── Cross-Port & URL Sync for Workspaces ──────────────────────────────────
+function syncWorkspacesToCookie() {
+  if (typeof document === "undefined" || !localDB.workspaces) return;
+  try {
+    const compact = (localDB.workspaces || []).map((w: any) => ({
+      id: w.id,
+      name: w.name,
+      slug: w.slug,
+      organization_size: w.organization_size || "5-10",
+      owner: w.owner,
+      role: w.role || 20,
+    }));
+    const val = encodeURIComponent(JSON.stringify(compact));
+    document.cookie = `plane_dapp_sync_workspaces=${val}; path=/; max-age=31536000; SameSite=Lax`;
+    const cidToSync = lastUploadedCID || baseCID || localStorage.getItem("plane_dapp_ipfs_cid_local");
+    if (cidToSync) {
+      document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
+    }
+  } catch { }
+}
+
+function syncCrossPortWorkspaces() {
+  if (typeof window === "undefined") return;
+  try {
+    let hasChanges = false;
+    if (!localDB.workspaces) localDB.workspaces = [DEFAULT_WORKSPACE];
+
+    // 1. Read from shared cross-port cookies (domain localhost)
+    if (typeof document !== "undefined" && document.cookie) {
+      const cookies = document.cookie.split("; ");
+      const wsCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_workspaces="));
+      if (wsCookie) {
+        const rawVal = wsCookie.trim().substring(wsCookie.trim().indexOf("=") + 1);
+        const val = decodeURIComponent(rawVal || "");
+        if (val) {
+          try {
+            const syncedWsList = JSON.parse(val);
+            if (Array.isArray(syncedWsList)) {
+              for (const sWs of syncedWsList) {
+                if (sWs && sWs.slug && sWs.slug !== "fiai-metanode" && !localDB.workspaces.some((w: any) => w.slug === sWs.slug || w.id === sWs.id)) {
+                  localDB.workspaces.push({
+                    id: sWs.id || `workspace-${sWs.slug}`,
+                    name: sWs.name || sWs.slug,
+                    slug: sWs.slug,
+                    organization_size: sWs.organization_size || "5-10",
+                    created_at: sWs.created_at || new Date().toISOString(),
+                    updated_at: sWs.updated_at || new Date().toISOString(),
+                    owner: sWs.owner || {
+                      id: getLoggedInUserId() || "user-default",
+                      email: getLoggedInEmail() || "user@fiai.network",
+                      first_name: sWs.name || sWs.slug,
+                      last_name: "",
+                      display_name: sWs.name || sWs.slug,
+                      avatar: "",
+                    },
+                    role: 20,
+                  });
+                  hasChanges = true;
+                  console.log(`[DApp DB] Auto-synced workspace from cross-port cookie: ${sWs.slug}`);
+                }
+              }
+            }
+          } catch { }
+        }
+      }
+
+      const cidCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_cid="));
+      if (cidCookie) {
+        const rawCVal = cidCookie.trim().substring(cidCookie.trim().indexOf("=") + 1);
+        const cVal = decodeURIComponent(rawCVal || "");
+        if (cVal && !cVal.startsWith("bafkrei") && cVal !== localStorage.getItem("plane_dapp_ipfs_cid_local")) {
+          localStorage.setItem("plane_dapp_ipfs_cid_local", cVal);
+          fetchFromIPFS(cVal).then((ipfsDB) => {
+            if (ipfsDB) {
+              console.log(`[DApp DB] Auto-loaded DB from synced cookie CID: ${cVal}`);
+              applyOffchainDB(ipfsDB);
+            }
+          }).catch(() => { });
+        }
+      }
+    }
+
+    // 2. Check URL search query parameters (e.g. ?ws_slug=fiai-metanode&ws_name=FIAI+METANODE&cid=...)
+    const searchParams = new URLSearchParams(window.location.search);
+    const wsSlug = searchParams.get("ws_slug");
+    const wsName = searchParams.get("ws_name");
+    const urlCid = searchParams.get("cid");
+    const authUser = searchParams.get("auth_user");
+    const authEmail = searchParams.get("auth_email");
+
+    if (wsSlug) {
+      const exists = localDB.workspaces.find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+      if (!exists) {
+        const decodedName = wsName ? decodeURIComponent(wsName) : wsSlug.replace(/[-_]/g, " ").toUpperCase();
+        const activeUserId = authUser || getLoggedInUserId() || "user-default";
+        const activeEmail = authEmail || getLoggedInEmail() || "user@fiai.network";
+        const newWs = {
+          id: `workspace-${wsSlug}`,
+          name: decodedName,
+          slug: wsSlug,
+          organization_size: "5-10",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          created_by: activeUserId,
+          owner: {
+            id: activeUserId,
+            email: activeEmail,
+            first_name: decodedName,
+            last_name: "",
+            display_name: decodedName,
+            avatar: "",
+          },
+          role: 20,
+        };
+        localDB.workspaces.push(newWs);
+        hasChanges = true;
+        console.log(`[DApp DB] Auto-provisioned workspace from URL query: ${wsSlug} (${decodedName})`);
+      }
+    }
+
+    if (urlCid && !urlCid.startsWith("bafkrei")) {
+      const storedCid = localStorage.getItem("plane_dapp_ipfs_cid_local");
+      if (storedCid !== urlCid) {
+        localStorage.setItem("plane_dapp_ipfs_cid_local", urlCid);
+      }
+      fetchFromIPFS(urlCid).then((ipfsDB) => {
+        if (ipfsDB) {
+          console.log(`[DApp DB] Auto-loaded DB from URL CID: ${urlCid}`);
+          applyOffchainDB(ipfsDB);
+          saveDB();
+        }
+      }).catch(() => { });
+    }
+
+    // 3. Auto-provision from pathname if visiting /:workspaceSlug
+    const pathname = window.location.pathname;
+    const pathSegments = pathname.split("/").filter(Boolean);
+    const firstSegment = pathSegments[0];
+    const reservedPaths = [
+      "assets",
+      "api",
+      "create-workspace",
+      "invitations",
+      "settings",
+      "profile",
+      "installations",
+      "onboarding",
+      "god-mode",
+      "workspace-member-invitations",
+      "workspace",
+      "preview",
+    ];
+    if (firstSegment && !reservedPaths.includes(firstSegment)) {
+      const exists = localDB.workspaces.find((w: any) => w.slug === firstSegment || w.id === firstSegment);
+      if (!exists) {
+        const formattedName = firstSegment.replace(/[-_]/g, " ").toUpperCase();
+        const activeUserId = getLoggedInUserId() || "user-default";
+        const activeEmail = getLoggedInEmail() || "user@fiai.network";
+        localDB.workspaces.push({
+          id: `workspace-${firstSegment}`,
+          name: formattedName,
+          slug: firstSegment,
+          organization_size: "5-10",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          created_by: activeUserId,
+          owner: {
+            id: activeUserId,
+            email: activeEmail,
+            first_name: formattedName,
+            last_name: "",
+            display_name: formattedName,
+            avatar: "",
+          },
+          role: 20,
+        });
+        hasChanges = true;
+        console.log(`[DApp DB] Auto-provisioned workspace from pathname: ${firstSegment}`);
+      }
+    }
+
+    if (hasChanges) {
+      try {
+        const snapshot = JSON.stringify(localDB);
+        localStorage.setItem("plane_dapp_local_db", snapshot);
+        sessionStorage.setItem("plane_dapp_latest_db", snapshot);
+      } catch { }
+      syncWorkspacesToCookie();
+    }
+  } catch (e) {
+    console.warn("[DApp DB] syncCrossPortWorkspaces error:", e);
+  }
+}
+
+// Immediately perform cross-port and URL workspace sync on startup
+syncCrossPortWorkspaces();
 
 // ── Auto-save to IPFS (debounced) ─────────────────────────────────────
 let ipfsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -146,13 +431,11 @@ let lastUploadedDataHash: string | null = null;
 let isUploadingIPFS = false;
 let isDirtyState = false;
 
-/** Get the data object that should be persisted (excludes transient collections) */
+/** Get the data object that should be persisted */
 function getDBSnapshot(): Record<string, any[]> {
   const dbToSave: Record<string, any[]> = {};
   for (const [key, value] of Object.entries(localDB)) {
-    if (!TRANSIENT_COLLECTIONS.includes(key)) {
-      dbToSave[key] = value;
-    }
+    dbToSave[key] = value;
   }
   return dbToSave;
 }
@@ -259,9 +542,11 @@ function saveDB() {
   if (typeof window === "undefined") return;
   isDirtyState = true;
   try {
-    const snapshot = JSON.stringify(getDBSnapshot());
+    const snapshot = JSON.stringify(localDB);
+    localStorage.setItem("plane_dapp_local_db", snapshot);
     sessionStorage.setItem("plane_dapp_latest_db", snapshot);
   } catch { }
+  syncWorkspacesToCookie();
   scheduleIPFSUpload();
 }
 
@@ -311,12 +596,49 @@ async function fetchFromIPFS(cid: string): Promise<Record<string, any> | null> {
 }
 
 function applyOffchainDB(ipfsDB: Record<string, any>) {
+  const currentWorkspaces = [...(localDB.workspaces || [])];
+  const currentIssues = [...(localDB.issues || [])];
+  const currentComments = [...(localDB.issue_comments || [])];
+  const currentAttachments = [...(localDB.attachments || [])];
   for (const key in localDB) delete localDB[key];
   Object.assign(localDB, ipfsDB);
   if (!localDB.users) localDB.users = [];
   localDB.users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
   if (!localDB.workspaces) localDB.workspaces = [];
+  for (const w of currentWorkspaces) {
+    if (w.slug !== "fiai-metanode" && !localDB.workspaces.some((existing: any) => existing.slug === w.slug || existing.id === w.id)) {
+      localDB.workspaces.push(w);
+    }
+  }
+  localDB.workspaces = localDB.workspaces.filter((w: any) => w.slug !== "fiai-metanode");
+  if (localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
+  if (!localDB.projects) localDB.projects = [];
+  localDB.projects = localDB.projects.filter((p: any) => p.id !== "project-fiai");
+  (localDB.projects || []).forEach((p: any) => {
+    if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
+  });
+  if (!localDB.states) localDB.states = [];
+  localDB.states = localDB.states.filter((s: any) => s.project !== "project-fiai");
+  if (!localDB.issues) localDB.issues = [];
+  for (const issue of currentIssues) {
+    if (!localDB.issues.some((i: any) => i.id === issue.id)) {
+      localDB.issues.push(issue);
+    }
+  }
+  if (!localDB.issue_comments) localDB.issue_comments = [];
+  for (const c of currentComments) {
+    if (!localDB.issue_comments.some((existing: any) => existing.id === c.id)) {
+      localDB.issue_comments.push(c);
+    }
+  }
+  if (!localDB.attachments) localDB.attachments = [];
+  for (const a of currentAttachments) {
+    if (!localDB.attachments.some((existing: any) => existing.id === a.id)) {
+      localDB.attachments.push(a);
+    }
+  }
   if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
+  localDB.instance.is_setup_done = true;
   // Migrate stale instance IDs and names
   if (localDB.instance.id === "dapp-instance") {
     localDB.instance.id = "instance-main";
@@ -325,7 +647,12 @@ function applyOffchainDB(ipfsDB: Record<string, any>) {
   if (localDB.instance.instance_name === "Plane DApp") {
     localDB.instance.instance_name = "Plane Instance";
   }
-  TRANSIENT_COLLECTIONS.forEach(col => { localDB[col] = []; });
+  try {
+    const snapshot = JSON.stringify(localDB);
+    localStorage.setItem("plane_dapp_local_db", snapshot);
+    sessionStorage.setItem("plane_dapp_latest_db", snapshot);
+  } catch { }
+  syncWorkspacesToCookie();
 }
 
 // Hàm resolve dùng cho db-bootstrap.tsx xử lý UI conflict
@@ -344,9 +671,31 @@ export function resolveDBConflict(choice: "USE_CHAIN" | "USE_LOCAL", cid: string
   }
 }
 
-// ── Decentralized IPFS + Blockchain Sync ─────────────────────────────────
+/** Khôi phục dữ liệu từ mã CID IPFS bất kỳ */
+export async function restoreFromIPFS(cid: string): Promise<boolean> {
+  const cleanCid = cid.trim();
+  if (!cleanCid) return false;
+  console.log(`[DApp DB] Đang khôi phục dữ liệu từ IPFS CID: ${cleanCid}`);
+  const ipfsDB = await fetchFromIPFS(cleanCid);
+  if (ipfsDB) {
+    applyOffchainDB(ipfsDB);
+    saveDB();
+    if (typeof window !== "undefined") {
+      localStorage.setItem("plane_dapp_ipfs_cid_local", cleanCid);
+      localStorage.setItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`, cleanCid);
+      lastUploadedCID = cleanCid;
+    }
+    console.log(`[DApp DB] Khôi phục thành công từ IPFS CID: ${cleanCid}`);
+    return true;
+  }
+  return false;
+}
 
-export let baseCID: string = "";
+if (typeof window !== "undefined") {
+  (window as any).restoreFromIPFS = restoreFromIPFS;
+}
+
+// ── Decentralized IPFS + Blockchain Sync ─────────────────────────────────
 
 const GET_CID_ABI = {
   type: "function",
@@ -378,7 +727,46 @@ function getEnvVar(name: string): string | undefined {
   return undefined;
 }
 
-const CONTRACT_ADDRESS = "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
+const CONTRACT_ADDRESS =
+  getEnvVar("VITE_REGISTRY_CONTRACT_ADDRESS") ||
+  getEnvVar("NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS") ||
+  "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
+
+const WORKSPACE_REGISTRY_ADDRESS =
+  getEnvVar("VITE_WORKSPACE_REGISTRY_ADDRESS") ||
+  getEnvVar("NEXT_PUBLIC_WORKSPACE_REGISTRY_ADDRESS") ||
+  "0xA89B781A0AA61F3bBC86410DE74a350297A5087d";
+
+const GET_WORKSPACE_CID_ABI = {
+  type: "function",
+  name: "getWorkspaceCID",
+  inputs: [{ internalType: "string", name: "slug", type: "string" }],
+  outputs: [{ internalType: "string", name: "", type: "string" }],
+  stateMutability: "view",
+};
+
+const UPDATE_WORKSPACE_CID_ABI = {
+  type: "function",
+  name: "updateWorkspaceCID",
+  inputs: [
+    { internalType: "string", name: "slug", type: "string" },
+    { internalType: "string", name: "newCid", type: "string" },
+  ],
+  outputs: [],
+  stateMutability: "nonpayable",
+};
+
+const CREATE_WORKSPACE_ABI = {
+  type: "function",
+  name: "createWorkspace",
+  inputs: [
+    { internalType: "string", name: "slug", type: "string" },
+    { internalType: "string", name: "name", type: "string" },
+    { internalType: "string", name: "initialCid", type: "string" },
+  ],
+  outputs: [],
+  stateMutability: "nonpayable",
+};
 const DEFAULT_PROXY_URL = "https://plane-ipfs-proxy.anh2482006.workers.dev";
 const PLACEHOLDER_PATTERNS = ["your-worker", "your-subdomain", "your-domain", "example.com"];
 
@@ -392,6 +780,7 @@ function getProxyUrl(): string | null {
 
 // ── Direct RPC (bypass Bridge iframe for read-only calls) ──────────────
 const GET_CID_SELECTOR = "0xfa3e97e7"; // keccak256("getCID(address,string)")[0:4]
+const GET_WORKSPACE_CID_SELECTOR = "0xdf48cfdc"; // keccak256("getWorkspaceCID(string)")[0:4]
 
 function getRpcUrl(): string {
   return getEnvVar("VITE_RPC_URL") || "https://rpc-proxy-sequoia.iqnb.com:8446";
@@ -421,6 +810,15 @@ function abiEncodeGetCID(userAddress: string, key: string): string {
   // string data (right-padded to 32-byte boundary)
   const keyDataHex = keyBytes.padEnd(Math.ceil(keyBytes.length / 64) * 64, "0");
   return GET_CID_SELECTOR + addressHex + offsetHex + keyLenHex + keyDataHex;
+}
+
+/** ABI-encode getWorkspaceCID(string) calldata without external libs */
+function abiEncodeGetWorkspaceCID(slug: string): string {
+  const offsetHex = padHex("20", 32);
+  const slugBytes = utf8ToHex(slug);
+  const slugLenHex = padHex(slug.length.toString(16), 32);
+  const slugDataHex = slugBytes.padEnd(Math.ceil(slugBytes.length / 64) * 64, "0");
+  return GET_WORKSPACE_CID_SELECTOR + offsetHex + slugLenHex + slugDataHex;
 }
 
 /** Decode ABI-encoded string return value from eth_call hex result */
@@ -543,9 +941,12 @@ async function _initDAppDB() {
   if (typeof window === "undefined") return { status: "OK" };
   const activeWallet = await getWalletAddress().catch(() => null);
 
+  const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+  const urlCid = urlParams?.get("cid");
+
   if (!activeWallet) {
     console.log(`[DApp DB] Chưa có ví. Sử dụng dữ liệu off-chain trong bộ nhớ RAM.`);
-    const localCid = localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) || localStorage.getItem("plane_dapp_ipfs_cid_local");
+    const localCid = urlCid || localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) || localStorage.getItem("plane_dapp_ipfs_cid_local");
     if (localCid) {
       const ipfsDB = await fetchFromIPFS(localCid);
       if (ipfsDB) {
@@ -592,8 +993,25 @@ async function _initDAppDB() {
     console.log(`[DApp DB] Đọc CID trực tiếp từ RPC (${getRpcUrl()})...`);
     const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
     const rawResult = await directRpcRead(CONTRACT_ADDRESS, calldata, 15000);
-    const onChainCid = decodeAbiString(rawResult);
-    console.log(`[DApp DB] CID từ contract:`, onChainCid || "(trống)");
+    const onChainUserCid = decodeAbiString(rawResult);
+    console.log(`[DApp DB] User CID từ contract:`, onChainUserCid || "(trống)");
+
+    // ── Check PlaneWorkspaceRegistry if available ──────────────
+    let onChainWorkspaceCid = "";
+    if (WORKSPACE_REGISTRY_ADDRESS) {
+      try {
+        const wsCalldata = abiEncodeGetWorkspaceCID("fiai");
+        const wsRawResult = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsCalldata, 10000);
+        onChainWorkspaceCid = decodeAbiString(wsRawResult);
+        if (onChainWorkspaceCid) {
+          console.log(`[DApp DB] Tìm thấy Workspace CID từ PlaneWorkspaceRegistry:`, onChainWorkspaceCid);
+        }
+      } catch (wsErr) {
+        console.warn(`[DApp DB] Không thể đọc CID từ PlaneWorkspaceRegistry:`, wsErr);
+      }
+    }
+
+    const onChainCid = onChainWorkspaceCid || onChainUserCid;
 
     baseCID = onChainCid || "";
 
@@ -721,6 +1139,51 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
 
   await sendWithWalletRecovery();
 
+  // Đồng bộ lên PlaneWorkspaceRegistry cho workspace chung nếu có
+  if (WORKSPACE_REGISTRY_ADDRESS && bridge) {
+    try {
+      await bridge.request("sendTransaction", {
+        from: currentUserAddress as string,
+        to: WORKSPACE_REGISTRY_ADDRESS,
+        abiData: [UPDATE_WORKSPACE_CID_ABI],
+        functionName: "updateWorkspaceCID",
+        feeType: "sc",
+        amount: "0",
+        value: "0",
+        gas: "3000000",
+        type: "transaction",
+        inputArray: [
+          { name: "slug", type: "string", value: "fiai" },
+          { name: "newCid", type: "string", value: cid },
+        ],
+        isReadOnly: false,
+        bundleId: "",
+      }).catch(async () => {
+        return bridge.request("sendTransaction", {
+          from: currentUserAddress as string,
+          to: WORKSPACE_REGISTRY_ADDRESS,
+          abiData: [CREATE_WORKSPACE_ABI],
+          functionName: "createWorkspace",
+          feeType: "sc",
+          amount: "0",
+          value: "0",
+          gas: "3000000",
+          type: "transaction",
+          inputArray: [
+            { name: "slug", type: "string", value: "fiai" },
+            { name: "name", type: "string", value: "FIAI Workspace" },
+            { name: "initialCid", type: "string", value: cid },
+          ],
+          isReadOnly: false,
+          bundleId: "",
+        });
+      });
+      console.log(`[DApp DB] ✅ Đã cập nhật CID lên PlaneWorkspaceRegistry (${WORKSPACE_REGISTRY_ADDRESS})`);
+    } catch (wsErr) {
+      console.warn("[DApp DB] Cập nhật PlaneWorkspaceRegistry bỏ qua:", wsErr);
+    }
+  }
+
   // Xóa cờ is_dirty CHỈ SAU KHI transaction confirm thành công
   baseCID = cid;
   isDirtyState = false;
@@ -801,11 +1264,12 @@ function getUserProfile() {
       id: "anonymous",
       user: "anonymous",
       role: "admin",
-      last_workspace_id: null,
+      last_workspace_id: "workspace-fiai",
+      last_workspace_slug: "fiai",
       theme: { theme: "dark" },
-      onboarding_step: { workspace_join: false, profile_complete: false, workspace_create: false, workspace_invite: false },
-      is_onboarded: false,
-      is_tour_completed: false,
+      onboarding_step: { workspace_join: true, profile_complete: true, workspace_create: true, workspace_invite: true },
+      is_onboarded: true,
+      is_tour_completed: true,
       use_case: null,
       billing_address_country: null,
       billing_address: null,
@@ -820,22 +1284,22 @@ function getUserProfile() {
 
   const userWorkspaces = localDB.workspaces || [];
   const firstWs = userWorkspaces[0] || null;
-  const hasWorkspace = userWorkspaces.length > 0;
 
   return {
     id: activeUser.id,
     user: activeUser.id,
     role: "admin",
-    last_workspace_id: activeUser.last_workspace_id || firstWs?.id || null,
+    last_workspace_id: activeUser.last_workspace_id || firstWs?.id || "workspace-fiai",
+    last_workspace_slug: activeUser.last_workspace_slug || firstWs?.slug || "fiai",
     theme: activeUser.theme || { theme: "dark", primary: null, background: null, darkPalette: false },
-    onboarding_step: activeUser.onboarding_step || {
-      workspace_join: hasWorkspace,
+    onboarding_step: {
+      workspace_join: true,
       profile_complete: true,
-      workspace_create: hasWorkspace,
-      workspace_invite: hasWorkspace,
+      workspace_create: true,
+      workspace_invite: true,
     },
-    is_onboarded: activeUser.is_onboarded ?? hasWorkspace,
-    is_tour_completed: activeUser.is_tour_completed ?? hasWorkspace,
+    is_onboarded: true,
+    is_tour_completed: true,
     use_case: null,
     billing_address_country: null,
     billing_address: null,
@@ -856,19 +1320,23 @@ function getUserSettings() {
     (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
   ) || localDB.users?.[0] || null;
 
-  const userWorkspaces = localDB.workspaces || [];
-  const currentWs = userWorkspaces.find((w: any) => w.id === activeUser?.last_workspace_id || w.slug === activeUser?.last_workspace_slug) || userWorkspaces[0] || null;
+  const userWorkspaces = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces : [DEFAULT_WORKSPACE];
+  const currentWs = userWorkspaces.find((w: any) =>
+    w.id === activeUser?.last_workspace_id ||
+    w.slug === activeUser?.last_workspace_slug ||
+    (loggedInEmail && w.owner?.email?.toLowerCase() === loggedInEmail.toLowerCase())
+  ) || userWorkspaces[0] || DEFAULT_WORKSPACE;
 
   return {
     id: activeUser?.id || "anonymous",
     email: activeUser?.email || loggedInEmail || "",
     workspace: {
-      last_workspace_id: currentWs?.id || null,
-      last_workspace_slug: currentWs?.slug || null,
-      last_workspace_name: currentWs?.name || null,
+      last_workspace_id: currentWs?.id || "workspace-fiai",
+      last_workspace_slug: currentWs?.slug || "fiai",
+      last_workspace_name: currentWs?.name || "FIAI",
       last_workspace_logo: currentWs?.logo || null,
-      fallback_workspace_id: currentWs?.id || null,
-      fallback_workspace_slug: currentWs?.slug || null,
+      fallback_workspace_id: currentWs?.id || "workspace-fiai",
+      fallback_workspace_slug: currentWs?.slug || "fiai",
       invites: 0,
     },
   };
@@ -893,6 +1361,7 @@ type RouteResult = { data: any; status: number };
 
 function handleRoute(method: string, url: string, body: Record<string, any>): RouteResult {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
+  syncCrossPortWorkspaces();
   const activeUserId = getLoggedInUserId();
   const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
   let activeUser = (localDB.users || []).find((u: any) =>
@@ -1136,6 +1605,7 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     if (url.includes("/project-roles")) return ok({}); // return empty object for project roles
 
     if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles") && !url.includes("/invitations")) {
+      syncCrossPortWorkspaces();
       const workspaces = localDB.workspaces || [];
       return ok(workspaces.map((ws: any) => ({ ...ws, role: 20 })));
     }
@@ -1196,6 +1666,38 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     return ok(projects);
   }
 
+  // ── Project Detail (GET, PATCH, DELETE) ──────────────────────────────
+  const projectDetailMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/?(?:\?.*)?$/);
+  if (projectDetailMatch) {
+    const projectId = projectDetailMatch[1];
+    if (projectId !== "details" && projectId !== "project-identifiers" && projectId !== "search") {
+      const projectIdx = (localDB.projects || []).findIndex(
+        (p: any) => p.id === projectId || p.identifier === projectId
+      );
+      if (projectIdx > -1) {
+        if (method === "get") {
+          return ok(localDB.projects[projectIdx]);
+        }
+        if (method === "patch" || method === "put") {
+          localDB.projects[projectIdx] = {
+            ...localDB.projects[projectIdx],
+            ...body,
+            updated_at: new Date().toISOString(),
+          };
+          saveDB();
+          syncDAppRecord("projects", projectId, localDB.projects[projectIdx]);
+          return ok(localDB.projects[projectIdx]);
+        }
+        if (method === "delete") {
+          localDB.projects.splice(projectIdx, 1);
+          saveDB();
+          return ok({});
+        }
+      } else if (method === "get") {
+        return { data: { error: "Project not found" }, status: 404 };
+      }
+    }
+  }
 
   // ── Project Members ──────────────────────────────────────────────────
   if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/projects\/[^/]+\/project-members\/me\/?/)) {
@@ -1242,6 +1744,11 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
 
   if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/?(?:\?.*)?$/)) {
     return ok(localDB.favorites || []);
+  }
+
+  // Assets v2 bulk status update
+  if (url.match(/\/api\/assets\/v2\/.*\/bulk\/?/) && method === "post") {
+    return ok({ success: true, asset_ids: body?.asset_ids || [] });
   }
 
   // Assets v2
@@ -1495,12 +2002,9 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   }
 
 
-  // search-issues endpoint — return issues in ISearchIssueResponse format
+  // search-issues endpoint — delegate to handleCRUD
   if (url.includes("/search-issues") || url.includes("search-issues")) {
-    if (method === "get") {
-      // Return empty array so UI is forced to rely on on-chain data
-      return ok([]);
-    }
+    return handleCRUD(method, url, body);
   }
   // ── Generic CRUD ────────────────────────────────────────────────────
   return handleCRUD(method, url, body);
@@ -1515,8 +2019,52 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
   // Handle search-issues directly — return ISearchIssueResponse[] format
   if (collection === "search-issues" && method === "get") {
-    // Return empty array so UI is forced to rely on on-chain data
-    return ok([]);
+    const urlObj = new URL(url, "http://localhost");
+    const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
+    const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
+
+    let list = [...(localDB.issues || [])];
+    console.log(`[DApp CRUD] search-issues: total issues in DB = ${list.length}`);
+
+    // Filter by project if not workspace-level search
+    if (!workspaceSearch) {
+      const projMatch = url.match(/\/projects\/([^/]+)\//);
+      if (projMatch) {
+        const projId = projMatch[1];
+        list = list.filter((item: any) => item.project === projId || item.project_id === projId);
+        console.log(`[DApp CRUD] search-issues: after project filter for ${projId} = ${list.length}`);
+      }
+    }
+
+    // Filter by search term
+    if (searchTerm) {
+      list = list.filter((item: any) => (item.name || "").toLowerCase().includes(searchTerm));
+    }
+
+    // Map to ISearchIssueResponse format
+    const results = list.map((item: any) => {
+      const stateDetail =
+        item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
+      const projectDetail =
+        item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
+      return {
+        id: item.id,
+        name: item.name || "",
+        project_id: item.project_id || item.project,
+        project__identifier: projectDetail?.identifier || "PROJ",
+        project__name: projectDetail?.name || "Project",
+        sequence_id: item.sequence_id || 0,
+        start_date: item.start_date || null,
+        state__color: stateDetail?.color || "#a3a3a3",
+        state__group: stateDetail?.group || "backlog",
+        state__name: stateDetail?.name || "Backlog",
+        workspace__slug: item.workspace || localDB.workspaces?.[0]?.slug || "fiai",
+        type_id: item.type_id || item.type || null,
+      };
+    });
+
+    console.log(`[DApp CRUD] search-issues returning ${results.length} results`);
+    return ok(results);
   }
 
   // Alias work-items / issues-detail / work-items-detail to issues
@@ -1887,7 +2435,34 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         }
       }
 
-      if (!item) return { data: null, status: 404 };
+      if (!item) {
+        if (collection === "workspaces" && id) {
+          const formattedName = id.replace(/[-_]/g, " ").toUpperCase();
+          item = {
+            id: `workspace-${id}`,
+            name: formattedName,
+            slug: id,
+            organization_size: "5-10",
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            created_by: getLoggedInUserId() || "user-default",
+            owner: {
+              id: getLoggedInUserId() || "user-default",
+              email: getLoggedInEmail() || "user@fiai.network",
+              first_name: formattedName,
+              last_name: "",
+              display_name: formattedName,
+              avatar: "",
+            },
+            role: 20,
+          };
+          if (!localDB.workspaces) localDB.workspaces = [];
+          localDB.workspaces.push(item);
+          saveDB();
+          return ok(item);
+        }
+        return { data: null, status: 404 };
+      }
       // Enrich issue/work-item data with defaults expected by the detail store
       if (collection === "issues") {
         const stateDetail =
@@ -2411,14 +2986,22 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
 
   const rest = segments.slice(apiIdx + 1); // everything after "api"
 
+  // Special cases: direct workspace or project routes
+  if (rest.length === 2 && rest[0] === "workspaces") {
+    return { collection: "workspaces", id: rest[1], isPaginated: false };
+  }
+  if (rest.length === 4 && rest[0] === "workspaces" && rest[2] === "projects") {
+    return { collection: "projects", id: rest[3], isPaginated: false };
+  }
+
   // Skip known structural prefixes to find the meaningful resource segments
   // Pattern: workspaces/:slug/projects/:pid/[v2/]<resource>[/:id[/<sub-resource>[/:subId]]]
   let i = 0;
 
   // skip "workspaces/:slug"
   if (rest[i] === "workspaces" && rest[i + 1]) i += 2;
-  // skip "projects/:pid"
-  if (rest[i] === "projects" && rest[i + 1]) i += 2;
+  // skip "projects/:pid" only if there are deeper sub-resource segments
+  if (rest[i] === "projects" && rest[i + 1] && rest.length > i + 2) i += 2;
   // skip "v2" prefix
   if (rest[i] === "v2") i += 1;
 

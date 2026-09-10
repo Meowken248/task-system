@@ -31,7 +31,10 @@ export function useOffchainData(key: string) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  const contractAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS || "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
+  const contractAddress =
+    process.env.VITE_REGISTRY_CONTRACT_ADDRESS ||
+    process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS ||
+    "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
   const DEFAULT_PINATA_PROXY = "https://plane-ipfs-proxy.anh2482006.workers.dev";
   const rawProxyUrl = process.env.VITE_PINATA_PROXY_URL || DEFAULT_PINATA_PROXY;
   const proxyUrl = rawProxyUrl && !rawProxyUrl.includes("your-worker") && !rawProxyUrl.includes("your-domain") ? rawProxyUrl : null;

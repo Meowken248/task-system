@@ -3,3 +3,4 @@
 /* eslint-disable */
 export * as offchainDataRegistrySol from "./OffchainDataRegistry.sol";
 export * as planeTaskManagerSol from "./PlaneTaskManager.sol";
+export * as planeWorkspaceRegistrySol from "./PlaneWorkspaceRegistry.sol";

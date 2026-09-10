@@ -43,10 +43,27 @@ export const WorkspaceListItem = observer(function WorkspaceListItem({ workspace
       : `${WEB_BASE_URL}/${encodeURIComponent(workspace.slug)}`;
   };
 
+  const handleLinkClick = () => {
+    try {
+      const compact = [
+        {
+          id: workspace.id,
+          name: workspace.name,
+          slug: workspace.slug,
+          organization_size: workspace.organization_size || "5-10",
+          owner: workspace.owner,
+          role: 20,
+        },
+      ];
+      document.cookie = `plane_dapp_sync_workspaces=${encodeURIComponent(JSON.stringify(compact))}; path=/; max-age=31536000; SameSite=Lax`;
+    } catch {}
+  };
+
   return (
     <a
       key={workspaceId}
       href={getWorkspaceHref()}
+      onClick={handleLinkClick}
       target="_blank"
       className="group flex items-center justify-between gap-2.5 truncate rounded-lg border border-subtle bg-layer-1 p-3 hover:border-subtle-1 hover:bg-layer-1-hover hover:shadow-raised-100"
       rel="noreferrer"

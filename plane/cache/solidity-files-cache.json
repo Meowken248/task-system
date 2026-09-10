@@ -8,11 +8,11 @@
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
-          "evmVersion": "paris",
           "optimizer": {
-            "enabled": false,
+            "enabled": true,
             "runs": 200
           },
+          "evmVersion": "paris",
           "outputSelection": {
             "*": {
               "*": [
@@ -38,17 +38,17 @@
       ]
     },
     "C:\\task-system\\plane\\contracts\\PlaneTaskManager.sol": {
-      "lastModificationDate": 1787906919727,
-      "contentHash": "0bb130751f3a6e6f85277242704f09fa",
+      "lastModificationDate": 1789029327773,
+      "contentHash": "91ec4fc16333199fbfccbacd6742a61a",
       "sourceName": "contracts/PlaneTaskManager.sol",
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
-          "evmVersion": "paris",
           "optimizer": {
-            "enabled": false,
+            "enabled": true,
             "runs": 200
           },
+          "evmVersion": "paris",
           "outputSelection": {
             "*": {
               "*": [
@@ -71,6 +71,42 @@
       ],
       "artifacts": [
         "PlaneTaskManager"
+      ]
+    },
+    "C:\\task-system\\plane\\contracts\\PlaneWorkspaceRegistry.sol": {
+      "lastModificationDate": 1789029290411,
+      "contentHash": "b57c2126ae005ad39142a0b5b7c1e526",
+      "sourceName": "contracts/PlaneWorkspaceRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "PlaneWorkspaceRegistry"
       ]
     }
   }

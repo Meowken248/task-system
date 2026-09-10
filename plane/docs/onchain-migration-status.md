@@ -20,9 +20,10 @@ Các thay đổi sau đây đã được hoàn thành 100% và đang được gi
   - Đã gỡ bỏ toàn bộ logic lưu dự phòng (fallback) xuống local như `recordOfflineTaskCreation` và `recordOfflineDailyReport`.
   - Mọi thao tác ghi (tạo task, gán nhân viên, sửa mô tả, ném comment) nếu bị chain từ chối (hoặc lỗi mạng) sẽ bắt buộc ném lỗi `throw { error: ..., isChainError: true }` để chặn hành động và hiện lỗi đỏ trên UI.
 
-### 1.3. Khóa Storage Giả (`dapp-interceptor.ts`)
-- **Tạo Transient Collections:** Đã nhóm `issues`, `issue_comments`, `attachments` vào `TRANSIENT_COLLECTIONS`. Các bảng này sẽ tự động xóa sạch khỏi local mỗi lần tải lại trang.
-- **Chặn List Endpoints:** Các endpoint như `search-issues` và lấy danh sách transient data đã bị ép trả về kết quả rỗng `[]` để không cho UI render dữ liệu giả.
+### 1.3. Lưu Trữ Dữ Liệu Task (`dapp-interceptor.ts`)
+- **Lưu trữ Persistent & IPFS Snapshot:** `issues`, `issue_comments`, `attachments` được lưu bền vững trong `localStorage` (`plane_dapp_local_db`) và tự động đồng bộ lên IPFS snapshot để bảo toàn dữ liệu task giữa các lần F5 reload trang.
+- **Khôi phục Search Issues:** Endpoint `search-issues` trả về đúng danh sách tasks từ localDB để hỗ trợ tìm kiếm, liên kết task cha-con (sub-issues) và hiển thị trên giao diện.
+- **Ghi bằng chứng On-chain song song:** Mọi thao tác tạo task vẫn tạo giao dịch ghi bằng chứng on-chain qua `plane-task-chain.service.ts` để phục vụ KPI và audit trail.
 
 ---
 

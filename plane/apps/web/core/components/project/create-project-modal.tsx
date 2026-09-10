@@ -54,10 +54,14 @@ export function CreateProjectModal(props: Props) {
   };
 
   const handleCoverImageStatusUpdate = async (projectId: string, coverImage: string) => {
-    if (!checkURLValidity(coverImage)) {
-      await fileService.updateBulkProjectAssetsUploadStatus(workspaceSlug, projectId, projectId, {
-        asset_ids: [getAssetIdFromUrl(coverImage)],
-      });
+    try {
+      if (!checkURLValidity(coverImage)) {
+        await fileService.updateBulkProjectAssetsUploadStatus(workspaceSlug, projectId, projectId, {
+          asset_ids: [getAssetIdFromUrl(coverImage)],
+        });
+      }
+    } catch (error) {
+      console.warn("Non-fatal error updating bulk project assets status:", error);
     }
   };
 

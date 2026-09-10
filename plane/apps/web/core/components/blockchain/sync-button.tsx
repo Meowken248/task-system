@@ -12,14 +12,23 @@ export function SyncToChainButton() {
       // 1. Lấy địa chỉ ví đã liên kết
       const walletAddress = await resolveMetanodeWalletAddress();
       
-      // 2. Ép SDK nhận diện ví (mở popup và tự động đóng bằng ESC nếu cần, giống web-book-phong-hop)
-      const imported = await promptForMetanodeWalletImport(walletAddress);
-      if (!imported) {
-        throw new Error("Chưa thêm ví vào MetaNode hoặc đã hủy.");
+      // 2. Gửi transaction trực tiếp (chỉ hỏi mật khẩu ký 1 lần duy nhất)
+      try {
+        await syncDAppDBToChain(walletAddress);
+      } catch (sendErr: any) {
+        // Fallback: nếu SDK chưa nhận diện được ví, mới gọi promptForMetanodeWalletImport
+        const errMsg = sendErr?.message || sendErr?.toString?.() || "";
+        if (/wallet not found|no frame found/i.test(errMsg)) {
+          const imported = await promptForMetanodeWalletImport(walletAddress);
+          if (imported) {
+            await syncDAppDBToChain(walletAddress);
+          } else {
+            throw sendErr;
+          }
+        } else {
+          throw sendErr;
+        }
       }
-
-      // 3. Gửi transaction (lúc này SDK đã có ví, sẽ bỏ qua popup "Chọn ví" bị lỗi, đi thẳng đến "Ký giao dịch")
-      await syncDAppDBToChain(walletAddress);
       alert("Đồng bộ dữ liệu lên Blockchain thành công!");
     } catch (err: any) {
       if (err.message && err.message.includes("LỖI XUNG ĐỘT")) {

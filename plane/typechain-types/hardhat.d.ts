@@ -14,6 +14,10 @@ import * as Contracts from ".";
 declare module "hardhat/types/runtime" {
   interface HardhatEthersHelpers extends HardhatEthersHelpersBase {
     getContractFactory(
+      name: "PlaneWorkspaceRegistry",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.PlaneWorkspaceRegistry__factory>;
+    getContractFactory(
       name: "PlaneTaskManager",
       signerOrOptions?: ethers.Signer | FactoryOptions
     ): Promise<Contracts.PlaneTaskManager__factory>;
@@ -23,6 +27,11 @@ declare module "hardhat/types/runtime" {
     ): Promise<Contracts.OffchainDataRegistry__factory>;
 
     getContractAt(
+      name: "PlaneWorkspaceRegistry",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.PlaneWorkspaceRegistry>;
+    getContractAt(
       name: "PlaneTaskManager",
       address: string | ethers.Addressable,
       signer?: ethers.Signer
@@ -34,6 +43,10 @@ declare module "hardhat/types/runtime" {
     ): Promise<Contracts.OffchainDataRegistry>;
 
     deployContract(
+      name: "PlaneWorkspaceRegistry",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.PlaneWorkspaceRegistry>;
+    deployContract(
       name: "PlaneTaskManager",
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.PlaneTaskManager>;
@@ -42,6 +55,11 @@ declare module "hardhat/types/runtime" {
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.OffchainDataRegistry>;
 
+    deployContract(
+      name: "PlaneWorkspaceRegistry",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.PlaneWorkspaceRegistry>;
     deployContract(
       name: "PlaneTaskManager",
       args: any[],
