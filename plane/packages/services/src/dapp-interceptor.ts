@@ -116,8 +116,18 @@ function loadInitialDB(): Record<string, any> {
       if (cachedLocal) {
         const parsed = JSON.parse(cachedLocal);
         if (parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0) {
-          parsed.projects = (parsed.projects || []).filter((p: any) => p.id !== "project-fiai");
-          parsed.states = (parsed.states || []).filter((s: any) => s.project !== "project-fiai");
+          const deletedSet = new Set(parsed._deleted_project_ids || []);
+          parsed.projects = (parsed.projects || []).filter(
+            (p: any) => p.id !== "project-fiai" && !deletedSet.has(p.id) && !deletedSet.has(p.identifier)
+          );
+          parsed.states = (parsed.states || []).filter(
+            (s: any) => s.project !== "project-fiai" && !deletedSet.has(s.project) && !deletedSet.has(s.project_id)
+          );
+          if (parsed.issues) {
+            parsed.issues = parsed.issues.filter(
+              (i: any) => !deletedSet.has(i.project) && !deletedSet.has(i.project_id)
+            );
+          }
           (parsed.projects || []).forEach((p: any) => {
             if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
           });
@@ -131,8 +141,18 @@ function loadInitialDB(): Record<string, any> {
       if (cachedSession) {
         const parsed = JSON.parse(cachedSession);
         if (parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0) {
-          parsed.projects = (parsed.projects || []).filter((p: any) => p.id !== "project-fiai");
-          parsed.states = (parsed.states || []).filter((s: any) => s.project !== "project-fiai");
+          const deletedSet = new Set(parsed._deleted_project_ids || []);
+          parsed.projects = (parsed.projects || []).filter(
+            (p: any) => p.id !== "project-fiai" && !deletedSet.has(p.id) && !deletedSet.has(p.identifier)
+          );
+          parsed.states = (parsed.states || []).filter(
+            (s: any) => s.project !== "project-fiai" && !deletedSet.has(s.project) && !deletedSet.has(s.project_id)
+          );
+          if (parsed.issues) {
+            parsed.issues = parsed.issues.filter(
+              (i: any) => !deletedSet.has(i.project) && !deletedSet.has(i.project_id)
+            );
+          }
           (parsed.projects || []).forEach((p: any) => {
             if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
           });
@@ -201,13 +221,21 @@ localDB.workspaces = (localDB.workspaces || []).filter((w: any) => w.slug !== "f
 if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
 if (!localDB.workspaces.some((w: any) => w.slug === "fiai")) localDB.workspaces.unshift(DEFAULT_WORKSPACE);
 if (!localDB.projects) localDB.projects = [];
-localDB.projects = localDB.projects.filter((p: any) => p.id !== "project-fiai");
+const initDeletedSet = new Set(localDB._deleted_project_ids || []);
+localDB.projects = localDB.projects.filter(
+  (p: any) => p.id !== "project-fiai" && !initDeletedSet.has(p.id) && !initDeletedSet.has(p.identifier)
+);
 (localDB.projects || []).forEach((p: any) => {
   if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
 });
 if (!localDB.states) localDB.states = [];
-localDB.states = localDB.states.filter((s: any) => s.project !== "project-fiai");
+localDB.states = localDB.states.filter(
+  (s: any) => s.project !== "project-fiai" && !initDeletedSet.has(s.project) && !initDeletedSet.has(s.project_id)
+);
 if (!localDB.issues) localDB.issues = [];
+localDB.issues = localDB.issues.filter(
+  (i: any) => !initDeletedSet.has(i.project) && !initDeletedSet.has(i.project_id)
+);
 if (!localDB.issue_comments) localDB.issue_comments = [];
 if (!localDB.attachments) localDB.attachments = [];
 if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
@@ -241,9 +269,13 @@ function syncWorkspacesToCookie() {
     }));
     const val = encodeURIComponent(JSON.stringify(compact));
     document.cookie = `plane_dapp_sync_workspaces=${val}; path=/; max-age=31536000; SameSite=Lax`;
-    const cidToSync = lastUploadedCID || baseCID || localStorage.getItem("plane_dapp_ipfs_cid_local");
-    if (cidToSync) {
-      document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
+    if (isDirtyState) {
+      document.cookie = "plane_dapp_sync_cid=; path=/; max-age=0; SameSite=Lax";
+    } else {
+      const cidToSync = lastUploadedCID || baseCID || localStorage.getItem("plane_dapp_ipfs_cid_local");
+      if (cidToSync) {
+        document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
+      }
     }
   } catch { }
 }
@@ -528,6 +560,7 @@ function scheduleIPFSUpload() {
 
 /** Get the last uploaded CID (for syncDAppDBToChain to reuse) */
 export function getLastUploadedCID(): string | null {
+  if (isDirtyState) return null;
   if (lastUploadedCID) return lastUploadedCID;
   if (typeof window === "undefined") return null;
   return localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`);
@@ -541,7 +574,11 @@ export function isIPFSUploading(): boolean {
 function saveDB() {
   if (typeof window === "undefined") return;
   isDirtyState = true;
+  lastUploadedCID = null;
+  lastUploadedDataHash = null;
   try {
+    const storageKey = getDBStorageKey();
+    localStorage.removeItem(`plane_dapp_ipfs_cid_${storageKey}`);
     const snapshot = JSON.stringify(localDB);
     localStorage.setItem("plane_dapp_local_db", snapshot);
     sessionStorage.setItem("plane_dapp_latest_db", snapshot);
@@ -600,8 +637,16 @@ function applyOffchainDB(ipfsDB: Record<string, any>) {
   const currentIssues = [...(localDB.issues || [])];
   const currentComments = [...(localDB.issue_comments || [])];
   const currentAttachments = [...(localDB.attachments || [])];
+  const mergedDeletedProjects = new Set<string>([
+    ...(localDB._deleted_project_ids || []),
+    ...(ipfsDB._deleted_project_ids || []),
+  ]);
+
   for (const key in localDB) delete localDB[key];
   Object.assign(localDB, ipfsDB);
+
+  localDB._deleted_project_ids = Array.from(mergedDeletedProjects);
+
   if (!localDB.users) localDB.users = [];
   localDB.users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
   if (!localDB.workspaces) localDB.workspaces = [];
@@ -612,18 +657,53 @@ function applyOffchainDB(ipfsDB: Record<string, any>) {
   }
   localDB.workspaces = localDB.workspaces.filter((w: any) => w.slug !== "fiai-metanode");
   if (localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
+
   if (!localDB.projects) localDB.projects = [];
-  localDB.projects = localDB.projects.filter((p: any) => p.id !== "project-fiai");
+  localDB.projects = localDB.projects.filter(
+    (p: any) => p.id !== "project-fiai" && !mergedDeletedProjects.has(p.id) && !mergedDeletedProjects.has(p.identifier)
+  );
   (localDB.projects || []).forEach((p: any) => {
     if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
   });
+
   if (!localDB.states) localDB.states = [];
-  localDB.states = localDB.states.filter((s: any) => s.project !== "project-fiai");
+  localDB.states = localDB.states.filter(
+    (s: any) => s.project !== "project-fiai" && !mergedDeletedProjects.has(s.project) && !mergedDeletedProjects.has(s.project_id)
+  );
+
   if (!localDB.issues) localDB.issues = [];
   for (const issue of currentIssues) {
-    if (!localDB.issues.some((i: any) => i.id === issue.id)) {
+    if (
+      !mergedDeletedProjects.has(issue.project) &&
+      !mergedDeletedProjects.has(issue.project_id) &&
+      !localDB.issues.some((i: any) => i.id === issue.id)
+    ) {
       localDB.issues.push(issue);
     }
+  }
+  localDB.issues = localDB.issues.filter(
+    (i: any) => !mergedDeletedProjects.has(i.project) && !mergedDeletedProjects.has(i.project_id)
+  );
+
+  if (localDB.labels) {
+    localDB.labels = localDB.labels.filter(
+      (l: any) => !mergedDeletedProjects.has(l.project) && !mergedDeletedProjects.has(l.project_id)
+    );
+  }
+  if (localDB.cycles) {
+    localDB.cycles = localDB.cycles.filter(
+      (c: any) => !mergedDeletedProjects.has(c.project) && !mergedDeletedProjects.has(c.project_id)
+    );
+  }
+  if (localDB.modules) {
+    localDB.modules = localDB.modules.filter(
+      (m: any) => !mergedDeletedProjects.has(m.project) && !mergedDeletedProjects.has(m.project_id)
+    );
+  }
+  if (localDB.project_members) {
+    localDB.project_members = localDB.project_members.filter(
+      (pm: any) => !mergedDeletedProjects.has(pm.project) && !mergedDeletedProjects.has(pm.project_id)
+    );
   }
   if (!localDB.issue_comments) localDB.issue_comments = [];
   for (const c of currentComments) {
@@ -767,6 +847,54 @@ const CREATE_WORKSPACE_ABI = {
   outputs: [],
   stateMutability: "nonpayable",
 };
+
+const ADD_MEMBER_ABI = {
+  type: "function",
+  name: "addMember",
+  inputs: [
+    { internalType: "string", name: "slug", type: "string" },
+    { internalType: "address", name: "member", type: "address" },
+    { internalType: "uint8", name: "role", type: "uint8" },
+  ],
+  outputs: [],
+  stateMutability: "nonpayable",
+};
+
+const REMOVE_MEMBER_ABI = {
+  type: "function",
+  name: "removeMember",
+  inputs: [
+    { internalType: "string", name: "slug", type: "string" },
+    { internalType: "address", name: "member", type: "address" },
+  ],
+  outputs: [],
+  stateMutability: "nonpayable",
+};
+
+function extractEthAddress(input: string | undefined | null): string | null {
+  if (!input) return null;
+  const clean = input.trim().toLowerCase();
+  if (/^0x[a-f0-9]{40}$/.test(clean)) return clean;
+  const match = clean.match(/^(0x[a-f0-9]{40})(@.*)?$/);
+  if (match) return match[1];
+  return null;
+}
+
+function mapPlaneRoleToContractRole(planeRole: number | string | undefined): number {
+  const r = Number(planeRole);
+  if (r >= 20) return 2; // Admin
+  if (r >= 5) return 1; // Member / Guest
+  return 1;
+}
+
+function getFiaiSDK(): any {
+  if (typeof window !== "undefined") {
+    return (window as any).fiaiSDK || null;
+  }
+  return null;
+}
+
+
 const DEFAULT_PROXY_URL = "https://plane-ipfs-proxy.anh2482006.workers.dev";
 const PLACEHOLDER_PATTERNS = ["your-worker", "your-subdomain", "your-domain", "example.com"];
 
@@ -781,6 +909,8 @@ function getProxyUrl(): string | null {
 // ── Direct RPC (bypass Bridge iframe for read-only calls) ──────────────
 const GET_CID_SELECTOR = "0xfa3e97e7"; // keccak256("getCID(address,string)")[0:4]
 const GET_WORKSPACE_CID_SELECTOR = "0xdf48cfdc"; // keccak256("getWorkspaceCID(string)")[0:4]
+const GET_USER_WORKSPACES_SELECTOR = "0xd7d19c4e"; // keccak256("getUserWorkspaces(address)")[0:4]
+const GET_WORKSPACE_SELECTOR = "0x1cd7381a"; // keccak256("getWorkspace(string)")[0:4]
 
 function getRpcUrl(): string {
   return getEnvVar("VITE_RPC_URL") || "https://rpc-proxy-sequoia.iqnb.com:8446";
@@ -821,6 +951,21 @@ function abiEncodeGetWorkspaceCID(slug: string): string {
   return GET_WORKSPACE_CID_SELECTOR + offsetHex + slugLenHex + slugDataHex;
 }
 
+/** ABI-encode getUserWorkspaces(address) calldata */
+function abiEncodeGetUserWorkspaces(userAddress: string): string {
+  const addressHex = padHex(userAddress, 32);
+  return GET_USER_WORKSPACES_SELECTOR + addressHex;
+}
+
+/** ABI-encode getWorkspace(string) calldata */
+function abiEncodeGetWorkspace(slug: string): string {
+  const offsetHex = padHex("20", 32);
+  const slugBytes = utf8ToHex(slug);
+  const slugLenHex = padHex(slug.length.toString(16), 32);
+  const slugDataHex = slugBytes.padEnd(Math.ceil(slugBytes.length / 64) * 64, "0");
+  return GET_WORKSPACE_SELECTOR + offsetHex + slugLenHex + slugDataHex;
+}
+
 /** Decode ABI-encoded string return value from eth_call hex result */
 function decodeAbiString(hexResult: string): string {
   if (!hexResult || hexResult === "0x" || hexResult.length < 130) return "";
@@ -831,6 +976,58 @@ function decodeAbiString(hexResult: string): string {
   const strHex = data.slice(128, 128 + length * 2);
   const bytes = new Uint8Array(strHex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
   return new TextDecoder().decode(bytes);
+}
+
+/** Decode ABI-encoded string[] return value from eth_call hex result */
+function decodeAbiStringArray(hexResult: string): string[] {
+  if (!hexResult || hexResult === "0x" || hexResult.length < 130) return [];
+  const data = hexResult.startsWith("0x") ? hexResult.slice(2) : hexResult;
+  try {
+    const arrayOffset = parseInt(data.slice(0, 64), 16) * 2;
+    const count = parseInt(data.slice(arrayOffset, arrayOffset + 64), 16);
+    if (isNaN(count) || count <= 0 || count > 100) return [];
+    const result: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const elemOffset = parseInt(data.slice(arrayOffset + 64 + i * 64, arrayOffset + 64 + (i + 1) * 64), 16) * 2;
+      const strStart = arrayOffset + 64 + elemOffset;
+      const strLen = parseInt(data.slice(strStart, strStart + 64), 16);
+      if (isNaN(strLen) || strLen < 0 || strLen > 500) continue;
+      const strHex = data.slice(strStart + 64, strStart + 64 + strLen * 2);
+      const bytes = new Uint8Array(strHex.match(/.{2}/g)?.map((b) => parseInt(b, 16)) || []);
+      result.push(new TextDecoder().decode(bytes));
+    }
+    return result;
+  } catch (err) {
+    console.warn("[DApp DB] decodeAbiStringArray error:", err);
+    return [];
+  }
+}
+
+/** Decode ABI-encoded getWorkspace result: (string name, address owner, string ipfsCID, uint256 updatedAt) */
+function decodeAbiWorkspace(hexResult: string): { name: string; owner: string; ipfsCID: string; updatedAt: number } | null {
+  if (!hexResult || hexResult === "0x" || hexResult.length < 256) return null;
+  const data = hexResult.startsWith("0x") ? hexResult.slice(2) : hexResult;
+  try {
+    const nameOffset = parseInt(data.slice(0, 64), 16) * 2;
+    const owner = "0x" + data.slice(64 + 24, 128);
+    const cidOffset = parseInt(data.slice(128, 192), 16) * 2;
+    const updatedAt = parseInt(data.slice(192, 256), 16);
+
+    const nameLen = parseInt(data.slice(nameOffset, nameOffset + 64), 16);
+    const nameHex = data.slice(nameOffset + 64, nameOffset + 64 + nameLen * 2);
+    const nameBytes = new Uint8Array(nameHex.match(/.{2}/g)?.map((b) => parseInt(b, 16)) || []);
+    const name = new TextDecoder().decode(nameBytes);
+
+    const cidLen = parseInt(data.slice(cidOffset, cidOffset + 64), 16);
+    const cidHex = data.slice(cidOffset + 64, cidOffset + 64 + cidLen * 2);
+    const cidBytes = new Uint8Array(cidHex.match(/.{2}/g)?.map((b) => parseInt(b, 16)) || []);
+    const ipfsCID = new TextDecoder().decode(cidBytes);
+
+    return { name, owner, ipfsCID, updatedAt };
+  } catch (err) {
+    console.warn("[DApp DB] decodeAbiWorkspace error:", err);
+    return null;
+  }
 }
 
 /** Call a read-only contract function directly via JSON-RPC eth_call */
@@ -1000,14 +1197,49 @@ async function _initDAppDB() {
     let onChainWorkspaceCid = "";
     if (WORKSPACE_REGISTRY_ADDRESS) {
       try {
-        const wsCalldata = abiEncodeGetWorkspaceCID("fiai");
-        const wsRawResult = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsCalldata, 10000);
-        onChainWorkspaceCid = decodeAbiString(wsRawResult);
-        if (onChainWorkspaceCid) {
-          console.log(`[DApp DB] Tìm thấy Workspace CID từ PlaneWorkspaceRegistry:`, onChainWorkspaceCid);
+        console.log(`[DApp DB] Đang truy vấn danh sách Workspaces của ví ${currentUserAddress} từ PlaneWorkspaceRegistry (${WORKSPACE_REGISTRY_ADDRESS})...`);
+        const userWsCalldata = abiEncodeGetUserWorkspaces(currentUserAddress as string);
+        const userWsRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, userWsCalldata, 10000);
+        const userWsSlugs = decodeAbiStringArray(userWsRaw);
+        console.log(`[DApp DB] Workspaces tìm thấy trên chain cho ví:`, userWsSlugs);
+
+        if (!localDB.workspaces) localDB.workspaces = [];
+
+        // Luôn kiểm tra workspace "fiai" nếu userWsSlugs rỗng để đảm bảo tính liên tục
+        const slugsToCheck = Array.from(new Set([...userWsSlugs, "fiai"]));
+
+        for (const slug of slugsToCheck) {
+          try {
+            const wsInfoCalldata = abiEncodeGetWorkspace(slug);
+            const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 8000);
+            const wsInfo = decodeAbiWorkspace(wsInfoRaw);
+            if (wsInfo && wsInfo.name) {
+              const existingIdx = localDB.workspaces.findIndex((w: any) => w.slug === slug);
+              if (existingIdx > -1) {
+                localDB.workspaces[existingIdx].name = wsInfo.name;
+                localDB.workspaces[existingIdx].owner = wsInfo.owner;
+              } else {
+                localDB.workspaces.push({
+                  id: slug,
+                  name: wsInfo.name,
+                  slug: slug,
+                  owner: wsInfo.owner,
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date(wsInfo.updatedAt * 1000).toISOString(),
+                });
+              }
+
+              if (wsInfo.ipfsCID && !onChainWorkspaceCid) {
+                onChainWorkspaceCid = wsInfo.ipfsCID;
+                console.log(`[DApp DB] Sử dụng IPFS CID từ workspace "${slug}":`, onChainWorkspaceCid);
+              }
+            }
+          } catch { }
         }
+
+        syncWorkspacesToCookie();
       } catch (wsErr) {
-        console.warn(`[DApp DB] Không thể đọc CID từ PlaneWorkspaceRegistry:`, wsErr);
+        console.warn(`[DApp DB] Không thể đọc danh sách Workspaces từ PlaneWorkspaceRegistry:`, wsErr);
       }
     }
 
@@ -1068,10 +1300,14 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   }
   currentUserAddress = activeWallet;
 
-  // Upload IPFS — reuse auto-saved CID if available, otherwise upload now
-  let cid = getLastUploadedCID();
+  // Upload IPFS — reuse auto-saved CID if available and not dirty, otherwise upload now
+  let cid = isDirtyState ? null : getLastUploadedCID();
   if (!cid) {
-    console.log("[DApp DB] Không có CID đã cache, upload IPFS mới...");
+    if (ipfsDebounceTimer) {
+      clearTimeout(ipfsDebounceTimer);
+      ipfsDebounceTimer = null;
+    }
+    console.log("[DApp DB] Dữ liệu có thay đổi (isDirtyState) hoặc chưa có CID, bắt buộc upload IPFS mới...");
     cid = await uploadToIPFS();
   }
   if (!cid) throw new Error("Không thể upload dữ liệu lên IPFS.");
@@ -1142,6 +1378,17 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   // Đồng bộ lên PlaneWorkspaceRegistry cho workspace chung nếu có
   if (WORKSPACE_REGISTRY_ADDRESS && bridge) {
     try {
+      const activeUserId = getLoggedInUserId();
+      const activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId);
+      const activeSlug =
+        (typeof window !== "undefined" ? localStorage.getItem("last_workspace_slug") : null) ||
+        activeUser?.last_workspace_slug ||
+        localDB.workspaces?.[0]?.slug ||
+        "fiai";
+      const targetWs = (localDB.workspaces || []).find((w: any) => w.slug === activeSlug) || localDB.workspaces?.[0];
+      const targetSlug = targetWs?.slug || activeSlug || "fiai";
+      const targetName = targetWs?.name || "Plane Workspace";
+
       await bridge.request("sendTransaction", {
         from: currentUserAddress as string,
         to: WORKSPACE_REGISTRY_ADDRESS,
@@ -1153,7 +1400,7 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
         gas: "3000000",
         type: "transaction",
         inputArray: [
-          { name: "slug", type: "string", value: "fiai" },
+          { name: "slug", type: "string", value: targetSlug },
           { name: "newCid", type: "string", value: cid },
         ],
         isReadOnly: false,
@@ -1170,15 +1417,15 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
           gas: "3000000",
           type: "transaction",
           inputArray: [
-            { name: "slug", type: "string", value: "fiai" },
-            { name: "name", type: "string", value: "FIAI Workspace" },
+            { name: "slug", type: "string", value: targetSlug },
+            { name: "name", type: "string", value: targetName },
             { name: "initialCid", type: "string", value: cid },
           ],
           isReadOnly: false,
           bundleId: "",
         });
       });
-      console.log(`[DApp DB] ✅ Đã cập nhật CID lên PlaneWorkspaceRegistry (${WORKSPACE_REGISTRY_ADDRESS})`);
+      console.log(`[DApp DB] ✅ Đã cập nhật CID lên PlaneWorkspaceRegistry cho slug "${targetSlug}" (${WORKSPACE_REGISTRY_ADDRESS})`);
     } catch (wsErr) {
       console.warn("[DApp DB] Cập nhật PlaneWorkspaceRegistry bỏ qua:", wsErr);
     }
@@ -1320,8 +1567,10 @@ function getUserSettings() {
     (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
   ) || localDB.users?.[0] || null;
 
+  const localSlug = typeof window !== "undefined" ? localStorage.getItem("last_workspace_slug") : null;
   const userWorkspaces = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces : [DEFAULT_WORKSPACE];
   const currentWs = userWorkspaces.find((w: any) =>
+    (localSlug && w.slug === localSlug) ||
     w.id === activeUser?.last_workspace_id ||
     w.slug === activeUser?.last_workspace_slug ||
     (loggedInEmail && w.owner?.email?.toLowerCase() === loggedInEmail.toLowerCase())
@@ -1579,6 +1828,48 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       activeUser.onboarding_step.workspace_join = true;
     }
 
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("last_workspace_slug", slug);
+        document.cookie = `last_workspace_slug=${slug}; path=/; max-age=31536000; SameSite=Lax`;
+        document.cookie = `plane_dapp_sync_workspaces=${encodeURIComponent(JSON.stringify(localDB.workspaces))}; path=/; max-age=31536000; SameSite=Lax`;
+      } catch (e) {
+        console.warn("[DApp Workspace] Không thể lưu cookies:", e);
+      }
+    }
+
+    // GỌI SMART CONTRACT: PlaneWorkspaceRegistry.createWorkspace
+    const bridge = getFiaiSDK();
+    if (WORKSPACE_REGISTRY_ADDRESS && bridge && currentUserAddress) {
+      const initialCid = baseCID || "QmInitial";
+      bridge
+        .request("sendTransaction", {
+          from: currentUserAddress,
+          to: WORKSPACE_REGISTRY_ADDRESS,
+          abiData: [CREATE_WORKSPACE_ABI],
+          functionName: "createWorkspace",
+          feeType: "sc",
+          amount: "0",
+          value: "0",
+          gas: "3000000",
+          type: "transaction",
+          inputArray: [
+            { name: "slug", type: "string", value: slug },
+            { name: "name", type: "string", value: newWorkspace.name },
+            { name: "initialCid", type: "string", value: initialCid },
+          ],
+          isReadOnly: false,
+          bundleId: "",
+        })
+        .then(() => {
+          console.log(`[DApp Workspace] ✅ Đã tạo workspace ${slug} on-chain trên PlaneWorkspaceRegistry`);
+          return true;
+        })
+        .catch((err: any) => {
+          console.warn(`[DApp Workspace] createWorkspace on-chain thất bại (có thể đã tồn tại):`, err);
+        });
+    }
+
     saveDB();
     return { data: newWorkspace, status: 201 };
   }
@@ -1594,7 +1885,22 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
       return ok(getUserProfile());
     }
 
-    if (url.includes("/api/users/me/settings")) return ok(getUserSettings());
+    if (url.includes("/api/users/me/settings")) {
+      if ((method === "patch" || method === "put" || method === "post") && body?.workspace) {
+        if (body.workspace.last_workspace_slug && activeUser) {
+          activeUser.last_workspace_slug = body.workspace.last_workspace_slug;
+          if (typeof window !== "undefined") {
+            localStorage.setItem("last_workspace_slug", body.workspace.last_workspace_slug);
+            document.cookie = `last_workspace_slug=${body.workspace.last_workspace_slug}; path=/; max-age=31536000; SameSite=Lax`;
+          }
+        }
+        if (body.workspace.last_workspace_id && activeUser) {
+          activeUser.last_workspace_id = body.workspace.last_workspace_id;
+        }
+        saveDB();
+      }
+      return ok(getUserSettings());
+    }
 
     if (url.includes("/api/users/me/instance-admin")) return ok({ is_instance_admin: true });
 
@@ -1635,34 +1941,167 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     });
   }
 
-  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/members\/?(?:\?.*)?$/)) {
+  if (url.match(/\/api\/workspaces\/[^/]+\/members\/?(?:\?.*)?$/)) {
     const wsSlug = url.match(/\/api\/workspaces\/([^/]+)\/members\/?/)?.[1] || "";
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-    return ok([
-      {
-        id: "ws-member-me",
-        member: activeUser || { id: "anonymous", email: "", first_name: "User", last_name: "", display_name: "User" },
-        role: 20,
-        workspace: ws?.id || wsSlug,
-        is_active: true,
-        created_at: new Date().toISOString(),
-      },
-    ]);
+
+    if (method === "get") {
+      const membersList: any[] = [
+        {
+          id: "ws-member-me",
+          member: activeUser || { id: "anonymous", email: "", first_name: "User", last_name: "", display_name: "User" },
+          role: 20,
+          workspace: ws?.id || wsSlug,
+          is_active: true,
+          created_at: new Date().toISOString(),
+        },
+      ];
+
+      const additionalMembers = (localDB.workspace_members || []).filter(
+        (m: any) =>
+          (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id) &&
+          m.id !== "ws-member-me" &&
+          m.member !== (activeUser?.id || "me")
+      );
+
+      additionalMembers.forEach((wm: any) => {
+        const user = (localDB.users || []).find(
+          (u: any) => u.id === wm.member || u.email === wm.member || u.username === wm.member
+        );
+        const memberKey = String(wm.member || wm.email || wm.id || "");
+        const isEth = memberKey.startsWith("0x");
+        const shortAddr = isEth ? `${memberKey.slice(0, 6)}...${memberKey.slice(-4)}` : "Member";
+        membersList.push({
+          id: wm.id,
+          member: user || {
+            id: wm.member || wm.id,
+            email: wm.email || (isEth ? `${memberKey}@fiai.network` : memberKey),
+            first_name: wm.first_name || shortAddr,
+            last_name: wm.last_name || "",
+            display_name: wm.display_name || shortAddr,
+            avatar_url: "",
+            is_active: true,
+          },
+          role: wm.role || 15,
+          workspace: ws?.id || wsSlug,
+          is_active: wm.is_active !== false,
+          created_at: wm.created_at || new Date().toISOString(),
+        });
+      });
+
+      return ok(membersList);
+    }
+  }
+
+  // ── Workspace Member Detail (DELETE, PATCH) ─────────────────────────
+  const wsMemberDetailMatch = url.match(/\/api\/workspaces\/([^/]+)\/members\/([^/]+)\/?(?:\?.*)?$/);
+  if (wsMemberDetailMatch) {
+    const wsSlug = wsMemberDetailMatch[1];
+    const memberId = wsMemberDetailMatch[2];
+
+    if (method === "delete") {
+      const target = (localDB.workspace_members || []).find((m: any) => m.id === memberId || m.member === memberId);
+      if (localDB.workspace_members) {
+        localDB.workspace_members = localDB.workspace_members.filter(
+          (m: any) => m.id !== memberId && m.member !== memberId
+        );
+        saveDB();
+      }
+
+      const memberAddr = extractEthAddress(target?.address || target?.member || target?.email);
+      const bridge = getFiaiSDK();
+      if (memberAddr && WORKSPACE_REGISTRY_ADDRESS && bridge && currentUserAddress) {
+        bridge
+          .request("sendTransaction", {
+            from: currentUserAddress,
+            to: WORKSPACE_REGISTRY_ADDRESS,
+            abiData: [REMOVE_MEMBER_ABI],
+            functionName: "removeMember",
+            feeType: "sc",
+            amount: "0",
+            value: "0",
+            gas: "2000000",
+            type: "transaction",
+            inputArray: [
+              { name: "slug", type: "string", value: wsSlug },
+              { name: "member", type: "address", value: memberAddr },
+            ],
+            isReadOnly: false,
+            bundleId: "",
+          })
+          .then(() => {
+            console.log(`[DApp Interceptor] ✅ Đã xóa thành viên ${memberAddr} khỏi ${wsSlug} on-chain`);
+            return true;
+          })
+          .catch((err: any) => {
+            console.warn(`[DApp Interceptor] removeMember on-chain thất bại:`, err);
+          });
+      }
+
+      return ok({ message: "Member removed" });
+    }
+
+    if (method === "patch" || method === "put") {
+      let updatedMember: any = null;
+      if (localDB.workspace_members) {
+        const idx = localDB.workspace_members.findIndex((m: any) => m.id === memberId || m.member === memberId);
+        if (idx >= 0) {
+          localDB.workspace_members[idx] = { ...localDB.workspace_members[idx], ...body };
+          updatedMember = localDB.workspace_members[idx];
+          saveDB();
+        }
+      }
+
+      if (updatedMember && body.role !== undefined) {
+        const memberAddr = extractEthAddress(updatedMember.address || updatedMember.member || updatedMember.email);
+        const bridge = getFiaiSDK();
+        if (memberAddr && WORKSPACE_REGISTRY_ADDRESS && bridge && currentUserAddress) {
+          const contractRole = mapPlaneRoleToContractRole(body.role);
+          bridge
+            .request("sendTransaction", {
+              from: currentUserAddress,
+              to: WORKSPACE_REGISTRY_ADDRESS,
+              abiData: [ADD_MEMBER_ABI],
+              functionName: "addMember",
+              feeType: "sc",
+              amount: "0",
+              value: "0",
+              gas: "2000000",
+              type: "transaction",
+              inputArray: [
+                { name: "slug", type: "string", value: wsSlug },
+                { name: "member", type: "address", value: memberAddr },
+                { name: "role", type: "uint8", value: String(contractRole) },
+              ],
+              isReadOnly: false,
+              bundleId: "",
+            })
+            .catch((err: any) => {
+              console.warn(`[DApp Interceptor] Cập nhật role on-chain thất bại:`, err);
+            });
+        }
+      }
+
+      return ok(updatedMember || { id: memberId, ...body });
+    }
   }
 
   if (
     method === "get" &&
     (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details"))
   ) {
-    const projects = (localDB.projects || []).map((p: any) => {
-      // Calculate next_work_item_sequence from actual issues
-      const projectIssues = (localDB.issues || []).filter((i: any) => i.project === p.id || i.project_id === p.id);
-      const maxSeq = projectIssues.reduce((max: number, i: any) => Math.max(max, i.sequence_id || 0), 0);
-      return {
-        ...p,
-        next_work_item_sequence: maxSeq + 1,
-      };
-    });
+    const deletedSet = new Set(localDB._deleted_project_ids || []);
+    const projects = (localDB.projects || [])
+      .filter((p: any) => !deletedSet.has(p.id) && !deletedSet.has(p.identifier))
+      .map((p: any) => {
+        // Calculate next_work_item_sequence from actual issues
+        const projectIssues = (localDB.issues || []).filter((i: any) => i.project === p.id || i.project_id === p.id);
+        const maxSeq = projectIssues.reduce((max: number, i: any) => Math.max(max, i.sequence_id || 0), 0);
+        return {
+          ...p,
+          next_work_item_sequence: maxSeq + 1,
+        };
+      });
     return ok(projects);
   }
 
@@ -1671,10 +2110,11 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   if (projectDetailMatch) {
     const projectId = projectDetailMatch[1];
     if (projectId !== "details" && projectId !== "project-identifiers" && projectId !== "search") {
+      const deletedSet = new Set(localDB._deleted_project_ids || []);
       const projectIdx = (localDB.projects || []).findIndex(
         (p: any) => p.id === projectId || p.identifier === projectId
       );
-      if (projectIdx > -1) {
+      if (projectIdx > -1 && !deletedSet.has(localDB.projects[projectIdx].id)) {
         if (method === "get") {
           return ok(localDB.projects[projectIdx]);
         }
@@ -1689,7 +2129,58 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
           return ok(localDB.projects[projectIdx]);
         }
         if (method === "delete") {
-          localDB.projects.splice(projectIdx, 1);
+          const targetProj = localDB.projects[projectIdx];
+          const targetId = targetProj?.id || projectId;
+
+          if (!localDB._deleted_project_ids) localDB._deleted_project_ids = [];
+          if (!localDB._deleted_project_ids.includes(targetId)) {
+            localDB._deleted_project_ids.push(targetId);
+          }
+          if (targetProj?.identifier && !localDB._deleted_project_ids.includes(targetProj.identifier)) {
+            const otherUsingSameIdentifier = (localDB.projects || []).some(
+              (p: any) => p.id !== targetId && p.identifier === targetProj.identifier
+            );
+            if (!otherUsingSameIdentifier) {
+              localDB._deleted_project_ids.push(targetProj.identifier);
+            }
+          }
+
+          const currentDeleted = new Set(localDB._deleted_project_ids);
+          localDB.projects = (localDB.projects || []).filter(
+            (p: any) => p.id !== targetId && !currentDeleted.has(p.id)
+          );
+
+          if (localDB.issues) {
+            localDB.issues = localDB.issues.filter(
+              (i: any) => i.project !== targetId && i.project_id !== targetId
+            );
+          }
+          if (localDB.states) {
+            localDB.states = localDB.states.filter(
+              (s: any) => s.project !== targetId && s.project_id !== targetId
+            );
+          }
+          if (localDB.labels) {
+            localDB.labels = localDB.labels.filter(
+              (l: any) => l.project !== targetId && l.project_id !== targetId
+            );
+          }
+          if (localDB.cycles) {
+            localDB.cycles = localDB.cycles.filter(
+              (c: any) => c.project !== targetId && c.project_id !== targetId
+            );
+          }
+          if (localDB.modules) {
+            localDB.modules = localDB.modules.filter(
+              (m: any) => m.project !== targetId && m.project_id !== targetId
+            );
+          }
+          if (localDB.project_members) {
+            localDB.project_members = localDB.project_members.filter(
+              (pm: any) => pm.project !== targetId && pm.project_id !== targetId
+            );
+          }
+
           saveDB();
           return ok({});
         }
@@ -2722,7 +3213,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     console.log("[DApp Interceptor] POST", collection, body);
     if (collection === "invitations" && body.emails && Array.isArray(body.emails)) {
       const match = url.match(/\/api\/workspaces\/([^/]+)\//);
-      const wsSlug = match ? match[1] : "mock-workspace";
+      const wsSlug = match ? match[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+      const currentWs = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
 
       const newInvites = body.emails.map((e: any) => ({
         id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
@@ -2733,8 +3225,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         accepted: false,
         message: "You have been invited.",
         workspace: {
-          id: wsSlug,
-          name: "Mock Workspace",
+          id: currentWs?.id || wsSlug,
+          name: currentWs?.name || "Workspace",
           slug: wsSlug,
           logo_url: "",
         },
@@ -2742,6 +3234,68 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
       if (!localDB[collection]) localDB[collection] = [];
       localDB[collection].push(...newInvites);
+
+      // Xử lý từng invitee: ghi nhận vào workspace_members và kích hoạt addMember on-chain nếu có địa chỉ ví
+      if (!localDB.workspace_members) localDB.workspace_members = [];
+
+      for (const e of body.emails) {
+        const memberAddress = extractEthAddress(e.email);
+        const memberKey = memberAddress || e.email;
+        const existingIdx = localDB.workspace_members.findIndex(
+          (m: any) =>
+            (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === currentWs?.id) &&
+            (m.member?.toLowerCase() === memberKey.toLowerCase() || m.email?.toLowerCase() === e.email.toLowerCase())
+        );
+        const memberRecord = {
+          id: `ws-member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          workspace: wsSlug,
+          workspace_id: wsSlug,
+          member: memberKey,
+          email: e.email,
+          role: e.role || 15,
+          is_active: true,
+          created_at: new Date().toISOString(),
+        };
+
+        if (existingIdx >= 0) {
+          localDB.workspace_members[existingIdx] = { ...localDB.workspace_members[existingIdx], ...memberRecord };
+        } else {
+          localDB.workspace_members.push(memberRecord);
+        }
+
+        // Gọi smart contract PlaneWorkspaceRegistry.addMember
+        const bridge = getFiaiSDK();
+        if (memberAddress && WORKSPACE_REGISTRY_ADDRESS && bridge && currentUserAddress) {
+          const contractRole = mapPlaneRoleToContractRole(e.role);
+          bridge
+            .request("sendTransaction", {
+              from: currentUserAddress,
+              to: WORKSPACE_REGISTRY_ADDRESS,
+              abiData: [ADD_MEMBER_ABI],
+              functionName: "addMember",
+              feeType: "sc",
+              amount: "0",
+              value: "0",
+              gas: "3000000",
+              type: "transaction",
+              inputArray: [
+                { name: "slug", type: "string", value: wsSlug },
+                { name: "member", type: "address", value: memberAddress },
+                { name: "role", type: "uint8", value: String(contractRole) },
+              ],
+              isReadOnly: false,
+              bundleId: "",
+            })
+            .then(() => {
+              console.log(`[DApp Interceptor] ✅ Đã thêm thành viên on-chain: ${memberAddress} vào workspace: ${wsSlug}`);
+              return true;
+            })
+            .catch((err: any) => {
+              console.warn(`[DApp Interceptor] addMember on-chain thất bại:`, err);
+            });
+        }
+      }
+
       saveDB();
       newInvites.forEach((inv) => syncDAppRecord(collection, inv.id, inv));
       return ok({ message: "Invitations sent successfully" });
@@ -2783,6 +3337,11 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       newRecord.created_by = activeUser?.id || "user-1";
     }
     if (collection === "projects") {
+      if (localDB._deleted_project_ids && Array.isArray(localDB._deleted_project_ids)) {
+        localDB._deleted_project_ids = localDB._deleted_project_ids.filter(
+          (dId: string) => dId !== newRecord.id && dId !== newRecord.identifier
+        );
+      }
       const match = url.match(/\/api\/workspaces\/([^/]+)\//);
       if (match) {
         const wsSlug = match[1];
@@ -2963,7 +3522,49 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   }
 
   if (method === "delete") {
-    localDB[collection] = localDB[collection].filter((r: any) => r.id !== id);
+    if (collection === "projects" && id) {
+      const targetProj = (localDB.projects || []).find((p: any) => p.id === id || p.identifier === id);
+      const targetId = targetProj?.id || id;
+
+      if (!localDB._deleted_project_ids) localDB._deleted_project_ids = [];
+      if (!localDB._deleted_project_ids.includes(targetId)) {
+        localDB._deleted_project_ids.push(targetId);
+      }
+      if (targetProj?.identifier && !localDB._deleted_project_ids.includes(targetProj.identifier)) {
+        const otherUsingSameIdentifier = (localDB.projects || []).some(
+          (p: any) => p.id !== targetId && p.identifier === targetProj.identifier
+        );
+        if (!otherUsingSameIdentifier) {
+          localDB._deleted_project_ids.push(targetProj.identifier);
+        }
+      }
+
+      const deletedSet = new Set(localDB._deleted_project_ids);
+      localDB.projects = (localDB.projects || []).filter(
+        (p: any) => p.id !== targetId && !deletedSet.has(p.id)
+      );
+
+      if (localDB.issues) {
+        localDB.issues = localDB.issues.filter((i: any) => i.project !== targetId && i.project_id !== targetId);
+      }
+      if (localDB.states) {
+        localDB.states = localDB.states.filter((s: any) => s.project !== targetId && s.project_id !== targetId);
+      }
+      if (localDB.labels) {
+        localDB.labels = localDB.labels.filter((l: any) => l.project !== targetId && l.project_id !== targetId);
+      }
+      if (localDB.cycles) {
+        localDB.cycles = localDB.cycles.filter((c: any) => c.project !== targetId && c.project_id !== targetId);
+      }
+      if (localDB.modules) {
+        localDB.modules = localDB.modules.filter((m: any) => m.project !== targetId && m.project_id !== targetId);
+      }
+      if (localDB.project_members) {
+        localDB.project_members = localDB.project_members.filter((pm: any) => pm.project !== targetId && pm.project_id !== targetId);
+      }
+    } else {
+      localDB[collection] = (localDB[collection] || []).filter((r: any) => r.id !== id);
+    }
     saveDB();
     return ok({});
   }
