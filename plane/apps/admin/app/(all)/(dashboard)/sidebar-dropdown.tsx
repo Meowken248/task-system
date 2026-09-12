@@ -34,7 +34,16 @@ export const AdminSidebarDropdown = observer(function AdminSidebarDropdown() {
     setTheme(newTheme);
   };
 
-  const handleSignOut = () => signOut();
+  const handleSignOut = (e?: React.FormEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    localStorage.removeItem("plane_dapp_auth_user");
+    localStorage.removeItem("plane_dapp_auth_email");
+    signOut();
+    window.location.href = "/god-mode/";
+  };
 
   const getSidebarMenuItems = () => (
     <Menu.Items

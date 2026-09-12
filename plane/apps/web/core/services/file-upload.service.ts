@@ -20,7 +20,7 @@ export class FileUploadService extends APIService {
     url: string,
     data: FormData,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
-  ): Promise<void> {
+  ): Promise<any> {
     this.cancelSource = axios.CancelToken.source();
     return this.post(url, data, {
       headers: {

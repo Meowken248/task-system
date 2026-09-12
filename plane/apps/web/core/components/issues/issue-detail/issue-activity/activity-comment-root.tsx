@@ -54,14 +54,18 @@ export const IssueActivityCommentRoot = observer(function IssueActivityCommentRo
 
   if (!activityAndComments) return <IssueActivityLoader />;
 
+  console.log("[IssueActivity] activityAndComments:", activityAndComments);
+
   if (activityAndComments.length <= 0) return null;
 
   const filteredActivityAndComments = filterActivityOnSelectedFilters(activityAndComments, selectedFilters);
+  console.log("[IssueActivity] filteredActivityAndComments:", filteredActivityAndComments);
 
   return (
     <div>
       {filteredActivityAndComments.map((activityComment, index) => {
         const comment = getCommentById(activityComment.id);
+        console.log("[IssueActivity] rendering comment ID:", activityComment.id, "found in store:", !!comment, comment);
         return activityComment.activity_type === "COMMENT" ? (
           <CommentCard
             key={activityComment.id}

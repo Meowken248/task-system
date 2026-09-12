@@ -15,7 +15,14 @@ import { buildTree } from "@plane/utils";
 import { IssueLabelService } from "@/services/issue";
 // store
 import type { CoreRootStore } from "./root.store";
-
+// Helper: chuẩn hóa response về mảng, dù backend trả mảng thuần hay object phân trang
+const normalizeToArray = <T,>(response: any): T[] => {
+  if (Array.isArray(response)) return response;
+  if (response?.results && Array.isArray(response.results)) return response.results;
+  if (response?.data && Array.isArray(response.data)) return response.data;
+  console.warn("Unexpected label response shape:", response);
+  return [];
+};
 export interface ILabelStore {
   //Loaders
   fetchedMap: Record<string, boolean>;
@@ -162,13 +169,14 @@ export class LabelStore implements ILabelStore {
    */
   fetchProjectLabels = async (workspaceSlug: string, projectId: string) =>
     await this.issueLabelService.getProjectLabels(workspaceSlug, projectId).then((response) => {
+      const labels = normalizeToArray<IIssueLabel>(response);
       runInAction(() => {
-        response.forEach((label) => {
+        labels.forEach((label) => {
           set(this.labelMap, [label.id], label);
         });
         set(this.fetchedMap, projectId, true);
       });
-      return response;
+      return labels;
     });
 
   /**
@@ -179,13 +187,14 @@ export class LabelStore implements ILabelStore {
    */
   fetchWorkspaceLabels = async (workspaceSlug: string) =>
     await this.issueLabelService.getWorkspaceIssueLabels(workspaceSlug).then((response) => {
+      const labels = normalizeToArray<IIssueLabel>(response);
       runInAction(() => {
-        response.forEach((label) => {
+        labels.forEach((label) => {
           set(this.labelMap, [label.id], label);
         });
         set(this.fetchedMap, workspaceSlug, true);
       });
-      return response;
+      return labels;
     });
 
   /**

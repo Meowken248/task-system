@@ -150,9 +150,7 @@ export function OnChainTaskPanel({
     } catch (error) {
       console.warn("Không gửi được báo cáo on-chain; lưu báo cáo trên Plane.", error);
       try {
-        await saveOfflineReport(
-          "Đã lưu báo cáo trên Plane. Blockchain chưa sẵn sàng nên báo cáo này chưa được ghi on-chain."
-        );
+        await saveOfflineReport("Đã lưu báo cáo trên Plane.");
       } catch (localError) {
         setStatus(localError instanceof Error ? localError.message : "Không thể lưu báo cáo trên Plane.");
       }
@@ -250,11 +248,7 @@ export function OnChainTaskPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-13 font-semibold text-primary">MetaNode FIAI</div>
-          <div className="text-11 text-tertiary">
-            {isOnChainTaskSyncEnabled()
-              ? "Ưu tiên xác thực bằng contract; nếu blockchain lỗi, báo cáo vẫn được lưu trên Plane."
-              : "Blockchain chưa sẵn sàng; báo cáo vẫn được lưu trên Plane."}
-          </div>
+          <div className="text-11 text-tertiary">{isOnChainTaskSyncEnabled() ? "" : ""}</div>
         </div>
         <Button
           variant="primary"

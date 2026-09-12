@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { observer } from "mobx-react";
 import { v4 as uuidv4 } from "uuid";
 // plane imports
@@ -73,9 +73,24 @@ const WorkItemFilterRoot = observer(function WorkItemFilterRoot(props: TWorkItem
     allowedFilters: filtersToShowByLayout ? filtersToShowByLayout : [],
     ...entityConfigProps,
   });
-  // get or create filter instance
-  const workItemLayoutFilter = useMemo(
-    () =>
+  // get or create filter instance lazily on first render
+  const [workItemLayoutFilter, setWorkItemLayoutFilter] = useState(() =>
+    getOrCreateFilter({
+      entityType,
+      entityId: workItemEntityID,
+      initialExpression: initialUserFilters,
+      onExpressionChange: updateFilters,
+      expressionOptions: {
+        saveViewOptions,
+        updateViewOptions,
+      },
+      showOnMount,
+    })
+  );
+
+  // ensure filter is kept updated or recreated if deleted by strict mode unmounts
+  useEffect(() => {
+    setWorkItemLayoutFilter(
       getOrCreateFilter({
         entityType,
         entityId: workItemEntityID,
@@ -86,10 +101,18 @@ const WorkItemFilterRoot = observer(function WorkItemFilterRoot(props: TWorkItem
           updateViewOptions,
         },
         showOnMount,
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [entityType, workItemEntityID, saveViewOptions, updateViewOptions, updateFilters]
-  );
+      })
+    );
+  }, [
+    entityType,
+    workItemEntityID,
+    initialUserFilters,
+    updateFilters,
+    saveViewOptions,
+    updateViewOptions,
+    showOnMount,
+    getOrCreateFilter,
+  ]);
 
   // delete filter instance when component unmounts
   useEffect(

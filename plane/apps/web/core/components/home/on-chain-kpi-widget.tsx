@@ -6,6 +6,9 @@ import {
 } from "@/services/blockchain/blockchain-tracking.service";
 import { getIssueOnChainProgress, getWalletKPI, type OnChainKPI } from "@/services/blockchain/plane-task-chain.service";
 import { ProjectService } from "@/services/project";
+import { IssueService } from "@/services/issue";
+import type { TIssue } from "@plane/types";
+import { useUser } from "@/hooks/store/user";
 
 type Props = { workspaceSlug: string };
 type ProjectOption = { id: string; name: string; identifier?: string };
@@ -23,11 +26,13 @@ type AggregateKpi = {
 };
 
 const projectService = new ProjectService();
+const issueService = new IssueService();
 
-function formatDateTime(value?: string): string {
-  if (!value) return "Chưa có thời gian";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+function formatDateTime(value?: string, fallbackValue?: string): string {
+  const time = value || fallbackValue;
+  if (!time) return "Chưa có thời gian";
+  const date = new Date(time);
+  if (Number.isNaN(date.getTime())) return time;
   return new Intl.DateTimeFormat("vi-VN", {
     day: "2-digit",
     month: "2-digit",
@@ -46,9 +51,11 @@ function shortHash(value?: string): string {
 }
 
 function taskProgress(task?: TaskOption, onChainProgress?: Readonly<Record<string, number>>): number {
-  if (task && typeof onChainProgress?.[task.id] === "number") return onChainProgress[task.id];
-  const report = task?.records.find((record) => record.event_type === "daily_report");
-  return typeof report?.progress === "number" ? report.progress : 0;
+  const contractProgress = task && typeof onChainProgress?.[task.id] === "number" ? onChainProgress[task.id] : 0;
+  const reports = task?.records.filter((record) => record.event_type === "daily_report") ?? [];
+  const latestReport = reports[reports.length - 1];
+  const localProgress = typeof latestReport?.progress === "number" ? latestReport.progress : 0;
+  return Math.max(contractProgress, localProgress);
 }
 
 function aggregateKpi(tasks: TaskOption[], onChainProgress?: Readonly<Record<string, number>>): AggregateKpi {
@@ -112,13 +119,15 @@ function KpiGrid({ value }: { value: AggregateKpi }) {
 }
 
 export function OnChainKpiWidget({ workspaceSlug }: Props) {
+  const { data: currentUser } = useUser();
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [records, setRecords] = useState<TBlockchainTrackingRecord[]>([]);
+  const [planeTasks, setPlaneTasks] = useState<TIssue[]>([]);
+  const [kpi, setKpi] = useState<OnChainKPI | undefined>();
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(new Set());
   const [onChainProgress, setOnChainProgress] = useState<Record<string, number>>({});
-  const [kpi, setKpi] = useState<OnChainKPI>();
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [loadingKpi, setLoadingKpi] = useState(false);
@@ -151,16 +160,34 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
       if (!record.issue_id) return;
       grouped.set(record.issue_id, [...(grouped.get(record.issue_id) ?? []), record]);
     });
-    return Array.from(grouped, ([id, taskRecords]) => {
+
+    const taskOptions: TaskOption[] = [];
+    const processedIds = new Set<string>();
+
+    planeTasks.forEach((issue) => {
+      processedIds.add(issue.id);
+      const taskRecords = grouped.get(issue.id) ?? [];
+      taskOptions.push({
+        id: issue.id,
+        name: issue.name,
+        parentId: issue.parent_id || undefined,
+        records: taskRecords,
+      });
+    });
+
+    Array.from(grouped).forEach(([id, taskRecords]) => {
+      if (processedIds.has(id)) return;
       const creation = taskRecords.find((record) => record.event_type === "create_task");
-      return {
+      taskOptions.push({
         id,
         name: taskRecords.find((record) => record.issue_name)?.issue_name || id,
         parentId: creation?.parent_issue_id,
         records: taskRecords,
-      };
-    }).filter((task) => !task.records.some((record) => record.event_type === "delete_task"));
-  }, [records]);
+      });
+    });
+
+    return taskOptions.filter((task) => !task.records.some((record) => record.event_type === "delete_task"));
+  }, [records, planeTasks]);
 
   useEffect(() => {
     let active = true;
@@ -209,10 +236,12 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     return children.length ? children.flatMap((child) => collectLeafTasks(child, nextVisited)) : [task];
   };
   const displayTaskProgress = (task: TaskOption): number => {
-    const contractProgress = onChainProgress[task.id];
-    if (typeof contractProgress === "number") return contractProgress;
+    const contractProgress = onChainProgress[task.id] ?? 0;
     const leaves = collectLeafTasks(task);
-    return leaves.length ? aggregateKpi(leaves, onChainProgress).averageProgress : taskProgress(task, onChainProgress);
+    if (leaves.length) {
+      return Math.max(contractProgress, aggregateKpi(leaves, onChainProgress).averageProgress);
+    }
+    return taskProgress(task, onChainProgress);
   };
   const projectLeafTasks = rootTasks.flatMap((task) => collectLeafTasks(task));
   const selectedTaskLeafTasks = selectedTask ? collectLeafTasks(selectedTask) : [];
@@ -230,11 +259,19 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     setSelectedProjectId(projectId);
     setSelectedTaskId("");
     setRecords([]);
+    setPlaneTasks([]);
     setKpi(undefined);
     setError("");
     setLoadingTasks(true);
     try {
-      setRecords(await blockchainTrackingService.getTransactions(workspaceSlug, projectId));
+      const [txRecords, planeIssuesRes] = await Promise.all([
+        blockchainTrackingService
+          .getTransactions(workspaceSlug, projectId)
+          .catch(() => [] as TBlockchainTrackingRecord[]),
+        issueService.getIssuesFromServer(workspaceSlug, projectId, {}).catch(() => ({ results: [] as TIssue[] })),
+      ]);
+      setRecords(txRecords);
+      setPlaneTasks(Array.isArray(planeIssuesRes?.results) ? planeIssuesRes.results : []);
     } catch {
       setError("Không tải được task và dữ liệu on-chain của dự án.");
     } finally {
@@ -263,14 +300,14 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
 
   const kpiItems = kpi
     ? [
-        ["Tổng task", kpi.total],
-        ["Đang làm", kpi.inProgress],
-        ["Hoàn thành", kpi.completed],
-        ["Đúng tiến độ", kpi.onSchedule],
-        ["Chậm", kpi.delayed],
-        ["Quá hạn", kpi.overdue],
-        ["Tiến độ TB", `${kpi.averageProgress}%`],
-      ]
+      ["Tổng task", kpi.total],
+      ["Đang làm", kpi.inProgress],
+      ["Hoàn thành", kpi.completed],
+      ["Đúng tiến độ", kpi.onSchedule],
+      ["Chậm", kpi.delayed],
+      ["Quá hạn", kpi.overdue],
+      ["Tiến độ TB", `${kpi.averageProgress}%`],
+    ]
     : [];
 
   const toggleTask = (taskId: string) => {
@@ -289,9 +326,8 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     return (
       <div key={task.id}>
         <div
-          className={`flex rounded-lg transition-colors ${
-            selectedTaskId === task.id ? "bg-accent-primary/10" : "hover:bg-surface-2"
-          }`}
+          className={`flex rounded-lg transition-colors ${selectedTaskId === task.id ? "bg-accent-primary/10" : "hover:bg-surface-2"
+            }`}
           style={{ marginLeft: `${depth * 14}px` }}
         >
           {children.length ? (
@@ -357,11 +393,10 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   key={project.id}
                   type="button"
                   onClick={() => void selectProject(project.id)}
-                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${
-                    selectedProjectId === project.id
+                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${selectedProjectId === project.id
                       ? "bg-accent-primary/10 text-accent-primary"
                       : "text-secondary hover:bg-surface-2"
-                  }`}
+                    }`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-12 font-medium">{project.name}</span>
@@ -518,11 +553,18 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   <div className="mt-3 grid gap-2 text-11 sm:grid-cols-2">
                     <div>
                       <span className="text-tertiary">Tên:</span>{" "}
-                      <span className="text-primary">{assignment.assignee_name || assignment.assignee_id}</span>
+                      <span className="text-primary">
+                        {assignment.assignee_name ||
+                          (assignment.assignee_id?.startsWith("user-")
+                            ? currentUser?.display_name || currentUser?.first_name || "Bạn (You)"
+                            : assignment.assignee_id)}
+                      </span>
                     </div>
                     <div>
                       <span className="text-tertiary">Thời gian giao:</span>{" "}
-                      <span className="text-primary">{formatDateTime(assignment.recorded_at)}</span>
+                      <span className="text-primary">
+                        {formatDateTime(assignment.recorded_at, (assignment as any).created_at)}
+                      </span>
                     </div>
                     <div className="sm:col-span-2">
                       <span className="text-tertiary">Ví:</span>{" "}
@@ -584,7 +626,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <time className="text-11 font-medium text-secondary">
-                            {formatDateTime(report.recorded_at)}
+                            {formatDateTime(report.recorded_at, (report as any).created_at)}
                           </time>
                           <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">
                             Tiến độ {report.progress ?? 0}%
@@ -600,7 +642,9 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                             <dt className="text-tertiary">Nhân viên báo cáo</dt>
                             <dd className="mt-0.5 text-primary">
                               {report.reporter_name ||
-                                report.reporter_id ||
+                                (report.reporter_id?.startsWith("user-")
+                                  ? currentUser?.display_name || currentUser?.first_name || "Bạn (You)"
+                                  : report.reporter_id) ||
                                 assignment?.assignee_name ||
                                 assignment?.assignee_id ||
                                 "Chưa xác định"}
@@ -639,7 +683,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
 
               <div>
                 <h4 className="text-12 font-semibold text-primary">
-                  Nội dung xác thực on-chain ({contentRecords.length})
+                  Nội dung xác thực({contentRecords.length})
                 </h4>
                 {contentRecords.length === 0 ? (
                   <p className="mt-3 rounded-lg border border-dashed border-subtle px-3 py-4 text-11 text-tertiary">
@@ -659,7 +703,9 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                           <span className="font-medium text-primary">
                             {record.content_kind === "comment" ? "Bình luận" : "Evidence"}
                           </span>
-                          <time className="text-tertiary">{formatDateTime(record.recorded_at)}</time>
+                          <time className="text-tertiary">
+                            {formatDateTime(record.recorded_at, (record as any).created_at)}
+                          </time>
                         </div>
                         <p className="mt-2 text-tertiary">
                           Tham chiếu:{" "}

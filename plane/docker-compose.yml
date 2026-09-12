@@ -7,103 +7,31 @@ services:
       args:
         DOCKER_BUILDKIT: 1
     restart: always
-    depends_on:
-      - api
 
-  admin:
-    container_name: admin
-    build:
-      context: .
-      dockerfile: ./apps/admin/Dockerfile.admin
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: always
-    depends_on:
-      - api
-      - web
 
-  space:
-    container_name: space
+  go-api:
+    container_name: go-api
     build:
-      context: .
-      dockerfile: ./apps/space/Dockerfile.space
-      args:
-        DOCKER_BUILDKIT: 1
+      context: ./apps/go-api
+      dockerfile: Dockerfile
     restart: always
-    depends_on:
-      - api
-      - web
-
-  api:
-    container_name: api
-    build:
-      context: ./apps/api
-      dockerfile: Dockerfile.api
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: always
-    command: ./bin/docker-entrypoint-api.sh
+    ports:
+      - "8080:8080"
     env_file:
-      - ./apps/api/.env
+      - ./apps/go-api/.env
+    environment:
+      GO_API_ADDRESS: ":8080"
     depends_on:
       - plane-db
-      - plane-redis
+    networks:
+      - default
+      - dev_env
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
-  worker:
-    container_name: bgworker
-    build:
-      context: ./apps/api
-      dockerfile: Dockerfile.api
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: always
-    command: ./bin/docker-entrypoint-worker.sh
-    env_file:
-      - ./apps/api/.env
-    depends_on:
-      - api
-      - plane-db
-      - plane-redis
-
-  beat-worker:
-    container_name: beatworker
-    build:
-      context: ./apps/api
-      dockerfile: Dockerfile.api
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: always
-    command: ./bin/docker-entrypoint-beat.sh
-    env_file:
-      - ./apps/api/.env
-    depends_on:
-      - api
-      - plane-db
-      - plane-redis
-
-  migrator:
-    container_name: plane-migrator
-    build:
-      context: ./apps/api
-      dockerfile: Dockerfile.api
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: no
-    command: ./bin/docker-entrypoint-migrator.sh
-    env_file:
-      - ./apps/api/.env
-    depends_on:
-      - plane-db
-      - plane-redis
-
-  live:
-    container_name: plane-live
-    build:
-      context: .
-      dockerfile: ./apps/live/Dockerfile.live
-      args:
-        DOCKER_BUILDKIT: 1
-    restart: always
 
   plane-db:
     container_name: plane-db
@@ -127,18 +55,6 @@ services:
     volumes:
       - redisdata:/data
 
-  plane-mq:
-    container_name: plane-mq
-    image: rabbitmq:3.13.6-management-alpine
-    restart: always
-    env_file:
-      - .env
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
-      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST}
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
 
   plane-minio:
     container_name: plane-minio
@@ -166,12 +82,14 @@ services:
       BUCKET_NAME: ${AWS_S3_BUCKET_NAME:-uploads}
     depends_on:
       - web
-      - api
-      - space
-      - admin
+      - go-api
 
 volumes:
   pgdata:
   redisdata:
   uploads:
-  rabbitmq_data:
+
+networks:
+  dev_env:
+    name: plane_dev_env
+    external: true

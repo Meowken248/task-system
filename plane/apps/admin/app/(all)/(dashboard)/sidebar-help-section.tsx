@@ -45,7 +45,20 @@ export const AdminSidebarHelpSection = observer(function AdminSidebarHelpSection
   // refs
   const helpOptionsRef = useRef<HTMLDivElement | null>(null);
 
-  const redirectionLink = encodeURI(WEB_BASE_URL + "/");
+  const getRedirectionLink = () => {
+    if (typeof window === "undefined") return encodeURI(WEB_BASE_URL + "/");
+    const cid = localStorage.getItem("plane_dapp_ipfs_cid_local");
+    const user = localStorage.getItem("plane_dapp_auth_user");
+    const email = localStorage.getItem("plane_dapp_auth_email");
+    const params = new URLSearchParams();
+    if (cid && !cid.startsWith("bafkrei")) params.set("cid", cid);
+    if (user) params.set("auth_user", user);
+    if (email) params.set("auth_email", email);
+    const paramStr = params.toString();
+    return paramStr ? `${WEB_BASE_URL}/?${paramStr}` : `${WEB_BASE_URL}/`;
+  };
+
+  const redirectionLink = getRedirectionLink();
 
   return (
     <div

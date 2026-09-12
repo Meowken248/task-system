@@ -362,3 +362,24 @@ export const authErrorHandler = (errorCode: EAuthErrorCodes, email?: string): TA
 
   return undefined;
 };
+
+/**
+ * Hash password with SHA-256 and salt using Web Crypto API
+ */
+export async function hashPassword(password: string): Promise<string> {
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const enc = new TextEncoder();
+    const data = enc.encode(`plane_dapp_salt:${password}`);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  let hash = 0;
+  for (let i = 0; i < password.length; i++) {
+    const char = password.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash |= 0;
+  }
+  return `fallback_${Math.abs(hash).toString(16)}`;
+}
+

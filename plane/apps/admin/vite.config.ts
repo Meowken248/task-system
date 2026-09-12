@@ -31,6 +31,7 @@ export default defineConfig(() => ({
       // Next.js compatibility shims used within admin
       "next/link": path.resolve(__dirname, "app/compat/next/link.tsx"),
       "next/navigation": path.resolve(__dirname, "app/compat/next/navigation.ts"),
+      "@plane/services": path.resolve(__dirname, "../../packages/services/src/index.ts"),
     },
     dedupe: ["react", "react-dom"],
   },
@@ -39,3 +40,4 @@ export default defineConfig(() => ({
   },
   // No SSR-specific overrides needed; alias resolves to ESM build
 }));
+

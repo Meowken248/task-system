@@ -111,3 +111,9 @@ build/
 temp/
 scripts/
 .pnpm-store/
+
+# Go build/test artifacts
+apps/go-api/.gocache/
+apps/go-api/bin/
+apps/go-api/api.exe
+*.codegraph

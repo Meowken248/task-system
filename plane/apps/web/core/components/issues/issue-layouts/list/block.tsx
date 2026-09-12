@@ -144,7 +144,7 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
 
   if (!issue) return null;
 
-  const projectIdentifier = getProjectIdentifierById(issue.project_id);
+  const projectIdentifier = getProjectIdentifierById(issue.project_id) || (issue as any).project_detail?.identifier;
   const isIssueSelected = selectionHelpers.getIsEntitySelected(issue.id);
   const isIssueActive = selectionHelpers.getIsEntityActive(issue.id);
   const isSubIssue = nestingLevel !== 0;
@@ -251,8 +251,9 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
                 <div className="flex-shrink-0" style={{ minWidth: `${keyMinWidth}px` }}>
                   {issue.project_id && (
                     <IssueIdentifier
-                      issueId={issueId}
                       projectId={issue.project_id}
+                      projectIdentifier={projectIdentifier || ""}
+                      issueSequenceId={issue.sequence_id}
                       size="xs"
                       variant="tertiary"
                       displayProperties={displayProperties}

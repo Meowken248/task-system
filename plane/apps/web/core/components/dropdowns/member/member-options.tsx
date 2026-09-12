@@ -102,7 +102,11 @@ export const MemberOptions = observer(function MemberOptions(props: Props) {
               {isUserSuspended(userId, workspaceSlug?.toString()) ? (
                 <SuspendedUserIcon className="h-3.5 w-3.5 text-placeholder" />
               ) : (
-                <Avatar name={userDetails?.display_name} src={getFileURL(userDetails?.avatar_url ?? "")} />
+                <Avatar
+                  name={userDetails?.display_name || userDetails?.first_name || "Unknown"}
+                  src={getFileURL(userDetails?.avatar_url ?? "")}
+                  showTooltip={false}
+                />
               )}
             </div>
             <span
@@ -111,7 +115,9 @@ export const MemberOptions = observer(function MemberOptions(props: Props) {
                 isUserSuspended(userId, workspaceSlug?.toString()) ? "text-placeholder" : ""
               )}
             >
-              {currentUser?.id === userId ? t("you") : userDetails?.display_name}
+              {currentUser?.id === userId
+                ? `${t("you")} (${userDetails?.display_name || "no-name"})`
+                : userDetails?.display_name || `ID: ${userId} - No details`}
             </span>
           </div>
         ),

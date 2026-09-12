@@ -8,7 +8,11 @@ import { index, layout, route } from "@react-router/dev/routes";
 import type { RouteConfig } from "@react-router/dev/routes";
 
 export default [
-  layout("./(all)/(home)/layout.tsx", [index("./(all)/(home)/page.tsx")]),
+  layout("./(all)/(home)/layout.tsx", [
+    index("./(all)/(home)/page.tsx"),
+    route("sign-up", "./(all)/(home)/page.tsx", { id: "home-sign-up" }),
+    route("setup", "./(all)/(home)/page.tsx", { id: "home-setup" }),
+  ]),
   layout("./(all)/(dashboard)/layout.tsx", [
     route("general", "./(all)/(dashboard)/general/page.tsx"),
     route("workspace", "./(all)/(dashboard)/workspace/page.tsx"),

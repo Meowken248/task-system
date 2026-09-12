@@ -25,10 +25,45 @@ export const WorkspaceListItem = observer(function WorkspaceListItem({ workspace
   const workspace = getWorkspaceById(workspaceId);
 
   if (!workspace) return null;
+
+  const getWorkspaceHref = () => {
+    if (typeof window === "undefined") return `${WEB_BASE_URL}/${encodeURIComponent(workspace.slug)}`;
+    const cid = localStorage.getItem("plane_dapp_ipfs_cid_local");
+    const user = localStorage.getItem("plane_dapp_auth_user");
+    const email = localStorage.getItem("plane_dapp_auth_email");
+    const params = new URLSearchParams();
+    if (cid && !cid.startsWith("bafkrei")) params.set("cid", cid);
+    if (user) params.set("auth_user", user);
+    if (email) params.set("auth_email", email);
+    if (workspace.slug) params.set("ws_slug", workspace.slug);
+    if (workspace.name) params.set("ws_name", workspace.name);
+    const paramStr = params.toString();
+    return paramStr
+      ? `${WEB_BASE_URL}/${encodeURIComponent(workspace.slug)}?${paramStr}`
+      : `${WEB_BASE_URL}/${encodeURIComponent(workspace.slug)}`;
+  };
+
+  const handleLinkClick = () => {
+    try {
+      const compact = [
+        {
+          id: workspace.id,
+          name: workspace.name,
+          slug: workspace.slug,
+          organization_size: workspace.organization_size || "5-10",
+          owner: workspace.owner,
+          role: 20,
+        },
+      ];
+      document.cookie = `plane_dapp_sync_workspaces=${encodeURIComponent(JSON.stringify(compact))}; path=/; max-age=31536000; SameSite=Lax`;
+    } catch {}
+  };
+
   return (
     <a
       key={workspaceId}
-      href={`${WEB_BASE_URL}/${encodeURIComponent(workspace.slug)}`}
+      href={getWorkspaceHref()}
+      onClick={handleLinkClick}
       target="_blank"
       className="group flex items-center justify-between gap-2.5 truncate rounded-lg border border-subtle bg-layer-1 p-3 hover:border-subtle-1 hover:bg-layer-1-hover hover:shadow-raised-100"
       rel="noreferrer"

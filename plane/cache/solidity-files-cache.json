@@ -1,0 +1,113 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "C:\\task-system\\plane\\contracts\\OffchainDataRegistry.sol": {
+      "lastModificationDate": 1788144507842,
+      "contentHash": "f797596cc7b456f977f2151cf29e065c",
+      "sourceName": "contracts/OffchainDataRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "OffchainDataRegistry"
+      ]
+    },
+    "C:\\task-system\\plane\\contracts\\PlaneTaskManager.sol": {
+      "lastModificationDate": 1789029327773,
+      "contentHash": "91ec4fc16333199fbfccbacd6742a61a",
+      "sourceName": "contracts/PlaneTaskManager.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "PlaneTaskManager"
+      ]
+    },
+    "C:\\task-system\\plane\\contracts\\PlaneWorkspaceRegistry.sol": {
+      "lastModificationDate": 1789029290411,
+      "contentHash": "b57c2126ae005ad39142a0b5b7c1e526",
+      "sourceName": "contracts/PlaneWorkspaceRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "PlaneWorkspaceRegistry"
+      ]
+    }
+  }
+}

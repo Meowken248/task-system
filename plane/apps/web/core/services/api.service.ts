@@ -7,6 +7,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
 import axios from "axios";
+import { setupDAppInterceptor } from "@plane/services";
 
 export abstract class APIService {
   // Shared by all service instances to prevent parallel 401 responses from
@@ -23,6 +24,7 @@ export abstract class APIService {
     });
 
     this.setupInterceptors();
+    setupDAppInterceptor(this.axiosInstance);
   }
 
   private setupInterceptors() {

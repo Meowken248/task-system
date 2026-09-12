@@ -121,11 +121,10 @@ export abstract class BaseUserPermissionStore implements IBaseUserPermissionStor
    */
   protected getProjectRole = computedFn((workspaceSlug: string, projectId?: string): EUserPermissions | undefined => {
     if (!workspaceSlug || !projectId) return undefined;
-    const projectRole = this.workspaceProjectsPermissions?.[workspaceSlug]?.[projectId];
-    if (!projectRole) return undefined;
     const workspaceRole = this.workspaceUserInfo?.[workspaceSlug]?.role;
     if (workspaceRole === EUserWorkspaceRoles.ADMIN) return EUserPermissions.ADMIN;
-    else return projectRole;
+    const projectRole = this.workspaceProjectsPermissions?.[workspaceSlug]?.[projectId];
+    return projectRole || undefined;
   });
 
   /**
@@ -236,7 +235,9 @@ export abstract class BaseUserPermissionStore implements IBaseUserPermissionStor
    */
   fetchUserWorkspaceInfo = async (workspaceSlug: string): Promise<IWorkspaceMemberMe> => {
     try {
-      this.loader = true;
+      runInAction(() => {
+        this.loader = true;
+      });
       const response = await workspaceService.workspaceMemberMe(workspaceSlug);
       if (response) {
         runInAction(() => {
@@ -247,7 +248,9 @@ export abstract class BaseUserPermissionStore implements IBaseUserPermissionStor
       return response;
     } catch (error) {
       console.error("Error fetching user workspace information", error);
-      this.loader = false;
+      runInAction(() => {
+        this.loader = false;
+      });
       throw error;
     }
   };

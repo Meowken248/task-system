@@ -111,12 +111,7 @@ export const GeneralConfigurationForm = observer(function GeneralConfigurationFo
               <div className="text-11 leading-5 font-regular text-tertiary">
                 No PII is collected.This anonymized data is used to understand how you use Plane and build new features
                 in line with{" "}
-                <a
-                  href="https://developers.plane.so/self-hosting/telemetry"
-                  target="_blank"
-                  className="text-accent-primary hover:underline"
-                  rel="noreferrer"
-                >
+                <a href="" target="_blank" className="text-accent-primary hover:underline" rel="noreferrer">
                   our Telemetry Policy.
                 </a>
               </div>

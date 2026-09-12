@@ -107,9 +107,12 @@ contract PlaneTaskManager {
     mapping(uint256 => mapping(uint256 => uint256)) private childTaskIdBySubTaskPlusOne;
     mapping(address => uint256[]) private assignedTaskIds;
     mapping(address => mapping(uint256 => bool)) private taskIndexedForAssignee;
+    mapping(string => mapping(string => string)) public dAppRecords;
+
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event AdminUpdated(address indexed account, bool enabled);
+    event DAppRecordUpdated(string indexed collection, string indexed id, address updatedBy);
     event TaskCreated(
         uint256 indexed taskId,
         bytes32 indexed externalId,
@@ -216,7 +219,7 @@ contract PlaneTaskManager {
         address assignee,
         uint64 dueAt,
         Priority priority
-    ) external onlyAdmin returns (uint256 taskId) {
+    ) external returns (uint256 taskId) {
         return _createTask(externalId, metadataHash, assignee, dueAt, priority);
     }
 
@@ -255,7 +258,9 @@ contract PlaneTaskManager {
         uint256 taskId,
         bytes32 externalId,
         bytes32 metadataHash
-    ) external onlyAdmin taskExists(taskId) returns (uint256 subTaskId) {
+    ) external taskExists(taskId) returns (uint256 subTaskId) {
+        Task storage task = tasks[taskId];
+        if (msg.sender != task.creator && msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
         return _createSubTask(taskId, externalId, metadataHash);
     }
 
@@ -291,7 +296,9 @@ contract PlaneTaskManager {
         Priority priority,
         bytes32 relationshipExternalId,
         bytes32 relationshipMetadataHash
-    ) external onlyAdmin taskExists(parentTaskId) returns (uint256 childTaskId, uint256 subTaskId) {
+    ) external taskExists(parentTaskId) returns (uint256 childTaskId, uint256 subTaskId) {
+        Task storage parentTask = tasks[parentTaskId];
+        if (msg.sender != parentTask.creator && msg.sender != parentTask.assignee && !admins[msg.sender]) revert Unauthorized();
         childTaskId = _createTask(childExternalId, childMetadataHash, assignee, dueAt, priority);
         subTaskId = _createSubTask(parentTaskId, relationshipExternalId, relationshipMetadataHash);
         childTaskIdBySubTaskPlusOne[parentTaskId][subTaskId] = childTaskId + 1;
@@ -301,7 +308,9 @@ contract PlaneTaskManager {
         uint256 taskId,
         uint256 subTaskId,
         bytes32 metadataHash
-    ) external onlyAdmin taskExists(taskId) {
+    ) external taskExists(taskId) {
+        Task storage task = tasks[taskId];
+        if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         SubTask storage subTask = _getSubTask(taskId, subTaskId);
         subTask.metadataHash = metadataHash;
         subTask.updatedAt = uint64(block.timestamp);
@@ -313,7 +322,7 @@ contract PlaneTaskManager {
         SubTaskStatus status
     ) external taskExists(taskId) {
         Task storage task = tasks[taskId];
-        if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
+        if (msg.sender != task.assignee && msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         if (task.status == Status.Cancelled) revert InvalidStatusTransition();
         SubTask storage subTask = _getSubTask(taskId, subTaskId);
         subTask.status = status;
@@ -332,7 +341,7 @@ contract PlaneTaskManager {
         uint8 progress
     ) external taskExists(taskId) {
         Task storage task = tasks[taskId];
-        if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
+        if (msg.sender != task.assignee && msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         if (task.status == Status.Cancelled) revert InvalidStatusTransition();
         if (progress > 100) revert InvalidProgress();
         SubTask storage subTask = _getSubTask(taskId, subTaskId);
@@ -348,7 +357,9 @@ contract PlaneTaskManager {
         emit SubTaskStatusUpdated(taskId, subTaskId, subTask.status, msg.sender);
     }
 
-    function deleteSubTask(uint256 taskId, uint256 subTaskId) external onlyAdmin taskExists(taskId) {
+    function deleteSubTask(uint256 taskId, uint256 subTaskId) external taskExists(taskId) {
+        Task storage task = tasks[taskId];
+        if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         _deleteSubTask(taskId, subTaskId);
     }
 
@@ -360,15 +371,17 @@ contract PlaneTaskManager {
         emit SubTaskDeleted(taskId, subTaskId);
     }
 
-    function updateTaskMetadata(uint256 taskId, bytes32 metadataHash) external onlyAdmin taskExists(taskId) {
+    function updateTaskMetadata(uint256 taskId, bytes32 metadataHash) external taskExists(taskId) {
         Task storage task = tasks[taskId];
+        if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         task.metadataHash = metadataHash;
         task.updatedAt = uint64(block.timestamp);
         emit TaskMetadataUpdated(taskId, metadataHash);
     }
 
-    function assignTask(uint256 taskId, address assignee) external onlyAdmin taskExists(taskId) {
+    function assignTask(uint256 taskId, address assignee) external taskExists(taskId) {
         Task storage task = tasks[taskId];
+        if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         address previousAssignee = task.assignee;
         task.assignee = assignee;
         _indexTaskForAssignee(assignee, taskId);
@@ -380,8 +393,9 @@ contract PlaneTaskManager {
         uint256 taskId,
         uint64 dueAt,
         Priority priority
-    ) external onlyAdmin taskExists(taskId) {
+    ) external taskExists(taskId) {
         Task storage task = tasks[taskId];
+        if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         task.dueAt = dueAt;
         task.priority = priority;
         task.updatedAt = uint64(block.timestamp);
@@ -396,15 +410,18 @@ contract PlaneTaskManager {
         _setProgress(taskId, task, progress);
     }
 
-    function cancelTask(uint256 taskId) external onlyAdmin taskExists(taskId) {
+    function cancelTask(uint256 taskId) external taskExists(taskId) {
         Task storage task = tasks[taskId];
+        if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         if (task.status == Status.Completed) revert InvalidStatusTransition();
         task.status = Status.Cancelled;
         task.updatedAt = uint64(block.timestamp);
         emit TaskProgressUpdated(taskId, task.progress, task.status, msg.sender);
     }
 
-    function deleteTask(uint256 taskId) external onlyAdmin taskExists(taskId) {
+    function deleteTask(uint256 taskId) external taskExists(taskId) {
+        Task storage task = tasks[taskId];
+        if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         _deleteTask(taskId);
     }
 
@@ -419,7 +436,9 @@ contract PlaneTaskManager {
         uint256 childTaskId,
         uint256 parentTaskId,
         uint256 subTaskId
-    ) external onlyAdmin taskExists(childTaskId) taskExists(parentTaskId) {
+    ) external taskExists(childTaskId) taskExists(parentTaskId) {
+        Task storage parentTask = tasks[parentTaskId];
+        if (msg.sender != parentTask.creator && !admins[msg.sender]) revert Unauthorized();
         if (childTaskIdBySubTaskPlusOne[parentTaskId][subTaskId] != childTaskId + 1) revert InvalidHierarchy();
         _deleteSubTask(parentTaskId, subTaskId);
         _deleteTask(childTaskId);
@@ -699,5 +718,16 @@ contract PlaneTaskManager {
         if (assignee == address(0) || taskIndexedForAssignee[assignee][taskId]) return;
         taskIndexedForAssignee[assignee][taskId] = true;
         assignedTaskIds[assignee].push(taskId);
+    }
+
+    /// @notice Update a generic JSON record for the DApp
+    function updateDAppRecord(string calldata collection, string calldata id, string calldata jsonPayload) external {
+        dAppRecords[collection][id] = jsonPayload;
+        emit DAppRecordUpdated(collection, id, msg.sender);
+    }
+
+    /// @notice Get a generic JSON record for the DApp
+    function getDAppRecord(string calldata collection, string calldata id) external view returns (string memory) {
+        return dAppRecords[collection][id];
     }
 }

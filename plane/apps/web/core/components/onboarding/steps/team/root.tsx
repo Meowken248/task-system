@@ -64,7 +64,7 @@ type InviteMemberFormProps = {
 
 // services
 const workspaceService = new WorkspaceService();
-const emailRegex = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
+const emailRegex = /^([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|0x[a-fA-F0-9]{40})$/i;
 
 const placeholderEmails = [
   "charlie.taylor@frstflt.com",

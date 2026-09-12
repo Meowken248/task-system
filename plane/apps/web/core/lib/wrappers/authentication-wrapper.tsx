@@ -69,11 +69,16 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
       currentUserSettings?.workspace?.last_workspace_slug || currentUserSettings?.workspace?.fallback_workspace_slug;
 
     // validate the current workspace_slug is available in the user's workspace list
-    const isCurrentWorkspaceValid = Object.values(workspaces || {}).findIndex(
+    const workspacesList = Object.values(workspaces || {});
+    const isCurrentWorkspaceValid = workspacesList.findIndex(
       (workspace) => workspace.slug === currentWorkspaceSlug
     );
 
-    if (isCurrentWorkspaceValid >= 0) redirectionRoute = `/${currentWorkspaceSlug}`;
+    if (isCurrentWorkspaceValid >= 0) {
+      redirectionRoute = `/${currentWorkspaceSlug}`;
+    } else if (workspacesList.length > 0) {
+      redirectionRoute = `/${workspacesList[0].slug}`;
+    }
 
     return redirectionRoute;
   };

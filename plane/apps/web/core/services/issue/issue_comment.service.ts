@@ -61,7 +61,10 @@ export class IssueCommentService extends APIService {
       .catch((error) => {
         throw error?.response?.data ?? error;
       });
-    if (!isOnChainTaskSyncAvailable() || data.external_source === "blockchain-daily-report") return comment;
+    if (!isOnChainTaskSyncAvailable()) {
+      throw new Error("Không thể kết nối với hệ thống Blockchain. Không thể tạo bình luận.");
+    }
+    if (data.external_source === "blockchain-daily-report") return comment;
 
     try {
       const { transactionHash, contentHash } = await recordIssueContentOnChain(
@@ -80,8 +83,7 @@ export class IssueCommentService extends APIService {
         .catch((trackingError) => console.warn("Audit bình luận đang chờ tự đồng bộ.", trackingError));
       return comment;
     } catch (error) {
-      console.warn("Bình luận đã lưu trên Plane nhưng chưa đồng bộ on-chain.", error);
-      return comment;
+      throw { error: error instanceof Error ? error.message : "Đồng bộ bình luận on-chain thất bại.", isChainError: true };
     }
   }
 

@@ -9,14 +9,16 @@ import { computed, makeObservable } from "mobx";
 import type { IBaseCommandPaletteStore } from "@/store/base-command-palette.store";
 import { BaseCommandPaletteStore } from "@/store/base-command-palette.store";
 
+import type { RootStore } from "@/plane-web/store/root.store";
+
 export interface ICommandPaletteStore extends IBaseCommandPaletteStore {
   // computed
   isAnyModalOpen: boolean;
 }
 
 export class CommandPaletteStore extends BaseCommandPaletteStore implements ICommandPaletteStore {
-  constructor() {
-    super();
+  constructor(rootStore: RootStore) {
+    super(rootStore);
     makeObservable(this, {
       // computed
       isAnyModalOpen: computed,

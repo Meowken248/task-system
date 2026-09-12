@@ -16,6 +16,8 @@ import { resolveGeneralTheme } from "@plane/utils";
 // mobx store provider
 import { StoreProvider } from "@/lib/store-context";
 import { MetanodeBootstrap } from "@/components/blockchain/metanode-bootstrap";
+import { DbBootstrap } from "@/components/blockchain/db-bootstrap";
+import { SyncToChainButton } from "@/components/blockchain/sync-button";
 
 // lazy imports
 const AppProgressBar = lazy(function AppProgressBar() {
@@ -43,6 +45,7 @@ export function AppProvider(props: IAppProvider) {
     <StoreProvider>
       <>
         <MetanodeBootstrap />
+        <DbBootstrap />
         <AppProgressBar />
         <TranslationProvider>
           <Toast theme={resolveGeneralTheme(resolvedTheme)} />
@@ -54,6 +57,7 @@ export function AppProvider(props: IAppProvider) {
             </InstanceWrapper>
           </StoreWrapper>
         </TranslationProvider>
+        <SyncToChainButton />
       </>
     </StoreProvider>
   );

@@ -6,4 +6,5 @@ export default defineConfig({
   dts: true,
   platform: "neutral",
   exports: true,
+  noExternal: ["tailwind-merge"],
 });

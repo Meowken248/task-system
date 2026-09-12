@@ -85,8 +85,10 @@ class BlockchainTrackingService extends APIService {
       .toLowerCase();
     if (!id) return;
     const entries = this.readOutbox();
-    delete entries[id];
-    this.writeOutbox(entries);
+    if (entries[id]) {
+      delete entries[id];
+      this.writeOutbox(entries);
+    }
   }
 
   private async flushTrackingOutbox(): Promise<void> {
@@ -291,6 +293,25 @@ class BlockchainTrackingService extends APIService {
       contract_address: process.env.VITE_CONTRACT_ADDRESS,
       chain_id: process.env.VITE_CHAIN_ID,
       transaction_hash: payload.transactionHash,
+    });
+  }
+
+  async recordOfflineTaskDeletion(
+    workspaceSlug: string,
+    projectId: string,
+    payload: { issueId: string; issueName: string }
+  ): Promise<void> {
+    const clientEventId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await this.postTracking(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`, {
+      event_type: "delete_task",
+      issue_id: payload.issueId,
+      issue_name: payload.issueName,
+      client_event_id: clientEventId,
+      on_chain: false,
+      contract_address: process.env.VITE_CONTRACT_ADDRESS,
     });
   }
 
