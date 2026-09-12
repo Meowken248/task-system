@@ -167,10 +167,11 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     planeTasks.forEach((issue) => {
       processedIds.add(issue.id);
       const taskRecords = grouped.get(issue.id) ?? [];
+      const creation = taskRecords.find((record) => record.event_type === "create_task");
       taskOptions.push({
         id: issue.id,
         name: issue.name,
-        parentId: issue.parent_id || undefined,
+        parentId: issue.parent_id || creation?.parent_issue_id || undefined,
         records: taskRecords,
       });
     });
@@ -268,7 +269,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
         blockchainTrackingService
           .getTransactions(workspaceSlug, projectId)
           .catch(() => [] as TBlockchainTrackingRecord[]),
-        issueService.getIssuesFromServer(workspaceSlug, projectId, {}).catch(() => ({ results: [] as TIssue[] })),
+        issueService.getIssuesFromServer(workspaceSlug, projectId, { sub_issue: "true" } as any).catch(() => ({ results: [] as TIssue[] })),
       ]);
       setRecords(txRecords);
       setPlaneTasks(Array.isArray(planeIssuesRes?.results) ? planeIssuesRes.results : []);

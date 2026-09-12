@@ -313,6 +313,22 @@ if (localDB.instance.id === "dapp-instance") {
   localDB.instance.instance_id = "instance-main";
 }
 
+function syncIssueParentsToTransactions() {
+  if (localDB.issues && localDB["blockchain-transactions"]) {
+    const issueParentMap = new Map<string, string>();
+    localDB.issues.forEach((i: any) => {
+      const parent = i.parent_id || i.parent;
+      if (parent) issueParentMap.set(i.id, parent);
+    });
+    localDB["blockchain-transactions"].forEach((tx: any) => {
+      if (tx.event_type === "create_task" && tx.issue_id && issueParentMap.has(tx.issue_id)) {
+        tx.parent_issue_id = issueParentMap.get(tx.issue_id);
+      }
+    });
+  }
+}
+syncIssueParentsToTransactions();
+
 export let baseCID: string = "";
 export let currentUserAddress: string | null = null;
 
@@ -638,6 +654,7 @@ export function isIPFSUploading(): boolean {
 
 function saveDB() {
   if (typeof window === "undefined") return;
+  syncIssueParentsToTransactions();
   isDirtyState = true;
   lastUploadedCID = null;
   lastUploadedDataHash = null;
@@ -3296,8 +3313,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       });
 
       // Always exclude issues that have a parent_id from the top-level list when fetching multiple issues
-      // But don't exclude them for search-issues so that existing sub-issues can be found
-      if (!id && !url.includes("search-issues")) {
+      // But don't exclude them for search-issues or when sub_issue/all issues are requested
+      if (!id && !url.includes("search-issues") && !url.includes("sub_issue") && !url.includes("all=true")) {
         list = list.filter((item: any) => !item.parent_id && !item.parent);
       }
     }
