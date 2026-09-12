@@ -11,12 +11,58 @@ async function syncDAppRecord(collection: string, id: string, _record?: any) {
   console.log(`[DApp Sync] Generic sync disabled for ${collection}/${id}`);
 }
 
+// ── Password hashing helper (SHA-256 Web Crypto with salt) ─────────────
+async function hashPassword(password: string): Promise<string> {
+  if (!password) return "";
+  const enc = new TextEncoder().encode(`plane_dapp_salt:${password}`);
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const hashBuf = await crypto.subtle.digest("SHA-256", enc);
+    return Array.from(new Uint8Array(hashBuf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  let hash = 0;
+  for (let i = 0; i < password.length; i++) {
+    hash = (hash << 5) - hash + password.charCodeAt(i);
+    hash |= 0;
+  }
+  return `h_${Math.abs(hash).toString(16)}`;
+}
+
+// ── Permanent Credential Store (Isolated from IPFS sync) ─────────────────
+function getStoredCredentials(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem("plane_dapp_credentials");
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function setStoredCredential(email: string, passwordHash: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const creds = getStoredCredentials();
+    creds[email.toLowerCase().trim()] = passwordHash;
+    localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
+  } catch {}
+}
+
 // ── User factory (Dynamic, zero static mock users) ────────────────────────
-function createUserObject(id: string, email: string, firstName?: string, lastName?: string) {
+function createUserObject(
+  id: string,
+  email: string,
+  firstName?: string,
+  lastName?: string,
+  passwordHash?: string
+) {
   const cleanEmail = (email || "").trim();
   const fName = firstName || (cleanEmail ? cleanEmail.split("@")[0] : "Admin");
   const lName = lastName || "";
   const displayName = `${fName} ${lName}`.trim() || fName;
+  const creds = getStoredCredentials();
+  const resolvedHash = passwordHash || creds[cleanEmail.toLowerCase()] || null;
   return {
     id,
     email: cleanEmail,
@@ -24,6 +70,7 @@ function createUserObject(id: string, email: string, firstName?: string, lastNam
     last_name: lName,
     display_name: displayName,
     avatar_url: "",
+    password_hash: resolvedHash,
     is_bot: false,
     is_active: true,
     is_email_verified: true,
@@ -133,6 +180,12 @@ function loadInitialDB(): Record<string, any> {
           });
           parsed.workspaces = (parsed.workspaces || []).filter((w: any) => w.slug !== "fiai-metanode");
           if (!parsed.workspaces.some((w: any) => w.slug === "fiai")) parsed.workspaces.unshift(DEFAULT_WORKSPACE);
+          const creds = getStoredCredentials();
+          (parsed.users || []).forEach((u: any) => {
+            if (u && u.email && creds[u.email.toLowerCase().trim()]) {
+              u.password_hash = creds[u.email.toLowerCase().trim()];
+            }
+          });
           console.log("[DApp DB] Khởi tạo từ localStorage thành công");
           return parsed;
         }
@@ -158,6 +211,12 @@ function loadInitialDB(): Record<string, any> {
           });
           parsed.workspaces = (parsed.workspaces || []).filter((w: any) => w.slug !== "fiai-metanode");
           if (!parsed.workspaces.some((w: any) => w.slug === "fiai")) parsed.workspaces.unshift(DEFAULT_WORKSPACE);
+          const creds = getStoredCredentials();
+          (parsed.users || []).forEach((u: any) => {
+            if (u && u.email && creds[u.email.toLowerCase().trim()]) {
+              u.password_hash = creds[u.email.toLowerCase().trim()];
+            }
+          });
           console.log("[DApp DB] Khởi tạo từ sessionStorage thành công");
           return parsed;
         }
@@ -170,6 +229,12 @@ function loadInitialDB(): Record<string, any> {
 }
 
 const localDB: Record<string, any> = loadInitialDB();
+const initialCreds = getStoredCredentials();
+(localDB.users || []).forEach((u: any) => {
+  if (u && u.email && initialCreds[u.email.toLowerCase().trim()]) {
+    u.password_hash = initialCreds[u.email.toLowerCase().trim()];
+  }
+});
 
 // Clean up legacy localStorage DB dumps, static mock sessions, and fiai-metanode cache
 if (typeof window !== "undefined") {
@@ -727,6 +792,12 @@ function applyOffchainDB(ipfsDB: Record<string, any>) {
   if (localDB.instance.instance_name === "Plane DApp") {
     localDB.instance.instance_name = "Plane Instance";
   }
+  const creds = getStoredCredentials();
+  (localDB.users || []).forEach((u: any) => {
+    if (u && u.email && creds[u.email.toLowerCase().trim()]) {
+      u.password_hash = creds[u.email.toLowerCase().trim()];
+    }
+  });
   try {
     const snapshot = JSON.stringify(localDB);
     localStorage.setItem("plane_dapp_local_db", snapshot);
@@ -1608,7 +1679,7 @@ function parseData(raw: any): Record<string, any> {
 // ── Route matcher ────────────────────────────────────────────────────────
 type RouteResult = { data: any; status: number };
 
-function handleRoute(method: string, url: string, body: Record<string, any>): RouteResult {
+async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   syncCrossPortWorkspaces();
   const activeUserId = getLoggedInUserId();
@@ -1641,26 +1712,88 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     return ok({ existing, is_password_autoset: false, status: "CREDENTIAL" });
   }
 
-  if (url.includes("/auth/sign-in") || url.includes("/auth/sign-up") || url.includes("/auth/magic-sign-in")) {
-    const email = (body?.email || loggedInEmail || "").trim();
-    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email.toLowerCase());
+  if (url.includes("/auth/sign-in") || url.includes("/auth/magic-sign-in")) {
+    const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
+    const password = body?.password || "";
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
+    const creds = getStoredCredentials();
+    const storedHash = user?.password_hash || creds[email];
 
-    if (!user && email) {
-      user = createUserObject(`user-${Date.now()}`, email, body?.first_name, body?.last_name);
-      if (!localDB.users) localDB.users = [];
-      localDB.users.push(user);
+    if (!user) {
+      if (!storedHash && (!localDB.users || localDB.users.length === 0)) {
+        const passwordHash = password ? await hashPassword(password) : undefined;
+        user = createUserObject(`user-${Date.now()}`, email, undefined, undefined, passwordHash);
+        if (passwordHash) setStoredCredential(email, passwordHash);
+        if (!localDB.users) localDB.users = [];
+        localDB.users.push(user);
+        saveDB();
+      } else {
+        return { data: { error: "Tài khoản không tồn tại. Vui lòng đăng ký trước." }, status: 404 };
+      }
+    }
+
+    if (storedHash) {
+      const inputHash = await hashPassword(password);
+      if (inputHash !== storedHash) {
+        return { data: { error: "Mật khẩu không chính xác. Vui lòng thử lại." }, status: 401 };
+      }
+      user.password_hash = storedHash;
+    } else if (password) {
+      // Legacy user migration: lưu mật khẩu lần đầu đăng nhập
+      const newHash = await hashPassword(password);
+      user.password_hash = newHash;
+      setStoredCredential(email, newHash);
       saveDB();
     }
 
-    if (user) {
-      setLoggedInUser(user.id);
-      if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
-      return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
-    }
-    return { data: { error: "User not found" }, status: 404 };
+    setLoggedInUser(user.id);
+    if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+    return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
   }
 
-  if (url.includes("/auth/forgot-password") || url.includes("/auth/set-password")) return ok({ message: "success" });
+  if (url.includes("/auth/sign-up")) {
+    const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
+    const password = body?.password || "";
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
+    const creds = getStoredCredentials();
+    const storedHash = user?.password_hash || creds[email];
+
+    if (storedHash) {
+      return { data: { error: "Email này đã được đăng ký. Vui lòng đăng nhập." }, status: 400 };
+    }
+
+    const passwordHash = password ? await hashPassword(password) : undefined;
+    if (passwordHash) {
+      setStoredCredential(email, passwordHash);
+    }
+    if (user) {
+      user.password_hash = passwordHash;
+      if (body?.first_name) user.first_name = body.first_name;
+      if (body?.last_name) user.last_name = body.last_name;
+      user.display_name = `${user.first_name} ${user.last_name}`.trim();
+    } else {
+      user = createUserObject(`user-${Date.now()}`, email, body?.first_name, body?.last_name, passwordHash);
+      if (!localDB.users) localDB.users = [];
+      localDB.users.push(user);
+    }
+    saveDB();
+    setLoggedInUser(user.id);
+    if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+    return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
+  }
+
+  if (url.includes("/auth/forgot-password") || url.includes("/auth/set-password")) {
+    const newPwd = body?.password || body?.new_password || "";
+    const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
+    const user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email) || activeUser;
+    if (newPwd && email) {
+      const newHash = await hashPassword(newPwd);
+      setStoredCredential(email, newHash);
+      if (user) user.password_hash = newHash;
+      saveDB();
+    }
+    return ok({ message: "success" });
+  }
 
   if (url.includes("/auth/sign-out")) {
     setLoggedInUser(null);
@@ -1668,7 +1801,6 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
     return ok({ message: "success" });
   }
 
-  // ── Instance ────────────────────────────────────────────────────────
   // ── Instance ────────────────────────────────────────────────────────
   if (url.match(/\/api\/instances\/?$/) || url.match(/\/api\/instances\/\?/)) {
     if (method === "patch" || method === "put" || method === "post") {
@@ -1692,15 +1824,36 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   }
 
   if (url.includes("/api/instances/admins/sign-in")) {
-    const email = (body?.email || loggedInEmail || "").trim();
-    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email.toLowerCase());
+    const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
+    const password = body?.password || "";
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
+    const creds = getStoredCredentials();
+    const storedHash = user?.password_hash || creds[email];
+
     if (!user && email) {
-      user = createUserObject(`admin-${Date.now()}`, email, body?.first_name, body?.last_name);
-      if (!localDB.users) localDB.users = [];
-      localDB.users.push(user);
-      saveDB();
+      if (!storedHash && (!localDB.users || localDB.users.length === 0)) {
+        const passwordHash = password ? await hashPassword(password) : undefined;
+        user = createUserObject(`admin-${Date.now()}`, email, body?.first_name, body?.last_name, passwordHash);
+        if (passwordHash) setStoredCredential(email, passwordHash);
+        if (!localDB.users) localDB.users = [];
+        localDB.users.push(user);
+        saveDB();
+      }
     }
+
     if (user) {
+      if (storedHash) {
+        const inputHash = await hashPassword(password);
+        if (inputHash !== storedHash) {
+          return { data: { error: "Mật khẩu quản trị viên không chính xác." }, status: 401 };
+        }
+        user.password_hash = storedHash;
+      } else if (password) {
+        const newHash = await hashPassword(password);
+        user.password_hash = newHash;
+        setStoredCredential(email, newHash);
+        saveDB();
+      }
       setLoggedInUser(user.id);
       if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
       return ok(user);
@@ -1709,14 +1862,21 @@ function handleRoute(method: string, url: string, body: Record<string, any>): Ro
   }
 
   if (url.includes("/api/instances/admins/sign-up")) {
-    const email = (body?.email || loggedInEmail || "").trim();
-    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email.toLowerCase());
+    const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
+    const password = body?.password || "";
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
+    const passwordHash = password ? await hashPassword(password) : undefined;
+    if (passwordHash && email) {
+      setStoredCredential(email, passwordHash);
+    }
+
     if (user) {
+      if (passwordHash) user.password_hash = passwordHash;
       user.first_name = body?.first_name || user.first_name;
       user.last_name = body?.last_name || user.last_name;
       user.display_name = `${user.first_name} ${user.last_name}`.trim();
     } else {
-      user = createUserObject(`admin-${Date.now()}`, email, body?.first_name, body?.last_name);
+      user = createUserObject(`admin-${Date.now()}`, email, body?.first_name, body?.last_name, passwordHash);
       if (!localDB.users) localDB.users = [];
       localDB.users.push(user);
     }
@@ -3684,7 +3844,7 @@ export function setupDAppInterceptor(axiosInstance: AxiosInstance) {
         }
       }
 
-      const { data, status } = handleRoute(method, url, body);
+      const { data, status } = await handleRoute(method, url, body);
 
       if (status >= 400) {
         const error: any = new Error(`Request failed with status code ${status}`);

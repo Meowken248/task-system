@@ -158,17 +158,18 @@ export function InstanceSetupForm({ onToggleMode }: { onToggleMode?: (mode: "sig
               e.preventDefault();
               setIsSubmitting(true);
               try {
-                const res = await authService.post("/api/instances/admins/sign-up/", formData).catch(() => {});
+                const res = await authService.post("/api/instances/admins/sign-up/", formData);
                 const user = (res as any)?.data || res;
                 if (user?.id) {
                   localStorage.setItem("plane_dapp_auth_user", user.id);
                   localStorage.setItem("plane_dapp_auth_email", user.email || formData.email);
-                } else if (formData.email) {
-                  localStorage.setItem("plane_dapp_auth_user", `admin-${Date.now()}`);
-                  localStorage.setItem("plane_dapp_auth_email", formData.email);
+                  window.location.href = "/god-mode/general";
                 }
+              } catch (err: any) {
+                const errMsg = err?.response?.data?.error || err?.message || "Đăng ký quản trị thất bại.";
+                alert(errMsg);
               } finally {
-                window.location.href = "/god-mode/general";
+                setIsSubmitting(false);
               }
             }}
             onError={() => setIsSubmitting(false)}
