@@ -38,7 +38,7 @@ export const AuthHeader = observer(function AuthHeader({ type }: AuthHeaderProps
   // store
   const { config } = useInstance();
   // derived values
-  const enableSignUpConfig = config?.enable_signup ?? false;
+  const enableSignUpConfig = config?.enable_signup ?? true;
 
   return (
     <AuthHeaderBase

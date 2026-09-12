@@ -95,6 +95,17 @@ export class IssueActivityStore implements IIssueActivityStore {
     const activities = this.getActivitiesByIssueId(issueId);
     const comments = currentStore.comment.getCommentsByIssueId(issueId);
 
+    console.log(
+      "[ActivityStore] issueId:",
+      issueId,
+      "activities:",
+      activities,
+      "comments array:",
+      comments,
+      "store comments map:",
+      currentStore.comment.comments
+    );
+
     if (!activities || !comments) return undefined;
 
     activities.forEach((activityId) => {
@@ -160,12 +171,10 @@ export class IssueActivityStore implements IIssueActivityStore {
       const activityIds = activities.map((activity) => activity.id);
 
       runInAction(() => {
-        update(this.activities, issueId, (currentActivityIds) => {
-          if (!currentActivityIds) return activityIds;
-          return uniq(concat(currentActivityIds, activityIds));
-        });
+        const currentActivityIds = this.activities[issueId] || [];
+        this.activities[issueId] = uniq(concat(currentActivityIds, activityIds));
         activities.forEach((activity) => {
-          set(this.activityMap, activity.id, activity);
+          this.activityMap[activity.id] = activity;
         });
         this.loader = undefined;
       });

@@ -205,6 +205,12 @@ export const uploadCoverImage = async (
     isUserAsset?: boolean;
   }
 ): Promise<string> => {
+  // If we are in Metanode environment, we can just return the local static or unsplash URL directly,
+  // bypassing the need to upload it to the File Processor, which currently has a bug with large base64 chunks.
+  if (typeof window !== "undefined" && (window as any).fiaiSDK) {
+    return imageUrl;
+  }
+
   const { workspaceSlug, entityIdentifier, entityType, isUserAsset = false } = uploadConfig;
 
   // Fetch the local image

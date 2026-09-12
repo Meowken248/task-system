@@ -12,7 +12,7 @@ import { DEFAULT_CREATE_PAGE_MODAL_DATA, EPageAccess } from "@plane/constants";
 import type { TProfileSettingsTabs } from "@plane/types";
 import { EIssuesStoreType } from "@plane/types";
 // lib
-import { store } from "@/lib/store-context";
+import type { RootStore } from "@/plane-web/store/root.store";
 
 export interface ModalData {
   store: EIssuesStoreType;
@@ -53,6 +53,7 @@ export interface IBaseCommandPaletteStore {
 }
 
 export abstract class BaseCommandPaletteStore implements IBaseCommandPaletteStore {
+  rootStore: RootStore;
   // observables
   isCreateProjectModalOpen: boolean = false;
   isCreateCycleModalOpen: boolean = false;
@@ -71,7 +72,8 @@ export abstract class BaseCommandPaletteStore implements IBaseCommandPaletteStor
   allStickiesModal: boolean = false;
   projectListOpenMap: Record<string, boolean> = {};
 
-  constructor() {
+  constructor(rootStore: RootStore) {
+    this.rootStore = rootStore;
     makeObservable(this, {
       // observable
       isCreateProjectModalOpen: observable.ref,
@@ -113,7 +115,7 @@ export abstract class BaseCommandPaletteStore implements IBaseCommandPaletteStor
       this.isCreateProjectModalOpen ||
       this.isCreateModuleModalOpen ||
       this.isCreateViewModalOpen ||
-      store.powerK.isShortcutsListModalOpen ||
+      this.rootStore.powerK.isShortcutsListModalOpen ||
       this.isBulkDeleteIssueModalOpen ||
       this.isDeleteIssueModalOpen ||
       this.createPageModal.isOpen ||

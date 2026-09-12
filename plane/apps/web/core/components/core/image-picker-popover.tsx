@@ -66,6 +66,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
   const { config } = useInstance();
   // derived values
   const hasUnsplashConfigured = config?.has_unsplash_configured || false;
+  const fiaiSDK = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
   const tabOptions: TTabOption[] = useMemo(
     () => [
       {
@@ -298,72 +299,138 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                   </div>
                 </Tabs.Content>
                 <Tabs.Content value="upload" className="h-full w-full">
-                  <div className="flex h-full w-full flex-col gap-y-2">
-                    <div className="flex w-full flex-1 items-center gap-3">
-                      <div
-                        {...getRootProps()}
-                        className={`relative grid h-full w-full cursor-pointer place-items-center rounded-lg p-12 text-center focus:ring-2 focus:ring-accent-strong focus:ring-offset-2 focus:outline-none ${
-                          (image === null && isDragActive) || !value
-                            ? "border-2 border-dashed border-subtle hover:bg-surface-2"
-                            : ""
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          className="absolute top-0 right-0 z-40 -translate-y-1/2 rounded-sm bg-surface-2 px-2 py-0.5 text-11 font-medium text-secondary"
-                        >
-                          Edit
-                        </button>
-                        {image !== null || (value && value !== "") ? (
-                          <>
-                            <img
-                              src={image ? URL.createObjectURL(image) : getCoverImageDisplayURL(value, "")}
-                              alt="image"
-                              className="h-full w-full rounded-lg object-cover"
-                            />
-                          </>
-                        ) : (
-                          <div>
-                            <span className="mt-2 block text-13 font-medium text-secondary">
-                              {isDragActive ? "Drop image here to upload" : "Drag & drop image here"}
-                            </span>
-                          </div>
-                        )}
-
-                        <input {...getInputProps()} />
-                      </div>
-                    </div>
-                    {fileRejections.length > 0 && (
-                      <p className="text-13 text-danger-primary">
-                        {fileRejections[0].errors[0].code === "file-too-large"
-                          ? "The image size cannot exceed 5 MB."
-                          : "Please upload a file in a valid format."}
+                  {fiaiSDK ? (
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-y-6 px-4">
+                      <p className="text-center text-14 text-secondary">
+                        Metanode File Processor is active.
+                        <br />
+                        Click below to select and upload a file securely.
                       </p>
-                    )}
-
-                    <p className="text-13 text-secondary">File formats supported- .jpeg, .jpg, .png, .webp</p>
-
-                    <div className="flex h-12 items-start justify-end gap-2">
-                      <Button
-                        variant="secondary"
-                        onClick={() => {
-                          setIsOpen(false);
-                          setImage(null);
-                        }}
-                      >
-                        Cancel
-                      </Button>
                       <Button
                         variant="primary"
-                        className="w-full"
-                        onClick={handleSubmit}
-                        disabled={!image}
+                        size="base"
                         loading={isImageUploading}
+                        onClick={async () => {
+                          try {
+                            setIsImageUploading(true);
+                            // Use browser file picker
+                            const input = document.createElement("input");
+                            input.type = "file";
+                            input.accept = "image/*";
+                            const filePromise = new Promise<File | null>((resolve) => {
+                              input.onchange = () => resolve(input.files?.[0] || null);
+                              input.oncancel = () => resolve(null);
+                            });
+                            input.click();
+                            const selectedFile = await filePromise;
+                            if (!selectedFile) return;
+
+                            // Convert to base64 and hash via SystemCore
+                            const base64 = await new Promise<string>((resolve, reject) => {
+                              const reader = new FileReader();
+                              reader.readAsDataURL(selectedFile);
+                              reader.onload = () => {
+                                let encoded = reader.result?.toString() || "";
+                                const idx = encoded.indexOf(",");
+                                if (idx !== -1) encoded = encoded.substring(idx + 1);
+                                resolve(encoded);
+                              };
+                              reader.onerror = reject;
+                            });
+
+                            const { createHash } = await import("@metanodejs/system-core");
+                            const hash = await createHash(base64, false);
+                            const assetId = typeof hash === "string" ? hash : (hash as any)?.hash || selectedFile.name;
+
+                            if (assetId) {
+                              onChange(assetId);
+                              setIsOpen(false);
+                            } else {
+                              throw new Error("Could not generate file hash");
+                            }
+                          } catch (error: any) {
+                            console.error("Metanode upload error:", error);
+                            setToast({
+                              message: error?.message || "Failed to upload file via Metanode",
+                              type: TOAST_TYPE.ERROR,
+                              title: "Image not uploaded",
+                            });
+                          } finally {
+                            setIsImageUploading(false);
+                          }
+                        }}
                       >
-                        {isImageUploading ? "Uploading" : "Upload & Save"}
+                        {isImageUploading ? "Uploading..." : "Upload via Metanode"}
                       </Button>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="flex h-full w-full flex-col gap-y-2">
+                      <div className="flex w-full flex-1 items-center gap-3">
+                        <div
+                          {...getRootProps()}
+                          className={`relative grid h-full w-full cursor-pointer place-items-center rounded-lg p-12 text-center focus:ring-2 focus:ring-accent-strong focus:ring-offset-2 focus:outline-none ${
+                            (image === null && isDragActive) || !value
+                              ? "border-2 border-dashed border-subtle hover:bg-surface-2"
+                              : ""
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            className="absolute top-0 right-0 z-40 -translate-y-1/2 rounded-sm bg-surface-2 px-2 py-0.5 text-11 font-medium text-secondary"
+                          >
+                            Edit
+                          </button>
+                          {image !== null || (value && value !== "") ? (
+                            <>
+                              <img
+                                src={image ? URL.createObjectURL(image) : getCoverImageDisplayURL(value, "")}
+                                alt="image"
+                                className="h-full w-full rounded-lg object-cover"
+                              />
+                            </>
+                          ) : (
+                            <div>
+                              <span className="mt-2 block text-13 font-medium text-secondary">
+                                {isDragActive ? "Drop image here to upload" : "Drag & drop image here"}
+                              </span>
+                            </div>
+                          )}
+
+                          <input {...getInputProps()} />
+                        </div>
+                      </div>
+                      {fileRejections.length > 0 && (
+                        <p className="text-13 text-danger-primary">
+                          {fileRejections[0].errors[0].code === "file-too-large"
+                            ? "The image size cannot exceed 5 MB."
+                            : "Please upload a file in a valid format."}
+                        </p>
+                      )}
+
+                      <p className="text-13 text-secondary">File formats supported- .jpeg, .jpg, .png, .webp</p>
+
+                      <div className="flex h-12 items-start justify-end gap-2">
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            setIsOpen(false);
+                            setImage(null);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          variant="primary"
+                          className="w-full"
+                          onClick={handleSubmit}
+                          disabled={!image}
+                          loading={isImageUploading}
+                        >
+                          {isImageUploading ? "Uploading" : "Upload & Save"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </Tabs.Content>
               </div>
             </Tabs>

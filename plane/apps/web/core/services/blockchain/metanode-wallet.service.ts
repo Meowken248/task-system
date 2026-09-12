@@ -1,4 +1,11 @@
-import { getFiaiSDK, initFiaiSDK } from "./fiai-sdk.service";
+import type { Wallet } from "@metanodejs/system-core";
+
+import {
+  clearLastSelectedMetanodeWallet,
+  getFiaiSDK,
+  getLastSelectedMetanodeWallet,
+  initFiaiSDK,
+} from "./fiai-sdk.service";
 import { UserService } from "@/services/user.service";
 
 type WalletLike = { address?: unknown };
@@ -34,18 +41,27 @@ export function getLinkedMetanodeWalletAddress(): string | null {
   return linkedWalletAddress;
 }
 export function isMetanodeWalletRuntimeSupported(): boolean {
-  return typeof window !== "undefined" && window.isSecureContext && "serviceWorker" in navigator;
+  if (typeof window === "undefined") return false;
+  // On HTTP localhost development, browser prevents subframe iframe TLS connection to external domains.
+  // Using the popup window allows top-level navigation, avoiding ERR_SSL_UNRECOGNIZED_NAME_ALERT.
+  const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  if (isLocalDev) return false;
+  return window.isSecureContext && "serviceWorker" in navigator;
 }
 
 function openConnectWalletPage(): void {
   const connectWalletUrl = process.env.VITE_URL_CONNECT_WALLET?.trim();
   if (!connectWalletUrl) throw new Error("VITE_URL_CONNECT_WALLET is missing.");
-  if (!/^https:\/\//i.test(connectWalletUrl)) {
-    throw new Error("VITE_URL_CONNECT_WALLET must start with https://.");
+  const normalizedUrl = /^https?:\/\//i.test(connectWalletUrl) ? connectWalletUrl : `https://${connectWalletUrl}`;
+  if (connectWalletPopup && !connectWalletPopup.closed) {
+    connectWalletPopup.focus();
+    return;
   }
-  connectWalletPopup = window.open(connectWalletUrl, "metanode-connect-wallet", "popup,width=480,height=760");
-  if (!connectWalletPopup) throw new Error("Connect Wallet popup was blocked by the browser.");
-  connectWalletPopup.focus();
+  connectWalletPopup = window.open(normalizedUrl, "metanode-connect-wallet", "popup,width=480,height=760");
+  if (!connectWalletPopup) {
+    connectWalletPopup = window.open(normalizedUrl, "_blank");
+  }
+  connectWalletPopup?.focus();
 }
 
 export function isWalletAddress(value: string): boolean {
@@ -58,7 +74,14 @@ function normalizeWalletAddress(value: string): string {
 }
 
 function readAddress(value: unknown): string | null {
-  if (typeof value === "string" && isWalletAddress(value)) return value;
+  if (typeof value === "string") {
+    if (isWalletAddress(value)) return value;
+    try {
+      return readAddress(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
   if (!value || typeof value !== "object") return null;
   const address = (value as WalletLike).address;
   if (typeof address === "string" && isWalletAddress(address)) return address;
@@ -91,6 +114,23 @@ async function getActiveWalletAddress(): Promise<string | null> {
   return readAddress(await sdk.request<unknown>("getActiveWallet", {}).catch(() => null));
 }
 
+async function dismissMetanodeWalletPicker(address: string): Promise<void> {
+  const wallet = (await getWallets().catch(() => [])).find(
+    (candidate) => readAddress(candidate)?.toLowerCase() === address.toLowerCase()
+  );
+
+  if (wallet) {
+    void import("@metanodejs/system-core")
+      .then(({ closeSelectPaymentWallet }) => closeSelectPaymentWallet(wallet as Wallet))
+      .catch((error) => console.warn("MetaNode wallet picker could not be closed through system-core:", error));
+  }
+
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  connectWalletPopup?.close();
+  connectWalletPopup = null;
+}
+
 async function persistLinkedWallet(address: string): Promise<void> {
   if (!currentPlaneUserId) throw new Error("Hãy đăng nhập Plane trước khi kết nối ví MetaNode.");
   const normalizedAddress = normalizeWalletAddress(address);
@@ -109,24 +149,67 @@ async function persistLinkedWallet(address: string): Promise<void> {
 
 async function selectAndLinkWallet(): Promise<string> {
   if (!currentPlaneUserId) throw new Error("Hãy đăng nhập Plane trước khi kết nối ví MetaNode.");
-  await openMetanodeWallet();
+  clearLastSelectedMetanodeWallet();
+
+  // Crypto Vault may already contain a single wallet while system-core keeps
+  // the `connectWallet` promise pending forever. In that case there is no
+  // ambiguity: link the only available wallet and let MtnContract open the
+  // password/signing screen directly.
+  const activeAddress = await getActiveWalletAddress();
+  if (activeAddress) {
+    await persistLinkedWallet(activeAddress);
+    return normalizeWalletAddress(activeAddress);
+  }
+
+  const availableAddresses = [
+    ...new Set(
+      (await getWallets())
+        .map((wallet) => readAddress(wallet))
+        .filter((address): address is string => Boolean(address))
+        .map(normalizeWalletAddress)
+    ),
+  ];
+  if (availableAddresses.length === 1) {
+    await persistLinkedWallet(availableAddresses[0]);
+    return availableAddresses[0];
+  }
+
+  // system-core may keep this promise pending after a wallet has been selected.
+  // Start the picker without blocking, then observe the active wallet through
+  // Crypto Vault so the Plane flow can finish and close the picker reliably.
+  let walletPickerError: unknown;
+  let walletPickerAddress: string | null = null;
+  void openMetanodeWallet()
+    .then((result) => {
+      walletPickerAddress = readAddress(result);
+    })
+    .catch((error) => {
+      walletPickerError = error;
+      console.error("MetaNode wallet picker failed:", error);
+    });
+
   const deadline = Date.now() + 120_000;
   // Give the wallet picker time to render before accepting its active wallet.
   await new Promise((resolve) => window.setTimeout(resolve, 750));
   while (Date.now() < deadline) {
     // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
-    const selectedAddress = await getActiveWalletAddress();
+    const selectedAddress =
+      walletPickerAddress ?? readAddress(getLastSelectedMetanodeWallet()) ?? (await getActiveWalletAddress());
     if (selectedAddress) {
-      // oxlint-disable-next-line no-await-in-loop -- the account link must finish before transaction signing.
-      await persistLinkedWallet(selectedAddress);
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-      connectWalletPopup?.close();
-      connectWalletPopup = null;
-      return normalizeWalletAddress(selectedAddress);
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- the account link must finish before transaction signing.
+        await persistLinkedWallet(selectedAddress);
+        return normalizeWalletAddress(selectedAddress);
+      } finally {
+        // Always release the blocking wallet layer, including when profile persistence fails.
+        // oxlint-disable-next-line no-await-in-loop -- dismissal should finish before Plane continues.
+        await dismissMetanodeWalletPicker(selectedAddress);
+      }
     }
     // oxlint-disable-next-line no-await-in-loop -- polling is throttled to avoid loading Crypto Vault.
     await new Promise((resolve) => window.setTimeout(resolve, 500));
   }
+  if (walletPickerError instanceof Error) throw walletPickerError;
   throw new Error("Đã hết thời gian chọn ví MetaNode cho tài khoản này.");
 }
 
@@ -143,7 +226,14 @@ export async function activateMetanodeWallet(address: string): Promise<boolean> 
   const activeWallet = await sdk.request<unknown>("getActiveWallet", {}).catch(() => null);
   if (readAddress(activeWallet)?.toLowerCase() === address.toLowerCase()) return true;
 
-  await sdk.request("setActiveWallet", wallet as Record<string, unknown>);
+  const { setWalletActiveDApp } = await import("@metanodejs/system-core");
+  await setWalletActiveDApp(wallet as Wallet);
+  await sdk
+    .request("setActiveWalletDapp", {
+      ...(wallet as Record<string, unknown>),
+      domain: window.location.hostname,
+    })
+    .catch((error) => console.warn("Unable to persist the active MetaNode wallet:", error));
   return true;
 }
 
@@ -164,15 +254,8 @@ export async function openMetanodeWallet(): Promise<unknown> {
   const sdk = await initFiaiSDK();
   if (!sdk) throw new Error("FiaiSDK is not available.");
 
-  // RuntimeSW used by system-core only works in a secure context. LAN development
-  // over plain HTTP must use the hosted HTTPS Connect Wallet page instead.
-  if (!isMetanodeWalletRuntimeSupported()) {
-    openConnectWalletPage();
-    return Promise.resolve();
-  }
-
-  // The module is preloaded by MetanodeBootstrap, so this call remains inside
-  // the user's click and browsers do not block the wallet dialog as a popup.
+  // Luôn dùng connectWallet('light') thay vì window.open popup ngoài,
+  // vì window.open không đồng bộ được dữ liệu ví về FiaiSDK trên localhost.
   if (connectWalletFn) return Promise.resolve(connectWalletFn("light"));
   return preloadMetanodeWallet()?.then((connectWallet) => connectWallet("light")) ?? Promise.resolve();
 }

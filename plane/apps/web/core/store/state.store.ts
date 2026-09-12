@@ -111,7 +111,14 @@ export class StateStore implements IStateStore {
     const projectId = this.router.projectId;
     const workspaceSlug = this.router.workspaceSlug || "";
     if (!projectId || !(this.fetchedMap[projectId] || this.fetchedMap[workspaceSlug])) return;
-    return sortStates(Object.values(this.stateMap).filter((state) => state.project_id === projectId));
+    const allStates = Object.values(this.stateMap);
+    console.log(`[StateStore] get projectStates for projectId: ${projectId}, total states: ${allStates.length}`);
+    if (allStates.length > 0) {
+      console.log(
+        `[StateStore] get projectStates Sample state project_id: ${allStates[0].project_id}, matching? ${allStates[0].project_id === projectId}`
+      );
+    }
+    return sortStates(allStates.filter((state) => (state.project_id || (state as any).project) === projectId));
   }
 
   /**
@@ -161,7 +168,14 @@ export class StateStore implements IStateStore {
   getProjectStates = computedFn((projectId: string | null | undefined) => {
     const workspaceSlug = this.router.workspaceSlug || "";
     if (!projectId || !(this.fetchedMap[projectId] || this.fetchedMap[workspaceSlug])) return;
-    return sortStates(Object.values(this.stateMap).filter((state) => state.project_id === projectId));
+    const allStates = Object.values(this.stateMap);
+    console.log(`[StateStore] getProjectStates for projectId: ${projectId}, total states: ${allStates.length}`);
+    if (allStates.length > 0) {
+      console.log(
+        `[StateStore] Sample state project_id: ${allStates[0].project_id}, matching? ${allStates[0].project_id === projectId}`
+      );
+    }
+    return sortStates(allStates.filter((state) => (state.project_id || (state as any).project) === projectId));
   });
 
   /**
@@ -217,10 +231,15 @@ export class StateStore implements IStateStore {
    */
   fetchProjectStates = async (workspaceSlug: string, projectId: string) => {
     const statesResponse = await this.stateService.getStates(workspaceSlug, projectId);
+    console.log(`[StateStore] fetchProjectStates statesResponse:`, statesResponse);
     runInAction(() => {
-      statesResponse.forEach((state) => {
-        set(this.stateMap, [state.id], state);
-      });
+      if (Array.isArray(statesResponse)) {
+        statesResponse.forEach((state) => {
+          set(this.stateMap, state.id, state);
+        });
+      } else {
+        console.error(`[StateStore] fetchProjectStates statesResponse IS NOT AN ARRAY!`, statesResponse);
+      }
       set(this.fetchedMap, projectId, true);
     });
     return statesResponse;

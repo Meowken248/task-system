@@ -71,18 +71,12 @@ export const OnboardingRoot = observer(function OnboardingRoot({ invitations = [
     (step: EOnboardingSteps, skipInvites?: boolean) => {
       switch (step) {
         case EOnboardingSteps.PROFILE_SETUP:
-          if (isSelfManaged) {
-            // Skip role & use case steps for self-hosted
-            stepChange({ profile_complete: true });
-            if (workspacesList.length > 0) finishOnboarding();
-            else setCurrentStep(EOnboardingSteps.WORKSPACE_CREATE_OR_JOIN);
-          } else {
-            setCurrentStep(EOnboardingSteps.ROLE_SETUP);
-          }
+          // Skip role & use case steps as requested
+          stepChange({ profile_complete: true });
+          if (workspacesList.length > 0) finishOnboarding();
+          else setCurrentStep(EOnboardingSteps.WORKSPACE_CREATE_OR_JOIN);
           break;
         case EOnboardingSteps.ROLE_SETUP:
-          setCurrentStep(EOnboardingSteps.USE_CASE_SETUP);
-          break;
         case EOnboardingSteps.USE_CASE_SETUP:
           stepChange({ profile_complete: true });
           if (workspacesList.length > 0) finishOnboarding();

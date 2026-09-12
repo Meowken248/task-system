@@ -41,8 +41,9 @@ const InstanceWrapper = observer(function InstanceWrapper(props: TInstanceWrappe
   // something went wrong while in the request
   if (error && error?.status === "error") return <>{children}</>;
 
-  // instance is not ready and setup is not done
-  if (instance?.is_setup_done === false) return <InstanceNotReady />;
+  // instance is not ready and setup is not done (only block on root path, never on workspace routes)
+  const isRootPath = typeof window !== "undefined" && window.location.pathname === "/";
+  if (instance?.is_setup_done === false && isRootPath) return <InstanceNotReady />;
 
   return <>{children}</>;
 });

@@ -61,7 +61,7 @@ export const parseChartData = (
   groupByProperty: ChartXAxisProperty | null | undefined,
   xAxisDateGrouping: ChartXAxisDateGrouping | null | undefined
 ): TChart => {
-  if (!data) {
+  if (!data || !data.data || !data.schema) {
     return {
       data: [],
       schema: {},

@@ -112,7 +112,7 @@ export function ExistingIssuesListModal(props: Props) {
       ...searchParams,
       workspace_search: isWorkspaceLevel,
     })
-      .then((res) => setIssues(res))
+      .then((res) => setIssues(Array.isArray(res) ? res : []))
       .finally(() => {
         setIsSearching(false);
         setIsLoading(false);
@@ -125,7 +125,7 @@ export function ExistingIssuesListModal(props: Props) {
 
   useEffect(() => {
     if (isOpen && !hasInitializedSelection.current && selectedWorkItemIds && issues.length > 0) {
-      setSelectedIssues(issues.filter((issue) => selectedWorkItemIds.includes(issue.id)));
+      setSelectedIssues((Array.isArray(issues) ? issues : []).filter((issue) => selectedWorkItemIds.includes(issue.id)));
       hasInitializedSelection.current = true;
     }
   }, [isOpen, issues, selectedWorkItemIds]);
@@ -134,7 +134,7 @@ export function ExistingIssuesListModal(props: Props) {
     handleSearch();
   }, [debouncedSearchTerm, isOpen, isWorkspaceLevel, projectId, workspaceSlug]);
 
-  const filteredIssues = issues.filter((issue) => !shouldHideIssue?.(issue));
+  const filteredIssues = (Array.isArray(issues) ? issues : []).filter((issue) => !shouldHideIssue?.(issue));
 
   return (
     <ModalCore isOpen={isOpen} handleClose={handleClose} position={EModalPosition.CENTER} width={EModalWidth.XXL}>

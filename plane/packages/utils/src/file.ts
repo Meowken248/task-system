@@ -94,3 +94,122 @@ export const csvDownload = (data: Array<Array<string>> | { [key: string]: string
   link.click();
   document.body.removeChild(link);
 };
+
+/**
+ * @description triggers browser download for a Blob
+ */
+export const downloadBlob = (blob: Blob, filename: string): void => {
+  if (typeof window === "undefined") return;
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.style.display = "none";
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    window.URL.revokeObjectURL(url);
+    if (a.parentNode) a.parentNode.removeChild(a);
+  }, 1000);
+};
+
+/**
+ * @description converts a base64 string to a Blob
+ */
+export const base64ToBlob = (base64: string, mimeType = "application/octet-stream"): Blob => {
+  const commaIdx = base64.indexOf(",");
+  const cleanBase64 = commaIdx !== -1 ? base64.substring(commaIdx + 1) : base64;
+  const byteCharacters = atob(cleanBase64);
+  const byteNumbers = new Uint8Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  return new Blob([byteNumbers.buffer as ArrayBuffer], { type: mimeType });
+};
+
+/**
+ * @description triggers browser download for a base64 file
+ */
+export const downloadBase64File = (base64: string, filename: string, mimeType = "application/octet-stream"): void => {
+  const blob = base64ToBlob(base64, mimeType);
+  downloadBlob(blob, filename);
+};
+
+const DB_NAME = "plane_attachment_storage";
+const STORE_NAME = "files";
+const DB_VERSION = 1;
+
+function openAttachmentDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined" || !window.indexedDB) {
+      return reject(new Error("IndexedDB not available"));
+    }
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: "key" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * @description persists an uploaded attachment into local IndexedDB
+ */
+export async function saveAttachmentToStorage(
+  key: string,
+  data: { name: string; base64: string; type?: string; size?: number }
+): Promise<void> {
+  if (!key || !data.base64) return;
+  try {
+    const db = await openAttachmentDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      store.put({ key, ...data, savedAt: Date.now() });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) {
+    try {
+      if (data.base64.length < 2000000) {
+        sessionStorage.setItem(`plane_att_${key}`, JSON.stringify(data));
+      }
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+}
+
+/**
+ * @description retrieves an attachment from local IndexedDB
+ */
+export async function getAttachmentFromStorage(
+  key: string
+): Promise<{ name: string; base64: string; type?: string; size?: number } | null> {
+  if (!key) return null;
+  try {
+    const db = await openAttachmentDB();
+    const result = await new Promise<any>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+    if (result && result.base64) return result;
+  } catch {
+    // fallback
+  }
+
+  try {
+    const item = sessionStorage.getItem(`plane_att_${key}`);
+    return item ? JSON.parse(item) : null;
+  } catch {
+    return null;
+  }
+}
+

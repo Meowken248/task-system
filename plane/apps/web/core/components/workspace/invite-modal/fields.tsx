@@ -56,7 +56,7 @@ export const InvitationFields = observer(function InvitationFields(props: TInvit
               rules={{
                 required: t("workspace_settings.settings.members.modal.errors.required"),
                 pattern: {
-                  value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
+                  value: /^([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|0x[a-fA-F0-9]{40})$/i,
                   message: t("workspace_settings.settings.members.modal.errors.invalid"),
                 },
               }}
@@ -70,7 +70,7 @@ export const InvitationFields = observer(function InvitationFields(props: TInvit
                     onChange={onChange}
                     ref={ref}
                     hasError={Boolean(errors.emails?.[index]?.email)}
-                    placeholder={t("workspace_settings.settings.members.modal.placeholder")}
+                    placeholder="email@example.com / 0x..."
                     className="w-full text-caption-sm-regular sm:text-body-xs-regular"
                   />
                   {errors.emails?.[index]?.email && (

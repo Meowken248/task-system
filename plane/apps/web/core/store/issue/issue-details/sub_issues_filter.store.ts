@@ -78,9 +78,11 @@ export class WorkItemSubIssueFiltersStore implements IWorkItemSubIssueFiltersSto
    * @param workItemId
    */
   initializeFilters = (workItemId: string) => {
-    set(this.subIssueFilters, [workItemId, "displayProperties"], DEFAULT_DISPLAY_PROPERTIES);
-    set(this.subIssueFilters, [workItemId, "filters"], {});
-    set(this.subIssueFilters, [workItemId, "displayFilters"], {});
+    this.subIssueFilters[workItemId] = {
+      displayProperties: { ...DEFAULT_DISPLAY_PROPERTIES },
+      filters: {},
+      displayFilters: {},
+    };
   };
 
   /**

@@ -1,3 +1,4 @@
+import { getComputedDisplayProperties } from "@plane/utils";
 /**
  * Copyright (c) 2023-present Plane Software, Inc. and contributors
  * SPDX-License-Identifier: AGPL-3.0-only
@@ -98,7 +99,7 @@ export const SubWorkItemTitleActions = observer(function SubWorkItemTitleActions
       <SubIssueDisplayFilters
         isEpic={issueServiceType === EIssueServiceType.EPICS}
         layoutDisplayFiltersOptions={layoutDisplayFiltersOptions}
-        displayProperties={subIssueFilters?.displayProperties ?? {}}
+        displayProperties={getComputedDisplayProperties(subIssueFilters?.displayProperties ?? {})}
         displayFilters={subIssueFilters?.displayFilters ?? {}}
         handleDisplayPropertiesUpdate={handleDisplayPropertiesUpdate}
         handleDisplayFiltersUpdate={handleDisplayFilters}
@@ -116,3 +117,4 @@ export const SubWorkItemTitleActions = observer(function SubWorkItemTitleActions
     </div>
   );
 });
+
