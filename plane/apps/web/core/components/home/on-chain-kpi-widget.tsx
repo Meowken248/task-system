@@ -395,8 +395,8 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   type="button"
                   onClick={() => void selectProject(project.id)}
                   className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${selectedProjectId === project.id
-                      ? "bg-accent-primary/10 text-accent-primary"
-                      : "text-secondary hover:bg-surface-2"
+                    ? "bg-accent-primary/10 text-accent-primary"
+                    : "text-secondary hover:bg-surface-2"
                     }`}
                 >
                   <span className="min-w-0">
