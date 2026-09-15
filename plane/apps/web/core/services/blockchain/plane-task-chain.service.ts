@@ -178,7 +178,7 @@ function enqueueTransaction<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 function isNonceError(error: unknown): boolean {
-  return /invalid nonce|nonce too low|nonce has already been used|replacement transaction underpriced/i.test(
+  return /invalid nonce|nonce too low|nonce has already been used|replacement transaction underpriced|nonce conflict/i.test(
     blockchainErrorMessage(error)
   );
 }

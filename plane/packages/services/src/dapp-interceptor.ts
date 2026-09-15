@@ -2,7 +2,17 @@ import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse } from "a
 
 declare const process: { env: Record<string, string | undefined> };
 
-const PLANE_CONTRACT = "0x2CB649c0A6338f668F0ADc4AE96c1b2Dc198ed41";
+function getEnvVar(name: string): string | undefined {
+  if (typeof process !== "undefined" && process.env?.[name]) return process.env[name];
+  if (typeof window !== "undefined" && (window as any).__env__?.[name]) return (window as any).__env__[name];
+  if (typeof window !== "undefined" && (window as any)[name]) return (window as any)[name];
+  return undefined;
+}
+
+const PLANE_CONTRACT =
+  getEnvVar("VITE_CONTRACT_ADDRESS") ||
+  getEnvVar("NEXT_PUBLIC_CONTRACT_ADDRESS") ||
+  "0xA12253Af2C667C69F8f75885a14C7313b3f089e4";
 
 // ── On-chain sync (fire-and-forget, never blocks UI) ──────────────────────
 async function syncDAppRecord(collection: string, id: string, _record?: any) {
@@ -95,7 +105,7 @@ function createUserObject(
   };
 }
 
-// ── Default Static Seed Data (Ensures system is ready out-of-the-box) ──
+// ── Default Workspace duy nhất: FIAI ──
 const DEFAULT_WORKSPACE = {
   id: "workspace-fiai",
   name: "FIAI",
@@ -106,10 +116,10 @@ const DEFAULT_WORKSPACE = {
   created_by: "user-default",
   owner: {
     id: "user-default",
-    email: "user@fiai.network",
+    email: "",
     first_name: "FIAI",
-    last_name: "User",
-    display_name: "FIAI User",
+    last_name: "",
+    display_name: "FIAI",
     avatar: "",
   },
   role: 20,
@@ -121,6 +131,14 @@ const defaultDB: Record<string, any> = {
   projects: [],
   states: [],
   labels: [],
+  issues: [],
+  issue_comments: [],
+  issue_activities: [],
+  attachments: [],
+  views: [],
+  cycles: [],
+  modules: [],
+  pages: [],
   instance: {
     id: "instance-main",
     instance_id: "instance-main",
@@ -132,6 +150,7 @@ const defaultDB: Record<string, any> = {
     updated_at: new Date().toISOString(),
   },
 };
+
 
 // ── Auth state (persisted in localStorage) ───────────────────────────────
 function getLoggedInUserId(): string | null {
@@ -162,13 +181,13 @@ function loadInitialDB(): Record<string, any> {
       const cachedLocal = localStorage.getItem("plane_dapp_local_db");
       if (cachedLocal) {
         const parsed = JSON.parse(cachedLocal);
-        if (parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0) {
+        if (parsed && typeof parsed === "object") {
           const deletedSet = new Set(parsed._deleted_project_ids || []);
           parsed.projects = (parsed.projects || []).filter(
-            (p: any) => p.id !== "project-fiai" && !deletedSet.has(p.id) && !deletedSet.has(p.identifier)
+            (p: any) => !deletedSet.has(p.id) && !deletedSet.has(p.identifier)
           );
           parsed.states = (parsed.states || []).filter(
-            (s: any) => s.project !== "project-fiai" && !deletedSet.has(s.project) && !deletedSet.has(s.project_id)
+            (s: any) => !deletedSet.has(s.project) && !deletedSet.has(s.project_id)
           );
           if (parsed.issues) {
             parsed.issues = parsed.issues.filter(
@@ -178,8 +197,7 @@ function loadInitialDB(): Record<string, any> {
           (parsed.projects || []).forEach((p: any) => {
             if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
           });
-          parsed.workspaces = (parsed.workspaces || []).filter((w: any) => w.slug !== "fiai-metanode");
-          if (!parsed.workspaces.some((w: any) => w.slug === "fiai")) parsed.workspaces.unshift(DEFAULT_WORKSPACE);
+          parsed.workspaces = (parsed.workspaces && parsed.workspaces.length > 0) ? parsed.workspaces : [DEFAULT_WORKSPACE];
           const creds = getStoredCredentials();
           (parsed.users || []).forEach((u: any) => {
             if (u && u.email && creds[u.email.toLowerCase().trim()]) {
@@ -193,13 +211,13 @@ function loadInitialDB(): Record<string, any> {
       const cachedSession = sessionStorage.getItem("plane_dapp_latest_db");
       if (cachedSession) {
         const parsed = JSON.parse(cachedSession);
-        if (parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0) {
+        if (parsed && typeof parsed === "object") {
           const deletedSet = new Set(parsed._deleted_project_ids || []);
           parsed.projects = (parsed.projects || []).filter(
-            (p: any) => p.id !== "project-fiai" && !deletedSet.has(p.id) && !deletedSet.has(p.identifier)
+            (p: any) => !deletedSet.has(p.id) && !deletedSet.has(p.identifier)
           );
           parsed.states = (parsed.states || []).filter(
-            (s: any) => s.project !== "project-fiai" && !deletedSet.has(s.project) && !deletedSet.has(s.project_id)
+            (s: any) => !deletedSet.has(s.project) && !deletedSet.has(s.project_id)
           );
           if (parsed.issues) {
             parsed.issues = parsed.issues.filter(
@@ -209,8 +227,7 @@ function loadInitialDB(): Record<string, any> {
           (parsed.projects || []).forEach((p: any) => {
             if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
           });
-          parsed.workspaces = (parsed.workspaces || []).filter((w: any) => w.slug !== "fiai-metanode");
-          if (!parsed.workspaces.some((w: any) => w.slug === "fiai")) parsed.workspaces.unshift(DEFAULT_WORKSPACE);
+          parsed.workspaces = (parsed.workspaces && parsed.workspaces.length > 0) ? parsed.workspaces : [DEFAULT_WORKSPACE];
           const creds = getStoredCredentials();
           (parsed.users || []).forEach((u: any) => {
             if (u && u.email && creds[u.email.toLowerCase().trim()]) {
@@ -236,66 +253,49 @@ const initialCreds = getStoredCredentials();
   }
 });
 
-// Clean up legacy localStorage DB dumps, static mock sessions, and fiai-metanode cache
+// Clean slate wipe: Xóa toàn bộ dữ liệu mẫu cũ để bắt đầu môi trường trắng tinh 100%
 if (typeof window !== "undefined") {
   try {
-    localStorage.removeItem("plane_dapp_db");
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const key = localStorage.key(i);
-      if (key && (key.startsWith("plane_dapp_db_") || key.startsWith("plane_dapp_is_dirty_"))) {
-        localStorage.removeItem(key);
-      }
-    }
-    // Clean up old static mock credentials "me" / "admin@plane.so"
-    if (
-      localStorage.getItem("plane_dapp_auth_user") === "me" ||
-      localStorage.getItem("plane_dapp_auth_email") === "admin@plane.so"
-    ) {
+    const CLEAN_SLATE_KEY = "plane_dapp_clean_slate_v4";
+    if (!localStorage.getItem(CLEAN_SLATE_KEY)) {
+      console.log("[DApp DB] Đang xóa toàn bộ dữ liệu mẫu cũ theo yêu cầu người dùng, khởi tạo duy nhất 1 DEFAULT_WORKSPACE (FIAI)...");
+      localStorage.removeItem("plane_dapp_local_db");
+      localStorage.removeItem("plane_dapp_credentials");
       localStorage.removeItem("plane_dapp_auth_user");
       localStorage.removeItem("plane_dapp_auth_email");
-    }
-    const latestDbStr = sessionStorage.getItem("plane_dapp_latest_db");
-    if (latestDbStr && (latestDbStr.includes("admin@plane.so") || latestDbStr.includes('"Plane DApp"'))) {
-      sessionStorage.removeItem("plane_dapp_latest_db");
-      localStorage.removeItem("plane_dapp_local_db");
-    }
-    // Clean fiai-metanode from stored caches
-    if (localStorage.getItem("plane_dapp_local_db")?.includes("fiai-metanode")) {
-      const parsed = JSON.parse(localStorage.getItem("plane_dapp_local_db") || "{}");
-      if (parsed.workspaces) {
-        parsed.workspaces = parsed.workspaces.filter((w: any) => w.slug !== "fiai-metanode");
-        localStorage.setItem("plane_dapp_local_db", JSON.stringify(parsed));
+      localStorage.removeItem("plane_dapp_ipfs_cid_local");
+      localStorage.removeItem("last_workspace_slug");
+      sessionStorage.clear();
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith("plane_dapp_") || key.startsWith("offchain_"))) {
+          localStorage.removeItem(key);
+        }
       }
+      document.cookie = "plane_dapp_sync_workspaces=; path=/; max-age=0;";
+      localStorage.setItem(CLEAN_SLATE_KEY, "true");
+      localDB.workspaces = [DEFAULT_WORKSPACE];
+      localDB.users = [];
+      localDB.projects = [];
+      localDB.issues = [];
     }
-    if (sessionStorage.getItem("plane_dapp_latest_db")?.includes("fiai-metanode")) {
-      const parsed = JSON.parse(sessionStorage.getItem("plane_dapp_latest_db") || "{}");
-      if (parsed.workspaces) {
-        parsed.workspaces = parsed.workspaces.filter((w: any) => w.slug !== "fiai-metanode");
-        sessionStorage.setItem("plane_dapp_latest_db", JSON.stringify(parsed));
-      }
-    }
-    document.cookie = "plane_dapp_sync_workspaces=; path=/; max-age=0;";
   } catch { }
 }
 
 // Safety checks
 if (!localDB.users) localDB.users = [];
-// Clean out any static mock users that might be cached
-localDB.users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
-localDB.workspaces = (localDB.workspaces || []).filter((w: any) => w.slug !== "fiai-metanode");
 if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
-if (!localDB.workspaces.some((w: any) => w.slug === "fiai")) localDB.workspaces.unshift(DEFAULT_WORKSPACE);
 if (!localDB.projects) localDB.projects = [];
 const initDeletedSet = new Set(localDB._deleted_project_ids || []);
 localDB.projects = localDB.projects.filter(
-  (p: any) => p.id !== "project-fiai" && !initDeletedSet.has(p.id) && !initDeletedSet.has(p.identifier)
+  (p: any) => !initDeletedSet.has(p.id) && !initDeletedSet.has(p.identifier)
 );
 (localDB.projects || []).forEach((p: any) => {
   if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
 });
 if (!localDB.states) localDB.states = [];
 localDB.states = localDB.states.filter(
-  (s: any) => s.project !== "project-fiai" && !initDeletedSet.has(s.project) && !initDeletedSet.has(s.project_id)
+  (s: any) => !initDeletedSet.has(s.project) && !initDeletedSet.has(s.project_id)
 );
 if (!localDB.issues) localDB.issues = [];
 localDB.issues = localDB.issues.filter(
@@ -305,6 +305,7 @@ if (!localDB.issue_comments) localDB.issue_comments = [];
 if (!localDB.attachments) localDB.attachments = [];
 if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
 localDB.instance.is_setup_done = true;
+
 if (localDB.instance.instance_name === "Plane DApp") {
   localDB.instance.instance_name = "Plane Instance";
 }
@@ -365,7 +366,7 @@ function syncCrossPortWorkspaces() {
   if (typeof window === "undefined") return;
   try {
     let hasChanges = false;
-    if (!localDB.workspaces) localDB.workspaces = [DEFAULT_WORKSPACE];
+    if (!localDB.workspaces) localDB.workspaces = [];
 
     // 1. Read from shared cross-port cookies (domain localhost)
     if (typeof document !== "undefined" && document.cookie) {
@@ -389,7 +390,7 @@ function syncCrossPortWorkspaces() {
                     updated_at: sWs.updated_at || new Date().toISOString(),
                     owner: sWs.owner || {
                       id: getLoggedInUserId() || "user-default",
-                      email: getLoggedInEmail() || "user@fiai.network",
+                      email: getLoggedInEmail() || "",
                       first_name: sWs.name || sWs.slug,
                       last_name: "",
                       display_name: sWs.name || sWs.slug,
@@ -435,7 +436,7 @@ function syncCrossPortWorkspaces() {
       if (!exists) {
         const decodedName = wsName ? decodeURIComponent(wsName) : wsSlug.replace(/[-_]/g, " ").toUpperCase();
         const activeUserId = authUser || getLoggedInUserId() || "user-default";
-        const activeEmail = authEmail || getLoggedInEmail() || "user@fiai.network";
+        const activeEmail = authEmail || getLoggedInEmail() || "";
         const newWs = {
           id: `workspace-${wsSlug}`,
           name: decodedName,
@@ -497,7 +498,7 @@ function syncCrossPortWorkspaces() {
       if (!exists) {
         const formattedName = firstSegment.replace(/[-_]/g, " ").toUpperCase();
         const activeUserId = getLoggedInUserId() || "user-default";
-        const activeEmail = getLoggedInEmail() || "user@fiai.network";
+        const activeEmail = getLoggedInEmail() || "";
         localDB.workspaces.push({
           id: `workspace-${firstSegment}`,
           name: formattedName,
@@ -543,6 +544,7 @@ let lastUploadedCID: string | null = null;
 let lastUploadedDataHash: string | null = null;
 let isUploadingIPFS = false;
 let isDirtyState = false;
+let isDAppDBInitialized = false;
 
 /** Get the data object that should be persisted */
 function getDBSnapshot(): Record<string, any[]> {
@@ -554,7 +556,7 @@ function getDBSnapshot(): Record<string, any[]> {
 }
 
 /** Upload current DB to IPFS (no wallet needed) */
-async function uploadToIPFS(): Promise<string | null> {
+async function uploadToIPFS(force = false): Promise<string | null> {
   if (typeof window === "undefined") return null;
   const dbToSave = getDBSnapshot();
 
@@ -568,6 +570,27 @@ async function uploadToIPFS(): Promise<string | null> {
   if (!hasData) {
     console.log("[DApp DB] Bỏ qua IPFS upload — chưa có dữ liệu off-chain.");
     return null;
+  }
+
+  // Safety guard: Protect against overwriting existing IPFS data with an empty/uninitialized shell
+  const hasRealContent =
+    (localDB.workspaces && localDB.workspaces.length > 0) ||
+    (localDB.projects && localDB.projects.length > 0) ||
+    (localDB.issues && localDB.issues.length > 0);
+
+  const existingCID =
+    lastUploadedCID ||
+    localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) ||
+    localStorage.getItem("plane_dapp_ipfs_cid_local");
+
+  if (!force && !isDAppDBInitialized && !hasRealContent) {
+    console.log("[DApp DB] Bỏ qua IPFS upload — cơ sở dữ liệu chưa hoàn tất nạp từ IPFS/chain.");
+    return null;
+  }
+
+  if (!force && existingCID && !existingCID.startsWith("bafkrei") && !hasRealContent) {
+    console.warn("[DApp DB] Chặn upload IPFS rỗng: Tránh ghi đè mất dữ liệu cũ trên IPFS:", existingCID);
+    return existingCID;
   }
 
   const serialized = JSON.stringify(dbToSave);
@@ -687,10 +710,10 @@ async function fetchFromIPFS(cid: string): Promise<Record<string, any> | null> {
   } catch { }
 
   const gateways = [
-    `https://purple-fascinating-quelea-533.mypinata.cloud/ipfs/${cleanCid}`,
     `https://gateway.pinata.cloud/ipfs/${cleanCid}`,
     `https://cloudflare-ipfs.com/ipfs/${cleanCid}`,
     `https://ipfs.io/ipfs/${cleanCid}`,
+    `https://dweb.link/ipfs/${cleanCid}`,
   ];
 
   for (const gw of gateways) {
@@ -730,19 +753,17 @@ function applyOffchainDB(ipfsDB: Record<string, any>) {
   localDB._deleted_project_ids = Array.from(mergedDeletedProjects);
 
   if (!localDB.users) localDB.users = [];
-  localDB.users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
   if (!localDB.workspaces) localDB.workspaces = [];
   for (const w of currentWorkspaces) {
-    if (w.slug !== "fiai-metanode" && !localDB.workspaces.some((existing: any) => existing.slug === w.slug || existing.id === w.id)) {
+    if (!localDB.workspaces.some((existing: any) => existing.slug === w.slug || existing.id === w.id)) {
       localDB.workspaces.push(w);
     }
   }
-  localDB.workspaces = localDB.workspaces.filter((w: any) => w.slug !== "fiai-metanode");
   if (localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
 
   if (!localDB.projects) localDB.projects = [];
   localDB.projects = localDB.projects.filter(
-    (p: any) => p.id !== "project-fiai" && !mergedDeletedProjects.has(p.id) && !mergedDeletedProjects.has(p.identifier)
+    (p: any) => !mergedDeletedProjects.has(p.id) && !mergedDeletedProjects.has(p.identifier)
   );
   (localDB.projects || []).forEach((p: any) => {
     if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
@@ -750,7 +771,7 @@ function applyOffchainDB(ipfsDB: Record<string, any>) {
 
   if (!localDB.states) localDB.states = [];
   localDB.states = localDB.states.filter(
-    (s: any) => s.project !== "project-fiai" && !mergedDeletedProjects.has(s.project) && !mergedDeletedProjects.has(s.project_id)
+    (s: any) => !mergedDeletedProjects.has(s.project) && !mergedDeletedProjects.has(s.project_id)
   );
 
   if (!localDB.issues) localDB.issues = [];
@@ -811,10 +832,14 @@ function applyOffchainDB(ipfsDB: Record<string, any>) {
   }
   const creds = getStoredCredentials();
   (localDB.users || []).forEach((u: any) => {
-    if (u && u.email && creds[u.email.toLowerCase().trim()]) {
-      u.password_hash = creds[u.email.toLowerCase().trim()];
+    const emailKey = u?.email?.toLowerCase().trim();
+    if (emailKey && creds[emailKey]) {
+      u.password_hash = creds[emailKey];
+    } else if (emailKey && u.password_hash) {
+      setStoredCredential(emailKey, u.password_hash);
     }
   });
+  isDAppDBInitialized = true;
   try {
     const snapshot = JSON.stringify(localDB);
     localStorage.setItem("plane_dapp_local_db", snapshot);
@@ -887,13 +912,6 @@ const SET_CID_IF_MATCHES_ABI = {
   outputs: [],
   stateMutability: "nonpayable"
 };
-
-function getEnvVar(name: string): string | undefined {
-  if (typeof process !== "undefined" && process.env?.[name]) return process.env[name];
-  if (typeof window !== "undefined" && (window as any).__env__?.[name]) return (window as any).__env__[name];
-  if (typeof window !== "undefined" && (window as any)[name]) return (window as any)[name];
-  return undefined;
-}
 
 const CONTRACT_ADDRESS =
   getEnvVar("VITE_REGISTRY_CONTRACT_ADDRESS") ||
@@ -1258,6 +1276,7 @@ async function _initDAppDB() {
       scheduleIPFSUpload();
     }
 
+    isDAppDBInitialized = true;
     return { status: "OK" };
   }
 
@@ -1271,15 +1290,21 @@ async function _initDAppDB() {
     const isMock = getEnvVar("VITE_MOCK_FIAI") === "true";
     if (isMock) {
       console.log(`[DApp DB] MOCK MODE: Bỏ qua đọc từ contract.`);
+      isDAppDBInitialized = true;
       return { status: "OK" };
     }
 
-    // ── Direct RPC call: getCID(address, "plane_dapp_db") ──────────────
-    console.log(`[DApp DB] Đọc CID trực tiếp từ RPC (${getRpcUrl()})...`);
-    const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
-    const rawResult = await directRpcRead(CONTRACT_ADDRESS, calldata, 15000);
-    const onChainUserCid = decodeAbiString(rawResult);
-    console.log(`[DApp DB] User CID từ contract:`, onChainUserCid || "(trống)");
+    let onChainUserCid = "";
+    try {
+      // ── Direct RPC call: getCID(address, "plane_dapp_db") ──────────────
+      console.log(`[DApp DB] Đọc CID trực tiếp từ RPC (${getRpcUrl()})...`);
+      const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
+      const rawResult = await directRpcRead(CONTRACT_ADDRESS, calldata, 8000);
+      onChainUserCid = decodeAbiString(rawResult);
+      console.log(`[DApp DB] User CID từ contract:`, onChainUserCid || "(trống)");
+    } catch (rpcErr) {
+      console.warn(`[DApp DB] Không thể đọc CID từ smart contract qua RPC (node có thể đang bảo trì):`, rpcErr);
+    }
 
     // ── Check PlaneWorkspaceRegistry if available ──────────────
     let onChainWorkspaceCid = "";
@@ -1287,7 +1312,7 @@ async function _initDAppDB() {
       try {
         console.log(`[DApp DB] Đang truy vấn danh sách Workspaces của ví ${currentUserAddress} từ PlaneWorkspaceRegistry (${WORKSPACE_REGISTRY_ADDRESS})...`);
         const userWsCalldata = abiEncodeGetUserWorkspaces(currentUserAddress as string);
-        const userWsRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, userWsCalldata, 10000);
+        const userWsRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, userWsCalldata, 8000);
         const userWsSlugs = decodeAbiStringArray(userWsRaw);
         console.log(`[DApp DB] Workspaces tìm thấy trên chain cho ví:`, userWsSlugs);
 
@@ -1299,7 +1324,7 @@ async function _initDAppDB() {
         for (const slug of slugsToCheck) {
           try {
             const wsInfoCalldata = abiEncodeGetWorkspace(slug);
-            const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 8000);
+            const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 5000);
             const wsInfo = decodeAbiWorkspace(wsInfoRaw);
             if (wsInfo && wsInfo.name) {
               const existingIdx = localDB.workspaces.findIndex((w: any) => w.slug === slug);
@@ -1332,11 +1357,12 @@ async function _initDAppDB() {
     }
 
     const onChainCid = onChainWorkspaceCid || onChainUserCid;
-
     baseCID = onChainCid || "";
 
-    const cachedIpfsCid = localStorage.getItem(`plane_dapp_ipfs_cid_${currentUserAddress}`);
-    const targetCID = cachedIpfsCid || onChainCid;
+    const cachedIpfsCid =
+      localStorage.getItem(`plane_dapp_ipfs_cid_${currentUserAddress}`) ||
+      localStorage.getItem("plane_dapp_ipfs_cid_local");
+    const targetCID = onChainCid || cachedIpfsCid;
 
     if (targetCID && targetCID !== "") {
       console.log(`[DApp DB] Đang tải dữ liệu off-chain từ IPFS (CID: ${targetCID})...`);
@@ -1344,17 +1370,21 @@ async function _initDAppDB() {
       if (ipfsDB) {
         if (onChainCid && cachedIpfsCid && onChainCid !== cachedIpfsCid) {
           console.warn(`[DApp DB] Phát hiện xung đột CID: On-chain (${onChainCid}) vs IPFS (${cachedIpfsCid})`);
+          isDAppDBInitialized = true;
           return { status: "CONFLICT", cid: onChainCid, ipfsDB };
         }
         applyOffchainDB(ipfsDB);
         lastUploadedCID = targetCID;
+        isDAppDBInitialized = true;
         return { status: "OK" };
       }
     }
 
+    isDAppDBInitialized = true;
     return { status: "OK" };
   } catch (err) {
     console.error("Failed to load DApp DB from chain / IPFS:", err);
+    isDAppDBInitialized = true;
     return { status: "OK" };
   }
 }
@@ -1396,7 +1426,7 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
       ipfsDebounceTimer = null;
     }
     console.log("[DApp DB] Dữ liệu có thay đổi (isDirtyState) hoặc chưa có CID, bắt buộc upload IPFS mới...");
-    cid = await uploadToIPFS();
+    cid = await uploadToIPFS(true);
   }
   if (!cid) throw new Error("Không thể upload dữ liệu lên IPFS.");
 
@@ -1552,13 +1582,13 @@ function getInstanceInfo() {
       is_telemetry_enabled: inst.is_telemetry_enabled ?? false,
       is_support_required: false,
       is_activated: true,
-      is_setup_done: inst.is_setup_done !== undefined ? inst.is_setup_done : hasUsers,
+      is_setup_done: true,
       is_signup_screen_visited: true,
       user_count: (localDB.users || []).length,
       is_verified: true,
       created_by: null,
       updated_by: null,
-      workspaces_exist: Boolean(localDB.workspaces && localDB.workspaces.length > 0),
+      workspaces_exist: true,
     },
     config: {
       enable_signup: true,
@@ -1599,8 +1629,8 @@ function getUserProfile() {
       id: "anonymous",
       user: "anonymous",
       role: "admin",
-      last_workspace_id: "workspace-fiai",
-      last_workspace_slug: "fiai",
+      last_workspace_id: null,
+      last_workspace_slug: null,
       theme: { theme: "dark" },
       onboarding_step: { workspace_join: true, profile_complete: true, workspace_create: true, workspace_invite: true },
       is_onboarded: true,
@@ -1617,15 +1647,15 @@ function getUserProfile() {
     };
   }
 
-  const userWorkspaces = localDB.workspaces || [];
-  const firstWs = userWorkspaces[0] || null;
+  const userWorkspaces = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces : [DEFAULT_WORKSPACE];
+  const firstWs = userWorkspaces[0] || DEFAULT_WORKSPACE;
 
   return {
     id: activeUser.id,
     user: activeUser.id,
     role: "admin",
-    last_workspace_id: activeUser.last_workspace_id || firstWs?.id || "workspace-fiai",
-    last_workspace_slug: activeUser.last_workspace_slug || firstWs?.slug || "fiai",
+    last_workspace_id: activeUser.last_workspace_id || firstWs.id,
+    last_workspace_slug: activeUser.last_workspace_slug || firstWs.slug,
     theme: activeUser.theme || { theme: "dark", primary: null, background: null, darkPalette: false },
     onboarding_step: {
       workspace_join: true,
@@ -1668,12 +1698,12 @@ function getUserSettings() {
     id: activeUser?.id || "anonymous",
     email: activeUser?.email || loggedInEmail || "",
     workspace: {
-      last_workspace_id: currentWs?.id || "workspace-fiai",
-      last_workspace_slug: currentWs?.slug || "fiai",
-      last_workspace_name: currentWs?.name || "FIAI",
+      last_workspace_id: currentWs?.id || DEFAULT_WORKSPACE.id,
+      last_workspace_slug: currentWs?.slug || DEFAULT_WORKSPACE.slug,
+      last_workspace_name: currentWs?.name || DEFAULT_WORKSPACE.name,
       last_workspace_logo: currentWs?.logo || null,
-      fallback_workspace_id: currentWs?.id || "workspace-fiai",
-      fallback_workspace_slug: currentWs?.slug || "fiai",
+      fallback_workspace_id: currentWs?.id || DEFAULT_WORKSPACE.id,
+      fallback_workspace_slug: currentWs?.slug || DEFAULT_WORKSPACE.slug,
       invites: 0,
     },
   };
@@ -1725,41 +1755,77 @@ async function handleRoute(method: string, url: string, body: Record<string, any
 
   if (url.includes("/auth/email-check")) {
     const email = (body?.email || "").trim().toLowerCase();
-    const existing = (localDB.users || []).some((u: any) => (u.email || "").toLowerCase() === email);
+    const creds = getStoredCredentials();
+    let existing = (localDB.users || []).some((u: any) => (u.email || "").toLowerCase() === email);
+    if (!existing && creds[email]) {
+      existing = true;
+    }
+    if (!existing && typeof window !== "undefined") {
+      try {
+        const rawLocal = localStorage.getItem("plane_dapp_local_db");
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal);
+          if (Array.isArray(parsed?.users) && parsed.users.some((u: any) => (u.email || "").toLowerCase() === email)) {
+            existing = true;
+          }
+        }
+      } catch { }
+    }
     return ok({ existing, is_password_autoset: false, status: "CREDENTIAL" });
   }
 
   if (url.includes("/auth/sign-in") || url.includes("/auth/magic-sign-in")) {
     const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
     const password = body?.password || "";
-    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
     const creds = getStoredCredentials();
-    const storedHash = user?.password_hash || creds[email];
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
 
-    if (!user) {
-      if (!storedHash && (!localDB.users || localDB.users.length === 0)) {
-        const passwordHash = password ? await hashPassword(password) : undefined;
-        user = createUserObject(`user-${Date.now()}`, email, undefined, undefined, passwordHash);
-        if (passwordHash) setStoredCredential(email, passwordHash);
-        if (!localDB.users) localDB.users = [];
-        localDB.users.push(user);
-        saveDB();
-      } else {
-        return { data: { error: "Tài khoản không tồn tại. Vui lòng đăng ký trước." }, status: 404 };
-      }
+    // Fallback: If not in localDB yet, check cached local DB snapshot
+    if (!user && typeof window !== "undefined") {
+      try {
+        const rawLocal = localStorage.getItem("plane_dapp_local_db");
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal);
+          const cachedUser = (parsed?.users || []).find((u: any) => (u.email || "").toLowerCase() === email);
+          if (cachedUser) {
+            user = cachedUser;
+            if (!localDB.users) localDB.users = [];
+            localDB.users.push(cachedUser);
+          }
+        }
+      } catch { }
     }
 
+    const storedHash = user?.password_hash || creds[email];
+
+    if (!user && !storedHash) {
+      return { data: { error: "Tài khoản không tồn tại. Vui lòng đăng ký trước." }, status: 404 };
+    }
+
+    // Strict password verification
     if (storedHash) {
+      if (!password) {
+        return { data: { error: "Vui lòng nhập mật khẩu." }, status: 400 };
+      }
       const inputHash = await hashPassword(password);
       if (inputHash !== storedHash) {
         return { data: { error: "Mật khẩu không chính xác. Vui lòng thử lại." }, status: 401 };
       }
-      user.password_hash = storedHash;
+      if (user) user.password_hash = storedHash;
     } else if (password) {
-      // Legacy user migration: lưu mật khẩu lần đầu đăng nhập
+      // Legacy user migration: First time saving password
       const newHash = await hashPassword(password);
-      user.password_hash = newHash;
+      if (user) user.password_hash = newHash;
       setStoredCredential(email, newHash);
+      saveDB();
+    } else {
+      return { data: { error: "Vui lòng nhập mật khẩu." }, status: 400 };
+    }
+
+    if (!user) {
+      user = createUserObject(`user-${Date.now()}`, email, undefined, undefined, storedHash);
+      if (!localDB.users) localDB.users = [];
+      localDB.users.push(user);
       saveDB();
     }
 
@@ -1771,11 +1837,12 @@ async function handleRoute(method: string, url: string, body: Record<string, any
   if (url.includes("/auth/sign-up")) {
     const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
     const password = body?.password || "";
-    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
     const creds = getStoredCredentials();
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
     const storedHash = user?.password_hash || creds[email];
 
-    if (storedHash) {
+    // Chặn tuyệt đối việc đăng ký đè lên tài khoản đã tồn tại
+    if (storedHash || user) {
       return { data: { error: "Email này đã được đăng ký. Vui lòng đăng nhập." }, status: 400 };
     }
 
@@ -1783,16 +1850,9 @@ async function handleRoute(method: string, url: string, body: Record<string, any
     if (passwordHash) {
       setStoredCredential(email, passwordHash);
     }
-    if (user) {
-      user.password_hash = passwordHash;
-      if (body?.first_name) user.first_name = body.first_name;
-      if (body?.last_name) user.last_name = body.last_name;
-      user.display_name = `${user.first_name} ${user.last_name}`.trim();
-    } else {
-      user = createUserObject(`user-${Date.now()}`, email, body?.first_name, body?.last_name, passwordHash);
-      if (!localDB.users) localDB.users = [];
-      localDB.users.push(user);
-    }
+    user = createUserObject(`user-${Date.now()}`, email, body?.first_name, body?.last_name, passwordHash);
+    if (!localDB.users) localDB.users = [];
+    localDB.users.push(user);
     saveDB();
     setLoggedInUser(user.id);
     if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
@@ -1881,7 +1941,11 @@ async function handleRoute(method: string, url: string, body: Record<string, any
   if (url.includes("/api/instances/admins/sign-up")) {
     const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
     const password = body?.password || "";
+    const creds = getStoredCredentials();
     let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
+    if (user && (user.password_hash || creds[email])) {
+      return { data: { error: "Email này đã được đăng ký quản trị viên. Vui lòng đăng nhập." }, status: 400 };
+    }
     const passwordHash = password ? await hashPassword(password) : undefined;
     if (passwordHash && email) {
       setStoredCredential(email, passwordHash);
@@ -1926,7 +1990,7 @@ async function handleRoute(method: string, url: string, body: Record<string, any
   }
 
   if (url.match(/\/api\/instances\/admins\/?$/) || url.match(/\/api\/instances\/admins\/\?/)) {
-    let users = (localDB.users || []).filter((u: any) => u.id !== "me" && u.email !== "admin@plane.so");
+    let users = localDB.users || [];
     if (users.length === 0 && (loggedInEmail || activeUserId)) {
       const fallbackUser = createUserObject(activeUserId || `admin-${Date.now().toString(36)}`, loggedInEmail || "");
       users = [fallbackUser];
@@ -2412,6 +2476,30 @@ async function handleRoute(method: string, url: string, body: Record<string, any
 
   if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/?(?:\?.*)?$/)) {
     return ok(localDB.favorites || []);
+  }
+
+  // ── Notifications ───────────────────────────────────────────────────
+  if (url.includes("/notifications/unread")) {
+    return ok({
+      total_unread_notifications_count: 0,
+      mention_unread_notifications_count: 0,
+    });
+  }
+
+  if (url.includes("/notifications")) {
+    if (method === "get") {
+      return ok({
+        results: [],
+        count: 0,
+        total_count: 0,
+        total_pages: 0,
+        next_page_results: false,
+        prev_page_results: false,
+        next_cursor: undefined,
+        prev_cursor: undefined,
+      });
+    }
+    return ok({});
   }
 
   // Assets v2 bulk status update
@@ -3116,7 +3204,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
             created_by: getLoggedInUserId() || "user-default",
             owner: {
               id: getLoggedInUserId() || "user-default",
-              email: getLoggedInEmail() || "user@fiai.network",
+              email: getLoggedInEmail() || "",
               first_name: formattedName,
               last_name: "",
               display_name: formattedName,

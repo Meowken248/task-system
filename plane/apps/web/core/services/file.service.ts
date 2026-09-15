@@ -87,8 +87,8 @@ export class FileService extends APIService {
             signedURLResponse.upload_data.url,
             fileUploadPayload
           );
-          if (uploadResult && uploadResult.asset) {
-            signedURLResponse.asset_url = uploadResult.asset;
+          if (uploadResult && (uploadResult.asset_url || uploadResult.asset)) {
+            signedURLResponse.asset_url = uploadResult.asset_url || uploadResult.asset;
           }
         } catch (uploadError: any) {
           console.warn("Caught upload error in file.service.ts, falling back to mock:", uploadError);
@@ -171,8 +171,8 @@ export class FileService extends APIService {
             signedURLResponse.upload_data.url,
             fileUploadPayload
           );
-          if (uploadResult && uploadResult.asset) {
-            signedURLResponse.asset_url = uploadResult.asset;
+          if (uploadResult && (uploadResult.asset_url || uploadResult.asset)) {
+            signedURLResponse.asset_url = uploadResult.asset_url || uploadResult.asset;
           }
         } catch (uploadError: any) {
           console.warn("Caught upload error in uploadProjectAsset, falling back to mock:", uploadError);
@@ -207,8 +207,8 @@ export class FileService extends APIService {
           signedURLResponse.upload_data.url,
           fileUploadPayload
         );
-        if (uploadResult && uploadResult.asset) {
-          signedURLResponse.asset_url = uploadResult.asset;
+        if (uploadResult && (uploadResult.asset_url || uploadResult.asset)) {
+          signedURLResponse.asset_url = uploadResult.asset_url || uploadResult.asset;
         }
         await this.updateUserAssetUploadStatus(signedURLResponse.asset_id);
         return signedURLResponse;
