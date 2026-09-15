@@ -51,7 +51,7 @@ function getStoredCredentials(): Record<string, string> {
 }
 
 function setStoredCredential(email: string, passwordHash: string) {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined" || !email || !passwordHash) return;
   try {
     const creds = getStoredCredentials();
     creds[email.toLowerCase().trim()] = passwordHash;
@@ -72,7 +72,10 @@ function createUserObject(
   const lName = lastName || "";
   const displayName = `${fName} ${lName}`.trim() || fName;
   const creds = getStoredCredentials();
-  const resolvedHash = passwordHash || creds[cleanEmail.toLowerCase()] || null;
+  const resolvedHash = passwordHash || (cleanEmail ? creds[cleanEmail.toLowerCase()] : null) || null;
+  if (cleanEmail && resolvedHash) {
+    setStoredCredential(cleanEmail, resolvedHash);
+  }
   return {
     id,
     email: cleanEmail,
@@ -200,8 +203,13 @@ function loadInitialDB(): Record<string, any> {
           parsed.workspaces = (parsed.workspaces && parsed.workspaces.length > 0) ? parsed.workspaces : [DEFAULT_WORKSPACE];
           const creds = getStoredCredentials();
           (parsed.users || []).forEach((u: any) => {
-            if (u && u.email && creds[u.email.toLowerCase().trim()]) {
-              u.password_hash = creds[u.email.toLowerCase().trim()];
+            const emailKey = u?.email?.toLowerCase().trim();
+            if (emailKey) {
+              if (creds[emailKey]) {
+                u.password_hash = creds[emailKey];
+              } else if (u.password_hash) {
+                setStoredCredential(emailKey, u.password_hash);
+              }
             }
           });
           console.log("[DApp DB] Khởi tạo từ localStorage thành công");
@@ -230,8 +238,13 @@ function loadInitialDB(): Record<string, any> {
           parsed.workspaces = (parsed.workspaces && parsed.workspaces.length > 0) ? parsed.workspaces : [DEFAULT_WORKSPACE];
           const creds = getStoredCredentials();
           (parsed.users || []).forEach((u: any) => {
-            if (u && u.email && creds[u.email.toLowerCase().trim()]) {
-              u.password_hash = creds[u.email.toLowerCase().trim()];
+            const emailKey = u?.email?.toLowerCase().trim();
+            if (emailKey) {
+              if (creds[emailKey]) {
+                u.password_hash = creds[emailKey];
+              } else if (u.password_hash) {
+                setStoredCredential(emailKey, u.password_hash);
+              }
             }
           });
           console.log("[DApp DB] Khởi tạo từ sessionStorage thành công");
@@ -248,8 +261,13 @@ function loadInitialDB(): Record<string, any> {
 const localDB: Record<string, any> = loadInitialDB();
 const initialCreds = getStoredCredentials();
 (localDB.users || []).forEach((u: any) => {
-  if (u && u.email && initialCreds[u.email.toLowerCase().trim()]) {
-    u.password_hash = initialCreds[u.email.toLowerCase().trim()];
+  const emailKey = u?.email?.toLowerCase().trim();
+  if (emailKey) {
+    if (initialCreds[emailKey]) {
+      u.password_hash = initialCreds[emailKey];
+    } else if (u.password_hash) {
+      setStoredCredential(emailKey, u.password_hash);
+    }
   }
 });
 
@@ -1839,6 +1857,20 @@ async function handleRoute(method: string, url: string, body: Record<string, any
     const password = body?.password || "";
     const creds = getStoredCredentials();
     let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
+
+    if (!user && typeof window !== "undefined") {
+      try {
+        const rawLocal = localStorage.getItem("plane_dapp_local_db");
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal);
+          const cachedUser = (parsed?.users || []).find((u: any) => (u.email || "").toLowerCase() === email);
+          if (cachedUser) {
+            user = cachedUser;
+          }
+        }
+      } catch { }
+    }
+
     const storedHash = user?.password_hash || creds[email];
 
     // Chặn tuyệt đối việc đăng ký đè lên tài khoản đã tồn tại
@@ -1868,8 +1900,9 @@ async function handleRoute(method: string, url: string, body: Record<string, any
       setStoredCredential(email, newHash);
       if (user) user.password_hash = newHash;
       saveDB();
+      return ok({ message: "Password updated successfully" });
     }
-    return ok({ message: "success" });
+    return { data: { error: "Invalid password or email" }, status: 400 };
   }
 
   if (url.includes("/auth/sign-out")) {
@@ -1907,35 +1940,38 @@ async function handleRoute(method: string, url: string, body: Record<string, any
     const creds = getStoredCredentials();
     const storedHash = user?.password_hash || creds[email];
 
-    if (!user && email) {
-      if (!storedHash && (!localDB.users || localDB.users.length === 0)) {
-        const passwordHash = password ? await hashPassword(password) : undefined;
-        user = createUserObject(`admin-${Date.now()}`, email, body?.first_name, body?.last_name, passwordHash);
-        if (passwordHash) setStoredCredential(email, passwordHash);
-        if (!localDB.users) localDB.users = [];
-        localDB.users.push(user);
-        saveDB();
-      }
+    if (!user && !storedHash) {
+      return { data: { error: "Tài khoản quản trị viên không tồn tại. Vui lòng đăng ký trước." }, status: 404 };
     }
 
-    if (user) {
-      if (storedHash) {
-        const inputHash = await hashPassword(password);
-        if (inputHash !== storedHash) {
-          return { data: { error: "Mật khẩu quản trị viên không chính xác." }, status: 401 };
-        }
-        user.password_hash = storedHash;
-      } else if (password) {
-        const newHash = await hashPassword(password);
-        user.password_hash = newHash;
-        setStoredCredential(email, newHash);
-        saveDB();
+    if (storedHash) {
+      if (!password) {
+        return { data: { error: "Vui lòng nhập mật khẩu." }, status: 400 };
       }
-      setLoggedInUser(user.id);
-      if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
-      return ok(user);
+      const inputHash = await hashPassword(password);
+      if (inputHash !== storedHash) {
+        return { data: { error: "Mật khẩu quản trị viên không chính xác." }, status: 401 };
+      }
+      if (user) user.password_hash = storedHash;
+    } else if (password) {
+      const newHash = await hashPassword(password);
+      if (user) user.password_hash = newHash;
+      setStoredCredential(email, newHash);
+      saveDB();
+    } else {
+      return { data: { error: "Vui lòng nhập mật khẩu." }, status: 400 };
     }
-    return { data: { error: "User not found" }, status: 404 };
+
+    if (!user) {
+      user = createUserObject(`admin-${Date.now()}`, email, undefined, undefined, storedHash);
+      if (!localDB.users) localDB.users = [];
+      localDB.users.push(user);
+      saveDB();
+    }
+
+    setLoggedInUser(user.id);
+    if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+    return ok(user);
   }
 
   if (url.includes("/api/instances/admins/sign-up")) {
