@@ -179,19 +179,37 @@ export const AuthPasswordForm = observer(function AuthPasswordForm(props: Props)
             if (raw) creds = JSON.parse(raw);
           } catch {}
 
+          let localDB: any = {};
+          try {
+            const rawDB = localStorage.getItem("plane_dapp_local_db");
+            if (rawDB) localDB = JSON.parse(rawDB);
+          } catch {}
+          const userInLocalDB = Array.isArray(localDB?.users)
+            ? localDB.users.find((u: any) => (u?.email || "").toLowerCase() === cleanEmail)
+            : null;
+
+          const savedHash = creds[cleanEmail] || userInLocalDB?.password_hash;
+
           if (mode === EAuthModes.SIGN_IN) {
-            const savedHash = creds[cleanEmail];
-            if (savedHash) {
-              const inputHash = await hashPassword(passwordFormData.password);
-              if (inputHash !== savedHash) {
-                setErrorMessage("Mật khẩu không chính xác. Vui lòng kiểm tra lại!");
-                setIsSubmitting(false);
-                return;
-              }
-            } else if (passwordFormData.password) {
-              // Lưu mật khẩu cho lần đầu đăng nhập của tài khoản này
-              const newHash = await hashPassword(passwordFormData.password);
-              creds[cleanEmail] = newHash;
+            if (!savedHash) {
+              setErrorMessage("Tài khoản chưa có mật khẩu hoặc không tồn tại. Vui lòng đăng ký trước.");
+              setIsSubmitting(false);
+              return;
+            }
+            if (!passwordFormData.password) {
+              setErrorMessage("Vui lòng nhập mật khẩu.");
+              setIsSubmitting(false);
+              return;
+            }
+            const inputHash = await hashPassword(passwordFormData.password);
+            if (inputHash !== savedHash) {
+              setErrorMessage("Mật khẩu không chính xác. Vui lòng kiểm tra lại!");
+              setIsSubmitting(false);
+              return;
+            }
+            // Mật khẩu chính xác -> Lưu lại cache creds nếu trước đó bị thiếu
+            if (!creds[cleanEmail]) {
+              creds[cleanEmail] = savedHash;
               try {
                 localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
               } catch {}
@@ -203,14 +221,17 @@ export const AuthPasswordForm = observer(function AuthPasswordForm(props: Props)
               getPasswordStrength(passwordFormData.password) === E_PASSWORD_STRENGTH.STRENGTH_VALID;
             if (!isPasswordValid) {
               setBannerMessage(true);
+              setIsSubmitting(false);
               return;
             }
             if (passwordFormData.password !== passwordFormData.confirm_password) {
               setErrorMessage("Mật khẩu xác nhận không khớp.");
+              setIsSubmitting(false);
               return;
             }
-            if (creds[cleanEmail]) {
+            if (savedHash || userInLocalDB) {
               setErrorMessage("Email này đã được đăng ký. Vui lòng đăng nhập.");
+              setIsSubmitting(false);
               return;
             }
             const newHash = await hashPassword(passwordFormData.password);

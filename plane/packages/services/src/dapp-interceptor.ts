@@ -1855,24 +1855,19 @@ async function handleRoute(method: string, url: string, body: Record<string, any
     }
 
     // Strict password verification
-    if (storedHash) {
-      if (!password) {
-        return { data: { error: "Vui lòng nhập mật khẩu." }, status: 400 };
-      }
-      const inputHash = await hashPassword(password);
-      if (inputHash !== storedHash) {
-        return { data: { error: "Mật khẩu không chính xác. Vui lòng thử lại." }, status: 401 };
-      }
-      if (user) user.password_hash = storedHash;
-    } else if (password) {
-      // Legacy user migration: First time saving password
-      const newHash = await hashPassword(password);
-      if (user) user.password_hash = newHash;
-      setStoredCredential(email, newHash);
-      saveDB();
-    } else {
+    if (!storedHash) {
+      return { data: { error: "Tài khoản chưa thiết lập mật khẩu. Vui lòng sử dụng tính năng quên mật khẩu hoặc đăng ký lại." }, status: 400 };
+    }
+
+    if (!password) {
       return { data: { error: "Vui lòng nhập mật khẩu." }, status: 400 };
     }
+
+    const inputHash = await hashPassword(password);
+    if (inputHash !== storedHash) {
+      return { data: { error: "Mật khẩu không chính xác. Vui lòng thử lại." }, status: 401 };
+    }
+    if (user) user.password_hash = storedHash;
 
     if (!user) {
       user = createUserObject(`user-${Date.now()}`, email, undefined, undefined, storedHash);

@@ -76,63 +76,43 @@ if (typeof document !== "undefined") {
       const storedHash = creds[email] || user?.password_hash;
 
       if (!user && !storedHash) {
-        if (localDB.users.length === 0) {
-          // First user onboarding on a fresh database
-          const passwordHash = password ? await hashPassword(password) : null;
-          const newUser = {
-            id: `user-${Date.now().toString(36)}`,
-            email,
-            password_hash: passwordHash,
-            first_name: email.split("@")[0],
-            last_name: "",
-            display_name: email.split("@")[0],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          };
-          if (passwordHash) {
-            creds[email] = passwordHash;
-            try {
-              localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
-            } catch { }
-          }
-          localDB.users.push(newUser);
-          user = newUser;
-          try {
-            localStorage.setItem("plane_dapp_local_db", JSON.stringify(localDB));
-          } catch { }
-        } else {
-          alert("Tài khoản không tồn tại. Vui lòng kiểm tra lại email hoặc đăng ký tài khoản mới.");
-          form.dispatchEvent(new Event("error", { bubbles: true }));
-          const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
-          if (submitBtn) submitBtn.disabled = false;
-          return;
-        }
+        alert("Tài khoản không tồn tại. Vui lòng kiểm tra lại email hoặc đăng ký tài khoản mới.");
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
       }
 
-      // Verify password
-      if (storedHash) {
-        const inputHash = await hashPassword(password);
-        if (inputHash !== storedHash) {
-          alert("Mật khẩu không chính xác. Vui lòng kiểm tra lại!");
-          form.dispatchEvent(new Event("error", { bubbles: true }));
-          const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
-          if (submitBtn) submitBtn.disabled = false;
-          return;
-        }
-      } else if (password) {
-        // Migration for legacy user account without password_hash:
-        const newHash = await hashPassword(password);
-        creds[email] = newHash;
-        try {
-          localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
-        } catch { }
-        if (user) {
-          user.password_hash = newHash;
-          try {
-            localStorage.setItem("plane_dapp_local_db", JSON.stringify(localDB));
-          } catch { }
-        }
+      if (!storedHash) {
+        alert("Tài khoản chưa thiết lập mật khẩu. Vui lòng sử dụng tính năng quên mật khẩu hoặc đăng ký lại.");
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
       }
+
+      if (!password) {
+        alert("Vui lòng nhập mật khẩu.");
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
+      const inputHash = await hashPassword(password);
+      if (inputHash !== storedHash) {
+        alert("Mật khẩu không chính xác. Vui lòng kiểm tra lại!");
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
+      if (user) user.password_hash = storedHash;
+      creds[email] = storedHash;
+      try {
+        localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
+      } catch { }
 
       localStorage.setItem("plane_dapp_auth_user", user?.id || `user-${Date.now().toString(36)}`);
       localStorage.setItem("plane_dapp_auth_email", email);
@@ -147,7 +127,7 @@ if (typeof document !== "undefined") {
 
       let existingUser = localDB.users.find((u: any) => (u?.email || "").toLowerCase() === email);
       const storedHash = creds[email] || existingUser?.password_hash;
-      if (storedHash) {
+      if (storedHash || existingUser) {
         alert("Email này đã được đăng ký. Vui lòng đăng nhập.");
         form.dispatchEvent(new Event("error", { bubbles: true }));
         const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
@@ -155,39 +135,38 @@ if (typeof document !== "undefined") {
         return;
       }
 
-      const passwordHash = password ? await hashPassword(password) : null;
-      if (passwordHash) {
-        creds[email] = passwordHash;
-        try {
-          localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
-        } catch { }
+      if (!password) {
+        alert("Vui lòng nhập mật khẩu.");
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
       }
-      if (existingUser) {
-        existingUser.password_hash = passwordHash;
-        if (firstNameInput?.value) existingUser.first_name = firstNameInput.value;
-        if (lastNameInput?.value) existingUser.last_name = lastNameInput.value;
-        existingUser.display_name = `${existingUser.first_name || ""} ${existingUser.last_name || ""}`.trim() || email.split("@")[0];
-      } else {
-        const newUser = {
-          id: `user-${Date.now().toString(36)}`,
-          email,
-          password_hash: passwordHash,
-          first_name: firstNameInput?.value || email.split("@")[0],
-          last_name: lastNameInput?.value || "",
-          display_name: `${firstNameInput?.value || email.split("@")[0]} ${lastNameInput?.value || ""}`.trim(),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        localDB.users.push(newUser);
-        existingUser = newUser;
-      }
+
+      const passwordHash = await hashPassword(password);
+      creds[email] = passwordHash;
+      try {
+        localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
+      } catch { }
+
+      const newUser = {
+        id: `user-${Date.now().toString(36)}`,
+        email,
+        password_hash: passwordHash,
+        first_name: firstNameInput?.value || email.split("@")[0],
+        last_name: lastNameInput?.value || "",
+        display_name: `${firstNameInput?.value || email.split("@")[0]} ${lastNameInput?.value || ""}`.trim(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      localDB.users.push(newUser);
 
       try {
         localStorage.setItem("plane_dapp_local_db", JSON.stringify(localDB));
       } catch { }
 
-      localStorage.setItem("plane_dapp_auth_user", existingUser.id);
-      localStorage.setItem("plane_dapp_auth_email", existingUser.email);
+      localStorage.setItem("plane_dapp_auth_user", newUser.id);
+      localStorage.setItem("plane_dapp_auth_email", newUser.email);
       window.location.href = nextPath || "/";
       return;
     }
