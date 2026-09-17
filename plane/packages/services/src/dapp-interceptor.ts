@@ -36,7 +36,7 @@ async function hashPassword(password: string): Promise<string> {
     hash = (hash << 5) - hash + password.charCodeAt(i);
     hash |= 0;
   }
-  return `h_${Math.abs(hash).toString(16)}`;
+  return `fallback_${Math.abs(hash).toString(16)}`;
 }
 
 // ── Permanent Credential Store (Isolated from IPFS sync) ─────────────────
@@ -56,7 +56,7 @@ function setStoredCredential(email: string, passwordHash: string) {
     const creds = getStoredCredentials();
     creds[email.toLowerCase().trim()] = passwordHash;
     localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
-  } catch {}
+  } catch { }
 }
 
 // ── User factory (Dynamic, zero static mock users) ────────────────────────
@@ -1990,23 +1990,18 @@ async function handleRoute(method: string, url: string, body: Record<string, any
       return { data: { error: "Tài khoản quản trị viên không tồn tại. Vui lòng đăng ký trước." }, status: 404 };
     }
 
-    if (storedHash) {
-      if (!password) {
-        return { data: { error: "Vui lòng nhập mật khẩu." }, status: 400 };
-      }
-      const inputHash = await hashPassword(password);
-      if (inputHash !== storedHash) {
-        return { data: { error: "Mật khẩu quản trị viên không chính xác." }, status: 401 };
-      }
-      if (user) user.password_hash = storedHash;
-    } else if (password) {
-      const newHash = await hashPassword(password);
-      if (user) user.password_hash = newHash;
-      setStoredCredential(email, newHash);
-      saveDB();
-    } else {
+    if (!storedHash) {
+      return { data: { error: "Tài khoản quản trị viên chưa thiết lập mật khẩu. Vui lòng đăng ký trước." }, status: 400 };
+    }
+
+    if (!password) {
       return { data: { error: "Vui lòng nhập mật khẩu." }, status: 400 };
     }
+    const inputHash = await hashPassword(password);
+    if (inputHash !== storedHash) {
+      return { data: { error: "Mật khẩu quản trị viên không chính xác." }, status: 401 };
+    }
+    if (user) user.password_hash = storedHash;
 
     if (!user) {
       user = createUserObject(`admin-${Date.now()}`, email, undefined, undefined, storedHash);
