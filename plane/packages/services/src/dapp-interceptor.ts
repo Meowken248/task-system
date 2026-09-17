@@ -271,34 +271,8 @@ const initialCreds = getStoredCredentials();
   }
 });
 
-// Clean slate wipe: Xóa toàn bộ dữ liệu mẫu cũ để bắt đầu môi trường trắng tinh 100%
-if (typeof window !== "undefined") {
-  try {
-    const CLEAN_SLATE_KEY = "plane_dapp_clean_slate_v4";
-    if (!localStorage.getItem(CLEAN_SLATE_KEY)) {
-      console.log("[DApp DB] Đang xóa toàn bộ dữ liệu mẫu cũ theo yêu cầu người dùng, khởi tạo duy nhất 1 DEFAULT_WORKSPACE (FIAI)...");
-      localStorage.removeItem("plane_dapp_local_db");
-      localStorage.removeItem("plane_dapp_credentials");
-      localStorage.removeItem("plane_dapp_auth_user");
-      localStorage.removeItem("plane_dapp_auth_email");
-      localStorage.removeItem("plane_dapp_ipfs_cid_local");
-      localStorage.removeItem("last_workspace_slug");
-      sessionStorage.clear();
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const key = localStorage.key(i);
-        if (key && (key.startsWith("plane_dapp_") || key.startsWith("offchain_"))) {
-          localStorage.removeItem(key);
-        }
-      }
-      document.cookie = "plane_dapp_sync_workspaces=; path=/; max-age=0;";
-      localStorage.setItem(CLEAN_SLATE_KEY, "true");
-      localDB.workspaces = [DEFAULT_WORKSPACE];
-      localDB.users = [];
-      localDB.projects = [];
-      localDB.issues = [];
-    }
-  } catch { }
-}
+// Clean slate wipe disabled to preserve user accounts and database across browser restarts
+
 
 // Safety checks
 if (!localDB.users) localDB.users = [];
@@ -369,13 +343,12 @@ function syncWorkspacesToCookie() {
     }));
     const val = encodeURIComponent(JSON.stringify(compact));
     document.cookie = `plane_dapp_sync_workspaces=${val}; path=/; max-age=31536000; SameSite=Lax`;
-    if (isDirtyState) {
-      document.cookie = "plane_dapp_sync_cid=; path=/; max-age=0; SameSite=Lax";
-    } else {
-      const cidToSync = lastUploadedCID || baseCID || localStorage.getItem("plane_dapp_ipfs_cid_local");
-      if (cidToSync) {
-        document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
-      }
+    const cidToSync =
+      lastUploadedCID ||
+      baseCID ||
+      (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") || localStorage.getItem("plane_dapp_ipfs_cid_last_valid") : null);
+    if (cidToSync && !cidToSync.startsWith("bafkrei")) {
+      document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
     }
   } catch { }
 }
@@ -387,7 +360,7 @@ function syncCrossPortWorkspaces() {
     if (!localDB.workspaces) localDB.workspaces = [];
 
     // 1. Read from shared cross-port cookies (domain localhost)
-    if (typeof document !== "undefined" && document.cookie) {
+    if (typeof document !== "undefined" && typeof document.cookie === "string" && document.cookie.trim() !== "") {
       const cookies = document.cookie.split("; ");
       const wsCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_workspaces="));
       if (wsCookie) {
@@ -565,11 +538,19 @@ let isDirtyState = false;
 let isDAppDBInitialized = false;
 
 /** Get the data object that should be persisted */
-function getDBSnapshot(): Record<string, any[]> {
-  const dbToSave: Record<string, any[]> = {};
+function getDBSnapshot(): Record<string, any> {
+  const dbToSave: Record<string, any> = {};
+  const creds = getStoredCredentials();
+  (localDB.users || []).forEach((u: any) => {
+    const emailKey = u?.email?.toLowerCase().trim();
+    if (emailKey && !u.password_hash && creds[emailKey]) {
+      u.password_hash = creds[emailKey];
+    }
+  });
   for (const [key, value] of Object.entries(localDB)) {
     dbToSave[key] = value;
   }
+  dbToSave.credentials = creds;
   return dbToSave;
 }
 
@@ -592,6 +573,7 @@ async function uploadToIPFS(force = false): Promise<string | null> {
 
   // Safety guard: Protect against overwriting existing IPFS data with an empty/uninitialized shell
   const hasRealContent =
+    (localDB.users && localDB.users.length > 0) ||
     (localDB.workspaces && localDB.workspaces.length > 0) ||
     (localDB.projects && localDB.projects.length > 0) ||
     (localDB.issues && localDB.issues.length > 0);
@@ -599,7 +581,8 @@ async function uploadToIPFS(force = false): Promise<string | null> {
   const existingCID =
     lastUploadedCID ||
     localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) ||
-    localStorage.getItem("plane_dapp_ipfs_cid_local");
+    localStorage.getItem("plane_dapp_ipfs_cid_local") ||
+    localStorage.getItem("plane_dapp_ipfs_cid_last_valid");
 
   if (!force && !isDAppDBInitialized && !hasRealContent) {
     console.log("[DApp DB] Bỏ qua IPFS upload — cơ sở dữ liệu chưa hoàn tất nạp từ IPFS/chain.");
@@ -662,6 +645,9 @@ async function uploadToIPFS(force = false): Promise<string | null> {
     isDirtyState = false;
     const storageKey = getDBStorageKey();
     localStorage.setItem(`plane_dapp_ipfs_cid_${storageKey}`, cid);
+    localStorage.setItem("plane_dapp_ipfs_cid_local", cid);
+    localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cid);
+    document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cid)}; path=/; max-age=31536000; SameSite=Lax`;
     console.log(`[DApp DB] ✅ Auto-save IPFS thành công: ${cid}`);
     return cid;
   } catch (err) {
@@ -685,7 +671,7 @@ export function getLastUploadedCID(): string | null {
   if (isDirtyState) return null;
   if (lastUploadedCID) return lastUploadedCID;
   if (typeof window === "undefined") return null;
-  return localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`);
+  return localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) || localStorage.getItem("plane_dapp_ipfs_cid_local");
 }
 
 /** Check if IPFS upload is in progress */
@@ -697,11 +683,7 @@ function saveDB() {
   if (typeof window === "undefined") return;
   syncIssueParentsToTransactions();
   isDirtyState = true;
-  lastUploadedCID = null;
-  lastUploadedDataHash = null;
   try {
-    const storageKey = getDBStorageKey();
-    localStorage.removeItem(`plane_dapp_ipfs_cid_${storageKey}`);
     const snapshot = JSON.stringify(localDB);
     localStorage.setItem("plane_dapp_local_db", snapshot);
     sessionStorage.setItem("plane_dapp_latest_db", snapshot);
@@ -756,7 +738,16 @@ async function fetchFromIPFS(cid: string): Promise<Record<string, any> | null> {
 }
 
 function applyOffchainDB(ipfsDB: Record<string, any>) {
+  if (ipfsDB.credentials && typeof ipfsDB.credentials === "object") {
+    for (const [email, hash] of Object.entries(ipfsDB.credentials)) {
+      if (email && typeof hash === "string") {
+        setStoredCredential(email, hash);
+      }
+    }
+  }
+
   const currentWorkspaces = [...(localDB.workspaces || [])];
+  const currentUsers = [...(localDB.users || [])];
   const currentIssues = [...(localDB.issues || [])];
   const currentComments = [...(localDB.issue_comments || [])];
   const currentAttachments = [...(localDB.attachments || [])];
@@ -771,6 +762,12 @@ function applyOffchainDB(ipfsDB: Record<string, any>) {
   localDB._deleted_project_ids = Array.from(mergedDeletedProjects);
 
   if (!localDB.users) localDB.users = [];
+  for (const u of currentUsers) {
+    if (!localDB.users.some((existing: any) => existing.id === u.id || (existing.email && existing.email.toLowerCase() === u.email?.toLowerCase()))) {
+      localDB.users.push(u);
+    }
+  }
+
   if (!localDB.workspaces) localDB.workspaces = [];
   for (const w of currentWorkspaces) {
     if (!localDB.workspaces.some((existing: any) => existing.slug === w.slug || existing.id === w.id)) {
@@ -1266,29 +1263,58 @@ async function _initDAppDB() {
   const urlCid = urlParams?.get("cid");
 
   if (!activeWallet) {
-    console.log(`[DApp DB] Chưa có ví. Sử dụng dữ liệu off-chain trong bộ nhớ RAM.`);
-    const localCid = urlCid || localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) || localStorage.getItem("plane_dapp_ipfs_cid_local");
-    if (localCid) {
-      const ipfsDB = await fetchFromIPFS(localCid);
-      if (ipfsDB) {
-        applyOffchainDB(ipfsDB);
-        lastUploadedCID = localCid;
-      } else {
-        try {
-          const latest = sessionStorage.getItem("plane_dapp_latest_db");
-          if (latest) {
-            applyOffchainDB(JSON.parse(latest));
-          }
-        } catch { }
+    console.log(`[DApp DB] Chưa có ví. Tìm kiếm CID từ local cache, cookie hoặc on-chain...`);
+    let candidateCid =
+      urlCid ||
+      localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) ||
+      localStorage.getItem("plane_dapp_ipfs_cid_local") ||
+      localStorage.getItem("plane_dapp_ipfs_cid_last_valid");
+
+    if (!candidateCid && typeof document !== "undefined") {
+      const cookies = document.cookie ? document.cookie.split(";") : [];
+      const cidCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_cid="));
+      if (cidCookie) {
+        const raw = cidCookie.trim().substring(cidCookie.trim().indexOf("=") + 1);
+        candidateCid = decodeURIComponent(raw || "").trim();
       }
-    } else {
+    }
+
+    if (!candidateCid && WORKSPACE_REGISTRY_ADDRESS) {
       try {
-        const latest = sessionStorage.getItem("plane_dapp_latest_db");
-        if (latest) {
-          applyOffchainDB(JSON.parse(latest));
+        const wsInfoCalldata = abiEncodeGetWorkspace("fiai");
+        const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 3000);
+        const wsInfo = decodeAbiWorkspace(wsInfoRaw);
+        if (wsInfo?.ipfsCID && wsInfo.ipfsCID.trim() !== "") {
+          candidateCid = wsInfo.ipfsCID.trim();
+          console.log(`[DApp DB] Tìm thấy CID workspace "fiai" từ contract:`, candidateCid);
         }
       } catch { }
     }
+
+    if (candidateCid) {
+      console.log(`[DApp DB] Khởi tạo DB từ CID: ${candidateCid}`);
+      const ipfsDB = await fetchFromIPFS(candidateCid);
+      if (ipfsDB) {
+        applyOffchainDB(ipfsDB);
+        lastUploadedCID = candidateCid;
+        localStorage.setItem("plane_dapp_ipfs_cid_local", candidateCid);
+        localStorage.setItem("plane_dapp_ipfs_cid_last_valid", candidateCid);
+        isDAppDBInitialized = true;
+        return { status: "OK" };
+      }
+    }
+
+    // Fallback nếu không có CID hoặc IPFS không phản hồi: nạp từ localStorage / sessionStorage
+    try {
+      const cached = localStorage.getItem("plane_dapp_local_db") || sessionStorage.getItem("plane_dapp_latest_db");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed === "object") {
+          applyOffchainDB(parsed);
+          console.log("[DApp DB] Nạp DB từ local cache snapshot thành công.");
+        }
+      }
+    } catch { }
 
     if (!lastUploadedCID || lastUploadedCID.startsWith("bafkrei")) {
       scheduleIPFSUpload();
@@ -1777,14 +1803,22 @@ async function handleRoute(method: string, url: string, body: Record<string, any
     let existing = (localDB.users || []).some((u: any) => (u.email || "").toLowerCase() === email);
     if (!existing && creds[email]) {
       existing = true;
+      if (!localDB.users) localDB.users = [];
+      localDB.users.push(createUserObject(`user-${Date.now()}`, email, undefined, undefined, creds[email]));
     }
     if (!existing && typeof window !== "undefined") {
       try {
         const rawLocal = localStorage.getItem("plane_dapp_local_db");
         if (rawLocal) {
           const parsed = JSON.parse(rawLocal);
-          if (Array.isArray(parsed?.users) && parsed.users.some((u: any) => (u.email || "").toLowerCase() === email)) {
+          const cachedUser = (parsed?.users || []).find((u: any) => (u.email || "").toLowerCase() === email);
+          if (cachedUser) {
             existing = true;
+            if (!localDB.users) localDB.users = [];
+            localDB.users.push(cachedUser);
+            if (cachedUser.password_hash) {
+              setStoredCredential(email, cachedUser.password_hash);
+            }
           }
         }
       } catch { }
@@ -1888,6 +1922,17 @@ async function handleRoute(method: string, url: string, body: Record<string, any
     saveDB();
     setLoggedInUser(user.id);
     if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+
+    // Kích hoạt upload IPFS ngay lập tức và đợi tối đa 3 giây để đảm bảo tài khoản đã lên IPFS trước khi chuyển trang
+    try {
+      await Promise.race([
+        uploadToIPFS(true),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    } catch (e) {
+      console.warn("[DApp DB] Upload IPFS lúc đăng ký có lỗi:", e);
+    }
+
     return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
   }
 
@@ -1900,6 +1945,12 @@ async function handleRoute(method: string, url: string, body: Record<string, any
       setStoredCredential(email, newHash);
       if (user) user.password_hash = newHash;
       saveDB();
+      try {
+        await Promise.race([
+          uploadToIPFS(true),
+          new Promise((resolve) => setTimeout(resolve, 3000)),
+        ]);
+      } catch { }
       return ok({ message: "Password updated successfully" });
     }
     return { data: { error: "Invalid password or email" }, status: 400 };
