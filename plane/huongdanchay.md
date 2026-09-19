@@ -39,3 +39,6 @@ pnpm build
 ## Lỗi Thường Gặp
 1. **Lỗi không tìm thấy lệnh `pnpm`:** Đảm bảo bạn đã chạy `npm install -g pnpm` và khởi động lại Terminal.
 2. **Lỗi liên quan đến phiên bản Node.js:** Đảm bảo bạn đang sử dụng đúng phiên bản Node.js yêu cầu. Bạn có thể dùng [NVM (Node Version Manager)](https://github.com/nvm-sh/nvm) hoặc [NVM cho Windows](https://github.com/coreybutler/nvm-windows) để dễ dàng chuyển đổi phiên bản Node.
+
+
+localStorage.clear(); sessionStorage.clear(); location.reload();
