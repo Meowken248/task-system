@@ -111,9 +111,12 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
   const chainId = Number(
     (typeof process !== "undefined" && process.env?.VITE_CHAIN_ID) || "991"
   );
-  const wsUrl =
+  let wsUrl =
     (typeof process !== "undefined" && process.env?.VITE_WS_URL) ||
     rpcUrl.replace(/^http/, "ws");
+  if (wsUrl && !wsUrl.endsWith("/ws")) {
+    wsUrl = `${wsUrl.replace(/\/$/, "")}/ws`;
+  }
 
   console.log(`[FiaiSDK] Bắt đầu init với timeout ${timeoutMs}ms, RPC=${rpcUrl}, WS=${wsUrl}, ChainId=${chainId}`);
 
