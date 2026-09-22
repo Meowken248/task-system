@@ -749,6 +749,15 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           );
 
           if (localDB.issues) {
+            const deletedProjIssues = localDB.issues.filter(
+              (i: any) => i.project === targetId || i.project_id === targetId
+            );
+            if (!localDB._deleted_issue_ids) localDB._deleted_issue_ids = [];
+            for (const dpi of deletedProjIssues) {
+              if (!localDB._deleted_issue_ids.includes(dpi.id)) {
+                localDB._deleted_issue_ids.push(dpi.id);
+              }
+            }
             localDB.issues = localDB.issues.filter(
               (i: any) => i.project !== targetId && i.project_id !== targetId
             );
@@ -1129,6 +1138,37 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   console.log(
     `[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`
   );
+
+  // Handle bulk-delete-issues endpoint
+  if (
+    (collection === "bulk-delete-issues" || url.includes("/bulk-delete-issues")) &&
+    method === "delete"
+  ) {
+    const issueIds: string[] = Array.isArray(body?.issue_ids) ? body.issue_ids : [];
+    if (!localDB._deleted_issue_ids) localDB._deleted_issue_ids = [];
+    for (const targetId of issueIds) {
+      if (!localDB._deleted_issue_ids.includes(targetId)) {
+        localDB._deleted_issue_ids.push(targetId);
+      }
+      const childIssues = (localDB.issues || []).filter(
+        (i: any) => i.parent_id === targetId || i.parent === targetId
+      );
+      for (const child of childIssues) {
+        if (!localDB._deleted_issue_ids.includes(child.id)) {
+          localDB._deleted_issue_ids.push(child.id);
+        }
+      }
+    }
+    const deletedSet = new Set(localDB._deleted_issue_ids);
+    localDB.issues = (localDB.issues || []).filter((i: any) => !deletedSet.has(i.id));
+    if (localDB.issue_comments) {
+      localDB.issue_comments = localDB.issue_comments.filter(
+        (c: any) => !deletedSet.has(c.issue || c.issue_id)
+      );
+    }
+    saveDB();
+    return ok({ message: "Issues deleted successfully" });
+  }
 
   // Handle search-issues directly — return ISearchIssueResponse[] format
   if (collection === "search-issues" && method === "get") {
@@ -1578,6 +1618,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
       // Enrich issue/work-item data with defaults expected by the detail store
       if (collection === "issues") {
+        const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
+        if (deletedIssueSet.has(item.id)) {
+          return { data: null, status: 404 };
+        }
         const stateDetail =
           item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
         const projectDetail =
@@ -1737,6 +1781,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
     // Enrich issues with project_id, workspace_id, and other _id fields (required by UI)
     if (collection === "issues") {
+      const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
+      list = list.filter((item: any) => !deletedIssueSet.has(item.id));
       list = list.map((item: any) => {
         const stateDetail =
           item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
@@ -2038,6 +2084,11 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       localDB["states"].push(...defaultStates);
     }
     if (collection === "issues") {
+      if (localDB._deleted_issue_ids && Array.isArray(localDB._deleted_issue_ids)) {
+        localDB._deleted_issue_ids = localDB._deleted_issue_ids.filter(
+          (dId: string) => dId !== newRecord.id
+        );
+      }
       // Find the project ID from the URL: /api/workspaces/.../projects/:projectId/issues/
       const match = url.match(/\/projects\/([^/]+)\//);
       if (match) {
@@ -2180,6 +2231,15 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       );
 
       if (localDB.issues) {
+        const deletedProjIssues = localDB.issues.filter(
+          (i: any) => i.project === targetId || i.project_id === targetId
+        );
+        if (!localDB._deleted_issue_ids) localDB._deleted_issue_ids = [];
+        for (const dpi of deletedProjIssues) {
+          if (!localDB._deleted_issue_ids.includes(dpi.id)) {
+            localDB._deleted_issue_ids.push(dpi.id);
+          }
+        }
         localDB.issues = localDB.issues.filter((i: any) => i.project !== targetId && i.project_id !== targetId);
       }
       if (localDB.states) {
@@ -2196,6 +2256,27 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
       if (localDB.project_members) {
         localDB.project_members = localDB.project_members.filter((pm: any) => pm.project !== targetId && pm.project_id !== targetId);
+      }
+    } else if (collection === "issues" && id) {
+      if (!localDB._deleted_issue_ids) localDB._deleted_issue_ids = [];
+      if (!localDB._deleted_issue_ids.includes(id)) {
+        localDB._deleted_issue_ids.push(id);
+      }
+      // Also collect all child / sub-issue IDs so they don't orphan or resurrect
+      const childIssues = (localDB.issues || []).filter((i: any) => i.parent_id === id || i.parent === id);
+      for (const child of childIssues) {
+        if (!localDB._deleted_issue_ids.includes(child.id)) {
+          localDB._deleted_issue_ids.push(child.id);
+        }
+      }
+      const deletedIssueSet = new Set(localDB._deleted_issue_ids);
+      localDB.issues = (localDB.issues || []).filter(
+        (r: any) => !deletedIssueSet.has(r.id) && r.parent_id !== id && r.parent !== id
+      );
+      if (localDB.issue_comments) {
+        localDB.issue_comments = localDB.issue_comments.filter(
+          (c: any) => !deletedIssueSet.has(c.issue || c.issue_id)
+        );
       }
     } else {
       localDB[collection] = (localDB[collection] || []).filter((r: any) => r.id !== id);

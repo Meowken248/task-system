@@ -533,11 +533,16 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     ...(localDB._deleted_project_ids || []),
     ...(ipfsDB._deleted_project_ids || []),
   ]);
+  const mergedDeletedIssues = new Set<string>([
+    ...(localDB._deleted_issue_ids || []),
+    ...(ipfsDB._deleted_issue_ids || []),
+  ]);
 
   for (const key in localDB) delete localDB[key];
   Object.assign(localDB, ipfsDB);
 
   localDB._deleted_project_ids = Array.from(mergedDeletedProjects);
+  localDB._deleted_issue_ids = Array.from(mergedDeletedIssues);
 
   if (!localDB.users) localDB.users = [];
   for (const u of currentUsers) {
@@ -572,14 +577,24 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     if (
       !mergedDeletedProjects.has(issue.project) &&
       !mergedDeletedProjects.has(issue.project_id) &&
+      !mergedDeletedIssues.has(issue.id) &&
       !localDB.issues.some((i: any) => i.id === issue.id)
     ) {
       localDB.issues.push(issue);
     }
   }
   localDB.issues = localDB.issues.filter(
-    (i: any) => !mergedDeletedProjects.has(i.project) && !mergedDeletedProjects.has(i.project_id)
+    (i: any) =>
+      !mergedDeletedProjects.has(i.project) &&
+      !mergedDeletedProjects.has(i.project_id) &&
+      !mergedDeletedIssues.has(i.id)
   );
+
+  if (localDB.issue_comments) {
+    localDB.issue_comments = localDB.issue_comments.filter(
+      (c: any) => !mergedDeletedIssues.has(c.issue || c.issue_id)
+    );
+  }
 
   if (localDB.labels) {
     localDB.labels = localDB.labels.filter(

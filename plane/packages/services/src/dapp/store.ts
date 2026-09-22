@@ -100,6 +100,7 @@ export function loadInitialDB(): Record<string, any> {
         const parsed = JSON.parse(cachedLocal);
         if (parsed && typeof parsed === "object") {
           const deletedSet = new Set(parsed._deleted_project_ids || []);
+          const deletedIssueSet = new Set(parsed._deleted_issue_ids || []);
           parsed.projects = (parsed.projects || []).filter(
             (p: any) => !deletedSet.has(p.id) && !deletedSet.has(p.identifier)
           );
@@ -108,7 +109,10 @@ export function loadInitialDB(): Record<string, any> {
           );
           if (parsed.issues) {
             parsed.issues = parsed.issues.filter(
-              (i: any) => !deletedSet.has(i.project) && !deletedSet.has(i.project_id)
+              (i: any) =>
+                !deletedSet.has(i.project) &&
+                !deletedSet.has(i.project_id) &&
+                !deletedIssueSet.has(i.id)
             );
           }
           (parsed.projects || []).forEach((p: any) => {
@@ -135,6 +139,7 @@ export function loadInitialDB(): Record<string, any> {
         const parsed = JSON.parse(cachedSession);
         if (parsed && typeof parsed === "object") {
           const deletedSet = new Set(parsed._deleted_project_ids || []);
+          const deletedIssueSet = new Set(parsed._deleted_issue_ids || []);
           parsed.projects = (parsed.projects || []).filter(
             (p: any) => !deletedSet.has(p.id) && !deletedSet.has(p.identifier)
           );
@@ -143,7 +148,10 @@ export function loadInitialDB(): Record<string, any> {
           );
           if (parsed.issues) {
             parsed.issues = parsed.issues.filter(
-              (i: any) => !deletedSet.has(i.project) && !deletedSet.has(i.project_id)
+              (i: any) =>
+                !deletedSet.has(i.project) &&
+                !deletedSet.has(i.project_id) &&
+                !deletedIssueSet.has(i.id)
             );
           }
           (parsed.projects || []).forEach((p: any) => {
@@ -179,6 +187,7 @@ if (!localDB.users) localDB.users = [];
 if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
 if (!localDB.projects) localDB.projects = [];
 const initDeletedSet = new Set(localDB._deleted_project_ids || []);
+const initDeletedIssueSet = new Set(localDB._deleted_issue_ids || []);
 localDB.projects = localDB.projects.filter(
   (p: any) => !initDeletedSet.has(p.id) && !initDeletedSet.has(p.identifier)
 );
@@ -191,7 +200,10 @@ localDB.states = localDB.states.filter(
 );
 if (!localDB.issues) localDB.issues = [];
 localDB.issues = localDB.issues.filter(
-  (i: any) => !initDeletedSet.has(i.project) && !initDeletedSet.has(i.project_id)
+  (i: any) =>
+    !initDeletedSet.has(i.project) &&
+    !initDeletedSet.has(i.project_id) &&
+    !initDeletedIssueSet.has(i.id)
 );
 if (!localDB.issue_comments) localDB.issue_comments = [];
 if (!localDB.attachments) localDB.attachments = [];

@@ -62,5 +62,7 @@ export interface DAppDatabase {
   modules: any[];
   pages: any[];
   instance: Record<string, any>;
+  _deleted_project_ids?: string[];
+  _deleted_issue_ids?: string[];
   [key: string]: any;
 }
