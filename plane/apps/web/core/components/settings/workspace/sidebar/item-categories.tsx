@@ -30,7 +30,9 @@ export const WorkspaceSettingsSidebarItemCategories = observer(function Workspac
   return (
     <div className="mt-3 flex flex-col divide-y divide-subtle px-3">
       {WORKSPACE_SETTINGS_CATEGORIES.map((category) => {
-        const categoryItems = GROUPED_WORKSPACE_SETTINGS[category];
+        const categoryItems = GROUPED_WORKSPACE_SETTINGS[category].filter(
+          (item) => item.key !== "import" && item.key !== "export"
+        );
         const accessibleItems = categoryItems.filter((item) =>
           allowPermissions(item.access, EUserPermissionsLevel.WORKSPACE, workspaceSlug)
         );

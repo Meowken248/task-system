@@ -482,7 +482,30 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (url.includes("/api/users/me/accounts")) return ok([]);
 
-    if (url.includes("/api/users/me/notification-preferences")) return ok({});
+    if (url.includes("/api/users/me/activities")) {
+      const activities = localDB.issue_activities || [];
+      return ok({
+        count: activities.length,
+        extra_stats: null,
+        next_cursor: "",
+        next_page_results: false,
+        prev_cursor: "",
+        prev_page_results: false,
+        results: activities,
+        total_pages: 1,
+        total_results: activities.length,
+      });
+    }
+
+    if (url.includes("/api/users/me/notification-preferences")) {
+      return ok({
+        property_change: true,
+        state_change: true,
+        comment: true,
+        mention: true,
+        issue_completed: true,
+      });
+    }
 
     if (url.includes("/project-roles")) return ok({}); // return empty object for project roles
 
