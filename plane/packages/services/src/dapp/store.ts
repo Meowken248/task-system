@@ -10,10 +10,15 @@ export function getEnvVar(name: string): string | undefined {
   return undefined;
 }
 
-export const PLANE_CONTRACT =
-  getEnvVar("VITE_CONTRACT_ADDRESS") ||
-  getEnvVar("NEXT_PUBLIC_CONTRACT_ADDRESS") ||
-  "0xA12253Af2C667C69F8f75885a14C7313b3f089e4";
+export function getPlaneContractAddress(): string {
+  return (
+    getEnvVar("VITE_CONTRACT_ADDRESS") ||
+    getEnvVar("NEXT_PUBLIC_CONTRACT_ADDRESS") ||
+    ""
+  );
+}
+
+export const PLANE_CONTRACT = getPlaneContractAddress();
 
 // ── Default Workspace duy nhất: FIAI ─────────────────────────────────────
 export const DEFAULT_WORKSPACE: DAppWorkspace = {

@@ -45,15 +45,24 @@ export const SET_CID_IF_MATCHES_ABI = {
   stateMutability: "nonpayable"
 };
 
-export const CONTRACT_ADDRESS =
-  getEnvVar("VITE_REGISTRY_CONTRACT_ADDRESS") ||
-  getEnvVar("NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS") ||
-  "0x1eF16F9e7Faf6977f8a6d13187A9eD7981b4460B";
+export function getRegistryContractAddress(): string {
+  return (
+    getEnvVar("VITE_REGISTRY_CONTRACT_ADDRESS") ||
+    getEnvVar("NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS") ||
+    ""
+  );
+}
 
-export const WORKSPACE_REGISTRY_ADDRESS =
-  getEnvVar("VITE_WORKSPACE_REGISTRY_ADDRESS") ||
-  getEnvVar("NEXT_PUBLIC_WORKSPACE_REGISTRY_ADDRESS") ||
-  "0xA89B781A0AA61F3bBC86410DE74a350297A5087d";
+export function getWorkspaceRegistryAddress(): string {
+  return (
+    getEnvVar("VITE_WORKSPACE_REGISTRY_ADDRESS") ||
+    getEnvVar("NEXT_PUBLIC_WORKSPACE_REGISTRY_ADDRESS") ||
+    ""
+  );
+}
+
+export const CONTRACT_ADDRESS = getRegistryContractAddress();
+export const WORKSPACE_REGISTRY_ADDRESS = getWorkspaceRegistryAddress();
 
 export const GET_WORKSPACE_CID_ABI = {
   type: "function",
