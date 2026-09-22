@@ -12,7 +12,30 @@ import { useUser } from "@/hooks/store/user";
 
 type Props = { workspaceSlug: string };
 type ProjectOption = { id: string; name: string; identifier?: string };
-type TaskOption = { id: string; name: string; parentId?: string; records: TBlockchainTrackingRecord[] };
+type TaskOption = {
+  id: string;
+  name: string;
+  sequence_id?: number;
+  identifier?: string;
+  parentId?: string;
+  records: TBlockchainTrackingRecord[];
+};
+
+function getCleanParentId(val: unknown): string | undefined {
+  if (!val) return undefined;
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    return trimmed && trimmed !== "null" && trimmed !== "undefined" ? trimmed : undefined;
+  }
+  if (typeof val === "object" && val !== null) {
+    const id = (val as any).id;
+    if (typeof id === "string") {
+      const trimmed = id.trim();
+      return trimmed && trimmed !== "null" && trimmed !== "undefined" ? trimmed : undefined;
+    }
+  }
+  return undefined;
+}
 type AggregateKpi = {
   total: number;
   todo: number;
@@ -140,7 +163,11 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
       try {
         const items = await projectService.getProjectsLite(workspaceSlug);
         if (active) {
-          setProjects(items.map((project) => ({ id: project.id, name: project.name, identifier: project.identifier })));
+          const opts = items.map((project) => ({ id: project.id, name: project.name, identifier: project.identifier }));
+          setProjects(opts);
+          if (opts.length > 0 && !selectedProjectId) {
+            void selectProject(opts[0].id);
+          }
         }
       } catch {
         if (active) setError("Không tải được danh sách dự án.");
@@ -153,6 +180,8 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
       active = false;
     };
   }, [workspaceSlug]);
+
+  const selectedProject = projects.find((project) => project.id === selectedProjectId);
 
   const tasks = useMemo<TaskOption[]>(() => {
     const grouped = new Map<string, TBlockchainTrackingRecord[]>();
@@ -168,10 +197,22 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
       processedIds.add(issue.id);
       const taskRecords = grouped.get(issue.id) ?? [];
       const creation = taskRecords.find((record) => record.event_type === "create_task");
+      const rawParentId =
+        getCleanParentId(issue.parent_id) ||
+        getCleanParentId((issue as any).parent) ||
+        getCleanParentId((issue as any).parent_detail) ||
+        getCleanParentId(creation?.parent_issue_id);
+
+      const seqId = typeof issue.sequence_id === "number" ? issue.sequence_id : undefined;
+      const projIdent = (issue as any).project_detail?.identifier || selectedProject?.identifier || "";
+      const issueIdent = projIdent && seqId ? `${projIdent}-${seqId}` : undefined;
+
       taskOptions.push({
         id: issue.id,
         name: issue.name,
-        parentId: issue.parent_id || creation?.parent_issue_id || undefined,
+        sequence_id: seqId,
+        identifier: issueIdent,
+        parentId: rawParentId && rawParentId !== issue.id && rawParentId !== issueIdent ? rawParentId : undefined,
         records: taskRecords,
       });
     });
@@ -179,16 +220,57 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     Array.from(grouped).forEach(([id, taskRecords]) => {
       if (processedIds.has(id)) return;
       const creation = taskRecords.find((record) => record.event_type === "create_task");
+      const rawParentId = getCleanParentId(creation?.parent_issue_id);
       taskOptions.push({
         id,
         name: taskRecords.find((record) => record.issue_name)?.issue_name || id,
-        parentId: creation?.parent_issue_id,
+        parentId: rawParentId && rawParentId !== id ? rawParentId : undefined,
         records: taskRecords,
       });
     });
 
+    // Normalize parentId to canonical parent task.id (supporting parent specified by UUID, identifier like 'SS-1', or sequence_id like '1')
+    taskOptions.forEach((task) => {
+      if (!task.parentId) return;
+      const target = task.parentId.trim().toLowerCase();
+      const matchedParent = taskOptions.find(
+        (p) =>
+          p.id !== task.id &&
+          (p.id.toLowerCase() === target ||
+            (p.identifier && p.identifier.toLowerCase() === target) ||
+            (p.sequence_id !== undefined && String(p.sequence_id) === target))
+      );
+      if (matchedParent) {
+        task.parentId = matchedParent.id;
+      }
+    });
+
+    // Break any circular reference loops
+    taskOptions.forEach((task) => {
+      if (!task.parentId) return;
+      const visited = new Set<string>([task.id]);
+      let curr = taskOptions.find((p) => p.id === task.parentId);
+      while (curr && curr.parentId) {
+        if (visited.has(curr.parentId)) {
+          curr.parentId = undefined;
+          break;
+        }
+        visited.add(curr.id);
+        curr = taskOptions.find((p) => p.id === curr!.parentId);
+      }
+    });
+
     return taskOptions.filter((task) => !task.records.some((record) => record.event_type === "delete_task"));
-  }, [records, planeTasks]);
+  }, [records, planeTasks, selectedProject]);
+
+  useEffect(() => {
+    if (!tasks.length) return;
+    const parentIds = new Set<string>();
+    tasks.forEach((t) => {
+      if (t.parentId) parentIds.add(t.parentId);
+    });
+    setExpandedTaskIds(parentIds);
+  }, [tasks]);
 
   useEffect(() => {
     let active = true;
@@ -216,7 +298,6 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     };
   }, [tasks]);
 
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
   const childrenByParent = useMemo(() => {
     const grouped = new Map<string, TaskOption[]>();
@@ -226,9 +307,16 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     });
     return grouped;
   }, [tasks]);
-  const rootTasks = tasks.filter(
-    (task) => !task.parentId || !tasks.some((candidate) => candidate.id === task.parentId)
-  );
+  const rootTasks = useMemo(() => {
+    const directRoots = tasks.filter(
+      (task) =>
+        !task.parentId ||
+        task.parentId === "null" ||
+        task.parentId === task.id ||
+        !tasks.some((candidate) => candidate.id === task.parentId && candidate.id !== task.id)
+    );
+    return directRoots.length > 0 ? directRoots : tasks;
+  }, [tasks]);
   const selectedTaskChildren = selectedTask ? (childrenByParent.get(selectedTask.id) ?? []) : [];
   const collectLeafTasks = (task: TaskOption, visited = new Set<string>()): TaskOption[] => {
     if (visited.has(task.id)) return [];
@@ -244,9 +332,9 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     }
     return taskProgress(task, onChainProgress);
   };
-  const projectLeafTasks = rootTasks.flatMap((task) => collectLeafTasks(task));
+  const projectLeafTasks = tasks.length > 0 ? (rootTasks.length > 0 ? rootTasks.flatMap((task) => collectLeafTasks(task)) : tasks) : [];
   const selectedTaskLeafTasks = selectedTask ? collectLeafTasks(selectedTask) : [];
-  const projectKpi = aggregateKpi(projectLeafTasks, onChainProgress);
+  const projectKpi = aggregateKpi(tasks, onChainProgress);
   const selectedTaskKpi = aggregateKpi(selectedTaskLeafTasks, onChainProgress);
   const creation = selectedTask?.records.find((record) => record.event_type === "create_task");
   const assignment =
@@ -269,10 +357,19 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
         blockchainTrackingService
           .getTransactions(workspaceSlug, projectId)
           .catch(() => [] as TBlockchainTrackingRecord[]),
-        issueService.getIssuesFromServer(workspaceSlug, projectId, { sub_issue: "true" } as any).catch(() => ({ results: [] as TIssue[] })),
+        issueService
+          .getIssuesFromServer(workspaceSlug, projectId, { sub_issue: "true" } as any)
+          .catch(() => ({ results: [] as TIssue[] })),
       ]);
       setRecords(txRecords);
-      setPlaneTasks(Array.isArray(planeIssuesRes?.results) ? planeIssuesRes.results : []);
+      const rawPlaneIssues: TIssue[] = Array.isArray(planeIssuesRes)
+        ? planeIssuesRes
+        : Array.isArray(planeIssuesRes?.results)
+          ? planeIssuesRes.results
+          : typeof planeIssuesRes?.results === "object" && planeIssuesRes?.results !== null
+            ? Object.values(planeIssuesRes.results).flatMap((g: any) => (Array.isArray(g?.results) ? g.results : []))
+            : [];
+      setPlaneTasks(rawPlaneIssues);
     } catch {
       setError("Không tải được task và dữ liệu on-chain của dự án.");
     } finally {
@@ -350,8 +447,13 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
             className="min-w-0 flex-1 px-1 py-2.5 pr-3 text-left active:scale-[0.99]"
           >
             <span className="flex items-center gap-2">
+              {task.identifier && (
+                <span className="shrink-0 text-10 font-mono font-semibold px-1 py-0.5 rounded bg-surface-2 text-tertiary">
+                  {task.identifier}
+                </span>
+              )}
               <span className="truncate text-12 font-medium text-primary">{task.name}</span>
-              {children.length > 0 && <span className="text-10 text-tertiary">{children.length} task con</span>}
+              {children.length > 0 && <span className="text-10 text-tertiary">({children.length})</span>}
             </span>
             <span className="mt-1 flex items-center justify-between text-10 text-tertiary">
               <span>{task.records.filter((record) => record.event_type === "daily_report").length} báo cáo</span>
@@ -456,7 +558,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                           className="w-full rounded-lg border border-subtle bg-surface-1/60 p-3 text-left hover:bg-surface-2"
                         >
                           <span className="flex items-center justify-between gap-3">
-                            <span className="truncate text-11 font-medium text-primary">{task.name}</span>
+                            <span className="truncate text-11 font-medium text-primary">{task.identifier ? `[${task.identifier}] ` : ""}{task.name}</span>
                             <span className="text-10 text-tertiary">{summary.averageProgress}%</span>
                           </span>
                           <span className="bg-surface-3 mt-2 block h-1.5 overflow-hidden rounded-full">
@@ -485,8 +587,8 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
             <div className="space-y-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-10 text-tertiary">{selectedProject?.identifier || "TASK"}</p>
-                  <h3 className="mt-1 truncate text-16 font-semibold text-primary">{selectedTask.name}</h3>
+                  <p className="text-10 text-tertiary">{selectedTask.identifier || selectedProject?.identifier || "TASK"}</p>
+                  <h3 className="mt-1 truncate text-16 font-semibold text-primary">{selectedTask.identifier ? `[${selectedTask.identifier}] ` : ""}{selectedTask.name}</h3>
                   <p className="mt-1 text-11 text-tertiary">Tạo on-chain: {formatDateTime(creation?.recorded_at)}</p>
                 </div>
                 <div className="rounded-lg border border-subtle bg-surface-1/70 px-3 py-2 text-right backdrop-blur-md">
@@ -532,7 +634,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                         className="flex w-full items-center justify-between rounded-lg border border-subtle bg-surface-1/60 px-3 py-2.5 text-left hover:bg-surface-2"
                       >
                         <span className="min-w-0">
-                          <span className="block truncate text-11 font-medium text-primary">{child.name}</span>
+                          <span className="block truncate text-11 font-medium text-primary">{child.identifier ? `[${child.identifier}] ` : ""}{child.name}</span>
                           <span className="mt-0.5 block text-10 text-tertiary">
                             {child.records.filter((record) => record.event_type === "daily_report").length} báo cáo
                           </span>

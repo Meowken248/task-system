@@ -1043,7 +1043,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const subIssues = (localDB.issues || []).filter((i: any) => i.parent_id === parentId || i.parent === parentId);
 
       const enrichedSubIssues = subIssues.map((item: any) => {
-        const children = (localDB.issues || []).filter((i: any) => i.parent_id === item.id || i.parent === item.id);
+        const children = (localDB.issues || []).filter((i: any) => {
+          const pId = typeof i.parent === "object" ? i.parent?.id : (i.parent_id || i.parent);
+          return (
+            pId === item.id ||
+            pId === String(item.sequence_id) ||
+            (item.project_detail?.identifier && pId === `${item.project_detail.identifier}-${item.sequence_id}`)
+          );
+        });
         const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
         const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
         return {
@@ -1592,7 +1599,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           project_id: item.project_id || item.project,
           workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
           state_id: item.state_id || item.state,
-          parent_id: item.parent_id || item.parent,
+          parent_id: typeof item.parent === "object" ? item.parent?.id : (item.parent_id || item.parent),
           cycle_id: item.cycle_id || item.cycle,
           type_id: item.type_id || item.type,
           assignees: item.assignees || item.assignee_ids || [],
@@ -1700,10 +1707,16 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       const match = url.match(/\/projects\/([^/]+)\//);
       if (match) {
         const projId = match[1];
+        const targetProj = (localDB.projects || []).find(
+          (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+        );
+        const matchingProjIds = new Set(
+          [projId, targetProj?.id, targetProj?.identifier].filter(Boolean)
+        );
         if (
-          ["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules"].includes(collection)
+          ["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules", "blockchain-transactions"].includes(collection)
         ) {
-          list = list.filter((item: any) => item.project === projId || item.project_id === projId);
+          list = list.filter((item: any) => matchingProjIds.has(item.project) || matchingProjIds.has(item.project_id));
         }
       }
     }
@@ -2036,14 +2049,21 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       const match = url.match(/\/projects\/([^/]+)\//);
       if (match) {
         const projId = match[1];
-        newRecord.project = projId;
-        const project = (localDB.projects || []).find((p: any) => p.id === projId);
+        const project = (localDB.projects || []).find(
+          (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+        );
+        const canonicalProjId = project?.id || projId;
+        newRecord.project = canonicalProjId;
+        newRecord.project_id = canonicalProjId;
         if (project) {
           newRecord.project_detail = project;
         }
 
+        const validProjKeys = new Set([projId, project?.id, project?.identifier].filter(Boolean));
         // Auto-increment sequence_id for the project
-        const projectIssues = (localDB.issues || []).filter((i: any) => i.project === projId);
+        const projectIssues = (localDB.issues || []).filter(
+          (i: any) => validProjKeys.has(i.project) || validProjKeys.has(i.project_id)
+        );
         const maxSeq = projectIssues.reduce((max: number, issue: any) => Math.max(max, issue.sequence_id || 0), 0);
         newRecord.sequence_id = maxSeq + 1;
       }
@@ -2052,8 +2072,12 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     localDB[collection].push(newRecord);
 
     // If this is an issue and it has a parent, update the parent's sub_issues_count
-    if (collection === "issues" && newRecord.parent_id) {
-      const parentIdx = localDB[collection].findIndex((i: any) => i.id === newRecord.parent_id);
+    const effectiveParentId = typeof newRecord.parent === "object" ? newRecord.parent?.id : (newRecord.parent_id || newRecord.parent);
+    if (collection === "issues" && effectiveParentId) {
+      newRecord.parent_id = effectiveParentId;
+      const parentIdx = localDB[collection].findIndex(
+        (i: any) => i.id === effectiveParentId || (i.sequence_id && String(i.sequence_id) === String(effectiveParentId))
+      );
       if (parentIdx > -1) {
         localDB[collection][parentIdx].sub_issues_count = (localDB[collection][parentIdx].sub_issues_count || 0) + 1;
         // Broadcast the parent update if needed, though for mock DB just saving is enough for next fetch
@@ -2087,7 +2111,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           localDB.workspaces?.[0]?.slug ||
           "",
         state_id: returnedRecord.state_id || returnedRecord.state,
-        parent_id: returnedRecord.parent_id || returnedRecord.parent,
+        parent_id: typeof returnedRecord.parent === "object" ? returnedRecord.parent?.id : (returnedRecord.parent_id || returnedRecord.parent),
         cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
         type_id: returnedRecord.type_id || returnedRecord.type,
         assignees: returnedRecord.assignees || returnedRecord.assignee_ids || [],

@@ -49,7 +49,9 @@ class BlockchainTrackingService extends APIService {
   private currentContractRecords(records: TBlockchainTrackingRecord[]): TBlockchainTrackingRecord[] {
     const currentContractAddress = process.env.VITE_CONTRACT_ADDRESS?.trim().toLowerCase();
     if (!currentContractAddress) return records;
-    return records.filter((record) => record.contract_address?.trim().toLowerCase() === currentContractAddress);
+    return records.filter(
+      (record) => !record.contract_address || record.contract_address.trim().toLowerCase() === currentContractAddress
+    );
   }
 
   private readOutbox(): Record<string, TTrackingOutboxEntry> {
