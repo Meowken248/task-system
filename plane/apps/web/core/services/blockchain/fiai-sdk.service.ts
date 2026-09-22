@@ -104,9 +104,41 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
   }
 
   const timeoutMs = Number(process.env.VITE_FIAI_TIMEOUT) || 60_000;
-  console.log(`[FiaiSDK] Bắt đầu init với timeout ${timeoutMs}ms...`);
 
-  const initTask = FiaiSDK.init({});
+  const rpcUrl =
+    (typeof process !== "undefined" && process.env?.VITE_RPC_URL) ||
+    "http://192.168.1.231:10746";
+  const chainId = Number(
+    (typeof process !== "undefined" && process.env?.VITE_CHAIN_ID) || "991"
+  );
+  const wsUrl =
+    (typeof process !== "undefined" && process.env?.VITE_WS_URL) ||
+    rpcUrl.replace(/^http/, "ws");
+
+  console.log(`[FiaiSDK] Bắt đầu init với timeout ${timeoutMs}ms, RPC=${rpcUrl}, WS=${wsUrl}, ChainId=${chainId}`);
+
+  const initOptions: Parameters<typeof FiaiSDK.init>[0] = {
+    timeout: timeoutMs,
+    chainConfig: {
+      rpcUrl,
+      wsUrl,
+      chainId,
+    },
+  };
+
+  if (
+    process.env.VITE_FIAI_BLOCKCHAIN_BRIDGE_URL &&
+    process.env.VITE_FIAI_CRYPTO_VAULT_URL &&
+    process.env.VITE_FIAI_FILE_PROCESSOR_URL
+  ) {
+    initOptions.frameUrls = {
+      blockchainBridge: process.env.VITE_FIAI_BLOCKCHAIN_BRIDGE_URL,
+      cryptoVault: process.env.VITE_FIAI_CRYPTO_VAULT_URL,
+      fileProcessor: process.env.VITE_FIAI_FILE_PROCESSOR_URL,
+    };
+  }
+
+  const initTask = FiaiSDK.init(initOptions);
 
   const timeoutTask = new Promise<never>((_, reject) => {
     setTimeout(() => {
