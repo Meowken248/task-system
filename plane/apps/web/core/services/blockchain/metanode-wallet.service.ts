@@ -42,11 +42,7 @@ export function getLinkedMetanodeWalletAddress(): string | null {
 }
 export function isMetanodeWalletRuntimeSupported(): boolean {
   if (typeof window === "undefined") return false;
-  // On HTTP localhost development, browser prevents subframe iframe TLS connection to external domains.
-  // Using the popup window allows top-level navigation, avoiding ERR_SSL_UNRECOGNIZED_NAME_ALERT.
-  const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-  if (isLocalDev) return false;
-  return window.isSecureContext && "serviceWorker" in navigator;
+  return window.isSecureContext;
 }
 
 function openConnectWalletPage(): void {
@@ -262,6 +258,37 @@ export async function openMetanodeWallet(): Promise<unknown> {
 
 export async function resolveMetanodeWalletAddress(): Promise<string> {
   if (typeof window === "undefined") throw new Error("MetaNode wallet is only available in the browser.");
+
+  if (linkedWalletAddress && isWalletAddress(linkedWalletAddress)) return linkedWalletAddress;
+
+  // Try localStorage
+  if (currentPlaneUserId) {
+    const localAddr = window.localStorage.getItem(walletStorageKey(currentPlaneUserId))?.trim() || "";
+    if (isWalletAddress(localAddr)) {
+      linkedWalletAddress = normalizeWalletAddress(localAddr);
+      return linkedWalletAddress;
+    }
+  }
+
+  // Check stored wallet in localStorage
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith("plane:metanode-wallet:")) {
+      const addr = localStorage.getItem(key)?.trim() || "";
+      if (isWalletAddress(addr)) {
+        linkedWalletAddress = normalizeWalletAddress(addr);
+        return linkedWalletAddress;
+      }
+    }
+  }
+
+  if (!isMetanodeWalletRuntimeSupported()) {
+    throw new Error(
+      "Trình duyệt không cho phép kết nối ví MetaNode trên kết nối HTTP không an toàn. " +
+      "Hãy dùng http://localhost:3000 hoặc cấu hình chrome://flags/#unsafely-treat-insecure-origin-as-secure."
+    );
+  }
+
   await initFiaiSDK();
   if (linkedWalletAddress && isWalletAddress(linkedWalletAddress)) return linkedWalletAddress;
   return selectAndLinkWallet();

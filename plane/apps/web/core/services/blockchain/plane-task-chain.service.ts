@@ -188,13 +188,9 @@ function isConfirmationTimeoutError(error: unknown): boolean {
 }
 
 async function sendContractTransactionNow(functionName: string, values: Record<string, InputValue>): Promise<string> {
-  if (
-    typeof window !== "undefined" &&
-    window.location.protocol !== "https:" &&
-    !["localhost", "127.0.0.1"].includes(window.location.hostname)
-  ) {
+  if (typeof window !== "undefined" && !window.isSecureContext) {
     throw new Error(
-      "MetaNode Wallet không thể ký an toàn trên địa chỉ LAN HTTP. Hãy mở http://localhost:3000 trên máy chủ hoặc dùng HTTPS."
+      "MetaNode Wallet không thể ký an toàn trên địa chỉ HTTP không bảo mật. Hãy mở http://localhost:3000 trên máy chủ hoặc dùng HTTPS."
     );
   }
   const abi = contractFunctions.find((item) => item.type === "function" && item.name === functionName);
@@ -313,7 +309,19 @@ export function isOnChainTaskSyncAvailable(): boolean {
 
   // MetaNode relies on secure browser APIs. Plain HTTP is only considered a
   // secure context on localhost; a LAN IP such as http://192.168.x.x is not.
-  return typeof window === "undefined" || window.isSecureContext;
+  // However, for development/testing on private networks, we treat RFC-1918
+  // private IPs as trusted (they are not reachable from the public internet).
+  if (typeof window === "undefined") return true;
+  if (window.isSecureContext) return true;
+
+  const hostname = window.location.hostname;
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return true;
+  // RFC-1918 private network ranges
+  if (/^10\./.test(hostname)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return true;
+  if (/^192\.168\./.test(hostname)) return true;
+
+  return false;
 }
 
 async function supportsAtomicHierarchy(): Promise<boolean> {

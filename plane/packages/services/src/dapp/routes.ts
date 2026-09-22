@@ -835,7 +835,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     return ok(localDB.favorites || []);
   }
 
-  // ── Notifications ───────────────────────────────────────────────────
+  // ── Notifications ─────────────────────────────────────────────────── 
   if (url.includes("/notifications/unread")) {
     return ok({
       total_unread_notifications_count: 0,
@@ -1043,14 +1043,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const subIssues = (localDB.issues || []).filter((i: any) => i.parent_id === parentId || i.parent === parentId);
 
       const enrichedSubIssues = subIssues.map((item: any) => {
-        const children = (localDB.issues || []).filter((i: any) => {
-          const pId = typeof i.parent === "object" ? i.parent?.id : (i.parent_id || i.parent);
-          return (
-            pId === item.id ||
-            pId === String(item.sequence_id) ||
-            (item.project_detail?.identifier && pId === `${item.project_detail.identifier}-${item.sequence_id}`)
-          );
-        });
+        const children = (localDB.issues || []).filter((i: any) => i.parent_id === item.id || i.parent === item.id);
         const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
         const projectDetail = item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
         return {
@@ -1599,7 +1592,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           project_id: item.project_id || item.project,
           workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
           state_id: item.state_id || item.state,
-          parent_id: typeof item.parent === "object" ? item.parent?.id : (item.parent_id || item.parent),
+          parent_id: item.parent_id || item.parent,
           cycle_id: item.cycle_id || item.cycle,
           type_id: item.type_id || item.type,
           assignees: item.assignees || item.assignee_ids || [],
@@ -2072,12 +2065,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     localDB[collection].push(newRecord);
 
     // If this is an issue and it has a parent, update the parent's sub_issues_count
-    const effectiveParentId = typeof newRecord.parent === "object" ? newRecord.parent?.id : (newRecord.parent_id || newRecord.parent);
-    if (collection === "issues" && effectiveParentId) {
-      newRecord.parent_id = effectiveParentId;
-      const parentIdx = localDB[collection].findIndex(
-        (i: any) => i.id === effectiveParentId || (i.sequence_id && String(i.sequence_id) === String(effectiveParentId))
-      );
+    if (collection === "issues" && newRecord.parent_id) {
+      const parentIdx = localDB[collection].findIndex((i: any) => i.id === newRecord.parent_id);
       if (parentIdx > -1) {
         localDB[collection][parentIdx].sub_issues_count = (localDB[collection][parentIdx].sub_issues_count || 0) + 1;
         // Broadcast the parent update if needed, though for mock DB just saving is enough for next fetch
@@ -2111,7 +2100,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           localDB.workspaces?.[0]?.slug ||
           "",
         state_id: returnedRecord.state_id || returnedRecord.state,
-        parent_id: typeof returnedRecord.parent === "object" ? returnedRecord.parent?.id : (returnedRecord.parent_id || returnedRecord.parent),
+        parent_id: returnedRecord.parent_id || returnedRecord.parent,
         cycle_id: returnedRecord.cycle_id || returnedRecord.cycle,
         type_id: returnedRecord.type_id || returnedRecord.type,
         assignees: returnedRecord.assignees || returnedRecord.assignee_ids || [],
