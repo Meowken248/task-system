@@ -256,6 +256,7 @@ localDB.issues = localDB.issues.filter(
     !initDeletedSet.has(i.project_id) &&
     !initDeletedIssueSet.has(i.id)
 );
+if (!localDB.labels) localDB.labels = [];
 if (!localDB.issue_comments) localDB.issue_comments = [];
 if (!localDB.attachments) localDB.attachments = [];
 if (!localDB.instance) localDB.instance = { ...defaultDB.instance };

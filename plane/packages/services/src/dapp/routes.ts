@@ -1876,6 +1876,14 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           list = list.filter((item: any) => matchingProjIds.has(item.project) || matchingProjIds.has(item.project_id));
         }
       }
+    } else if (url.includes("/workspaces/") && collection === "labels") {
+      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+      if (wsMatch) {
+        const wsSlug = wsMatch[1];
+        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+        const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
+        list = list.filter((item: any) => validWsKeys.has(item.workspace) || validWsKeys.has(item.workspace_id));
+      }
     }
 
     // Filter sub-resources by issue ID
@@ -2233,6 +2241,35 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
     }
 
+    if (collection === "labels") {
+      const match = url.match(/\/projects\/([^/]+)\//);
+      if (match) {
+        const projId = match[1];
+        const project = (localDB.projects || []).find(
+          (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+        );
+        const canonicalProjId = project?.id || projId;
+        newRecord.project = canonicalProjId;
+        newRecord.project_id = canonicalProjId;
+      }
+      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+      if (wsMatch) {
+        const wsSlug = wsMatch[1];
+        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+        newRecord.workspace = ws?.id || wsSlug;
+        newRecord.workspace_id = ws?.id || wsSlug;
+      }
+      if (!newRecord.color) newRecord.color = "#3f3f46";
+      newRecord.parent = newRecord.parent || null;
+      if (newRecord.sort_order === undefined) {
+        const projLabels = (localDB.labels || []).filter(
+          (l: any) => l.project === newRecord.project || l.project_id === newRecord.project_id
+        );
+        newRecord.sort_order = projLabels.length * 10000 + 10000;
+      }
+    }
+
+    if (!localDB[collection]) localDB[collection] = [];
     localDB[collection].push(newRecord);
 
     // If this is an issue and it has a parent, update the parent's sub_issues_count
@@ -2292,6 +2329,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   }
 
   if (method === "patch" || method === "put") {
+    if (!localDB[collection]) localDB[collection] = [];
     const idx = localDB[collection].findIndex((r: any) => r.id === id || r.slug === id);
     if (idx > -1) {
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
@@ -2554,6 +2592,11 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
 
   if (resourceSegments.length === 0) {
     return { collection: "general", id: null, isPaginated: false };
+  }
+
+  // Normalize aliases so they match localDB collection names
+  if (resourceSegments[0] === "issue-labels" || resourceSegments[0] === "issue_labels") {
+    resourceSegments[0] = "labels";
   }
 
   if (resourceSegments.length === 1) {
