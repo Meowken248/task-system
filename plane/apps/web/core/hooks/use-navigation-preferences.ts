@@ -192,12 +192,15 @@ export const useWorkspaceNavigationPreferences = () => {
 
   // Convert store format to hook format
   const preferences: TWorkspaceNavigationPreferences = useMemo(() => {
-    if (!storePreferences) {
+    if (!storePreferences || Object.keys(storePreferences).length === 0) {
       return DEFAULT_WORKSPACE_PREFERENCES;
     }
 
     return {
-      items: storePreferences,
+      items: {
+        ...DEFAULT_WORKSPACE_PREFERENCES.items,
+        ...storePreferences,
+      },
     };
   }, [storePreferences]);
 

@@ -56,6 +56,38 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     return ok({ status: !exists });
   }
 
+  // ── Workspace Sidebar Preferences ─────────────────────────────────
+  if (url.includes("/sidebar-preferences")) {
+    const slugMatch = url.match(/\/workspaces\/([^/]+)\/sidebar-preferences/);
+    const slug = slugMatch ? slugMatch[1] : "";
+    if (!localDB.sidebarPreferences) localDB.sidebarPreferences = {};
+    const defaultPrefs: Record<string, any> = {
+      views: { key: "views", is_pinned: true, sort_order: 1 },
+      analytics: { key: "analytics", is_pinned: true, sort_order: 2 },
+      archives: { key: "archives", is_pinned: true, sort_order: 3 },
+    };
+    if (method.toUpperCase() === "GET") {
+      return ok(localDB.sidebarPreferences[slug] || defaultPrefs);
+    }
+    if (method.toUpperCase() === "PATCH") {
+      if (!localDB.sidebarPreferences[slug]) {
+        localDB.sidebarPreferences[slug] = { ...defaultPrefs };
+      }
+      if (Array.isArray(body)) {
+        body.forEach((item: any) => {
+          if (item && item.key) {
+            localDB.sidebarPreferences[slug][item.key] = item;
+          }
+        });
+      } else if (body && typeof body === "object") {
+        Object.assign(localDB.sidebarPreferences[slug], body);
+      }
+      saveDB();
+      return ok(localDB.sidebarPreferences[slug]);
+    }
+    return ok(defaultPrefs);
+  }
+
   // ── Auth endpoints ──────────────────────────────────────────────────
   if (url.includes("/auth/get-csrf-token")) return ok({ csrf_token: "dapp-csrf-token" });
 

@@ -66,7 +66,11 @@ export const DEFAULT_PROJECT_PREFERENCES: TProjectNavigationPreferences = {
 };
 
 export const DEFAULT_WORKSPACE_PREFERENCES: TWorkspaceNavigationPreferences = {
-  items: {},
+  items: {
+    views: { is_pinned: true, sort_order: 1 },
+    analytics: { is_pinned: true, sort_order: 2 },
+    archives: { is_pinned: true, sort_order: 3 },
+  },
 };
 
 // App Rail preferences
