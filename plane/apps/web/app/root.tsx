@@ -35,15 +35,18 @@ import "@fontsource/ibm-plex-mono";
 
 const APP_TITLE = "Plane | Simple, extensible, open-source project management tool.";
 
+const routerBase = (typeof process !== "undefined" && process.env?.VITE_ROUTER_BASENAME) || "/plane";
+const cleanRouterBase = routerBase === "/" ? "" : routerBase.replace(/\/+$/, "");
+
 export const links: LinksFunction = () => [
   { rel: "icon", type: "image/png", sizes: "32x32", href: favicon32 },
   { rel: "icon", type: "image/png", sizes: "16x16", href: favicon16 },
   { rel: "shortcut icon", href: faviconIco },
-  { rel: "manifest", href: "/site.webmanifest.json" },
+  { rel: "manifest", href: `${cleanRouterBase}/site.webmanifest.json` },
   { rel: "apple-touch-icon", href: icon512 },
   { rel: "apple-touch-icon", sizes: "180x180", href: icon180 },
   { rel: "apple-touch-icon", sizes: "512x512", href: icon512 },
-  { rel: "manifest", href: "/manifest.json" },
+  { rel: "manifest", href: `${cleanRouterBase}/manifest.json` },
   { rel: "stylesheet", href: globalStyles },
   {
     rel: "preload",

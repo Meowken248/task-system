@@ -36,6 +36,28 @@ function isAuthAction(action: string): boolean {
   );
 }
 
+function resolveAppPath(path?: string | null): string {
+  const routerBase = (typeof process !== "undefined" && process.env?.VITE_ROUTER_BASENAME) || "/plane";
+  const cleanBase = routerBase === "/" ? "" : routerBase.replace(/\/+$/, "");
+  const rootPath = cleanBase ? `${cleanBase}/` : "/";
+
+  if (!path || path === "/") {
+    return rootPath;
+  }
+
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    return path;
+  }
+
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  if (cleanBase && (normalizedPath === cleanBase || normalizedPath.startsWith(`${cleanBase}/`))) {
+    return normalizedPath;
+  }
+
+  return cleanBase ? `${cleanBase}${normalizedPath}` : normalizedPath;
+}
+
 if (typeof document !== "undefined") {
   const handleAuthAction = async (form: HTMLFormElement) => {
     const action = form.action || "";
@@ -43,7 +65,7 @@ if (typeof document !== "undefined") {
     if (action.includes("/auth/sign-out")) {
       localStorage.removeItem("plane_dapp_auth_user");
       localStorage.removeItem("plane_dapp_auth_email");
-      window.location.href = "/";
+      window.location.href = resolveAppPath("/");
       return;
     }
 
@@ -116,7 +138,7 @@ if (typeof document !== "undefined") {
 
       localStorage.setItem("plane_dapp_auth_user", user?.id || `user-${Date.now().toString(36)}`);
       localStorage.setItem("plane_dapp_auth_email", email);
-      window.location.href = nextPath || "/";
+      window.location.href = resolveAppPath(nextPath);
       return;
     }
 
@@ -167,7 +189,7 @@ if (typeof document !== "undefined") {
 
       localStorage.setItem("plane_dapp_auth_user", newUser.id);
       localStorage.setItem("plane_dapp_auth_email", newUser.email);
-      window.location.href = nextPath || "/";
+      window.location.href = resolveAppPath(nextPath);
       return;
     }
   };

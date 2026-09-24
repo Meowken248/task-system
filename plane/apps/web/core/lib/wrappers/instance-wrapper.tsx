@@ -42,7 +42,12 @@ const InstanceWrapper = observer(function InstanceWrapper(props: TInstanceWrappe
   if (error && error?.status === "error") return <>{children}</>;
 
   // instance is not ready and setup is not done (only block on root path, never on workspace routes)
-  const isRootPath = typeof window !== "undefined" && window.location.pathname === "/";
+  const routerBase = (typeof process !== "undefined" && process.env?.VITE_ROUTER_BASENAME) || "/plane";
+  const cleanBase = routerBase === "/" ? "" : routerBase.replace(/\/+$/, "");
+  const isRootPath =
+    typeof window !== "undefined" &&
+    (window.location.pathname === "/" ||
+      (cleanBase && (window.location.pathname === cleanBase || window.location.pathname === `${cleanBase}/`)));
   if (instance?.is_setup_done === false && isRootPath) return <InstanceNotReady />;
 
   return <>{children}</>;

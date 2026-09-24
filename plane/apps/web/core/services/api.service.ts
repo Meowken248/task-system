@@ -34,15 +34,26 @@ export abstract class APIService {
         return response;
       },
       (error) => {
-        if (
-          typeof window !== "undefined" &&
-          error.response?.status === 401 &&
-          window.location.pathname !== "/" &&
-          !APIService.authRedirectInProgress
-        ) {
-          APIService.authRedirectInProgress = true;
-          const currentPath = `${window.location.pathname}${window.location.search}`;
-          window.location.replace(`/?next_path=${encodeURIComponent(currentPath)}`);
+        if (typeof window !== "undefined" && error.response?.status === 401) {
+          const routerBase = (typeof process !== "undefined" && process.env?.VITE_ROUTER_BASENAME) || "/plane";
+          const cleanBase = routerBase === "/" ? "" : routerBase.replace(/\/+$/, "");
+          const appRoot = cleanBase ? `${cleanBase}/` : "/";
+
+          const currentPathname = window.location.pathname.replace(/\/+$/, "") || "/";
+          const rootNormalized = cleanBase || "/";
+
+          // If the user is already on the sign-in / landing page or auth pages, DO NOT redirect!
+          const isAtAppRoot = currentPathname === rootNormalized;
+          const isAuthPage =
+            isAtAppRoot ||
+            currentPathname.endsWith("/sign-up") ||
+            currentPathname.includes("/accounts/");
+
+          if (!isAuthPage && !APIService.authRedirectInProgress) {
+            APIService.authRedirectInProgress = true;
+            const currentPath = `${window.location.pathname}${window.location.search}`;
+            window.location.replace(`${appRoot}?next_path=${encodeURIComponent(currentPath)}`);
+          }
         }
         return Promise.reject(error);
       }
