@@ -1358,6 +1358,91 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     return ok(results);
   }
 
+  // Handle user-properties / epics-user-properties endpoints
+  if (
+    collection === "user-properties" ||
+    collection === "epics-user-properties" ||
+    url.includes("/user-properties/") ||
+    url.includes("/epics-user-properties/")
+  ) {
+    const projMatch = url.match(/\/projects\/([^/]+)\//);
+    const projId = projMatch ? projMatch[1] : id;
+    const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+    const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+    const key = projId ? `${wsSlug}_${projId}` : wsSlug;
+
+    if (!localDB.user_properties) localDB.user_properties = {};
+
+    const defaultProps = {
+      rich_filters: {},
+      display_filters: {
+        layout: "list",
+        order_by: "sort_order",
+        group_by: null,
+        sub_group_by: null,
+        sub_issue: true,
+        show_empty_groups: false,
+        calendar: {
+          show_weekends: false,
+          layout: "month",
+        },
+      },
+      display_properties: {
+        assignee: true,
+        start_date: true,
+        due_date: true,
+        labels: true,
+        priority: true,
+        state: true,
+        sub_issue_count: true,
+        attachment_count: true,
+        link: true,
+        link_count: true,
+        estimate: true,
+        key: true,
+        created_on: true,
+        updated_on: true,
+        modules: true,
+        cycle: true,
+        issue_type: true,
+      },
+      sort_order: 1,
+      preferences: {
+        pages: { block_display: true },
+        navigation: { default_tab: "issues", hide_in_more_menu: [] },
+      },
+    };
+
+    if (method === "get") {
+      const current = localDB.user_properties[key] || defaultProps;
+      return ok(current);
+    }
+
+    if (method === "patch" || method === "put" || method === "post") {
+      const current = localDB.user_properties[key] || defaultProps;
+      const updated = {
+        ...current,
+        ...body,
+        display_filters: {
+          ...current.display_filters,
+          ...(body?.display_filters || {}),
+        },
+        display_properties: {
+          ...current.display_properties,
+          ...(body?.display_properties || {}),
+        },
+        preferences: {
+          ...current.preferences,
+          ...(body?.preferences || {}),
+        },
+      };
+      localDB.user_properties[key] = updated;
+      saveDB();
+      return ok(updated);
+    }
+  }
+
+
   // Alias work-items / issues-detail / work-items-detail to issues
   if (
     collection === "work-items" ||
@@ -1631,26 +1716,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       return ok({ data: Object.values(mockDataMap), schema });
     }
   }
-  if (collection === "user-properties" && method === "get") {
-    return ok({
-      display_filters: { layout: "list" },
-      display_properties: {
-        assignee: true,
-        attachment_count: true,
-        created_on: true,
-        due_date: true,
-        estimate: true,
-        key: true,
-        labels: true,
-        link: true,
-        priority: true,
-        start_date: true,
-        state: true,
-        sub_issue_count: true,
-        updated_on: true,
-      },
-    });
-  }
+
 
   if (!localDB[collection]) localDB[collection] = [];
 
@@ -1921,6 +1987,9 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
         return {
           ...item,
+          created_at: item.created_at || item.created_on || new Date().toISOString(),
+          updated_at: item.updated_at || item.updated_on || item.created_at || new Date().toISOString(),
+          state: item.state_id || item.state,
           project_id: item.project_id || item.project,
           workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || localDB.workspaces?.[0]?.slug || "",
           state_id: item.state_id || item.state,
@@ -1966,14 +2035,26 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       // Initialize groups if it's states
       if (groupBy === "state" && collection === "issues") {
         const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
-        const states = (localDB.states || []).filter((s: any) => s.project === projId);
+        const states = (localDB.states || []).filter((s: any) => s.project === projId || s.project_id === projId);
         states.forEach((s: any) => {
           groupedResults[s.id] = { results: [], total_results: 0 };
         });
       }
 
       list.forEach((item: any) => {
-        const groupKey = item[groupBy] || "None";
+        let groupKey = item[groupBy];
+        if (groupBy === "state") {
+          groupKey = item.state_id || item.state || "None";
+        } else if (groupBy === "state_detail.group") {
+          groupKey = item.state_detail?.group || item.state_group || "None";
+        } else if (groupBy === "priority") {
+          groupKey = item.priority || "none";
+        } else if (groupBy === "target_date") {
+          groupKey = item.target_date ? item.target_date.split("T")[0] : "None";
+        } else {
+          groupKey = groupKey || "None";
+        }
+
         if (!groupedResults[groupKey]) {
           groupedResults[groupKey] = { results: [], total_results: 0 };
         }
@@ -2619,6 +2700,8 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
       "project-stats",
       "blockchain-transactions",
       "search-issues",
+      "user-properties",
+      "epics-user-properties",
     ];
     const collection = resourceSegments[0];
     return { collection, id: null, isPaginated: !unpaginated.includes(collection) };

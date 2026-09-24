@@ -210,10 +210,12 @@ const getModuleColumns = (): IGroupByColumn[] | undefined => {
 
 const getStateColumns = ({ projectId }: TGetColumns): IGroupByColumn[] | undefined => {
   const { getProjectStates, projectStates } = store.state;
-  const _states = projectId ? getProjectStates(projectId) : projectStates;
-  if (!_states) return;
+  const resolvedProjectId = projectId || store.projectRoot.project.currentProjectDetails?.id;
+  const _states = resolvedProjectId ? getProjectStates(resolvedProjectId) : projectStates;
+  const statesToUse = _states && _states.length > 0 ? _states : projectStates;
+  if (!statesToUse || statesToUse.length === 0) return;
   // map project states to group by columns
-  return _states.map((state) => ({
+  return statesToUse.map((state) => ({
     id: state.id,
     name: state.name,
     icon: (

@@ -6,6 +6,7 @@
 
 import type { MutableRefObject } from "react";
 import { observer } from "mobx-react";
+import { useParams } from "next/navigation";
 import type {
   GroupByColumnTypes,
   IGroupByColumn,
@@ -106,11 +107,15 @@ export const KanBan = observer(function KanBan(props: IKanBan) {
 
   const { getIsWorkflowWorkItemCreationDisabled } = useWorkFlowFDragNDrop(group_by, sub_group_by);
 
+  const { projectId: routerProjectId } = useParams();
+  const projectId = routerProjectId ? routerProjectId.toString() : undefined;
+
   const list = getGroupByColumns({
     groupBy: group_by as GroupByColumnTypes,
     includeNone: true,
     isWorkspaceLevel: isWorkspaceLevel(storeType),
     isEpic: isEpic,
+    projectId: projectId,
   });
 
   if (!list) return null;

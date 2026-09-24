@@ -27,8 +27,6 @@ import { ProjectSpreadsheetLayout } from "../spreadsheet/roots/project-root";
 
 function ProjectIssueLayout(props: { activeLayout: EIssueLayoutTypes | undefined }) {
   switch (props.activeLayout) {
-    case EIssueLayoutTypes.LIST:
-      return <ListLayout />;
     case EIssueLayoutTypes.KANBAN:
       return <KanBanLayout />;
     case EIssueLayoutTypes.CALENDAR:
@@ -37,8 +35,9 @@ function ProjectIssueLayout(props: { activeLayout: EIssueLayoutTypes | undefined
       return <BaseGanttRoot />;
     case EIssueLayoutTypes.SPREADSHEET:
       return <ProjectSpreadsheetLayout />;
+    case EIssueLayoutTypes.LIST:
     default:
-      return null;
+      return <ListLayout />;
   }
 }
 
@@ -51,7 +50,7 @@ export const ProjectLayoutRoot = observer(function ProjectLayoutRoot() {
   const { issues, issuesFilter } = useIssues(EIssuesStoreType.PROJECT);
   // derived values
   const workItemFilters = projectId ? issuesFilter?.getIssueFilters(projectId) : undefined;
-  const activeLayout = workItemFilters?.displayFilters?.layout;
+  const activeLayout = workItemFilters?.displayFilters?.layout || EIssueLayoutTypes.LIST;
 
   useSWR(
     workspaceSlug && projectId ? `PROJECT_ISSUES_${workspaceSlug}_${projectId}` : null,

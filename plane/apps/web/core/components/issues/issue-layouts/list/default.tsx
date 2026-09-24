@@ -8,6 +8,7 @@ import { useEffect, useRef } from "react";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { autoScrollForElements } from "@atlaskit/pragmatic-drag-and-drop-auto-scroll/element";
 import { observer } from "mobx-react";
+import { useParams } from "next/navigation";
 // plane constants
 import { ALL_ISSUES } from "@plane/constants";
 // types
@@ -87,11 +88,15 @@ export const List = observer(function List(props: IList) {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+  const { projectId: routerProjectId } = useParams();
+  const projectId = routerProjectId ? routerProjectId.toString() : undefined;
+
   const groups = getGroupByColumns({
     groupBy: group_by as GroupByColumnTypes,
     includeNone: true,
     isWorkspaceLevel: isWorkspaceLevel(storeType),
     isEpic: isEpic,
+    projectId: projectId,
   });
 
   // Enable Auto Scroll for Main Kanban

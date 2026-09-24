@@ -62,6 +62,12 @@ export class IssueStore implements IIssueStore {
     if (issues && issues.length <= 0) return;
     runInAction(() => {
       issues.forEach((issue) => {
+        if (!issue.created_at) {
+          (issue as any).created_at = (issue as any).created_on || new Date().toISOString();
+        }
+        if (!issue.updated_at) {
+          (issue as any).updated_at = (issue as any).updated_on || issue.created_at || new Date().toISOString();
+        }
         // add issue identifier to the issuesIdentifierMap
         const projectIdentifier = rootStore.projectRoot.project.getProjectIdentifierById(issue?.project_id);
         const workItemSequenceId = issue?.sequence_id;

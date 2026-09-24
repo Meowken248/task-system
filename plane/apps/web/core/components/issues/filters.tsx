@@ -4,15 +4,16 @@
  * See the LICENSE file for details.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { observer } from "mobx-react";
 import { ChartNoAxesColumn, SlidersHorizontal } from "lucide-react";
 // plane imports
-import { EIssueFilterType, ISSUE_STORE_TO_FILTERS_MAP } from "@plane/constants";
+import { EIssueFilterType, ISSUE_STORE_TO_FILTERS_MAP, ISSUE_DISPLAY_FILTERS_BY_PAGE } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
 import { Button } from "@plane/propel/button";
 import type { IIssueDisplayFilterOptions, IIssueDisplayProperties } from "@plane/types";
 import { EIssueLayoutTypes, EIssuesStoreType } from "@plane/types";
+import { getComputedDisplayProperties } from "@plane/utils";
 // hooks
 import { useIssues } from "@/hooks/store/use-issues";
 // plane web imports
@@ -54,35 +55,52 @@ export const HeaderFilters = observer(function HeaderFilters(props: Props) {
   // states
   const [analyticsModal, setAnalyticsModal] = useState(false);
   // store hooks
-  const {
-    issuesFilter: { issueFilters, updateFilters },
-  } = useIssues(storeType);
+  const { issuesFilter } = useIssues(storeType);
+
+  const currentFilters =
+    (projectId && (issuesFilter as any)?.getIssueFilters?.(projectId)) ||
+    issuesFilter?.issueFilters;
+
+  useEffect(() => {
+    if (workspaceSlug && projectId && issuesFilter?.fetchFilters) {
+      const existing = (issuesFilter as any)?.getIssueFilters?.(projectId);
+      if (!existing) {
+        issuesFilter.fetchFilters(workspaceSlug, projectId);
+      }
+    }
+  }, [workspaceSlug, projectId, issuesFilter]);
+
   // derived values
-  const activeLayout = issueFilters?.displayFilters?.layout;
-  const layoutDisplayFiltersOptions = ISSUE_STORE_TO_FILTERS_MAP[storeType]?.layoutOptions[activeLayout];
+  const activeLayout = currentFilters?.displayFilters?.layout ?? EIssueLayoutTypes.LIST;
+  const layoutDisplayFiltersOptions =
+    (activeLayout && ISSUE_STORE_TO_FILTERS_MAP[storeType]?.layoutOptions?.[activeLayout]) ||
+    ISSUE_DISPLAY_FILTERS_BY_PAGE.issues.layoutOptions.list;
+
+  const currentDisplayFilters = currentFilters?.displayFilters ?? { layout: activeLayout };
+  const currentDisplayProperties = currentFilters?.displayProperties ?? getComputedDisplayProperties({});
 
   const handleLayoutChange = useCallback(
     (layout: EIssueLayoutTypes) => {
       if (!workspaceSlug || !projectId) return;
-      updateFilters(workspaceSlug, projectId, EIssueFilterType.DISPLAY_FILTERS, { layout: layout });
+      issuesFilter?.updateFilters(workspaceSlug, projectId, EIssueFilterType.DISPLAY_FILTERS, { layout: layout });
     },
-    [workspaceSlug, projectId, updateFilters]
+    [workspaceSlug, projectId, issuesFilter]
   );
 
   const handleDisplayFilters = useCallback(
     (updatedDisplayFilter: Partial<IIssueDisplayFilterOptions>) => {
       if (!workspaceSlug || !projectId) return;
-      updateFilters(workspaceSlug, projectId, EIssueFilterType.DISPLAY_FILTERS, updatedDisplayFilter);
+      issuesFilter?.updateFilters(workspaceSlug, projectId, EIssueFilterType.DISPLAY_FILTERS, updatedDisplayFilter);
     },
-    [workspaceSlug, projectId, updateFilters]
+    [workspaceSlug, projectId, issuesFilter]
   );
 
   const handleDisplayProperties = useCallback(
     (property: Partial<IIssueDisplayProperties>) => {
       if (!workspaceSlug || !projectId) return;
-      updateFilters(workspaceSlug, projectId, EIssueFilterType.DISPLAY_PROPERTIES, property);
+      issuesFilter?.updateFilters(workspaceSlug, projectId, EIssueFilterType.DISPLAY_PROPERTIES, property);
     },
-    [workspaceSlug, projectId, updateFilters]
+    [workspaceSlug, projectId, issuesFilter]
   );
 
   return (
@@ -115,9 +133,9 @@ export const HeaderFilters = observer(function HeaderFilters(props: Props) {
       >
         <DisplayFiltersSelection
           layoutDisplayFiltersOptions={layoutDisplayFiltersOptions}
-          displayFilters={issueFilters?.displayFilters ?? {}}
+          displayFilters={currentDisplayFilters}
           handleDisplayFiltersUpdate={handleDisplayFilters}
-          displayProperties={issueFilters?.displayProperties ?? {}}
+          displayProperties={currentDisplayProperties}
           handleDisplayPropertiesUpdate={handleDisplayProperties}
           cycleViewDisabled={!currentProjectDetails?.cycle_view}
           moduleViewDisabled={!currentProjectDetails?.module_view}
