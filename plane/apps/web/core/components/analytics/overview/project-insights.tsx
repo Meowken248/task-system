@@ -51,6 +51,8 @@ const ProjectInsights = observer(function ProjectInsights() {
       )
   );
 
+  const insightsList = Array.isArray(projectInsightsData) ? projectInsightsData : [];
+
   return (
     <AnalyticsSectionWrapper
       title={`${t("workspace_analytics.project_insights")}`}
@@ -59,7 +61,7 @@ const ProjectInsights = observer(function ProjectInsights() {
     >
       {isLoadingProjectInsight ? (
         <ProjectInsightsLoader />
-      ) : projectInsightsData && projectInsightsData?.length == 0 ? (
+      ) : insightsList.length === 0 ? (
         <EmptyStateCompact
           assetKey="unknown"
           assetClassName="size-20"
@@ -68,33 +70,31 @@ const ProjectInsights = observer(function ProjectInsights() {
         />
       ) : (
         <div className="gap-8 lg:flex">
-          {projectInsightsData && (
-            <Suspense fallback={<ProjectInsightsLoader />}>
-              <RadarChart
-                className="h-[350px] w-full text-accent-primary lg:w-3/5"
-                data={projectInsightsData}
-                dataKey="key"
-                radars={[
-                  {
-                    key: "count",
-                    name: "Count",
-                    fill: "var(--text-color-accent-primary)",
-                    stroke: "var(--text-color-accent-primary)",
-                    fillOpacity: 0.6,
-                    dot: {
-                      r: 4,
-                      fillOpacity: 1,
-                    },
+          <Suspense fallback={<ProjectInsightsLoader />}>
+            <RadarChart
+              className="h-[350px] w-full text-accent-primary lg:w-3/5"
+              data={insightsList}
+              dataKey="key"
+              radars={[
+                {
+                  key: "count",
+                  name: "Count",
+                  fill: "var(--text-color-accent-primary)",
+                  stroke: "var(--text-color-accent-primary)",
+                  fillOpacity: 0.6,
+                  dot: {
+                    r: 4,
+                    fillOpacity: 1,
                   },
-                ]}
-                margin={{ top: 0, right: 40, bottom: 10, left: 40 }}
-                showTooltip
-                angleAxis={{
-                  key: "name",
-                }}
-              />
-            </Suspense>
-          )}
+                },
+              ]}
+              margin={{ top: 0, right: 40, bottom: 10, left: 40 }}
+              showTooltip
+              angleAxis={{
+                key: "name",
+              }}
+            />
+          </Suspense>
           <div className="w-full lg:w-2/5">
             <div className="text-13 text-tertiary">{t("workspace_analytics.summary_of_projects")}</div>
             <div className="mb-3 border-b border-subtle py-2">{t("workspace_analytics.all_projects")}</div>
@@ -103,7 +103,7 @@ const ProjectInsights = observer(function ProjectInsights() {
                 <div>{t("workspace_analytics.trend_on_charts")}</div>
                 <div>{t("common.work_items")}</div>
               </div>
-              {projectInsightsData?.map((item) => (
+              {insightsList.map((item) => (
                 <div key={item.key} className="flex items-center justify-between text-13 text-primary">
                   <div>{item.name}</div>
                   <div className="flex items-center gap-1">

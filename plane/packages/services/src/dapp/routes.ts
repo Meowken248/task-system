@@ -88,6 +88,179 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     return ok(defaultPrefs);
   }
 
+  // ── Workspace Analytics Endpoints ─────────────────────────────────
+  if (url.includes("/advance-analytics-charts")) {
+    const slugMatch = url.match(/\/workspaces\/([^/?]+)/);
+    const slug = slugMatch ? slugMatch[1] : "";
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === slug || w.id === slug);
+    const wsKeys = new Set([slug, ws?.id, ws?.slug].filter(Boolean));
+    const wsProjects = (localDB.projects || []).filter((p: any) => wsKeys.has(p.workspace) || wsKeys.has(p.workspace_id));
+    const wsProjectIds = new Set(wsProjects.map((p: any) => p.id));
+    const wsIssues = (localDB.issues || []).filter((i: any) => wsProjectIds.has(i.project || i.project_id) && !(localDB._deleted_issue_ids || []).includes(i.id) && !i.is_draft);
+
+    const typeMatch = url.match(/[?&]type=([^&]+)/);
+    const chartType = typeMatch ? decodeURIComponent(typeMatch[1]) : "projects";
+
+    if (chartType === "projects") {
+      const chartData = wsProjects.map((p: any) => {
+        const count = wsIssues.filter((i: any) => (i.project || i.project_id) === p.id).length;
+        return {
+          key: p.id,
+          name: p.name || "Untitled Project",
+          count,
+        };
+      });
+      return ok(chartData);
+    }
+
+    if (chartType === "work-items") {
+      const createdMap: Record<string, number> = {};
+      const resolvedMap: Record<string, number> = {};
+      wsIssues.forEach((i: any) => {
+        const cDate = (i.created_at || i.created_on || "").split("T")[0];
+        if (cDate) createdMap[cDate] = (createdMap[cDate] || 0) + 1;
+        if (i.completed_at) {
+          const rDate = i.completed_at.split("T")[0];
+          if (rDate) resolvedMap[rDate] = (resolvedMap[rDate] || 0) + 1;
+        }
+      });
+      const allDates = Array.from(new Set([...Object.keys(createdMap), ...Object.keys(resolvedMap)])).sort();
+      const data = allDates.map((date) => ({
+        key: date,
+        name: date,
+        count: (createdMap[date] || 0) + (resolvedMap[date] || 0),
+        created: createdMap[date] || 0,
+        resolved: resolvedMap[date] || 0,
+      }));
+      return ok({
+        schema: { created: "Created", resolved: "Resolved" },
+        data,
+      });
+    }
+
+    // custom-work-items
+    const priorityCounts: Record<string, number> = { urgent: 0, high: 0, medium: 0, low: 0, none: 0 };
+    wsIssues.forEach((i: any) => {
+      const prio = (i.priority || "none").toLowerCase();
+      if (prio in priorityCounts) priorityCounts[prio]++;
+      else priorityCounts["none"]++;
+    });
+    const data = Object.entries(priorityCounts).map(([key, count]) => ({
+      key,
+      name: key.charAt(0).toUpperCase() + key.slice(1),
+      count,
+    }));
+    return ok({
+      schema: { count: "Count" },
+      data,
+    });
+  }
+
+  if (url.includes("/advance-analytics-stats")) {
+    const slugMatch = url.match(/\/workspaces\/([^/?]+)/);
+    const slug = slugMatch ? slugMatch[1] : "";
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === slug || w.id === slug);
+    const wsKeys = new Set([slug, ws?.id, ws?.slug].filter(Boolean));
+    const wsProjects = (localDB.projects || []).filter((p: any) => wsKeys.has(p.workspace) || wsKeys.has(p.workspace_id));
+    const wsProjectIds = new Set(wsProjects.map((p: any) => p.id));
+    const wsIssues = (localDB.issues || []).filter((i: any) => wsProjectIds.has(i.project || i.project_id) && !(localDB._deleted_issue_ids || []).includes(i.id) && !i.is_draft);
+
+    const states = localDB.states || [];
+    const stateGroupMap = new Map(states.map((s: any) => [s.id, s.group]));
+    const stats = wsProjects.map((p: any) => {
+      const pIssues = wsIssues.filter((i: any) => (i.project || i.project_id) === p.id);
+      let backlog = 0, started = 0, unstarted = 0, completed = 0, cancelled = 0;
+      pIssues.forEach((i: any) => {
+        const group = stateGroupMap.get(i.state_id || i.state) || i.state_detail?.group || "backlog";
+        if (group === "backlog") backlog++;
+        else if (group === "started") started++;
+        else if (group === "unstarted") unstarted++;
+        else if (group === "completed") completed++;
+        else if (group === "cancelled") cancelled++;
+        else unstarted++;
+      });
+      return {
+        project_id: p.id,
+        project__name: p.name || "Untitled Project",
+        backlog_work_items: backlog,
+        started_work_items: started,
+        un_started_work_items: unstarted,
+        completed_work_items: completed,
+        cancelled_work_items: cancelled,
+      };
+    });
+    return ok(stats);
+  }
+
+  if (url.includes("/project-stats")) {
+    const slugMatch = url.match(/\/workspaces\/([^/?]+)/);
+    const slug = slugMatch ? slugMatch[1] : "";
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === slug || w.id === slug);
+    const wsKeys = new Set([slug, ws?.id, ws?.slug].filter(Boolean));
+    const wsProjects = (localDB.projects || []).filter((p: any) => wsKeys.has(p.workspace) || wsKeys.has(p.workspace_id));
+    const wsProjectIds = new Set(wsProjects.map((p: any) => p.id));
+    const wsIssues = (localDB.issues || []).filter((i: any) => wsProjectIds.has(i.project || i.project_id) && !(localDB._deleted_issue_ids || []).includes(i.id) && !i.is_draft);
+
+    const states = localDB.states || [];
+    const completedStateIds = new Set(states.filter((s: any) => s.group === "completed").map((s: any) => s.id));
+    const projectStats = wsProjects.map((p: any) => {
+      const pIssues = wsIssues.filter((i: any) => (i.project || i.project_id) === p.id);
+      const completed_issues = pIssues.filter((i: any) => completedStateIds.has(i.state_id || i.state) || i.completed_at).length;
+      return {
+        id: p.id,
+        total_issues: pIssues.length,
+        completed_issues,
+      };
+    });
+    return ok(projectStats);
+  }
+
+  if (url.includes("/advance-analytics")) {
+    const slugMatch = url.match(/\/workspaces\/([^/?]+)/);
+    const slug = slugMatch ? slugMatch[1] : "";
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === slug || w.id === slug);
+    const wsKeys = new Set([slug, ws?.id, ws?.slug].filter(Boolean));
+    const wsProjects = (localDB.projects || []).filter((p: any) => wsKeys.has(p.workspace) || wsKeys.has(p.workspace_id));
+    const wsProjectIds = new Set(wsProjects.map((p: any) => p.id));
+    const wsIssues = (localDB.issues || []).filter((i: any) => wsProjectIds.has(i.project || i.project_id) && !(localDB._deleted_issue_ids || []).includes(i.id) && !i.is_draft);
+
+    const wsMembers = (localDB.workspace_members || []).filter((m: any) => wsKeys.has(m.workspace) || wsKeys.has(m.workspace_id));
+    const total_users = Math.max(wsMembers.length, (localDB.users || []).length, 1);
+    const total_admins = Math.max(wsMembers.filter((m: any) => m.role === 20 || m.role === "admin").length, 1);
+    const total_members = wsMembers.filter((m: any) => m.role === 15 || m.role === "member").length;
+    const total_guests = wsMembers.filter((m: any) => m.role === 5 || m.role === "guest").length;
+    const total_projects = wsProjects.length;
+    const total_work_items = wsIssues.length;
+
+    const states = localDB.states || [];
+    const stateGroupMap = new Map(states.map((s: any) => [s.id, s.group]));
+    let started_work_items = 0, backlog_work_items = 0, un_started_work_items = 0, completed_work_items = 0;
+    wsIssues.forEach((i: any) => {
+      const group = stateGroupMap.get(i.state_id || i.state) || i.state_detail?.group || "unstarted";
+      if (group === "started") started_work_items++;
+      else if (group === "backlog") backlog_work_items++;
+      else if (group === "completed") completed_work_items++;
+      else un_started_work_items++;
+    });
+    const total_cycles = (localDB.cycles || []).filter((c: any) => wsProjectIds.has(c.project || c.project_id)).length;
+    const total_intake = (localDB.intakes || []).filter((it: any) => wsProjectIds.has(it.project || it.project_id)).length;
+
+    return ok({
+      total_users: { count: total_users, filter_count: total_users },
+      total_admins: { count: total_admins, filter_count: total_admins },
+      total_members: { count: total_members, filter_count: total_members },
+      total_guests: { count: total_guests, filter_count: total_guests },
+      total_projects: { count: total_projects, filter_count: total_projects },
+      total_work_items: { count: total_work_items, filter_count: total_work_items },
+      total_cycles: { count: total_cycles, filter_count: total_cycles },
+      total_intake: { count: total_intake, filter_count: total_intake },
+      started_work_items: { count: started_work_items, filter_count: started_work_items },
+      backlog_work_items: { count: backlog_work_items, filter_count: backlog_work_items },
+      un_started_work_items: { count: un_started_work_items, filter_count: un_started_work_items },
+      completed_work_items: { count: completed_work_items, filter_count: completed_work_items },
+    });
+  }
+
   // ── Auth endpoints ──────────────────────────────────────────────────
   if (url.includes("/auth/get-csrf-token")) return ok({ csrf_token: "dapp-csrf-token" });
 

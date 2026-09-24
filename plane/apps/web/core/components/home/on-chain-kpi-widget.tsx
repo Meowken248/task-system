@@ -471,7 +471,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
   return (
     <section className="shadow-sm overflow-hidden rounded-2xl border border-subtle bg-layer-1/75 backdrop-blur-xl">
       <header className="border-b border-subtle px-5 py-4">
-        <h2 className="text-14 font-semibold text-primary">Dashboard KPI on-chain</h2>
+        <h2 className="text-14 font-semibold text-primary">Dashboard KPI</h2>
         <p className="mt-1 text-11 text-tertiary">Chọn dự án, chọn task để xem báo cáo và KPI của nhân viên.</p>
       </header>
 
