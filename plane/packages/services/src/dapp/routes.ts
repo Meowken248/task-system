@@ -43,6 +43,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     localDB.users.push(activeUser);
     saveDB();
   }
+  if (!activeUser && (localDB.users || []).length > 0) {
+    activeUser = localDB.users[0];
+  }
 
   // ── Workspace Slug Check (used by web:3000 and god-mode:3001) ───────
   if (url.includes("/api/workspace-slug-check") || url.includes("/api/instances/workspace-slug-check")) {
@@ -455,6 +458,20 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (url.includes("/api/users/me/profile")) {
       if (method === "patch" || method === "put" || method === "post") {
+        if (!activeUser) {
+          activeUser = (localDB.users || [])[0] || createUserObject(activeUserId || "user-default", loggedInEmail || "admin@plane.local");
+          if (!localDB.users) localDB.users = [];
+          if (!localDB.users.includes(activeUser)) localDB.users.push(activeUser);
+        }
+        if (body?.theme) {
+          activeUser.theme = { ...(activeUser.theme || {}), ...body.theme };
+          if (typeof window !== "undefined") {
+            if (body.theme.theme) {
+              localStorage.setItem("theme", body.theme.theme);
+              localStorage.setItem("plane_user_theme", body.theme.theme);
+            }
+          }
+        }
         Object.assign(activeUser, body);
         saveDB();
       }

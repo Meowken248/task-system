@@ -546,8 +546,34 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
 
   if (!localDB.users) localDB.users = [];
   for (const u of currentUsers) {
-    if (!localDB.users.some((existing: any) => existing.id === u.id || (existing.email && existing.email.toLowerCase() === u.email?.toLowerCase()))) {
+    const existingIndex = localDB.users.findIndex(
+      (existing: any) =>
+        existing.id === u.id ||
+        (existing.email && existing.email.toLowerCase() === u.email?.toLowerCase())
+    );
+    if (existingIndex === -1) {
       localDB.users.push(u);
+    } else {
+      if (u.theme) {
+        localDB.users[existingIndex].theme = {
+          ...(localDB.users[existingIndex].theme || {}),
+          ...u.theme,
+        };
+      }
+      if (u.user_timezone) localDB.users[existingIndex].user_timezone = u.user_timezone;
+      if (u.display_name) localDB.users[existingIndex].display_name = u.display_name;
+      if (u.first_name) localDB.users[existingIndex].first_name = u.first_name;
+      if (u.last_name) localDB.users[existingIndex].last_name = u.last_name;
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    const localSavedTheme = localStorage.getItem("theme") || localStorage.getItem("plane_user_theme");
+    if (localSavedTheme && localSavedTheme !== "system") {
+      for (const u of localDB.users) {
+        if (!u.theme) u.theme = {};
+        u.theme.theme = localSavedTheme;
+      }
     }
   }
 

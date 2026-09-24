@@ -130,6 +130,13 @@ export function loadInitialDB(): Record<string, any> {
               }
             }
           });
+          const localSavedTheme = localStorage.getItem("theme") || localStorage.getItem("plane_user_theme");
+          if (localSavedTheme && localSavedTheme !== "system") {
+            (parsed.users || []).forEach((u: any) => {
+              if (!u.theme) u.theme = {};
+              u.theme.theme = localSavedTheme;
+            });
+          }
           console.log("[DApp DB] Khởi tạo từ localStorage thành công");
           return parsed;
         }
@@ -169,6 +176,13 @@ export function loadInitialDB(): Record<string, any> {
               }
             }
           });
+          const localSavedTheme = localStorage.getItem("theme") || localStorage.getItem("plane_user_theme");
+          if (localSavedTheme && localSavedTheme !== "system") {
+            (parsed.users || []).forEach((u: any) => {
+              if (!u.theme) u.theme = {};
+              u.theme.theme = localSavedTheme;
+            });
+          }
           console.log("[DApp DB] Khởi tạo từ sessionStorage thành công");
           return parsed;
         }
@@ -181,6 +195,16 @@ export function loadInitialDB(): Record<string, any> {
 }
 
 export const localDB: Record<string, any> = loadInitialDB();
+
+if (typeof window !== "undefined") {
+  const localSavedTheme = localStorage.getItem("theme") || localStorage.getItem("plane_user_theme");
+  if (localSavedTheme && localSavedTheme !== "system") {
+    for (const u of (localDB.users || [])) {
+      if (!u.theme) u.theme = {};
+      u.theme.theme = localSavedTheme;
+    }
+  }
+}
 
 // Initial safety validation
 if (!localDB.users) localDB.users = [];
@@ -518,14 +542,17 @@ export function getUserProfile() {
     (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
   ) || localDB.users?.[0] || null;
 
+  const localSavedTheme = typeof window !== "undefined" ? (localStorage.getItem("theme") || localStorage.getItem("plane_user_theme")) : null;
+
   if (!activeUser) {
+    const fallbackTheme = (localSavedTheme && localSavedTheme !== "system") ? localSavedTheme : "dark";
     return {
       id: "anonymous",
       user: "anonymous",
       role: "admin",
       last_workspace_id: null,
       last_workspace_slug: null,
-      theme: { theme: "dark" },
+      theme: { theme: fallbackTheme },
       onboarding_step: { workspace_join: true, profile_complete: true, workspace_create: true, workspace_invite: true },
       is_onboarded: true,
       is_tour_completed: true,
@@ -544,13 +571,25 @@ export function getUserProfile() {
   const userWorkspaces = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces : [DEFAULT_WORKSPACE];
   const firstWs = userWorkspaces[0] || DEFAULT_WORKSPACE;
 
+  const effectiveTheme = (localSavedTheme && localSavedTheme !== "system")
+    ? localSavedTheme
+    : (activeUser.theme?.theme || "dark");
+
+  const userTheme = {
+    ...(activeUser.theme || {}),
+    theme: effectiveTheme,
+    primary: activeUser.theme?.primary || null,
+    background: activeUser.theme?.background || null,
+    darkPalette: activeUser.theme?.darkPalette ?? false,
+  };
+
   return {
     id: activeUser.id,
     user: activeUser.id,
     role: "admin",
     last_workspace_id: activeUser.last_workspace_id || firstWs.id,
     last_workspace_slug: activeUser.last_workspace_slug || firstWs.slug,
-    theme: activeUser.theme || { theme: "dark", primary: null, background: null, darkPalette: false },
+    theme: userTheme,
     onboarding_step: {
       workspace_join: true,
       profile_complete: true,
