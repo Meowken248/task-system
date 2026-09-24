@@ -33,6 +33,17 @@ export const GET_CID_ABI = {
   stateMutability: "view"
 };
 
+export const SET_CID_ABI = {
+  type: "function",
+  name: "setCID",
+  inputs: [
+    { internalType: "string", name: "key", type: "string" },
+    { internalType: "string", name: "cid", type: "string" },
+  ],
+  outputs: [],
+  stateMutability: "nonpayable",
+};
+
 export const SET_CID_IF_MATCHES_ABI = {
   type: "function",
   name: "setCIDIfMatches",
@@ -943,56 +954,130 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
     }
   } catch { }
 
-  await bridge.request("sendTransaction", {
-    from: currentUserAddress as string,
-    to: CONTRACT_ADDRESS,
-    abiData: [SET_CID_IF_MATCHES_ABI],
-    functionName: "setCIDIfMatches",
-    feeType: "sc",
-    amount: "0",
-    value: "0",
-    gas: "3000000",
-    type: "transaction",
-    inputArray: [
-      { ...SET_CID_IF_MATCHES_ABI.inputs[0], value: "plane_dapp_db" },
-      { ...SET_CID_IF_MATCHES_ABI.inputs[1], value: baseCID },
-      { ...SET_CID_IF_MATCHES_ABI.inputs[2], value: cid }
-    ],
-    isReadOnly: false,
-    bundleId: "",
-  });
+  // 1. Refresh actual on-chain CID from OffchainDataRegistry
+  let onChainUserCid = "";
+  try {
+    const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
+    const rawResult = await directRpcRead(CONTRACT_ADDRESS, calldata, 5000);
+    onChainUserCid = decodeAbiString(rawResult) || "";
+  } catch (e) {
+    console.warn("[DApp Sync] Không đọc được on-chain CID trước khi gửi:", e);
+  }
 
+  // If baseCID was not initialized (empty string) but on-chain has a valid CID,
+  // sync baseCID with the on-chain value to prevent false optimistic concurrency conflict
+  if (!baseCID && onChainUserCid) {
+    baseCID = onChainUserCid;
+  }
+
+  // 2. Send transaction to OffchainDataRegistry
+  // Try setCIDIfMatches first for optimistic concurrency protection, fallback to setCID if mismatch
+  try {
+    await bridge.request("sendTransaction", {
+      from: currentUserAddress as string,
+      to: CONTRACT_ADDRESS,
+      abiData: [SET_CID_IF_MATCHES_ABI],
+      functionName: "setCIDIfMatches",
+      feeType: "sc",
+      amount: "0",
+      value: "0",
+      gas: "3000000",
+      type: "transaction",
+      inputArray: [
+        { ...SET_CID_IF_MATCHES_ABI.inputs[0], value: "plane_dapp_db" },
+        { ...SET_CID_IF_MATCHES_ABI.inputs[1], value: baseCID },
+        { ...SET_CID_IF_MATCHES_ABI.inputs[2], value: cid }
+      ],
+      isReadOnly: false,
+      bundleId: "",
+    });
+  } catch (err: any) {
+    const errMsg = err?.message || err?.toString?.() || "";
+    console.warn("[DApp Sync] setCIDIfMatches failed, falling back to setCID:", errMsg);
+    // Use authoritative setCID to write new CID directly
+    await bridge.request("sendTransaction", {
+      from: currentUserAddress as string,
+      to: CONTRACT_ADDRESS,
+      abiData: [SET_CID_ABI],
+      functionName: "setCID",
+      feeType: "sc",
+      amount: "0",
+      value: "0",
+      gas: "3000000",
+      type: "transaction",
+      inputArray: [
+        { ...SET_CID_ABI.inputs[0], value: "plane_dapp_db" },
+        { ...SET_CID_ABI.inputs[1], value: cid }
+      ],
+      isReadOnly: false,
+      bundleId: "",
+    });
+  }
+
+  // 3. Workspace Registry update
   if (WORKSPACE_REGISTRY_ADDRESS && bridge) {
     try {
       const activeUserId = getLoggedInUserId();
       const activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId);
-      const activeSlug =
-        (typeof window !== "undefined" ? localStorage.getItem("last_workspace_slug") : null) ||
-        activeUser?.last_workspace_slug ||
-        localDB.workspaces?.[0]?.slug ||
-        "fiai";
+
+      let activeSlug = "";
+      if (typeof window !== "undefined") {
+        const rawSegments = window.location.pathname.split("/").filter(Boolean);
+        const segments = rawSegments[0] === "plane" ? rawSegments.slice(1) : rawSegments;
+        const reservedPaths = [
+          "plane", "assets", "api", "create-workspace", "invitations", "settings",
+          "profile", "installations", "onboarding", "god-mode",
+          "workspace-member-invitations", "workspace", "preview",
+        ];
+        if (segments[0] && !reservedPaths.includes(segments[0])) {
+          activeSlug = segments[0];
+        }
+        if (!activeSlug) {
+          activeSlug = localStorage.getItem("last_workspace_slug") || "";
+        }
+      }
+      if (!activeSlug) {
+        activeSlug = activeUser?.last_workspace_slug || localDB.workspaces?.[0]?.slug || "fiai";
+      }
+
       const targetWs = (localDB.workspaces || []).find((w: any) => w.slug === activeSlug) || localDB.workspaces?.[0];
       const targetSlug = targetWs?.slug || activeSlug || "fiai";
-      const targetName = targetWs?.name || "Plane Workspace";
+      const targetName = targetWs?.name || targetSlug.toUpperCase();
 
-      await bridge.request("sendTransaction", {
-        from: currentUserAddress as string,
-        to: WORKSPACE_REGISTRY_ADDRESS,
-        abiData: [UPDATE_WORKSPACE_CID_ABI],
-        functionName: "updateWorkspaceCID",
-        feeType: "sc",
-        amount: "0",
-        value: "0",
-        gas: "3000000",
-        type: "transaction",
-        inputArray: [
-          { name: "slug", type: "string", value: targetSlug },
-          { name: "newCid", type: "string", value: cid },
-        ],
-        isReadOnly: false,
-        bundleId: "",
-      }).catch(async () => {
-        return bridge.request("sendTransaction", {
+      let wsExistsOnChain = false;
+      try {
+        const wsInfoCalldata = abiEncodeGetWorkspace(targetSlug);
+        const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 3000);
+        const wsInfo = decodeAbiWorkspace(wsInfoRaw);
+        if (wsInfo && wsInfo.name) {
+          wsExistsOnChain = true;
+        }
+      } catch {
+        wsExistsOnChain = false;
+      }
+
+      if (wsExistsOnChain) {
+        await bridge.request("sendTransaction", {
+          from: currentUserAddress as string,
+          to: WORKSPACE_REGISTRY_ADDRESS,
+          abiData: [UPDATE_WORKSPACE_CID_ABI],
+          functionName: "updateWorkspaceCID",
+          feeType: "sc",
+          amount: "0",
+          value: "0",
+          gas: "3000000",
+          type: "transaction",
+          inputArray: [
+            { name: "slug", type: "string", value: targetSlug },
+            { name: "newCid", type: "string", value: cid },
+          ],
+          isReadOnly: false,
+          bundleId: "",
+        }).catch((updateErr: any) => {
+          console.warn("[DApp Sync] updateWorkspaceCID failed:", updateErr);
+        });
+      } else {
+        await bridge.request("sendTransaction", {
           from: currentUserAddress as string,
           to: WORKSPACE_REGISTRY_ADDRESS,
           abiData: [CREATE_WORKSPACE_ABI],
@@ -1009,9 +1094,13 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
           ],
           isReadOnly: false,
           bundleId: "",
+        }).catch((createErr: any) => {
+          console.warn("[DApp Sync] createWorkspace failed:", createErr);
         });
-      });
-    } catch { }
+      }
+    } catch (wsErr) {
+      console.warn("[DApp Sync] Workspace registry error:", wsErr);
+    }
   }
 
   baseCID = cid;
