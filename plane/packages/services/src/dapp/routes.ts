@@ -2006,9 +2006,15 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         };
       });
 
-      // Always exclude issues that have a parent_id from the top-level list when fetching multiple issues
-      // But don't exclude them for search-issues or when sub_issue/all issues are requested
-      if (!id && !url.includes("search-issues") && !url.includes("sub_issue") && !url.includes("all=true")) {
+      const urlObj = new URL(url, "http://localhost");
+      const subIssueParam = urlObj.searchParams.get("sub_issue");
+      const shouldIncludeSubIssues =
+        subIssueParam === "true" ||
+        url.includes("search-issues") ||
+        url.includes("all=true") ||
+        !!id;
+
+      if (!shouldIncludeSubIssues) {
         list = list.filter((item: any) => !item.parent_id && !item.parent);
       }
     }
@@ -2027,39 +2033,165 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     }
 
     const urlObj = new URL(url, "http://localhost");
+    const orderByParam = urlObj.searchParams.get("order_by");
+    if (orderByParam && collection === "issues") {
+      const isDesc = orderByParam.startsWith("-");
+      const sortKey = isDesc ? orderByParam.slice(1) : orderByParam;
+
+      const priorityOrder: Record<string, number> = {
+        urgent: 1,
+        high: 2,
+        medium: 3,
+        low: 4,
+        none: 5,
+      };
+
+      list.sort((a: any, b: any) => {
+        let valA: any;
+        let valB: any;
+
+        if (sortKey === "sort_order") {
+          valA = a.sort_order ?? 0;
+          valB = b.sort_order ?? 0;
+        } else if (sortKey === "created_at") {
+          valA = new Date(a.created_at || a.created_on || 0).getTime();
+          valB = new Date(b.created_at || b.created_on || 0).getTime();
+        } else if (sortKey === "updated_at") {
+          valA = new Date(a.updated_at || a.updated_on || a.created_at || 0).getTime();
+          valB = new Date(b.updated_at || b.updated_on || b.created_at || 0).getTime();
+        } else if (sortKey === "start_date") {
+          valA = a.start_date ? new Date(a.start_date).getTime() : isDesc ? -Infinity : Infinity;
+          valB = b.start_date ? new Date(b.start_date).getTime() : isDesc ? -Infinity : Infinity;
+        } else if (sortKey === "target_date") {
+          valA = a.target_date ? new Date(a.target_date).getTime() : isDesc ? -Infinity : Infinity;
+          valB = b.target_date ? new Date(b.target_date).getTime() : isDesc ? -Infinity : Infinity;
+        } else if (sortKey === "priority") {
+          valA = priorityOrder[a.priority?.toLowerCase() || "none"] ?? 5;
+          valB = priorityOrder[b.priority?.toLowerCase() || "none"] ?? 5;
+        } else if (sortKey === "state__name") {
+          valA = a.state_detail?.name || "";
+          valB = b.state_detail?.name || "";
+        } else {
+          valA = a[sortKey] ?? "";
+          valB = b[sortKey] ?? "";
+        }
+
+        if (valA < valB) return isDesc ? 1 : -1;
+        if (valA > valB) return isDesc ? -1 : 1;
+        return 0;
+      });
+    }
+
     const groupBy = urlObj.searchParams.get("group_by");
 
     if (groupBy) {
+      const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
       const groupedResults: Record<string, any> = {};
 
-      // Initialize groups if it's states
-      if (groupBy === "state" && collection === "issues") {
-        const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
+      const canonicalGroupBy =
+        groupBy === "state_id" || groupBy === "state"
+          ? "state"
+          : groupBy === "labels__id" || groupBy === "labels"
+            ? "labels"
+            : groupBy === "assignees__id" || groupBy === "assignees"
+              ? "assignees"
+              : groupBy === "state__group" || groupBy === "state_detail.group"
+                ? "state_detail.group"
+                : groupBy === "cycle_id" || groupBy === "cycle"
+                  ? "cycle"
+                  : groupBy === "issue_module__module_id" || groupBy === "module"
+                    ? "module"
+                    : groupBy;
+
+      const ensureGroup = (key: string) => {
+        if (!groupedResults[key]) {
+          groupedResults[key] = { results: [], total_results: 0 };
+        }
+      };
+
+      // Pre-initialize groups so empty groups work and show_empty_groups can render
+      if (canonicalGroupBy === "state" && collection === "issues") {
         const states = (localDB.states || []).filter((s: any) => s.project === projId || s.project_id === projId);
-        states.forEach((s: any) => {
-          groupedResults[s.id] = { results: [], total_results: 0 };
-        });
+        states.forEach((s: any) => ensureGroup(s.id));
+        ensureGroup("None");
+      } else if (canonicalGroupBy === "priority") {
+        ["urgent", "high", "medium", "low", "none"].forEach((p) => ensureGroup(p));
+      } else if (canonicalGroupBy === "labels") {
+        const labels = (localDB.labels || []).filter((l: any) => l.project === projId || l.project_id === projId);
+        labels.forEach((l: any) => ensureGroup(l.id));
+        ensureGroup("None");
+      } else if (canonicalGroupBy === "state_detail.group") {
+        ["backlog", "unstarted", "started", "completed", "cancelled"].forEach((g) => ensureGroup(g));
+      } else if (canonicalGroupBy === "assignees") {
+        ensureGroup("None");
+      } else if (canonicalGroupBy === "created_by") {
+        ensureGroup("None");
       }
 
       list.forEach((item: any) => {
-        let groupKey = item[groupBy];
-        if (groupBy === "state") {
-          groupKey = item.state_id || item.state || "None";
-        } else if (groupBy === "state_detail.group") {
-          groupKey = item.state_detail?.group || item.state_group || "None";
-        } else if (groupBy === "priority") {
-          groupKey = item.priority || "none";
-        } else if (groupBy === "target_date") {
-          groupKey = item.target_date ? item.target_date.split("T")[0] : "None";
+        if (canonicalGroupBy === "state") {
+          const key = item.state_id || item.state || "None";
+          ensureGroup(key);
+          groupedResults[key].results.push(item);
+          groupedResults[key].total_results++;
+        } else if (canonicalGroupBy === "priority") {
+          const key = (item.priority || "none").toLowerCase();
+          ensureGroup(key);
+          groupedResults[key].results.push(item);
+          groupedResults[key].total_results++;
+        } else if (canonicalGroupBy === "labels") {
+          const rawLabels = item.labels || item.label_ids || [];
+          const labelIds = (Array.isArray(rawLabels) ? rawLabels : [rawLabels])
+            .map((l: any) => (typeof l === "object" && l ? l.id : l))
+            .filter(Boolean);
+          if (labelIds.length === 0) {
+            ensureGroup("None");
+            groupedResults["None"].results.push(item);
+            groupedResults["None"].total_results++;
+          } else {
+            labelIds.forEach((lblId: string) => {
+              ensureGroup(lblId);
+              groupedResults[lblId].results.push(item);
+              groupedResults[lblId].total_results++;
+            });
+          }
+        } else if (canonicalGroupBy === "assignees") {
+          const rawAssignees = item.assignees || item.assignee_ids || [];
+          const assigneeIds = (Array.isArray(rawAssignees) ? rawAssignees : [rawAssignees])
+            .map((u: any) => (typeof u === "object" && u ? u.id : u))
+            .filter(Boolean);
+          if (assigneeIds.length === 0) {
+            ensureGroup("None");
+            groupedResults["None"].results.push(item);
+            groupedResults["None"].total_results++;
+          } else {
+            assigneeIds.forEach((uId: string) => {
+              ensureGroup(uId);
+              groupedResults[uId].results.push(item);
+              groupedResults[uId].total_results++;
+            });
+          }
+        } else if (canonicalGroupBy === "created_by") {
+          const key = item.created_by || "None";
+          ensureGroup(key);
+          groupedResults[key].results.push(item);
+          groupedResults[key].total_results++;
+        } else if (canonicalGroupBy === "state_detail.group") {
+          const key = item.state_detail?.group || item.state_group || "backlog";
+          ensureGroup(key);
+          groupedResults[key].results.push(item);
+          groupedResults[key].total_results++;
+        } else if (canonicalGroupBy === "target_date") {
+          const key = item.target_date ? item.target_date.split("T")[0] : "None";
+          ensureGroup(key);
+          groupedResults[key].results.push(item);
+          groupedResults[key].total_results++;
         } else {
-          groupKey = groupKey || "None";
+          const key = item[canonicalGroupBy] || "None";
+          ensureGroup(key);
+          groupedResults[key].results.push(item);
+          groupedResults[key].total_results++;
         }
-
-        if (!groupedResults[groupKey]) {
-          groupedResults[groupKey] = { results: [], total_results: 0 };
-        }
-        groupedResults[groupKey].results.push(item);
-        groupedResults[groupKey].total_results++;
       });
       return ok({
         results: groupedResults,

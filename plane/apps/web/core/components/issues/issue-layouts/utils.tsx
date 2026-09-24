@@ -271,48 +271,60 @@ const getLabelsColumns = ({ isWorkspaceLevel }: TGetColumns): IGroupByColumn[] =
   }));
 };
 
-const getAssigneeColumns = ({ isWorkspaceLevel, projectId }: TGetColumns): IGroupByColumn[] | undefined => {
+const getAssigneeColumns = ({ isWorkspaceLevel, projectId }: TGetColumns): IGroupByColumn[] => {
   // store values
   const { getUserDetails } = store.memberRoot;
   // derived values
-  const { memberIds, includeNone } = getScopeMemberIds({ isWorkspaceLevel, projectId });
+  const { memberIds } = getScopeMemberIds({ isWorkspaceLevel, projectId });
   const assigneeColumns: IGroupByColumn[] = [];
 
-  if (!memberIds) return [];
-
-  memberIds.forEach((memberId) => {
-    const member = getUserDetails(memberId);
-    if (!member) return;
-    assigneeColumns.push({
-      id: memberId,
-      name: member?.display_name || "",
-      icon: <Avatar name={member?.display_name} src={getFileURL(member?.avatar_url ?? "")} size="md" />,
-      payload: { assignee_ids: [memberId] },
+  if (memberIds && memberIds.length > 0) {
+    memberIds.forEach((memberId) => {
+      const member = getUserDetails(memberId);
+      if (!member) return;
+      assigneeColumns.push({
+        id: memberId,
+        name: member?.display_name || member?.first_name || "",
+        icon: <Avatar name={member?.display_name || member?.first_name} src={getFileURL(member?.avatar_url ?? "")} size="md" />,
+        payload: { assignee_ids: [memberId] },
+      });
     });
-  });
-  if (includeNone) {
-    assigneeColumns.push({ id: "None", name: "None", icon: <Avatar size="md" />, payload: {} });
   }
+  assigneeColumns.push({ id: "None", name: "None", icon: <Avatar size="md" />, payload: {} });
 
   return assigneeColumns;
 };
 
-const getCreatedByColumns = (): IGroupByColumn[] | undefined => {
+const getCreatedByColumns = ({ isWorkspaceLevel, projectId }: TGetColumns): IGroupByColumn[] => {
   const {
     project: { projectMemberIds },
+    workspace: { workspaceMemberIds },
     getUserDetails,
   } = store.memberRoot;
-  if (!projectMemberIds) return;
-  // Map project member ids to group by created by columns
-  return projectMemberIds.map((memberId) => {
+  const { memberIds } = getScopeMemberIds({ isWorkspaceLevel, projectId });
+  const ids =
+    projectMemberIds && projectMemberIds.length > 0
+      ? projectMemberIds
+      : memberIds && memberIds.length > 0
+        ? memberIds
+        : workspaceMemberIds || [];
+
+  const createdByColumns: IGroupByColumn[] = [];
+
+  ids.forEach((memberId) => {
     const member = getUserDetails(memberId);
-    return {
+    if (!member) return;
+    createdByColumns.push({
       id: memberId,
-      name: member?.display_name || "",
-      icon: <Avatar name={member?.display_name} src={getFileURL(member?.avatar_url ?? "")} size="md" />,
+      name: member?.display_name || member?.first_name || "",
+      icon: <Avatar name={member?.display_name || member?.first_name} src={getFileURL(member?.avatar_url ?? "")} size="md" />,
       payload: {},
-    };
+    });
   });
+
+  createdByColumns.push({ id: "None", name: "None", icon: <Avatar size="md" />, payload: {} });
+
+  return createdByColumns;
 };
 
 export const getDisplayPropertiesCount = (
