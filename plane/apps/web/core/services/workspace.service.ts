@@ -71,7 +71,7 @@ export class WorkspaceService extends APIService {
     return this.delete(`/api/workspaces/${workspaceSlug}/`)
       .then((response) => response?.data)
       .catch((error) => {
-        throw error?.response?.data;
+        throw error?.response?.data || error;
       });
   }
 

@@ -34,9 +34,8 @@ export const DeleteWorkspaceForm = observer(function DeleteWorkspaceForm(props: 
   // router
   const router = useAppRouter();
   // store hooks
-  const { deleteWorkspace } = useWorkspace();
+  const { deleteWorkspace, fetchWorkspaces, getWorkspaceRedirectionUrl } = useWorkspace();
   const { t } = useTranslation();
-  const { getWorkspaceRedirectionUrl } = useWorkspace();
   const { fetchCurrentUserSettings } = useUserSettings();
   // form info
   const {
@@ -63,15 +62,18 @@ export const DeleteWorkspaceForm = observer(function DeleteWorkspaceForm(props: 
 
     try {
       await deleteWorkspace(data.slug);
+      await fetchWorkspaces();
       await fetchCurrentUserSettings();
       handleClose();
-      router.push(getWorkspaceRedirectionUrl());
+      const redirectUrl = getWorkspaceRedirectionUrl();
+      router.push(redirectUrl);
       setToast({
         type: TOAST_TYPE.SUCCESS,
         title: t("workspace_settings.settings.general.delete_modal.success_title"),
         message: t("workspace_settings.settings.general.delete_modal.success_message"),
       });
     } catch (_error) {
+      console.error("Workspace deletion error:", _error);
       setToast({
         type: TOAST_TYPE.ERROR,
         title: t("workspace_settings.settings.general.delete_modal.error_title"),

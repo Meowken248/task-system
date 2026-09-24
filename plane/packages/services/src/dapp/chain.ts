@@ -529,6 +529,14 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentIssues = [...(localDB.issues || [])];
   const currentComments = [...(localDB.issue_comments || [])];
   const currentAttachments = [...(localDB.attachments || [])];
+  const mergedDeletedWorkspaces = new Set<string>([
+    ...(localDB._deleted_workspace_ids || []),
+    ...(ipfsDB._deleted_workspace_ids || []),
+  ]);
+  const mergedDeletedWorkspaceSlugs = new Set<string>([
+    ...(localDB._deleted_workspace_slugs || []),
+    ...(ipfsDB._deleted_workspace_slugs || []),
+  ]);
   const mergedDeletedProjects = new Set<string>([
     ...(localDB._deleted_project_ids || []),
     ...(ipfsDB._deleted_project_ids || []),
@@ -541,6 +549,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   for (const key in localDB) delete localDB[key];
   Object.assign(localDB, ipfsDB);
 
+  localDB._deleted_workspace_ids = Array.from(mergedDeletedWorkspaces);
+  localDB._deleted_workspace_slugs = Array.from(mergedDeletedWorkspaceSlugs);
   localDB._deleted_project_ids = Array.from(mergedDeletedProjects);
   localDB._deleted_issue_ids = Array.from(mergedDeletedIssues);
 
@@ -578,12 +588,23 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   }
 
   if (!localDB.workspaces) localDB.workspaces = [];
+  localDB.workspaces = localDB.workspaces.filter(
+    (w: any) => !mergedDeletedWorkspaces.has(w.id) && !mergedDeletedWorkspaceSlugs.has(w.slug)
+  );
   for (const w of currentWorkspaces) {
-    if (!localDB.workspaces.some((existing: any) => existing.slug === w.slug || existing.id === w.id)) {
+    if (
+      !mergedDeletedWorkspaces.has(w.id) &&
+      !mergedDeletedWorkspaceSlugs.has(w.slug) &&
+      !localDB.workspaces.some((existing: any) => existing.slug === w.slug || existing.id === w.id)
+    ) {
       localDB.workspaces.push(w);
     }
   }
-  if (localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
+  if (localDB.workspaces.length === 0) {
+    if (!mergedDeletedWorkspaceSlugs.has(DEFAULT_WORKSPACE.slug) && !mergedDeletedWorkspaces.has(DEFAULT_WORKSPACE.id)) {
+      localDB.workspaces = [DEFAULT_WORKSPACE];
+    }
+  }
 
   if (!localDB.projects) localDB.projects = [];
   localDB.projects = localDB.projects.filter(
@@ -807,7 +828,11 @@ async function _initDAppDB() {
         const userWsSlugs = decodeAbiStringArray(userWsRaw);
 
         if (!localDB.workspaces) localDB.workspaces = [];
-        const slugsToCheck = Array.from(new Set([...userWsSlugs, "fiai"]));
+        const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
+        const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
+        const slugsToCheck = Array.from(new Set([...userWsSlugs, "fiai"])).filter(
+          (s) => !deletedWsSlugs.has(s) && !deletedWsIds.has(s)
+        );
 
         for (const slug of slugsToCheck) {
           try {

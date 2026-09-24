@@ -11,6 +11,7 @@ import {
   getInstanceInfo,
   getUserProfile,
   getUserSettings,
+  DEFAULT_WORKSPACE,
 } from "./store";
 import {
   uploadToIPFS,
@@ -378,6 +379,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       ...body,
     };
 
+    if (localDB._deleted_workspace_ids) {
+      localDB._deleted_workspace_ids = localDB._deleted_workspace_ids.filter((dId: string) => dId !== wsId);
+    }
+    if (localDB._deleted_workspace_slugs) {
+      localDB._deleted_workspace_slugs = localDB._deleted_workspace_slugs.filter((s: string) => s !== slug);
+    }
+
     if (!localDB.workspaces) localDB.workspaces = [];
     const existingIdx = localDB.workspaces.findIndex((w: any) => w.id === wsId || w.slug === slug);
     if (existingIdx >= 0) {
@@ -451,6 +459,115 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     saveDB();
     return { data: newWorkspace, status: 201 };
+  }
+
+  // ── Workspace Deletion ────────────────────────────────────────────────
+  const wsDeleteMatch = url.match(/\/api\/workspaces\/([^/]+)\/?$/);
+  if (wsDeleteMatch && method === "delete") {
+    const slugOrId = wsDeleteMatch[1];
+    const targetWs = (localDB.workspaces || []).find((w: any) => w.id === slugOrId || w.slug === slugOrId);
+    const targetId = targetWs?.id || slugOrId;
+    const targetSlug = targetWs?.slug || slugOrId;
+
+    if (!localDB._deleted_workspace_ids) localDB._deleted_workspace_ids = [];
+    if (!localDB._deleted_workspace_ids.includes(targetId)) {
+      localDB._deleted_workspace_ids.push(targetId);
+    }
+    if (!localDB._deleted_workspace_slugs) localDB._deleted_workspace_slugs = [];
+    if (!localDB._deleted_workspace_slugs.includes(targetSlug)) {
+      localDB._deleted_workspace_slugs.push(targetSlug);
+    }
+
+    const deletedWsIds = new Set(localDB._deleted_workspace_ids);
+    const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs);
+
+    // 1. Remove from localDB.workspaces
+    localDB.workspaces = (localDB.workspaces || []).filter(
+      (w: any) => w.id !== targetId && w.slug !== targetSlug && !deletedWsIds.has(w.id) && !deletedWsSlugs.has(w.slug)
+    );
+
+    // 2. Cascade delete all projects belonging to this workspace
+    const deletedProjects = (localDB.projects || []).filter(
+      (p: any) => p.workspace === targetId || p.workspace === targetSlug || p.workspace_id === targetId || p.workspace_id === targetSlug
+    );
+    if (!localDB._deleted_project_ids) localDB._deleted_project_ids = [];
+    for (const dp of deletedProjects) {
+      if (!localDB._deleted_project_ids.includes(dp.id)) localDB._deleted_project_ids.push(dp.id);
+      if (dp.identifier && !localDB._deleted_project_ids.includes(dp.identifier)) localDB._deleted_project_ids.push(dp.identifier);
+    }
+    const currentDeletedProjSet = new Set(localDB._deleted_project_ids);
+    localDB.projects = (localDB.projects || []).filter(
+      (p: any) => p.workspace !== targetId && p.workspace !== targetSlug && p.workspace_id !== targetId && p.workspace_id !== targetSlug && !currentDeletedProjSet.has(p.id)
+    );
+
+    // 3. Cascade delete all issues for those projects or this workspace
+    if (localDB.issues) {
+      const deletedProjIds = new Set(deletedProjects.map((p: any) => p.id));
+      const deletedIssues = localDB.issues.filter(
+        (i: any) => deletedProjIds.has(i.project) || deletedProjIds.has(i.project_id) || i.workspace === targetId || i.workspace === targetSlug
+      );
+      if (!localDB._deleted_issue_ids) localDB._deleted_issue_ids = [];
+      for (const di of deletedIssues) {
+        if (!localDB._deleted_issue_ids.includes(di.id)) localDB._deleted_issue_ids.push(di.id);
+      }
+      const currentDeletedIssueSet = new Set(localDB._deleted_issue_ids);
+      localDB.issues = localDB.issues.filter(
+        (i: any) => !deletedProjIds.has(i.project) && !deletedProjIds.has(i.project_id) && i.workspace !== targetId && i.workspace !== targetSlug && !currentDeletedIssueSet.has(i.id)
+      );
+    }
+
+    // 4. Cascade delete states, labels, cycles, modules, workspace_members
+    if (localDB.states) {
+      localDB.states = localDB.states.filter((s: any) => s.workspace !== targetId && s.workspace !== targetSlug);
+    }
+    if (localDB.labels) {
+      localDB.labels = localDB.labels.filter((l: any) => l.workspace !== targetId && l.workspace !== targetSlug);
+    }
+    if (localDB.cycles) {
+      localDB.cycles = localDB.cycles.filter((c: any) => c.workspace !== targetId && c.workspace !== targetSlug);
+    }
+    if (localDB.modules) {
+      localDB.modules = localDB.modules.filter((m: any) => m.workspace !== targetId && m.workspace !== targetSlug);
+    }
+    if (localDB.workspace_members) {
+      localDB.workspace_members = localDB.workspace_members.filter(
+        (m: any) => m.workspace !== targetId && m.workspace !== targetSlug && m.workspace_id !== targetId && m.workspace_id !== targetSlug
+      );
+    }
+
+    // 5. Update activeUser
+    const remainingWs = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces[0] : null;
+    if (activeUser) {
+      if (activeUser.last_workspace_slug === targetSlug || activeUser.last_workspace_id === targetId) {
+        activeUser.last_workspace_slug = remainingWs ? remainingWs.slug : null;
+        activeUser.last_workspace_id = remainingWs ? remainingWs.id : null;
+      }
+    }
+
+    // 6. Update localStorage and document.cookie
+    if (typeof window !== "undefined") {
+      try {
+        if (localStorage.getItem("last_workspace_slug") === targetSlug) {
+          if (remainingWs) {
+            localStorage.setItem("last_workspace_slug", remainingWs.slug);
+          } else {
+            localStorage.removeItem("last_workspace_slug");
+          }
+        }
+        if (remainingWs) {
+          document.cookie = `last_workspace_slug=${remainingWs.slug}; path=/; max-age=31536000; SameSite=Lax`;
+        } else {
+          document.cookie = `last_workspace_slug=; path=/; max-age=0; SameSite=Lax`;
+        }
+        document.cookie = `plane_dapp_sync_workspaces=${encodeURIComponent(JSON.stringify(localDB.workspaces))}; path=/; max-age=31536000; SameSite=Lax`;
+      } catch (e) {
+        console.warn("[DApp Workspace] Không thể cập nhật cookies:", e);
+      }
+    }
+
+    saveDB();
+    console.log(`[DApp Workspace] ✅ Đã xóa workspace ${targetSlug} (${targetId}), còn lại:`, localDB.workspaces);
+    return ok({ message: "Workspace deleted successfully" });
   }
 
   if (url.match(/\/api\/users\/me/)) {
@@ -528,7 +645,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles") && !url.includes("/invitations")) {
       syncCrossPortWorkspaces();
-      const workspaces = localDB.workspaces || [];
+      const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
+      const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
+      const workspaces = (localDB.workspaces || []).filter(
+        (ws: any) => !deletedWsSlugs.has(ws.slug) && !deletedWsIds.has(ws.id)
+      );
       return ok(workspaces.map((ws: any) => Object.assign({}, ws, { role: 20 })));
     }
 
@@ -1606,32 +1727,14 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
 
       if (!item) {
-        if (collection === "workspaces" && id) {
-          const formattedName = id.replace(/[-_]/g, " ").toUpperCase();
-          item = {
-            id: `workspace-${id}`,
-            name: formattedName,
-            slug: id,
-            organization_size: "5-10",
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            created_by: getLoggedInUserId() || "user-default",
-            owner: {
-              id: getLoggedInUserId() || "user-default",
-              email: getLoggedInEmail() || "",
-              first_name: formattedName,
-              last_name: "",
-              display_name: formattedName,
-              avatar: "",
-            },
-            role: 20,
-          };
-          if (!localDB.workspaces) localDB.workspaces = [];
-          localDB.workspaces.push(item);
-          saveDB();
-          return ok(item);
-        }
         return { data: null, status: 404 };
+      }
+      if (collection === "workspaces" && item) {
+        const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
+        const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
+        if (deletedWsSlugs.has(item.slug) || deletedWsIds.has(item.id)) {
+          return { data: null, status: 404 };
+        }
       }
       // Enrich issue/work-item data with defaults expected by the detail store
       if (collection === "issues") {
@@ -2225,7 +2328,115 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
   }
 
   if (method === "delete") {
-    if (collection === "projects" && id) {
+    if (collection === "workspaces" && id) {
+      const targetWs = (localDB.workspaces || []).find((w: any) => w.id === id || w.slug === id);
+      const targetId = targetWs?.id || id;
+      const targetSlug = targetWs?.slug || id;
+
+      if (!localDB._deleted_workspace_ids) localDB._deleted_workspace_ids = [];
+      if (!localDB._deleted_workspace_ids.includes(targetId)) {
+        localDB._deleted_workspace_ids.push(targetId);
+      }
+      if (!localDB._deleted_workspace_slugs) localDB._deleted_workspace_slugs = [];
+      if (!localDB._deleted_workspace_slugs.includes(targetSlug)) {
+        localDB._deleted_workspace_slugs.push(targetSlug);
+      }
+
+      const deletedWsIds = new Set(localDB._deleted_workspace_ids);
+      const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs);
+
+      // 1. Remove from localDB.workspaces
+      localDB.workspaces = (localDB.workspaces || []).filter(
+        (w: any) => w.id !== targetId && w.slug !== targetSlug && !deletedWsIds.has(w.id) && !deletedWsSlugs.has(w.slug)
+      );
+
+      // 2. Cascade delete all projects belonging to this workspace
+      const deletedProjects = (localDB.projects || []).filter(
+        (p: any) => p.workspace === targetId || p.workspace === targetSlug || p.workspace_id === targetId || p.workspace_id === targetSlug
+      );
+      if (!localDB._deleted_project_ids) localDB._deleted_project_ids = [];
+      for (const dp of deletedProjects) {
+        if (!localDB._deleted_project_ids.includes(dp.id)) localDB._deleted_project_ids.push(dp.id);
+        if (dp.identifier && !localDB._deleted_project_ids.includes(dp.identifier)) localDB._deleted_project_ids.push(dp.identifier);
+      }
+      const currentDeletedProjSet = new Set(localDB._deleted_project_ids);
+      localDB.projects = (localDB.projects || []).filter(
+        (p: any) => p.workspace !== targetId && p.workspace !== targetSlug && p.workspace_id !== targetId && p.workspace_id !== targetSlug && !currentDeletedProjSet.has(p.id)
+      );
+
+      // 3. Cascade delete all issues for those projects or this workspace
+      if (localDB.issues) {
+        const deletedProjIds = new Set(deletedProjects.map((p: any) => p.id));
+        const deletedIssues = localDB.issues.filter(
+          (i: any) => deletedProjIds.has(i.project) || deletedProjIds.has(i.project_id) || i.workspace === targetId || i.workspace === targetSlug
+        );
+        if (!localDB._deleted_issue_ids) localDB._deleted_issue_ids = [];
+        for (const di of deletedIssues) {
+          if (!localDB._deleted_issue_ids.includes(di.id)) localDB._deleted_issue_ids.push(di.id);
+        }
+        const currentDeletedIssueSet = new Set(localDB._deleted_issue_ids);
+        localDB.issues = localDB.issues.filter(
+          (i: any) => !deletedProjIds.has(i.project) && !deletedProjIds.has(i.project_id) && i.workspace !== targetId && i.workspace !== targetSlug && !currentDeletedIssueSet.has(i.id)
+        );
+      }
+
+      // 4. Cascade delete states, labels, cycles, modules, workspace_members
+      if (localDB.states) {
+        localDB.states = localDB.states.filter((s: any) => s.workspace !== targetId && s.workspace !== targetSlug);
+      }
+      if (localDB.labels) {
+        localDB.labels = localDB.labels.filter((l: any) => l.workspace !== targetId && l.workspace !== targetSlug);
+      }
+      if (localDB.cycles) {
+        localDB.cycles = localDB.cycles.filter((c: any) => c.workspace !== targetId && c.workspace !== targetSlug);
+      }
+      if (localDB.modules) {
+        localDB.modules = localDB.modules.filter((m: any) => m.workspace !== targetId && m.workspace !== targetSlug);
+      }
+      if (localDB.workspace_members) {
+        localDB.workspace_members = localDB.workspace_members.filter(
+          (m: any) => m.workspace !== targetId && m.workspace !== targetSlug && m.workspace_id !== targetId && m.workspace_id !== targetSlug
+        );
+      }
+
+      // 5. Update activeUser
+      const remainingWs = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces[0] : null;
+      const activeUserId = getLoggedInUserId();
+      const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
+      const activeUser = (localDB.users || []).find((u: any) =>
+        (activeUserId && u.id === activeUserId) ||
+        (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
+      ) || localDB.users?.[0] || null;
+
+      if (activeUser) {
+        if (activeUser.last_workspace_slug === targetSlug || activeUser.last_workspace_id === targetId) {
+          activeUser.last_workspace_slug = remainingWs ? remainingWs.slug : null;
+          activeUser.last_workspace_id = remainingWs ? remainingWs.id : null;
+        }
+      }
+
+      // 6. Update localStorage and document.cookie
+      if (typeof window !== "undefined") {
+        try {
+          if (localStorage.getItem("last_workspace_slug") === targetSlug) {
+            if (remainingWs) {
+              localStorage.setItem("last_workspace_slug", remainingWs.slug);
+            } else {
+              localStorage.removeItem("last_workspace_slug");
+            }
+          }
+          if (remainingWs) {
+            document.cookie = `last_workspace_slug=${remainingWs.slug}; path=/; max-age=31536000; SameSite=Lax`;
+          } else {
+            document.cookie = `last_workspace_slug=; path=/; max-age=0; SameSite=Lax`;
+          }
+          document.cookie = `plane_dapp_sync_workspaces=${encodeURIComponent(JSON.stringify(localDB.workspaces))}; path=/; max-age=31536000; SameSite=Lax`;
+        } catch { }
+      }
+
+      saveDB();
+      return ok({ message: "Workspace deleted successfully" });
+    } else if (collection === "projects" && id) {
       const targetProj = (localDB.projects || []).find((p: any) => p.id === id || p.identifier === id);
       const targetId = targetProj?.id || id;
 

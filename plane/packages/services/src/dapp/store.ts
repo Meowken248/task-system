@@ -118,7 +118,14 @@ export function loadInitialDB(): Record<string, any> {
           (parsed.projects || []).forEach((p: any) => {
             if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
           });
-          parsed.workspaces = (parsed.workspaces && parsed.workspaces.length > 0) ? parsed.workspaces : [DEFAULT_WORKSPACE];
+          const deletedWsIds = new Set(parsed._deleted_workspace_ids || []);
+          const deletedWsSlugs = new Set(parsed._deleted_workspace_slugs || []);
+          parsed.workspaces = (parsed.workspaces || []).filter(
+            (w: any) => !deletedWsIds.has(w.id) && !deletedWsSlugs.has(w.slug)
+          );
+          parsed.workspaces = (parsed.workspaces && parsed.workspaces.length > 0)
+            ? parsed.workspaces
+            : (!deletedWsSlugs.has(DEFAULT_WORKSPACE.slug) && !deletedWsIds.has(DEFAULT_WORKSPACE.id) ? [DEFAULT_WORKSPACE] : []);
           const creds = getStoredCredentials();
           (parsed.users || []).forEach((u: any) => {
             const emailKey = u?.email?.toLowerCase().trim();
@@ -164,7 +171,14 @@ export function loadInitialDB(): Record<string, any> {
           (parsed.projects || []).forEach((p: any) => {
             if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
           });
-          parsed.workspaces = (parsed.workspaces && parsed.workspaces.length > 0) ? parsed.workspaces : [DEFAULT_WORKSPACE];
+          const deletedWsIds = new Set(parsed._deleted_workspace_ids || []);
+          const deletedWsSlugs = new Set(parsed._deleted_workspace_slugs || []);
+          parsed.workspaces = (parsed.workspaces || []).filter(
+            (w: any) => !deletedWsIds.has(w.id) && !deletedWsSlugs.has(w.slug)
+          );
+          parsed.workspaces = (parsed.workspaces && parsed.workspaces.length > 0)
+            ? parsed.workspaces
+            : (!deletedWsSlugs.has(DEFAULT_WORKSPACE.slug) && !deletedWsIds.has(DEFAULT_WORKSPACE.id) ? [DEFAULT_WORKSPACE] : []);
           const creds = getStoredCredentials();
           (parsed.users || []).forEach((u: any) => {
             const emailKey = u?.email?.toLowerCase().trim();
@@ -208,7 +222,20 @@ if (typeof window !== "undefined") {
 
 // Initial safety validation
 if (!localDB.users) localDB.users = [];
-if (!localDB.workspaces || localDB.workspaces.length === 0) localDB.workspaces = [DEFAULT_WORKSPACE];
+if (!localDB._deleted_workspace_ids) localDB._deleted_workspace_ids = [];
+if (!localDB._deleted_workspace_slugs) localDB._deleted_workspace_slugs = [];
+const initDeletedWsIds = new Set(localDB._deleted_workspace_ids);
+const initDeletedWsSlugs = new Set(localDB._deleted_workspace_slugs);
+localDB.workspaces = (localDB.workspaces || []).filter(
+  (w: any) => !initDeletedWsIds.has(w.id) && !initDeletedWsSlugs.has(w.slug)
+);
+if (!localDB.workspaces || localDB.workspaces.length === 0) {
+  if (!initDeletedWsSlugs.has(DEFAULT_WORKSPACE.slug) && !initDeletedWsIds.has(DEFAULT_WORKSPACE.id)) {
+    localDB.workspaces = [DEFAULT_WORKSPACE];
+  } else {
+    localDB.workspaces = [];
+  }
+}
 if (!localDB.projects) localDB.projects = [];
 const initDeletedSet = new Set(localDB._deleted_project_ids || []);
 const initDeletedIssueSet = new Set(localDB._deleted_issue_ids || []);
@@ -322,6 +349,8 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
   try {
     let hasChanges = false;
     if (!localDB.workspaces) localDB.workspaces = [];
+    const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
+    const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
 
     // 1. Read from shared cross-port cookies (domain localhost)
     if (typeof document !== "undefined" && typeof document.cookie === "string" && document.cookie.trim() !== "") {
@@ -335,7 +364,14 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
             const syncedWsList = JSON.parse(val);
             if (Array.isArray(syncedWsList)) {
               for (const sWs of syncedWsList) {
-                if (sWs && sWs.slug && sWs.slug !== "fiai-metanode" && !localDB.workspaces.some((w: any) => w.slug === sWs.slug || w.id === sWs.id)) {
+                if (
+                  sWs &&
+                  sWs.slug &&
+                  sWs.slug !== "fiai-metanode" &&
+                  !deletedWsSlugs.has(sWs.slug) &&
+                  !deletedWsIds.has(sWs.id) &&
+                  !localDB.workspaces.some((w: any) => w.slug === sWs.slug || w.id === sWs.id)
+                ) {
                   localDB.workspaces.push({
                     id: sWs.id || `workspace-${sWs.slug}`,
                     name: sWs.name || sWs.slug,
@@ -383,7 +419,7 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
     const authUser = searchParams.get("auth_user");
     const authEmail = searchParams.get("auth_email");
 
-    if (wsSlug) {
+    if (wsSlug && !deletedWsSlugs.has(wsSlug) && !deletedWsIds.has(wsSlug)) {
       const exists = localDB.workspaces.find((w: any) => w.slug === wsSlug || w.id === wsSlug);
       if (!exists) {
         const decodedName = wsName ? decodeURIComponent(wsName) : wsSlug.replace(/[-_]/g, " ").toUpperCase();
@@ -425,13 +461,20 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
 
     // 3. Auto-provision from pathname if visiting /:workspaceSlug
     const pathname = window.location.pathname;
-    const firstSegment = pathname.split("/").find(Boolean);
+    const rawSegments = pathname.split("/").filter(Boolean);
+    const segments = rawSegments[0] === "plane" ? rawSegments.slice(1) : rawSegments;
+    const firstSegment = segments[0];
     const reservedPaths = [
-      "assets", "api", "create-workspace", "invitations", "settings",
+      "plane", "assets", "api", "create-workspace", "invitations", "settings",
       "profile", "installations", "onboarding", "god-mode",
       "workspace-member-invitations", "workspace", "preview",
     ];
-    if (firstSegment && !reservedPaths.includes(firstSegment)) {
+    if (
+      firstSegment &&
+      !reservedPaths.includes(firstSegment) &&
+      !deletedWsSlugs.has(firstSegment) &&
+      !deletedWsIds.has(firstSegment)
+    ) {
       const exists = localDB.workspaces.find((w: any) => w.slug === firstSegment || w.id === firstSegment);
       if (!exists) {
         const formattedName = firstSegment.replace(/[-_]/g, " ").toUpperCase();
@@ -568,8 +611,12 @@ export function getUserProfile() {
     };
   }
 
-  const userWorkspaces = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces : [DEFAULT_WORKSPACE];
-  const firstWs = userWorkspaces[0] || DEFAULT_WORKSPACE;
+  const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
+  const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
+  const userWorkspaces = (localDB.workspaces || []).filter(
+    (w: any) => !deletedWsSlugs.has(w.slug) && !deletedWsIds.has(w.id)
+  );
+  const firstWs = userWorkspaces[0] || null;
 
   const effectiveTheme = (localSavedTheme && localSavedTheme !== "system")
     ? localSavedTheme
@@ -587,8 +634,8 @@ export function getUserProfile() {
     id: activeUser.id,
     user: activeUser.id,
     role: "admin",
-    last_workspace_id: activeUser.last_workspace_id || firstWs.id,
-    last_workspace_slug: activeUser.last_workspace_slug || firstWs.slug,
+    last_workspace_id: activeUser.last_workspace_id || firstWs?.id || null,
+    last_workspace_slug: activeUser.last_workspace_slug || firstWs?.slug || null,
     theme: userTheme,
     onboarding_step: {
       workspace_join: true,
@@ -619,24 +666,28 @@ export function getUserSettings() {
   ) || localDB.users?.[0] || null;
 
   const localSlug = typeof window !== "undefined" ? localStorage.getItem("last_workspace_slug") : null;
-  const userWorkspaces = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces : [DEFAULT_WORKSPACE];
+  const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
+  const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
+  const userWorkspaces = (localDB.workspaces || []).filter(
+    (w: any) => !deletedWsSlugs.has(w.slug) && !deletedWsIds.has(w.id)
+  );
   const currentWs = userWorkspaces.find((w: any) =>
     (localSlug && w.slug === localSlug) ||
     w.id === activeUser?.last_workspace_id ||
     w.slug === activeUser?.last_workspace_slug ||
     (loggedInEmail && w.owner?.email?.toLowerCase() === loggedInEmail.toLowerCase())
-  ) || userWorkspaces[0] || DEFAULT_WORKSPACE;
+  ) || userWorkspaces[0] || null;
 
   return {
     id: activeUser?.id || "anonymous",
     email: activeUser?.email || loggedInEmail || "",
     workspace: {
-      last_workspace_id: currentWs?.id || DEFAULT_WORKSPACE.id,
-      last_workspace_slug: currentWs?.slug || DEFAULT_WORKSPACE.slug,
-      last_workspace_name: currentWs?.name || DEFAULT_WORKSPACE.name,
+      last_workspace_id: currentWs?.id || null,
+      last_workspace_slug: currentWs?.slug || null,
+      last_workspace_name: currentWs?.name || null,
       last_workspace_logo: currentWs?.logo || null,
-      fallback_workspace_id: currentWs?.id || DEFAULT_WORKSPACE.id,
-      fallback_workspace_slug: currentWs?.slug || DEFAULT_WORKSPACE.slug,
+      fallback_workspace_id: currentWs?.id || null,
+      fallback_workspace_slug: currentWs?.slug || null,
       invites: 0,
     },
   };

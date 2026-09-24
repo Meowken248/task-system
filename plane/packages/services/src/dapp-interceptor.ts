@@ -40,7 +40,27 @@ export function setupDAppInterceptor(axiosInstance: AxiosInstance): void {
         }
       }
 
-      const { data, status } = await handleRoute(method, url, body);
+      let routeResult;
+      try {
+        routeResult = await handleRoute(method, url, body);
+      } catch (err: any) {
+        console.error(`[DApp Interceptor] Error executing route handler for ${method.toUpperCase()} ${url}:`, err);
+        const error: any = new Error(err?.message || "DApp route handler failed");
+        error.name = "AxiosError";
+        error.code = "ERR_BAD_RESPONSE";
+        error.status = 500;
+        error.response = {
+          data: { error: err?.message || "Internal DApp error" },
+          status: 500,
+          statusText: "Internal Error",
+          headers: {},
+          config: adapterConfig,
+          request: {},
+        };
+        throw error;
+      }
+
+      const { data, status } = routeResult || { data: null, status: 200 };
 
       if (status >= 400) {
         const error: any = new Error(`Request failed with status code ${status}`);
@@ -48,7 +68,7 @@ export function setupDAppInterceptor(axiosInstance: AxiosInstance): void {
         error.code = status === 401 ? "ERR_BAD_REQUEST" : "ERR_BAD_RESPONSE";
         error.status = status;
         error.response = {
-          data,
+          data: data || { error: `Request failed with status code ${status}` },
           status,
           statusText: "Error",
           headers: {},
