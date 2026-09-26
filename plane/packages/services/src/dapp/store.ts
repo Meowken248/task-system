@@ -47,6 +47,7 @@ export const defaultDB: DAppDatabase = {
   states: [],
   labels: [],
   issues: [],
+  "project-deploy-boards": [],
   issue_comments: [],
   issue_activities: [],
   attachments: [],

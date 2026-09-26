@@ -209,11 +209,71 @@ const getModuleColumns = (): IGroupByColumn[] | undefined => {
 };
 
 const getStateColumns = ({ projectId }: TGetColumns): IGroupByColumn[] | undefined => {
-  const { getProjectStates, projectStates } = store.state;
+  const { getProjectStates, projectStates, stateMap } = store.state;
   const resolvedProjectId = projectId || store.projectRoot.project.currentProjectDetails?.id;
-  const _states = resolvedProjectId ? getProjectStates(resolvedProjectId) : projectStates;
+  let _states = resolvedProjectId ? getProjectStates(resolvedProjectId) : projectStates;
+  if (!_states || _states.length === 0) {
+    const allStates = Object.values(stateMap || {});
+    _states = allStates.filter((s) => (s.project_id || (s as any).project) === resolvedProjectId);
+    if (!_states || _states.length === 0) {
+      _states = allStates;
+    }
+  }
   const statesToUse = _states && _states.length > 0 ? _states : projectStates;
-  if (!statesToUse || statesToUse.length === 0) return;
+  if (!statesToUse || statesToUse.length === 0) {
+    return [
+      {
+        id: "Backlog",
+        name: "Backlog",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="backlog" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+      {
+        id: "Unstarted",
+        name: "Unstarted",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="unstarted" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+      {
+        id: "Started",
+        name: "Started",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="started" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+      {
+        id: "Completed",
+        name: "Completed",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="completed" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+      {
+        id: "Cancelled",
+        name: "Cancelled",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="cancelled" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+    ];
+  }
   // map project states to group by columns
   return statesToUse.map((state) => ({
     id: state.id,
@@ -631,10 +691,11 @@ export const isSubGrouped = (groupedIssueIds: TGroupedIssues) => {
  * @returns
  */
 export const isIssueNew = (issue: TIssue) => {
+  if (!issue || !issue.created_at) return false;
   const createdDate = new Date(issue.created_at);
   const currentDate = new Date();
   const diff = currentDate.getTime() - createdDate.getTime();
-  return diff < 30000;
+  return !isNaN(diff) && diff < 30000;
 };
 
 /**

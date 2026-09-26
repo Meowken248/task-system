@@ -11,10 +11,14 @@ import {
   getInstanceInfo,
   getUserProfile,
   getUserSettings,
-  DEFAULT_WORKSPACE,
 } from "./store";
 import {
   uploadToIPFS,
+  fetchFromIPFS,
+  applyOffchainDB,
+  directRpcRead,
+  decodeAbiWorkspace,
+  abiEncodeGetWorkspace,
   baseCID,
   currentUserAddress,
   getFiaiSDK,
@@ -25,9 +29,12 @@ import {
   mapPlaneRoleToContractRole,
   extractEthAddress,
   syncDAppRecord,
+  getLastUploadedCID,
 } from "./chain";
 
 export { ok, parseApiUrl };
+
+let lastLoadedPublicCid: string | null = null;
 
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
@@ -259,6 +266,548 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       un_started_work_items: { count: un_started_work_items, filter_count: un_started_work_items },
       completed_work_items: { count: completed_work_items, filter_count: completed_work_items },
     });
+  }
+
+  // ── Public Anchor API (Space App / Published Project) ─────────────────
+  if (url.includes("/api/public/anchor/") || url.includes("/api/public/workspaces/")) {
+    const anchorMatch = url.match(/\/api\/public\/anchor\/([^/?]+)(?:\/([^/?]+))?/);
+    const pubWsMatch = url.match(/\/api\/public\/workspaces\/([^/]+)\/projects\/([^/]+)\/anchor/);
+
+    if (!localDB["project-deploy-boards"]) localDB["project-deploy-boards"] = [];
+
+    // Helper to fetch and load DB from IPFS when board is not in memory (zero localStorage dependency)
+    const ensureBoardFromIPFS = async (predicate: (b: any) => boolean): Promise<any> => {
+      let cidToFetch: string | null = null;
+      if (typeof window !== "undefined") {
+        try {
+          const searchParams = new URLSearchParams(window.location.search);
+          cidToFetch = searchParams.get("cid");
+        } catch { }
+        if (!cidToFetch && typeof document !== "undefined") {
+          const cookies = document.cookie ? document.cookie.split(";") : [];
+          const cidCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_cid="));
+          if (cidCookie) {
+            const raw = cidCookie.trim().substring(cidCookie.trim().indexOf("=") + 1);
+            cidToFetch = decodeURIComponent(raw || "").trim();
+          }
+        }
+      }
+      if (!cidToFetch) {
+        try {
+          const urlSearchParams = new URL(url, "http://localhost").searchParams;
+          cidToFetch = urlSearchParams.get("cid");
+        } catch { }
+      }
+      if (!cidToFetch && WORKSPACE_REGISTRY_ADDRESS) {
+        try {
+          const wsInfoCalldata = abiEncodeGetWorkspace("fiai");
+          const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 3000);
+          const wsInfo = decodeAbiWorkspace(wsInfoRaw);
+          if (wsInfo?.ipfsCID && wsInfo.ipfsCID.trim() !== "") {
+            cidToFetch = wsInfo.ipfsCID.trim();
+          }
+        } catch { }
+      }
+
+      // If a CID is specified and hasn't been applied yet, ALWAYS fetch and apply it from IPFS
+      if (cidToFetch && cidToFetch !== lastLoadedPublicCid) {
+        console.log(`[Public Anchor API] Đang tải trực tiếp DB từ IPFS CID: ${cidToFetch}...`);
+        try {
+          const ipfsDB = await fetchFromIPFS(cidToFetch);
+          if (ipfsDB) {
+            applyOffchainDB(ipfsDB);
+            lastLoadedPublicCid = cidToFetch;
+          }
+        } catch (e) {
+          console.warn("[Public Anchor API] Lỗi tải từ IPFS:", e);
+        }
+      }
+
+      let b = (localDB["project-deploy-boards"] as any[]).find(predicate);
+      if (b) return b;
+
+      // Fallback matching
+      if (!b && (localDB["project-deploy-boards"] || []).length > 0) {
+        b = localDB["project-deploy-boards"][0];
+      }
+      if (!b) {
+        const targetProj = localDB.projects?.[0] || { id: "project-fiai", identifier: "FIAI", name: "FIAI" };
+        const targetWs = localDB.workspaces?.[0] || { id: "workspace-fiai", slug: "fiai", name: "FIAI" };
+        const defaultAnchor = crypto.randomUUID?.().replace(/-/g, "") || "48c26b7724a243d6a9a7a93a19b5bfb4";
+        b = {
+          id: "board-" + defaultAnchor,
+          anchor: defaultAnchor,
+          project: targetProj.id,
+          project_id: targetProj.id,
+          workspace: targetWs.id,
+          workspace_id: targetWs.id,
+          entity_name: "project",
+          entity_identifier: targetProj.identifier,
+          view_props: { list: true, kanban: true },
+          is_comments_enabled: true,
+          is_reactions_enabled: true,
+          is_votes_enabled: true,
+          project_details: targetProj,
+          workspace_detail: targetWs,
+        };
+        localDB["project-deploy-boards"].push(b);
+      }
+      return b;
+    };
+
+    // GET /api/public/workspaces/:slug/projects/:projectId/anchor/
+    if (pubWsMatch) {
+      const _wsSlug = pubWsMatch[1];
+      const projId = pubWsMatch[2];
+      const board = await ensureBoardFromIPFS(
+        (b: any) => b.project === projId || b.project_id === projId
+      );
+      if (board) return ok(board);
+      return { data: { detail: "Not found" }, status: 404 };
+    }
+
+    if (anchorMatch) {
+      const anchorId = anchorMatch[1];
+      const subResource = anchorMatch[2] || "";
+
+      // Find the deploy board by anchor (loading directly from IPFS if needed)
+      let board = await ensureBoardFromIPFS((b: any) => b.anchor === anchorId || b.id === anchorId);
+      if (!board) {
+        board = (localDB["project-deploy-boards"] || [])[0];
+      }
+
+      if (!board) {
+        return { data: { detail: "Published project not found" }, status: 404 };
+      }
+
+      const projId = board.project || board.project_id;
+      const project = (localDB.projects || []).find((p: any) => p.id === projId || p.identifier === projId) || localDB.projects?.[0];
+      const ws = (localDB.workspaces || []).find(
+        (w: any) => w.id === (board.workspace || board.workspace_id) || w.slug === (board.workspace || board.workspace_id)
+      ) || localDB.workspaces?.[0];
+
+      const projectIds = new Set(
+        [
+          projId,
+          String(projId),
+          project?.id,
+          project?.id ? String(project.id) : null,
+          project?.identifier,
+          board.project,
+          board.project ? String(board.project) : null,
+          board.project_id,
+          board.project_id ? String(board.project_id) : null,
+          board.entity_identifier,
+        ].filter(Boolean)
+      );
+
+      // GET /api/public/anchor/:anchor/meta/
+      if (subResource === "meta") {
+        return ok({
+          name: project?.name || "Published Project",
+          description: project?.description || "",
+          cover_image: project?.cover_image || null,
+        });
+      }
+
+      // GET /api/public/anchor/:anchor/settings/
+      if (subResource === "settings") {
+        return ok({
+          ...board,
+          workspace: board.workspace || ws?.id,
+          workspace_detail: board.workspace_detail || (ws ? { id: ws.id, name: ws.name, slug: ws.slug } : undefined),
+          project_details: board.project_details || (project ? {
+            id: project.id,
+            name: project.name,
+            identifier: project.identifier,
+            cover_image: project.cover_image,
+            description: project.description,
+            logo_props: project.logo_props || { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } },
+          } : undefined),
+        });
+      }
+
+      // GET /api/public/anchor/:anchor/states/
+      if (subResource === "states") {
+        let states = (localDB.states || []).filter(
+          (s: any) => projectIds.has(s.project) || projectIds.has(s.project_id) || projectIds.has(String(s.project)) || projectIds.has(String(s.project_id))
+        );
+        if (states.length === 0) {
+          states = [
+            { id: "state-backlog", name: "Backlog", color: "#A3A3A3", sequence: 15000, group: "backlog", project: project?.id || projId, project_id: project?.id || projId },
+            { id: "state-todo", name: "Todo", color: "#3A3A3A", sequence: 25000, group: "unstarted", project: project?.id || projId, project_id: project?.id || projId },
+            { id: "state-in-progress", name: "In Progress", color: "#F59E0B", sequence: 35000, group: "started", project: project?.id || projId, project_id: project?.id || projId },
+            { id: "state-done", name: "Done", color: "#16A34A", sequence: 45000, group: "completed", project: project?.id || projId, project_id: project?.id || projId },
+            { id: "state-cancelled", name: "Cancelled", color: "#EF4444", sequence: 55000, group: "cancelled", project: project?.id || projId, project_id: project?.id || projId },
+          ];
+          if (!localDB.states) localDB.states = [];
+          localDB.states.push(...states);
+        }
+        return ok(states);
+      }
+
+      // GET /api/public/anchor/:anchor/labels/
+      if (subResource === "labels") {
+        let labels = (localDB.labels || []).filter(
+          (l: any) => projectIds.has(l.project) || projectIds.has(l.project_id) || projectIds.has(String(l.project)) || projectIds.has(String(l.project_id))
+        );
+        if (labels.length === 0 && (localDB.labels || []).length > 0) {
+          labels = localDB.labels;
+        }
+        return ok(labels);
+      }
+
+      // GET /api/public/anchor/:anchor/members/
+      if (subResource === "members") {
+        const wsId = ws?.id || board.workspace;
+        const members = (localDB.members || []).filter(
+          (m: any) => m.workspace === wsId || m.workspace_id === wsId
+        );
+        return ok(members.map((m: any) => ({
+          ...m,
+          member: (localDB.users || []).find((u: any) => u.id === (m.member || m.member_id)) || m,
+        })));
+      }
+
+      // GET /api/public/anchor/:anchor/modules/
+      if (subResource === "modules") {
+        const modules = (localDB.modules || []).filter(
+          (m: any) => projectIds.has(m.project) || projectIds.has(m.project_id)
+        );
+        return ok(modules);
+      }
+
+      // GET /api/public/anchor/:anchor/cycles/
+      if (subResource === "cycles") {
+        const cycles = (localDB.cycles || []).filter(
+          (c: any) => projectIds.has(c.project) || projectIds.has(c.project_id)
+        );
+        return ok(cycles);
+      }
+
+      // GET /api/public/anchor/:anchor/issues/ or /issues/:issueId/
+      if (subResource === "issues") {
+        const issueIdMatch = url.match(/\/issues\/([a-f0-9-]{36})\/?/);
+
+        if (issueIdMatch) {
+          // Single issue detail
+          const issueId = issueIdMatch[1];
+          const issue = (localDB.issues || []).find((i: any) => i.id === issueId || String(i.id) === issueId);
+          if (issue) return ok(issue);
+          return { data: { detail: "Issue not found" }, status: 404 };
+        }
+
+        // Issue list with pagination support
+        let allIssues = (localDB.issues || []).filter(
+          (i: any) => projectIds.has(i.project) || projectIds.has(i.project_id) || projectIds.has(String(i.project)) || projectIds.has(String(i.project_id))
+        );
+
+        if (allIssues.length === 0 && (localDB.issues || []).length > 0 && (localDB.projects || []).length <= 1) {
+          allIssues = localDB.issues;
+        }
+
+        // Parse query params for grouping / pagination
+        const qsParams = new URLSearchParams(url.split("?")[1] || "");
+        const groupBy = qsParams.get("group_by") || null;
+        const perPage = parseInt(qsParams.get("per_page") || "50", 10);
+        const _cursor = qsParams.get("cursor") || `${perPage}:0:0`;
+
+        // Resolve project states
+        let projectStates = (localDB.states || []).filter(
+          (s: any) => projectIds.has(s.project) || projectIds.has(s.project_id) || projectIds.has(String(s.project)) || projectIds.has(String(s.project_id))
+        );
+        if (projectStates.length === 0) {
+          projectStates = [
+            { id: "state-backlog", name: "Backlog", color: "#A3A3A3", sequence: 15000, group: "backlog", project: project?.id || projId, project_id: project?.id || projId },
+            { id: "state-todo", name: "Todo", color: "#3A3A3A", sequence: 25000, group: "unstarted", project: project?.id || projId, project_id: project?.id || projId },
+            { id: "state-in-progress", name: "In Progress", color: "#F59E0B", sequence: 35000, group: "started", project: project?.id || projId, project_id: project?.id || projId },
+            { id: "state-done", name: "Done", color: "#16A34A", sequence: 45000, group: "completed", project: project?.id || projId, project_id: project?.id || projId },
+            { id: "state-cancelled", name: "Cancelled", color: "#EF4444", sequence: 55000, group: "cancelled", project: project?.id || projId, project_id: project?.id || projId },
+          ];
+          if (!localDB.states) localDB.states = [];
+          localDB.states.push(...projectStates);
+        }
+
+        const backlogState = projectStates.find((s: any) => s.group === "backlog") || projectStates[0];
+        const unstartedState = projectStates.find((s: any) => s.group === "unstarted") || projectStates[1] || backlogState;
+        const startedState = projectStates.find((s: any) => s.group === "started") || projectStates[2] || backlogState;
+        const completedState = projectStates.find((s: any) => s.group === "completed") || projectStates[3] || backlogState;
+        const cancelledState = projectStates.find((s: any) => s.group === "cancelled") || projectStates[4] || backlogState;
+
+        // Add state / created_at backfill and ensure valid state_id matching projectStates
+        const enrichedIssues = allIssues.map((issue: any, idx: number) => {
+          let matchedState = projectStates.find(
+            (s: any) => s.id === issue.state_id || s.id === issue.state || String(s.id) === String(issue.state_id) || String(s.id) === String(issue.state)
+          );
+
+          if (!matchedState) {
+            const rawState = String(issue.state_id || issue.state || "").toLowerCase();
+            if (rawState === "1" || rawState.includes("backlog")) matchedState = backlogState;
+            else if (rawState === "2" || rawState.includes("todo") || rawState.includes("unstart")) matchedState = unstartedState;
+            else if (rawState === "3" || rawState.includes("progress") || rawState.includes("start")) matchedState = startedState;
+            else if (rawState === "4" || rawState.includes("done") || rawState.includes("complete")) matchedState = completedState;
+            else if (rawState === "5" || rawState.includes("cancel")) matchedState = cancelledState;
+            else matchedState = backlogState;
+          }
+
+          const rawLabels = issue.labels || issue.label_ids || [];
+          const labelIds = (Array.isArray(rawLabels) ? rawLabels : [rawLabels])
+            .map((l: any) => (typeof l === "object" && l ? l.id : l))
+            .filter(Boolean);
+
+          const targetStateId = matchedState.id;
+          const stateDetail = {
+            id: matchedState.id,
+            name: matchedState.name,
+            color: matchedState.color,
+            group: matchedState.group,
+            sequence: matchedState.sequence,
+          };
+
+          return {
+            ...issue,
+            sequence_id: issue.sequence_id || idx + 1,
+            state: targetStateId,
+            state_id: targetStateId,
+            state_detail: stateDetail,
+            priority: (issue.priority || "none").toLowerCase(),
+            labels: labelIds,
+            label_ids: labelIds,
+            project_id: project?.id || projId,
+            workspace_id: ws?.id || "workspace-fiai",
+            created_at: issue.created_at || issue.created_on || new Date().toISOString(),
+            updated_at: issue.updated_at || issue.updated_on || issue.created_at || new Date().toISOString(),
+          };
+        });
+
+        if (groupBy) {
+          const grouped: Record<string, any[]> = {};
+          if (groupBy === "state") {
+            projectStates.forEach((s: any) => {
+              grouped[s.id] = [];
+            });
+          }
+          enrichedIssues.forEach((item: any) => {
+            let key = "None";
+            if (groupBy === "state") {
+              key = item.state_id || item.state;
+              if (!grouped[key]) {
+                if (projectStates[0]) key = projectStates[0].id;
+              }
+            } else if (groupBy === "state_detail.group") {
+              key = item.state_detail?.group || "backlog";
+            } else if (groupBy === "target_date") {
+              key = item.target_date ? item.target_date.split("T")[0] : "None";
+            } else {
+              key = item[groupBy] || "None";
+            }
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(item);
+          });
+
+          const result: Record<string, any> = {};
+          for (const [key, items] of Object.entries(grouped)) {
+            result[key] = {
+              results: items,
+              total_results: items.length,
+              next_cursor: null,
+              prev_cursor: null,
+              next_page_results: false,
+              total_pages: 1,
+            };
+          }
+          return ok({
+            results: result,
+            grouped_by: groupBy,
+            total_count: enrichedIssues.length,
+            count: enrichedIssues.length,
+            total_results: enrichedIssues.length,
+            total_pages: 1,
+            next_cursor: null,
+            prev_cursor: null,
+            next_page_results: false,
+            prev_page_results: false,
+          });
+        }
+
+        // Ungrouped
+        return ok({
+          results: enrichedIssues,
+          total_count: enrichedIssues.length,
+          count: enrichedIssues.length,
+          total_results: enrichedIssues.length,
+          next_cursor: null,
+          prev_cursor: null,
+          next_page_results: false,
+          total_pages: 1,
+        });
+      }
+
+      // Fallback: return the board settings for any unhandled sub-resource
+      return ok(board);
+    }
+  }
+
+  // ── Project Deploy Boards (Publish Project) ───────────────────────────
+  if (url.includes("/project-deploy-boards")) {
+    const match = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/project-deploy-boards(?:\/([^/?]+))?/);
+    const wsSlug = match ? match[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+    const projId = match ? match[2] : "";
+    const publishId = match ? match[3] : "";
+
+    if (!localDB["project-deploy-boards"]) localDB["project-deploy-boards"] = [];
+
+    // Ensure any previously saved board has an anchor
+    (localDB["project-deploy-boards"] as any[]).forEach((b: any) => {
+      if (!b.anchor) {
+        b.anchor = crypto.randomUUID?.().replace(/-/g, "") || Math.random().toString(36).slice(2, 18);
+      }
+      if (!b.project && projId) b.project = projId;
+      if (!b.project_id && projId) b.project_id = projId;
+    });
+
+    const methodUpper = method.toUpperCase();
+
+    if (methodUpper === "GET") {
+      let board: any = null;
+      if (publishId) {
+        board = localDB["project-deploy-boards"].find((b: any) => b.id === publishId);
+      } else {
+        board = localDB["project-deploy-boards"].find(
+          (b: any) => b.project === projId || b.project_id === projId
+        );
+      }
+
+      if (board) {
+        if (!board.anchor) {
+          board.anchor = crypto.randomUUID?.().replace(/-/g, "") || Math.random().toString(36).slice(2, 18);
+          saveDB();
+        }
+        if (!board.cid) {
+          board.cid = getLastUploadedCID() || undefined;
+        }
+        return ok(board);
+      }
+      return ok({});
+    }
+
+    if (methodUpper === "POST") {
+      let board = localDB["project-deploy-boards"].find(
+        (b: any) => b.project === projId || b.project_id === projId
+      );
+      const project = (localDB.projects || []).find((p: any) => p.id === projId || p.identifier === projId);
+      const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+
+      if (!board) {
+        const newAnchor = crypto.randomUUID?.().replace(/-/g, "") || Math.random().toString(36).slice(2, 18);
+        board = {
+          id: body.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+          anchor: newAnchor,
+          project: projId,
+          project_id: projId,
+          workspace: ws?.id || wsSlug,
+          workspace_id: ws?.id || wsSlug,
+          entity_name: "project",
+          entity_identifier: project?.identifier || projId,
+          is_comments_enabled: !!body.is_comments_enabled,
+          is_reactions_enabled: !!body.is_reactions_enabled,
+          is_votes_enabled: !!body.is_votes_enabled,
+          view_props: body.view_props || { list: true, kanban: true },
+          project_details: project
+            ? {
+                id: project.id,
+                name: project.name,
+                identifier: project.identifier,
+                cover_image: project.cover_image,
+                description: project.description,
+                logo_props: project.logo_props,
+              }
+            : undefined,
+          workspace_detail: ws
+            ? {
+                id: ws.id,
+                name: ws.name,
+                slug: ws.slug,
+              }
+            : undefined,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          created_by: activeUserId || "user-1",
+          updated_by: activeUserId || "user-1",
+          inbox: null,
+        };
+        localDB["project-deploy-boards"].push(board);
+      } else {
+        if (!board.anchor) {
+          board.anchor = crypto.randomUUID?.().replace(/-/g, "") || Math.random().toString(36).slice(2, 18);
+        }
+        board.is_comments_enabled = !!body.is_comments_enabled;
+        board.is_reactions_enabled = !!body.is_reactions_enabled;
+        board.is_votes_enabled = !!body.is_votes_enabled;
+        if (body.view_props) board.view_props = body.view_props;
+        board.updated_at = new Date().toISOString();
+      }
+
+      if (project) {
+        project.anchor = board.anchor;
+      }
+
+      saveDB();
+
+      // Trigger immediate IPFS upload so the published board is pinned to IPFS
+      try {
+        const newCid = await uploadToIPFS(true);
+        if (newCid) {
+          board.cid = newCid;
+          saveDB();
+        }
+      } catch (uploadErr) {
+        console.warn("[Project Deploy Boards] Lỗi upload IPFS:", uploadErr);
+      }
+
+      return { data: board, status: 201 };
+    }
+
+    if (methodUpper === "PATCH" || methodUpper === "PUT") {
+      let board = localDB["project-deploy-boards"].find(
+        (b: any) => b.id === publishId || b.project === projId || b.project_id === projId
+      );
+      if (board) {
+        Object.assign(board, body, { updated_at: new Date().toISOString() });
+        if (!board.anchor) {
+          board.anchor = crypto.randomUUID?.().replace(/-/g, "") || Math.random().toString(36).slice(2, 18);
+        }
+        const project = (localDB.projects || []).find((p: any) => p.id === projId || p.identifier === projId);
+        if (project) project.anchor = board.anchor;
+        saveDB();
+
+        try {
+          const newCid = await uploadToIPFS(true);
+          if (newCid) {
+            board.cid = newCid;
+            saveDB();
+          }
+        } catch { }
+
+        return ok(board);
+      }
+      return ok(body);
+    }
+
+    if (methodUpper === "DELETE") {
+      localDB["project-deploy-boards"] = (localDB["project-deploy-boards"] || []).filter(
+        (b: any) => b.id !== publishId && b.project !== projId && b.project_id !== projId
+      );
+      const project = (localDB.projects || []).find((p: any) => p.id === projId || p.identifier === projId);
+      if (project) {
+        project.anchor = null;
+      }
+      saveDB();
+      try {
+        await uploadToIPFS(true);
+      } catch { }
+      return ok({ message: "Project unpublished successfully" });
+    }
   }
 
   // ── Auth endpoints ──────────────────────────────────────────────────
@@ -2289,7 +2838,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
     const groupBy = urlObj.searchParams.get("group_by");
 
-    if (groupBy) {
+    if (groupBy && groupBy !== "null" && groupBy !== "undefined" && groupBy !== "") {
       const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
       const groupedResults: Record<string, any> = {};
 
@@ -3039,6 +3588,7 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
       "search-issues",
       "user-properties",
       "epics-user-properties",
+      "project-deploy-boards",
     ];
     const collection = resourceSegments[0];
     return { collection, id: null, isPaginated: !unpaginated.includes(collection) };

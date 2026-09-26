@@ -4,7 +4,9 @@
  * See the LICENSE file for details.
  */
 
+import { useEffect } from "react";
 import { ThemeProvider } from "next-themes";
+import { initDAppDB } from "@plane/services";
 // components
 import { TranslationProvider } from "@plane/i18n";
 import { AppProgressBar } from "@/lib/b-progress";
@@ -13,6 +15,10 @@ import { StoreProvider } from "@/lib/store-provider";
 import { ToastProvider } from "@/lib/toast-provider";
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    initDAppDB().catch(() => {});
+  }, []);
+
   return (
     <ThemeProvider themes={["light", "dark"]} defaultTheme="system" enableSystem>
       <StoreProvider>

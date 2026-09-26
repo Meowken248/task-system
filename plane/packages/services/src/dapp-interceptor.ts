@@ -12,6 +12,9 @@ export {
   restoreFromIPFS,
   initDAppDB,
   syncDAppDBToChain,
+  uploadToIPFS,
+  fetchFromIPFS,
+  applyOffchainDB,
 } from "./dapp/chain";
 
 // ── Re-export types and storage utilities for modular consumers ──────────────

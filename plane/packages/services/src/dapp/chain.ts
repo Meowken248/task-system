@@ -476,10 +476,14 @@ export function scheduleIPFSUpload(): void {
 }
 
 export function getLastUploadedCID(): string | null {
-  if (isDirtyState) return null;
   if (lastUploadedCID) return lastUploadedCID;
   if (typeof window === "undefined") return null;
-  return localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) || localStorage.getItem("plane_dapp_ipfs_cid_local");
+  return (
+    localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) ||
+    localStorage.getItem("plane_dapp_ipfs_cid_local") ||
+    localStorage.getItem("plane_dapp_ipfs_cid_last_valid") ||
+    null
+  );
 }
 
 export function isIPFSUploading(): boolean {
@@ -540,6 +544,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentIssues = [...(localDB.issues || [])];
   const currentComments = [...(localDB.issue_comments || [])];
   const currentAttachments = [...(localDB.attachments || [])];
+  const currentDeployBoards = [...(localDB["project-deploy-boards"] || [])];
+  const currentMembers = [...(localDB.members || [])];
   const mergedDeletedWorkspaces = new Set<string>([
     ...(localDB._deleted_workspace_ids || []),
     ...(ipfsDB._deleted_workspace_ids || []),
@@ -684,6 +690,18 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   for (const a of currentAttachments) {
     if (!localDB.attachments.some((existing: any) => existing.id === a.id)) {
       localDB.attachments.push(a);
+    }
+  }
+  if (!localDB["project-deploy-boards"]) localDB["project-deploy-boards"] = [];
+  for (const b of currentDeployBoards) {
+    if (!localDB["project-deploy-boards"].some((existing: any) => existing.id === b.id || existing.anchor === b.anchor)) {
+      localDB["project-deploy-boards"].push(b);
+    }
+  }
+  if (!localDB.members) localDB.members = [];
+  for (const m of currentMembers) {
+    if (!localDB.members.some((existing: any) => existing.id === m.id)) {
+      localDB.members.push(m);
     }
   }
   if (!localDB.instance) localDB.instance = { ...defaultDB.instance };

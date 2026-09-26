@@ -30,6 +30,8 @@ export default defineConfig(() => ({
     alias: {
       // Next.js compatibility shims used within space
       "next/navigation": path.resolve(__dirname, "app/compat/next/navigation.ts"),
+      "@plane/services": path.resolve(__dirname, "../../packages/services/src/index.ts"),
+      "@plane/constants": path.resolve(__dirname, "../../packages/constants/src/index.ts"),
     },
     dedupe: ["react", "react-dom"],
   },

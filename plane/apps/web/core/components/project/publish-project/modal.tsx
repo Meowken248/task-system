@@ -19,6 +19,7 @@ import type { TProjectPublishLayouts, TProjectPublishSettings } from "@plane/typ
 import { Loader, ToggleSwitch, CustomSelect, ModalCore, EModalWidth } from "@plane/ui";
 // helpers
 import { copyTextToClipboard } from "@plane/utils";
+import { getLastUploadedCID } from "@plane/services";
 // hooks
 import { useProjectPublish } from "@/hooks/store/use-project-publish";
 
@@ -91,7 +92,14 @@ export const PublishProjectModal = observer(function PublishProjectModal(props: 
 
   const handlePublishProject = async (payload: Partial<TProjectPublishSettings>) => {
     if (!workspaceSlug) return;
-    await publishProject(workspaceSlug.toString(), projectId, payload);
+    await publishProject(workspaceSlug.toString(), projectId, payload).then((res) => {
+      setToast({
+        type: TOAST_TYPE.SUCCESS,
+        title: "Success!",
+        message: "Project published successfully!",
+      });
+      return res;
+    });
   };
 
   const handleUpdatePublishSettings = async (payload: Partial<TProjectPublishSettings>) => {
@@ -165,7 +173,8 @@ export const PublishProjectModal = observer(function PublishProjectModal(props: 
   }, [projectPublishSettings, reset]);
 
   const SPACE_APP_URL = (SPACE_BASE_URL.trim() === "" ? window.location.origin : SPACE_BASE_URL) + SPACE_BASE_PATH;
-  const publishLink = `${SPACE_APP_URL}/issues/${projectPublishSettings?.anchor}`;
+  const currentCid = (projectPublishSettings as any)?.cid || getLastUploadedCID();
+  const publishLink = `${SPACE_APP_URL}/issues/${projectPublishSettings?.anchor}${currentCid ? `?cid=${currentCid}` : ""}`;
 
   const handleCopyLink = () =>
     copyTextToClipboard(publishLink).then(() =>

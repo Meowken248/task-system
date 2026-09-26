@@ -20,4 +20,6 @@ export * from "./label";
 export * from "./state";
 export * from "./api.service";
 export * from "./dapp-interceptor";
+export * from "./dapp/routes";
+export * from "./dapp/store";
 export * from "./issue";

@@ -318,6 +318,27 @@ export class IssueFilterHelperStore implements IIssueFilterHelperStore {
       paginationParams.group_by = options.groupedBy;
     }
 
+    if (options.canGroup === false) {
+      delete paginationParams["group_by"];
+      delete paginationParams["sub_group_by"];
+    }
+
+    if (
+      paginationParams["group_by"] === null ||
+      (paginationParams["group_by"] as any) === "null" ||
+      (paginationParams["group_by"] as any) === "undefined"
+    ) {
+      delete paginationParams["group_by"];
+    }
+
+    if (
+      paginationParams["sub_group_by"] === null ||
+      (paginationParams["sub_group_by"] as any) === "null" ||
+      (paginationParams["sub_group_by"] as any) === "undefined"
+    ) {
+      delete paginationParams["sub_group_by"];
+    }
+
     // If before and after dates are sent from option to filter by then, add them to filter the options
     if (options.after && options.before) {
       paginationParams["target_date"] = `${options.after};after,${options.before};before`;
