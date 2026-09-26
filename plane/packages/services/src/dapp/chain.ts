@@ -169,7 +169,7 @@ const GET_USER_WORKSPACES_SELECTOR = "0xd7d19c4e";
 const GET_WORKSPACE_SELECTOR = "0x1cd7381a";
 
 export function getRpcUrl(): string {
-  return getEnvVar("VITE_RPC_URL") || "http://192.168.1.231:10746";
+  return getEnvVar("VITE_RPC_URL") || "http://192.168.1.231:10747";
 }
 
 function padHex(hex: string, bytes: number): string {

@@ -107,7 +107,7 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
 
   const rpcUrl =
     (typeof process !== "undefined" && process.env?.VITE_RPC_URL) ||
-    "http://192.168.1.231:10746";
+    "http://192.168.1.231:10747";
   const chainId = Number(
     (typeof process !== "undefined" && process.env?.VITE_CHAIN_ID) || "991"
   );
