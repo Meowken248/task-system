@@ -1,8 +1,36 @@
+import fs from "node:fs";
 import path from "node:path";
 import * as dotenv from "dotenv";
 import { reactRouter } from "@react-router/dev/vite";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
+
+function rootServiceWorkerPlugin(): Plugin {
+  const handler = (req: any, res: any, next: any) => {
+    const rawUrl = req.url ? req.url.split("?")[0] : "";
+    if (rawUrl === "/wallet-runtime-sw.js" || rawUrl === "/sw.js") {
+      const filePath = path.resolve(__dirname, "public", rawUrl.slice(1));
+      if (fs.existsSync(filePath)) {
+        res.setHeader("Content-Type", "application/javascript");
+        res.setHeader("Service-Worker-Allowed", "/");
+        res.writeHead(200);
+        fs.createReadStream(filePath).pipe(res);
+        return;
+      }
+    }
+    next();
+  };
+
+  return {
+    name: "serve-root-service-worker",
+    configureServer(server) {
+      server.middlewares.use(handler);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(handler);
+    },
+  };
+}
 
 dotenv.config({ path: path.resolve(__dirname, ".env") });
 const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8080";
@@ -32,6 +60,7 @@ export default defineConfig(() => ({
     assetsInlineLimit: 0,
   },
   plugins: [
+    rootServiceWorkerPlugin(),
     reactRouter(),
     tsconfigPaths({ projects: [path.resolve(__dirname, "tsconfig.json")] }),
   ],

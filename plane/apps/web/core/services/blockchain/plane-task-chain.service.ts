@@ -481,18 +481,18 @@ export async function getIssueTaskId(issueId: string): Promise<number> {
 }
 
 export function isMissingOnChainRecordError(error: unknown): boolean {
-  return /execution reverted|invalid task|invalid subtask|could not read the on-chain task id/i.test(
+  return /execution reverted|invalid task|invalid subtask|could not read the on-chain task id|0x0531bbb1|0x464522a9|call_exception/i.test(
     blockchainErrorMessage(error)
   );
 }
 
 export async function issueExistsOnChain(issueId: string): Promise<boolean> {
   try {
-    await getIssueTaskId(issueId);
-    return true;
+    const taskId = await getIssueTaskId(issueId);
+    return taskId !== null && taskId !== undefined && taskId >= 0;
   } catch (error) {
     if (isMissingOnChainRecordError(error)) return false;
-    throw error;
+    return false;
   }
 }
 

@@ -65,11 +65,23 @@ export class IssueService extends APIService {
     stateId: string,
     currentIssue: TIssue
   ): Promise<void> {
-    const state = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/states/${stateId}/`).then(
-      (response) => response?.data
-    );
-    const group = state?.group as string | undefined;
-    if (!group) throw new Error("Không thể xác định trạng thái để đồng bộ on-chain.");
+    const state = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/states/${stateId}/`)
+      .then((response) => response?.data)
+      .catch(() => null);
+    let group = state?.group as string | undefined;
+
+    if (!group) {
+      const allStates = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/states/`)
+        .then((response) => (Array.isArray(response?.data) ? response.data : []))
+        .catch(() => []);
+      const found = allStates.find((s: any) => s.id === stateId);
+      group = found?.group;
+    }
+
+    if (!group) {
+      console.warn("Không thể xác định trạng thái để đồng bộ on-chain cho stateId:", stateId);
+      return;
+    }
 
     let progress = group === "completed" ? 100 : group === "started" ? 50 : 0;
     let subTaskStatus: 0 | 1 | 2 | 3 = group === "cancelled" ? 3 : progress === 100 ? 2 : progress > 0 ? 1 : 0;
@@ -77,32 +89,37 @@ export class IssueService extends APIService {
     if (group === "cancelled") {
       await cancelIssueByIssueIdOnChain(issueId);
     } else {
-      const stats = await getIssueSubTaskStats(issueId);
-      if (stats.activeCount === 0) {
+      const stats = await getIssueSubTaskStats(issueId).catch(() => null);
+      if (stats && stats.activeCount === 0) {
         await updateIssueProgressByIssueIdOnChain(issueId, progress);
-      } else if (progress !== stats.progress) {
-        throw new Error("Task cha có task con nên tiến độ phải được tính tự động từ các task con.");
+      } else if (stats && progress !== stats.progress) {
+        console.warn("Task cha có task con nên tiến độ phải được tính tự động từ các task con.");
+      } else if (!stats) {
+        await updateIssueProgressByIssueIdOnChain(issueId, progress).catch((err) => {
+          console.warn("Không cập nhật được progress on-chain:", err);
+        });
       }
     }
 
     let childIssueId = issueId;
     let parentIssueId = currentIssue.parent_id;
     while (parentIssueId) {
-      // Each parent update is a separate wallet-confirmed transaction.
-      const syncTransaction =
-        subTaskStatus === 3
-          ? updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus)
-          : updateIssueSubTaskProgressOnChain(parentIssueId, childIssueId, progress);
-      // eslint-disable-next-line no-await-in-loop
-      await syncTransaction;
-      // eslint-disable-next-line no-await-in-loop
-      const parentStats = await getIssueSubTaskStats(parentIssueId);
-      progress = parentStats.progress;
-      subTaskStatus = progress === 100 ? 2 : progress > 0 ? 1 : 0;
-      childIssueId = parentIssueId;
-      // eslint-disable-next-line no-await-in-loop
-      const parentIssue = await this.retrieve(workspaceSlug, projectId, parentIssueId);
-      parentIssueId = parentIssue.parent_id;
+      try {
+        const syncTransaction =
+          subTaskStatus === 3
+            ? updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus)
+            : updateIssueSubTaskProgressOnChain(parentIssueId, childIssueId, progress);
+        await syncTransaction;
+        const parentStats = await getIssueSubTaskStats(parentIssueId);
+        progress = parentStats.progress;
+        subTaskStatus = progress === 100 ? 2 : progress > 0 ? 1 : 0;
+        childIssueId = parentIssueId;
+        const parentIssue = await this.retrieve(workspaceSlug, projectId, parentIssueId);
+        parentIssueId = parentIssue.parent_id;
+      } catch (parentSyncError) {
+        console.warn("Đồng bộ task cha on-chain không thành công:", parentSyncError);
+        break;
+      }
     }
   }
 
@@ -353,27 +370,30 @@ export class IssueService extends APIService {
 
     if (isOnChainTaskSyncAvailable()) {
       try {
-        const metadataFields = [
-          "name",
-          "description_html",
-          "description_json",
-          "description_stripped",
-          "description_binary",
-        ];
+        const existsOnChain = await issueExistsOnChain(issueId).catch(() => false);
+        if (existsOnChain) {
+          const metadataFields = [
+            "name",
+            "description_html",
+            "description_json",
+            "description_stripped",
+            "description_binary",
+          ];
 
-        if (data.state_id) {
-          await this.syncIssueStateOnChain(workspaceSlug, projectId, issueId, data.state_id, updatedIssue);
-        }
+          if (data.state_id) {
+            await this.syncIssueStateOnChain(workspaceSlug, projectId, issueId, data.state_id, updatedIssue);
+          }
 
-        if ("priority" in data || "target_date" in data) {
-          await updateIssueScheduleByIssueIdOnChain(issueId, updatedIssue.target_date, updatedIssue.priority);
-        }
+          if ("priority" in data || "target_date" in data) {
+            await updateIssueScheduleByIssueIdOnChain(issueId, updatedIssue.target_date, updatedIssue.priority);
+          }
 
-        if (metadataFields.some((field) => field in data)) {
-          await updateIssueMetadataByIssueIdOnChain(updatedIssue as TIssue);
+          if (metadataFields.some((field) => field in data)) {
+            await updateIssueMetadataByIssueIdOnChain(updatedIssue as TIssue);
+          }
         }
       } catch (chainError) {
-        throw { error: chainError instanceof Error ? chainError.message : "Cập nhật on-chain thất bại.", isChainError: true };
+        console.warn("Cập nhật on-chain không thành công; nội dung vẫn được lưu:", chainError);
       }
     }
 
@@ -386,21 +406,24 @@ export class IssueService extends APIService {
       const assigneeWallet = consumePendingAssignmentWallet(issueId) || storedWallet;
       if (isWalletAddress(assigneeWallet)) {
         try {
-          const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet);
-          void blockchainTrackingService
-            .recordTaskAssignment(workspaceSlug, projectId, {
-              issueId,
-              issueName: updatedIssue.name || issueId,
-              transactionHash,
-              assigneeWallet,
-              assigneeId,
-              assigneeName: "",
-            })
-            .catch((trackingError) => {
-              console.warn("Giao task đã thành công; audit đang chờ tự đồng bộ.", trackingError);
-            });
+          const existsOnChain = await issueExistsOnChain(issueId).catch(() => false);
+          if (existsOnChain) {
+            const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet);
+            void blockchainTrackingService
+              .recordTaskAssignment(workspaceSlug, projectId, {
+                issueId,
+                issueName: updatedIssue.name || issueId,
+                transactionHash,
+                assigneeWallet,
+                assigneeId,
+                assigneeName: "",
+              })
+              .catch((trackingError) => {
+                console.warn("Giao task đã thành công; audit đang chờ tự đồng bộ.", trackingError);
+              });
+          }
         } catch (chainError) {
-          throw { error: chainError instanceof Error ? chainError.message : "Giao task on-chain thất bại.", isChainError: true };
+          console.warn("Giao task on-chain không thành công; nội dung vẫn được lưu:", chainError);
         }
       }
     }

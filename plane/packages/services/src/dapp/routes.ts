@@ -2508,6 +2508,12 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     if (id) {
       let item = localDB[collection].find((r: any) => r.id === id || r.slug === id);
 
+      if (!item && collection === "states") {
+        item = (localDB.states || []).find(
+          (s: any) => s.id === id || s.group === id || s.name?.toLowerCase() === id?.toLowerCase()
+        );
+      }
+
       // Fallback: If id is a number (sequenceId), try finding by project id or identifier
       if (!item && collection === "issues") {
         const projMatch = url.match(/\/projects\/([^/]+)\//);
@@ -3297,9 +3303,36 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
   if (method === "patch" || method === "put") {
     if (!localDB[collection]) localDB[collection] = [];
-    const idx = localDB[collection].findIndex((r: any) => r.id === id || r.slug === id);
+    let idx = localDB[collection].findIndex((r: any) => r.id === id || r.slug === id);
+    if (idx === -1 && collection === "issues" && id) {
+      const projMatch = url.match(/\/projects\/([^/]+)\//);
+      const projOrIdentifier = projMatch ? projMatch[1] : null;
+      const seqId = parseInt(id, 10);
+      if (!isNaN(seqId) && projOrIdentifier) {
+        idx = localDB.issues.findIndex(
+          (r: any) =>
+            (r.project === projOrIdentifier ||
+              r.project_id === projOrIdentifier ||
+              r.project_detail?.identifier === projOrIdentifier) &&
+            r.sequence_id === seqId
+        );
+      }
+      if (idx === -1 && id.includes("-")) {
+        const [projIdentifier, seqIdStr] = id.split("-");
+        const sId = parseInt(seqIdStr, 10);
+        if (!isNaN(sId)) {
+          idx = localDB.issues.findIndex(
+            (r: any) => r.project_detail?.identifier === projIdentifier && r.sequence_id === sId
+          );
+        }
+      }
+    }
     if (idx > -1) {
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
+      if (collection === "issues") {
+        if (body.state_id) localDB[collection][idx].state = body.state_id;
+        if (body.state) localDB[collection][idx].state_id = body.state;
+      }
       saveDB();
       syncDAppRecord(collection, id!, localDB[collection][idx]);
 
