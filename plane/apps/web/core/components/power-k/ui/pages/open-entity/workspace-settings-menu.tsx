@@ -29,8 +29,6 @@ export const PowerKOpenWorkspaceSettingsMenu = observer(function PowerKOpenWorks
   // derived values
   const settingsList = Object.values(WORKSPACE_SETTINGS).filter(
     (setting) =>
-      setting.key !== "import" &&
-      setting.key !== "export" &&
       context.params.workspaceSlug &&
       allowPermissions(setting.access, EUserPermissionsLevel.WORKSPACE, context.params.workspaceSlug?.toString())
   );

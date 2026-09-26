@@ -22,16 +22,17 @@ export const useExportColumns = () => {
       key: "Exported By",
       content: "Exported By",
       tdRender: (rowData: RowData) => {
-        const { avatar_url, display_name, email } = rowData.initiated_by_detail;
+        const initiatedBy = rowData?.initiated_by_detail || {};
+        const { avatar_url, display_name, email } = initiatedBy;
         return (
           <div className="flex items-center gap-x-2">
             <div>
-              {avatar_url && avatar_url.trim() !== "" ? (
+              {avatar_url && typeof avatar_url === "string" && avatar_url.trim() !== "" ? (
                 <span className="relative flex h-4 w-4 items-center justify-center rounded-full text-on-color capitalize">
                   <img
                     src={getFileURL(avatar_url)}
                     className="absolute top-0 left-0 h-full w-full rounded-full object-cover"
-                    alt={display_name || email}
+                    alt={display_name || email || "User"}
                   />
                 </span>
               ) : (
@@ -40,7 +41,7 @@ export const useExportColumns = () => {
                 </span>
               )}
             </div>
-            <div>{display_name}</div>
+            <div>{display_name || email || "User"}</div>
           </div>
         );
       },
@@ -54,7 +55,7 @@ export const useExportColumns = () => {
     {
       key: "Exported projects",
       content: "Exported projects",
-      tdRender: (rowData: RowData) => <div className="text-13">{rowData.project.length} project(s)</div>,
+      tdRender: (rowData: RowData) => <div className="text-13">{(rowData?.project || []).length} project(s)</div>,
     },
     {
       key: "Format",

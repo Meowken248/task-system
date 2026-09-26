@@ -1432,6 +1432,100 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     });
   }
 
+  // ── Workspace Integrations & Import / Export ────────────────────────
+  if (url.includes("/api/integrations")) {
+    return ok([
+      {
+        id: "github-integration",
+        title: "GitHub",
+        provider: "github",
+        description: "Connect with GitHub with your Plane workspace to sync project work items.",
+        author: "Plane",
+        avatar_url: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        created_by: null,
+        updated_by: null,
+        verified: true,
+        webhook_secret: "",
+        webhook_url: "",
+        redirect_url: "",
+        network: 1,
+        metadata: {},
+      },
+      {
+        id: "slack-integration",
+        title: "Slack",
+        provider: "slack",
+        description: "Connect with Slack with your Plane workspace to sync project work items.",
+        author: "Plane",
+        avatar_url: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        created_by: null,
+        updated_by: null,
+        verified: true,
+        webhook_secret: "",
+        webhook_url: "",
+        redirect_url: "",
+        network: 1,
+        metadata: {},
+      },
+    ]);
+  }
+
+  if (url.includes("/workspace-integrations")) {
+    return ok(localDB.workspace_integrations || []);
+  }
+
+  if (url.includes("/importers")) {
+    return ok([]);
+  }
+
+  if (url.includes("/export-issues")) {
+    const userDetail = {
+      id: activeUser?.id || "user-default",
+      display_name: activeUser?.display_name || activeUser?.first_name || "User",
+      email: activeUser?.email || "",
+      avatar_url: activeUser?.avatar_url || activeUser?.avatar || "",
+    };
+    if (method === "post") {
+      const newExport = {
+        id: "exp-" + Date.now(),
+        provider: body?.provider || "csv",
+        status: "completed",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        url: "",
+        token: "",
+        created_by: userDetail.id,
+        updated_by: userDetail.id,
+        project: Array.isArray(body?.project) ? body.project : [],
+        initiated_by_detail: userDetail,
+      };
+      if (!localDB.exports) localDB.exports = [];
+      localDB.exports.unshift(newExport);
+      saveDB();
+      return ok(newExport);
+    }
+    const exports = (localDB.exports || []).map((exp: any) => ({
+      ...exp,
+      project: Array.isArray(exp?.project) ? exp.project : [],
+      initiated_by_detail: exp?.initiated_by_detail || userDetail,
+    }));
+    return ok({
+      count: exports.length,
+      extra_stats: null,
+      next_cursor: "",
+      next_page_results: false,
+      prev_cursor: "",
+      prev_page_results: false,
+      results: exports,
+      total_pages: 1,
+      total_results: exports.length,
+    });
+  }
+
   if (url.match(/\/api\/workspaces\/[^/]+\/members\/?(?:\?.*)?$/)) {
     const wsSlug = url.match(/\/api\/workspaces\/([^/]+)\/members\/?/)?.[1] || "";
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
