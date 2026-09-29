@@ -75,6 +75,7 @@ export default defineConfig(() => ({
       "next/script": path.resolve(__dirname, "app/compat/next/script.tsx"),
       "@plane/services": path.resolve(__dirname, "../../packages/services/src/index.ts"),
       "@plane/constants": path.resolve(__dirname, "../../packages/constants/src/index.ts"),
+      "@plane/utils": path.resolve(__dirname, "../../packages/utils/src/index.ts"),
       // nanoid: "C:/metanode-sdk/node_modules/.pnpm/nanoid@5.1.16/node_modules/nanoid",
     },
     dedupe: ["react", "react-dom", "@headlessui/react"],

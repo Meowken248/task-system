@@ -29,18 +29,31 @@ export const orderJoinedProjects = (
   let updatedSortOrder: number | undefined = undefined;
   const sortOrderDefaultValue = 10000;
 
+  let lastSortOrder = 0;
+  const normalizedProjects = joinedProjects.map((p, idx) => {
+    let order = typeof p.sort_order === "number" ? p.sort_order : (idx + 1) * sortOrderDefaultValue;
+    if (order <= lastSortOrder) {
+      order = lastSortOrder + sortOrderDefaultValue;
+    }
+    lastSortOrder = order;
+    return {
+      ...p,
+      sort_order: order,
+    };
+  });
+
   if (destinationIndex === 0) {
     // updating project at the top of the project
-    const currentSortOrder = joinedProjects[destinationIndex].sort_order || 0;
+    const currentSortOrder = normalizedProjects[destinationIndex].sort_order || 0;
     updatedSortOrder = currentSortOrder - sortOrderDefaultValue;
-  } else if (destinationIndex === joinedProjects.length) {
+  } else if (destinationIndex === normalizedProjects.length) {
     // updating project at the bottom of the project
-    const currentSortOrder = joinedProjects[destinationIndex - 1].sort_order || 0;
+    const currentSortOrder = normalizedProjects[destinationIndex - 1].sort_order || 0;
     updatedSortOrder = currentSortOrder + sortOrderDefaultValue;
   } else {
     // updating project in the middle of the project
-    const destinationTopProjectSortOrder = joinedProjects[destinationIndex - 1].sort_order || 0;
-    const destinationBottomProjectSortOrder = joinedProjects[destinationIndex].sort_order || 0;
+    const destinationTopProjectSortOrder = normalizedProjects[destinationIndex - 1].sort_order || 0;
+    const destinationBottomProjectSortOrder = normalizedProjects[destinationIndex].sort_order || 0;
     const updatedValue = (destinationTopProjectSortOrder + destinationBottomProjectSortOrder) / 2;
     updatedSortOrder = updatedValue;
   }

@@ -1678,12 +1678,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const deletedSet = new Set(localDB._deleted_project_ids || []);
     const projects = (localDB.projects || [])
       .filter((p: any) => !deletedSet.has(p.id) && !deletedSet.has(p.identifier))
-      .map((p: any) => {
+      .map((p: any, index: number) => {
         // Calculate next_work_item_sequence from actual issues
         const projectIssues = (localDB.issues || []).filter((i: any) => i.project === p.id || i.project_id === p.id);
         const maxSeq = projectIssues.reduce((max: number, i: any) => Math.max(max, i.sequence_id || 0), 0);
+        const sortOrder = typeof p.sort_order === "number" ? p.sort_order : (index + 1) * 10000;
         return Object.assign({}, p, {
           next_work_item_sequence: maxSeq + 1,
+          sort_order: sortOrder,
         });
       });
     return ok(projects);
@@ -2285,6 +2287,18 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         },
       };
       localDB.user_properties[key] = updated;
+
+      // Sync sort_order directly to localDB.projects so it persists
+      if (body?.sort_order !== undefined && projId) {
+        const pIdx = (localDB.projects || []).findIndex(
+          (p: any) => p.id === projId || p.identifier === projId
+        );
+        if (pIdx > -1) {
+          localDB.projects[pIdx].sort_order = body.sort_order;
+          syncDAppRecord("projects", localDB.projects[pIdx].id, localDB.projects[pIdx]);
+        }
+      }
+
       saveDB();
       return ok(updated);
     }
@@ -3334,6 +3348,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         );
         newRecord.sort_order = projLabels.length * 10000 + 10000;
       }
+    }
+
+    if (collection === "projects" && newRecord.sort_order === undefined) {
+      newRecord.sort_order = ((localDB.projects || []).length + 1) * 10000;
     }
 
     if (!localDB[collection]) localDB[collection] = [];
