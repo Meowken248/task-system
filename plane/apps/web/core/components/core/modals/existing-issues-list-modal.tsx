@@ -134,7 +134,10 @@ export function ExistingIssuesListModal(props: Props) {
     handleSearch();
   }, [debouncedSearchTerm, isOpen, isWorkspaceLevel, projectId, workspaceSlug]);
 
-  const filteredIssues = (Array.isArray(issues) ? issues : []).filter((issue) => !shouldHideIssue?.(issue));
+  const currentIssueId = searchParams?.issue_id;
+  const filteredIssues = (Array.isArray(issues) ? issues : []).filter(
+    (issue) => !shouldHideIssue?.(issue) && (!currentIssueId || issue.id !== currentIssueId)
+  );
 
   return (
     <ModalCore isOpen={isOpen} handleClose={handleClose} position={EModalPosition.CENTER} width={EModalWidth.XXL}>

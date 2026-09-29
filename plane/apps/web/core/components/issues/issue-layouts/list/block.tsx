@@ -144,11 +144,12 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
 
   if (!issue) return null;
 
+  const currentProjectId = projectId || issue.project_id;
   const projectIdentifier = getProjectIdentifierById(issue.project_id) || (issue as any).project_detail?.identifier;
   const isIssueSelected = selectionHelpers.getIsEntitySelected(issue.id);
   const isIssueActive = selectionHelpers.getIsEntityActive(issue.id);
   const isSubIssue = nestingLevel !== 0;
-  const canSelectIssues = canEditIssueProperties && !selectionHelpers.isSelectionDisabled;
+  const canSelectIssues = !selectionHelpers.isSelectionDisabled;
 
   const marginLeft = `${spacingLeft}px`;
 
@@ -220,7 +221,7 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
           <div className="flex flex-grow items-center gap-0.5 truncate">
             <div className="flex items-center gap-1" style={isSubIssue ? { marginLeft } : {}}>
               {/* select checkbox */}
-              {projectId && canSelectIssues && !isEpic && (
+              {currentProjectId && canSelectIssues && !isEpic && (
                 <Tooltip
                   tooltipContent={
                     <>
@@ -229,7 +230,7 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
                       project can be selected.
                     </>
                   }
-                  disabled={issue.project_id === projectId}
+                  disabled={issue.project_id === currentProjectId}
                 >
                   <div className="absolute left-1 grid w-3.5 flex-shrink-0 place-items-center">
                     <MultipleSelectEntityAction
@@ -242,7 +243,7 @@ export const IssueBlock = observer(function IssueBlock(props: IssueBlockProps) {
                       groupId={groupId}
                       id={issue.id}
                       selectionHelpers={selectionHelpers}
-                      disabled={issue.project_id !== projectId}
+                      disabled={issue.project_id !== currentProjectId}
                     />
                   </div>
                 </Tooltip>

@@ -211,6 +211,7 @@ export const IssueDetailWidgetModals = observer(function IssueDetailWidgetModals
           searchParams={{ issue_relation: true, issue_id: issueId }}
           handleOnSubmit={handleExistingIssueModalOnSubmit}
           workspaceLevelToggle
+          shouldHideIssue={(issue) => issue.id === issueId}
         />
       )}
 

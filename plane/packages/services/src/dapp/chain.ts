@@ -583,6 +583,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentAttachments = [...(localDB.attachments || [])];
   const currentDeployBoards = [...(localDB["project-deploy-boards"] || [])];
   const currentMembers = [...(localDB.members || [])];
+  const currentIssueRelations = [...(localDB.issue_relations || [])];
   const mergedDeletedWorkspaces = new Set<string>([
     ...(localDB._deleted_workspace_ids || []),
     ...(ipfsDB._deleted_workspace_ids || []),
@@ -782,6 +783,20 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   for (const m of currentMembers) {
     if (!localDB.members.some((existing: any) => existing.id === m.id)) {
       localDB.members.push(m);
+    }
+  }
+  if (!localDB.issue_relations) localDB.issue_relations = [];
+  for (const r of currentIssueRelations) {
+    if (
+      !localDB.issue_relations.some(
+        (existing: any) =>
+          existing.id === r.id ||
+          (existing.issue_id === r.issue_id &&
+            existing.related_issue_id === r.related_issue_id &&
+            existing.relation_type === r.relation_type)
+      )
+    ) {
+      localDB.issue_relations.push(r);
     }
   }
   if (!localDB.instance) localDB.instance = { ...defaultDB.instance };

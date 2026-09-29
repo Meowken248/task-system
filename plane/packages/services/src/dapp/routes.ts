@@ -2131,9 +2131,126 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
   // issue-relation
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/issue-relation\/?(?:\?.*)?$/)) {
-    if (method === "get") return ok({});
-    if (method === "post") return ok({ ...body });
+  const issueRelationMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/issue-relation\/?(?:\?.*)?$/);
+  if (issueRelationMatch) {
+    const issueId = issueRelationMatch[2];
+    if (!localDB.issue_relations) localDB.issue_relations = [];
+
+    if (method === "get") {
+      const relations = localDB.issue_relations.filter((r: any) => r.issue_id === issueId);
+      const res: Record<string, any[]> = {
+        relates_to: [],
+        duplicate: [],
+        blocked_by: [],
+        blocking: [],
+      };
+      for (const rel of relations) {
+        const relatedIssue = (localDB.issues || []).find((i: any) => i.id === rel.related_issue_id);
+        if (relatedIssue && res[rel.relation_type]) {
+          const stateDetail =
+            relatedIssue.state_detail ||
+            (localDB.states || []).find((s: any) => s.id === (relatedIssue.state_id || relatedIssue.state));
+          const projectDetail =
+            relatedIssue.project_detail ||
+            (localDB.projects || []).find((p: any) => p.id === (relatedIssue.project_id || relatedIssue.project));
+          res[rel.relation_type].push({
+            ...relatedIssue,
+            state_detail: stateDetail,
+            project_detail: projectDetail,
+          });
+        }
+      }
+      return ok(res);
+    }
+
+    if (method === "post") {
+      const relationType = body?.relation_type || "relates_to";
+      const targetIssueIds: string[] = Array.isArray(body?.issues) ? body.issues : [];
+      const reverseMap: Record<string, string> = {
+        blocked_by: "blocking",
+        blocking: "blocked_by",
+        duplicate: "duplicate",
+        relates_to: "relates_to",
+      };
+      const reverseRelationType = reverseMap[relationType] || relationType;
+
+      const addedIssues: any[] = [];
+
+      for (const targetId of targetIssueIds) {
+        if (!targetId || targetId === issueId) continue;
+
+        // Add forward relation
+        const existsForward = localDB.issue_relations.some(
+          (r: any) => r.issue_id === issueId && r.related_issue_id === targetId && r.relation_type === relationType
+        );
+        if (!existsForward) {
+          localDB.issue_relations.push({
+            id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+            issue_id: issueId,
+            related_issue_id: targetId,
+            relation_type: relationType,
+            created_at: new Date().toISOString(),
+          });
+        }
+
+        // Add reverse relation
+        const existsReverse = localDB.issue_relations.some(
+          (r: any) => r.issue_id === targetId && r.related_issue_id === issueId && r.relation_type === reverseRelationType
+        );
+        if (!existsReverse) {
+          localDB.issue_relations.push({
+            id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+            issue_id: targetId,
+            related_issue_id: issueId,
+            relation_type: reverseRelationType,
+            created_at: new Date().toISOString(),
+          });
+        }
+
+        const targetIssue = (localDB.issues || []).find((i: any) => i.id === targetId);
+        if (targetIssue) {
+          const stateDetail =
+            targetIssue.state_detail ||
+            (localDB.states || []).find((s: any) => s.id === (targetIssue.state_id || targetIssue.state));
+          const projectDetail =
+            targetIssue.project_detail ||
+            (localDB.projects || []).find((p: any) => p.id === (targetIssue.project_id || targetIssue.project));
+          addedIssues.push({
+            ...targetIssue,
+            state_detail: stateDetail,
+            project_detail: projectDetail,
+          });
+        }
+      }
+
+      saveDB();
+      return ok(addedIssues);
+    }
+  }
+
+  // remove-relation
+  const removeRelationMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/remove-relation\/?(?:\?.*)?$/);
+  if (removeRelationMatch && method === "post") {
+    const issueId = removeRelationMatch[2];
+    const relationType = body?.relation_type;
+    const relatedIssueId = body?.related_issue;
+    const reverseMap: Record<string, string> = {
+      blocked_by: "blocking",
+      blocking: "blocked_by",
+      duplicate: "duplicate",
+      relates_to: "relates_to",
+    };
+    const reverseRelationType = reverseMap[relationType] || relationType;
+
+    if (localDB.issue_relations) {
+      localDB.issue_relations = localDB.issue_relations.filter(
+        (r: any) =>
+          !(r.issue_id === issueId && r.related_issue_id === relatedIssueId && r.relation_type === relationType) &&
+          !(r.issue_id === relatedIssueId && r.related_issue_id === issueId && r.relation_type === reverseRelationType)
+      );
+      saveDB();
+    }
+    return ok({ message: "Relation removed successfully" });
   }
 
   // links
@@ -2222,6 +2339,50 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     return ok({ message: "Issues deleted successfully" });
   }
 
+  // Handle bulk-operation-issues endpoint
+  if (
+    (collection === "bulk-operation-issues" || url.includes("/bulk-operation-issues")) &&
+    method === "post"
+  ) {
+    const issueIds: string[] = Array.isArray(body?.issue_ids) ? body.issue_ids : [];
+    const propsToUpdate = body?.properties || {};
+    if (localDB.issues) {
+      localDB.issues = localDB.issues.map((i: any) => {
+        if (issueIds.includes(i.id)) {
+          const updated = { ...i, ...propsToUpdate, updated_at: new Date().toISOString() };
+          if (propsToUpdate.state_id) {
+            updated.state = propsToUpdate.state_id;
+            const stateObj = (localDB.states || []).find((s: any) => s.id === propsToUpdate.state_id);
+            if (stateObj) updated.state_detail = stateObj;
+          }
+          return updated;
+        }
+        return i;
+      });
+      saveDB();
+    }
+    return ok({ message: "Issues updated successfully" });
+  }
+
+  // Handle bulk-archive-issues endpoint
+  if (
+    (collection === "bulk-archive-issues" || url.includes("/bulk-archive-issues")) &&
+    method === "post"
+  ) {
+    const issueIds: string[] = Array.isArray(body?.issue_ids) ? body.issue_ids : [];
+    const archived_at = new Date().toISOString();
+    if (localDB.issues) {
+      localDB.issues = localDB.issues.map((i: any) => {
+        if (issueIds.includes(i.id)) {
+          return { ...i, archived_at };
+        }
+        return i;
+      });
+      saveDB();
+    }
+    return ok({ message: "Issues archived successfully", archived_at });
+  }
+
   // Handle mark-default endpoint for states
   if (url.includes("/states/") && url.includes("/mark-default/") && method === "post") {
     const match = url.match(/\/states\/([^/]+)\/mark-default/);
@@ -2247,9 +2408,16 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     const urlObj = new URL(url, "http://localhost");
     const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
     const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
+    const currentIssueId = urlObj.searchParams.get("issue_id");
 
-    let list = [...(localDB.issues || [])];
+    const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
+    let list = (localDB.issues || []).filter((item: any) => !deletedIssueSet.has(item.id));
     console.log(`[DApp CRUD] search-issues: total issues in DB = ${list.length}`);
+
+    // Exclude current issue itself if issue_id is provided
+    if (currentIssueId) {
+      list = list.filter((item: any) => item.id !== currentIssueId);
+    }
 
     // Filter by project if not workspace-level search
     if (!workspaceSearch) {
