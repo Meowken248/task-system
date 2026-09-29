@@ -2293,6 +2293,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
 
+  // ── Workspace Global Search endpoint (Power-K command palette) ───────
+  const workspaceSearchMatch = url.match(/\/workspaces\/([^/?]+)\/search(?:\/|\?|$)/);
+  if (workspaceSearchMatch && method.toLowerCase() === "get") {
+    const wsSlug = workspaceSearchMatch[1];
+    return handleWorkspaceGlobalSearch(url, wsSlug);
+  }
+
   // search-issues endpoint — delegate to handleCRUD
   if (url.includes("/search-issues") || url.includes("search-issues")) {
     return handleCRUD(method, url, body);
@@ -2301,12 +2308,298 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   return handleCRUD(method, url, body);
 }
 
+// ── Workspace Global Search handler (Power-K command palette) ─────────────
+function handleWorkspaceGlobalSearch(url: string, wsSlug: string): RouteResult {
+  let urlObj: URL;
+  try {
+    urlObj = new URL(url, "http://localhost");
+  } catch {
+    urlObj = new URL(url.replace(/^[a-zA-Z0-9_-]+:/, ""), "http://localhost");
+  }
+
+  const rawSearch = urlObj.searchParams.get("search") || "";
+  let searchTerm = "";
+  try {
+    searchTerm = decodeURIComponent(rawSearch).trim().toLowerCase();
+  } catch {
+    searchTerm = rawSearch.trim().toLowerCase();
+  }
+
+  const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
+  const projectIdParam = urlObj.searchParams.get("project_id");
+
+  const emptyResult = {
+    results: {
+      workspace: [],
+      project: [],
+      issue: [],
+      cycle: [],
+      module: [],
+      issue_view: [],
+      page: [],
+    },
+  };
+
+  if (!searchTerm) {
+    return ok(emptyResult);
+  }
+
+  // 1. Resolve workspace
+  const ws = (localDB.workspaces || []).find(
+    (w: any) =>
+      w.slug === wsSlug ||
+      w.id === wsSlug ||
+      w.slug?.toLowerCase() === wsSlug?.toLowerCase()
+  );
+  const actualWsSlug = ws?.slug || wsSlug;
+  const wsId = ws?.id || wsSlug;
+  const wsKeys = new Set([wsSlug, actualWsSlug, wsId].filter(Boolean));
+
+  // 2. Resolve projects in workspace
+  const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
+  const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
+
+  let allProjects = (localDB.projects || []).filter((p: any) => {
+    return wsKeys.has(p.workspace) || wsKeys.has(p.workspace_id);
+  });
+  if (allProjects.length === 0) {
+    allProjects = localDB.projects || [];
+  }
+
+  const projectMap = new Map<string, any>();
+  allProjects.forEach((p: any) => {
+    if (p.id) projectMap.set(p.id, p);
+    if (p.identifier) {
+      projectMap.set(p.identifier, p);
+      projectMap.set(p.identifier.toLowerCase(), p);
+    }
+  });
+
+  // Target project scope
+  const targetProject = allProjects.find(
+    (p: any) =>
+      p.id === projectIdParam ||
+      p.identifier === projectIdParam ||
+      p.identifier?.toLowerCase() === projectIdParam?.toLowerCase() ||
+      p.name?.toLowerCase() === projectIdParam?.toLowerCase()
+  );
+  const matchingProjectIds = new Set<string>();
+  if (targetProject) {
+    if (targetProject.id) matchingProjectIds.add(targetProject.id);
+    if (targetProject.identifier) matchingProjectIds.add(targetProject.identifier);
+  } else if (projectIdParam) {
+    matchingProjectIds.add(projectIdParam);
+  }
+
+  // ── 1. Workspaces ──
+  const workspaceResults: any[] = [];
+  if (workspaceSearch) {
+    (localDB.workspaces || []).forEach((w: any) => {
+      if (deletedWsSlugs.has(w.slug) || deletedWsIds.has(w.id)) return;
+      const nameMatch = (w.name || "").toLowerCase().includes(searchTerm);
+      const slugMatch = (w.slug || "").toLowerCase().includes(searchTerm);
+      if (nameMatch || slugMatch) {
+        workspaceResults.push({
+          id: w.id,
+          name: w.name || w.slug,
+          slug: w.slug,
+        });
+      }
+    });
+  }
+
+  // ── 2. Projects ──
+  const projectResults: any[] = [];
+  if (workspaceSearch) {
+    allProjects.forEach((p: any) => {
+      const nameMatch = (p.name || "").toLowerCase().includes(searchTerm);
+      const identifierMatch = (p.identifier || "").toLowerCase().includes(searchTerm);
+      if (nameMatch || identifierMatch) {
+        projectResults.push({
+          id: p.id,
+          identifier: p.identifier || "PROJ",
+          name: p.name || "Untitled Project",
+          workspace__slug: actualWsSlug,
+        });
+      }
+    });
+  }
+
+  // ── 3. Work items (Issues) ──
+  const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
+  const issueResults: any[] = [];
+
+  (localDB.issues || []).forEach((item: any) => {
+    if (deletedIssueSet.has(item.id)) return;
+    if (item.is_draft) return;
+    if (item.archived_at) return;
+
+    const itemProjId = item.project_id || item.project;
+    const proj = itemProjId ? projectMap.get(itemProjId) : null;
+    const projIdentifier = proj?.identifier || item.project_detail?.identifier || "PROJ";
+
+    // Scope check: if workspaceSearch is false, restrict to selected project
+    if (!workspaceSearch && matchingProjectIds.size > 0) {
+      const belongsToProj =
+        (itemProjId && matchingProjectIds.has(itemProjId)) ||
+        matchingProjectIds.has(projIdentifier);
+      if (!belongsToProj) return;
+    } else if (workspaceSearch && allProjects.length > 0) {
+      // Must belong to current workspace projects or workspace
+      const belongsToWs =
+        (itemProjId && projectMap.has(itemProjId)) ||
+        wsKeys.has(item.workspace) ||
+        wsKeys.has(item.workspace_id);
+      if (!belongsToWs) return;
+    }
+
+    // Match search term against:
+    // - issue name
+    // - sequence_id
+    // - full identifier (e.g. "NET-2")
+    const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
+    const seqStr = String(item.sequence_id ?? "");
+    const seqMatch = seqStr === searchTerm || (seqStr.length > 0 && seqStr.includes(searchTerm));
+    const cleanSearchTerm = searchTerm.replace(/^#/, "");
+    const fullIdentifier = `${projIdentifier}-${seqStr}`.toLowerCase();
+    const identifierMatch =
+      fullIdentifier.includes(searchTerm) ||
+      fullIdentifier.includes(cleanSearchTerm) ||
+      (cleanSearchTerm !== "" && cleanSearchTerm === seqStr);
+
+    if (nameMatch || seqMatch || identifierMatch) {
+      issueResults.push({
+        id: item.id,
+        name: item.name || "",
+        project__identifier: projIdentifier,
+        project_id: proj?.id || itemProjId,
+        sequence_id: item.sequence_id || 0,
+        workspace__slug: actualWsSlug,
+        type_id: item.type_id || item.type || "",
+      });
+    }
+  });
+
+  // ── 4. Cycles ──
+  const cycleResults: any[] = [];
+  (localDB.cycles || []).forEach((item: any) => {
+    const itemProjId = item.project_id || item.project;
+    if (!workspaceSearch && matchingProjectIds.size > 0) {
+      if (!itemProjId || !matchingProjectIds.has(itemProjId)) return;
+    }
+    const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
+    if (nameMatch) {
+      const proj = itemProjId ? projectMap.get(itemProjId) : null;
+      cycleResults.push({
+        id: item.id,
+        name: item.name || "",
+        project_id: proj?.id || itemProjId,
+        project__identifier: proj?.identifier || "PROJ",
+        workspace__slug: actualWsSlug,
+      });
+    }
+  });
+
+  // ── 5. Modules ──
+  const moduleResults: any[] = [];
+  (localDB.modules || []).forEach((item: any) => {
+    const itemProjId = item.project_id || item.project;
+    if (!workspaceSearch && matchingProjectIds.size > 0) {
+      if (!itemProjId || !matchingProjectIds.has(itemProjId)) return;
+    }
+    const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
+    if (nameMatch) {
+      const proj = itemProjId ? projectMap.get(itemProjId) : null;
+      moduleResults.push({
+        id: item.id,
+        name: item.name || "",
+        project_id: proj?.id || itemProjId,
+        project__identifier: proj?.identifier || "PROJ",
+        workspace__slug: actualWsSlug,
+      });
+    }
+  });
+
+  // ── 6. Views ──
+  const viewResults: any[] = [];
+  (localDB.views || []).forEach((item: any) => {
+    const itemProjId = item.project_id || item.project;
+    if (!workspaceSearch && matchingProjectIds.size > 0) {
+      if (!itemProjId || !matchingProjectIds.has(itemProjId)) return;
+    }
+    const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
+    if (nameMatch) {
+      const proj = itemProjId ? projectMap.get(itemProjId) : null;
+      viewResults.push({
+        id: item.id,
+        name: item.name || "",
+        project_id: proj?.id || itemProjId,
+        project__identifier: proj?.identifier || "PROJ",
+        workspace__slug: actualWsSlug,
+      });
+    }
+  });
+
+  // ── 7. Pages ──
+  const pageResults: any[] = [];
+  (localDB.pages || []).forEach((item: any) => {
+    const itemProjId = item.project_id || item.project;
+    if (!workspaceSearch && matchingProjectIds.size > 0) {
+      const pids = Array.isArray(item.project_ids)
+        ? item.project_ids
+        : (itemProjId ? [itemProjId] : []);
+      const hasMatch = pids.some((pid: string) => matchingProjectIds.has(pid));
+      if (!hasMatch) return;
+    }
+    const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
+    if (nameMatch) {
+      const proj = itemProjId ? projectMap.get(itemProjId) : null;
+      const project_ids = Array.isArray(item.project_ids)
+        ? item.project_ids
+        : (itemProjId ? [itemProjId] : []);
+      const project__identifiers = Array.isArray(item.project__identifiers)
+        ? item.project__identifiers
+        : (proj?.identifier ? [proj.identifier] : []);
+      pageResults.push({
+        id: item.id,
+        name: item.name || "",
+        project_ids,
+        project__identifiers,
+        workspace__slug: actualWsSlug,
+      });
+    }
+  });
+
+  console.log(
+    `[DApp Search] term="${searchTerm}", ws="${actualWsSlug}", proj="${projectIdParam || "all"}", results: issues=${issueResults.length}, projects=${projectResults.length}`
+  );
+
+  return ok({
+    results: {
+      workspace: workspaceResults,
+      project: projectResults,
+      issue: issueResults,
+      cycle: cycleResults,
+      module: moduleResults,
+      issue_view: viewResults,
+      page: pageResults,
+    },
+  });
+}
+
 // ── Generic CRUD handler ─────────────────────────────────────────────────
 function handleCRUD(method: string, url: string, body: Record<string, any>): RouteResult {
   let { collection, id, isPaginated } = parseApiUrl(url);
   console.log(
     `[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`
   );
+
+  // Handle workspace global search
+  if (collection === "search" && method === "get") {
+    const wsMatch = url.match(/\/workspaces\/([^/?]+)/);
+    const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+    return handleWorkspaceGlobalSearch(url, wsSlug);
+  }
 
   // Handle bulk-delete-issues endpoint
   if (
