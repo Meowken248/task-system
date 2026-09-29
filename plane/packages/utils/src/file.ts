@@ -213,3 +213,28 @@ export async function getAttachmentFromStorage(
   }
 }
 
+/**
+ * @description deletes an attachment from local IndexedDB and fallback storage
+ */
+export async function deleteAttachmentFromStorage(key: string): Promise<void> {
+  if (!key) return;
+  try {
+    const db = await openAttachmentDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      store.delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // fallback
+  }
+
+  try {
+    sessionStorage.removeItem(`plane_att_${key}`);
+  } catch {
+    // ignore
+  }
+}
+

@@ -7,15 +7,14 @@
 import type { AxiosRequestConfig } from "axios";
 import { API_BASE_URL } from "@plane/constants";
 // plane types
-import { getFileMetaDataForUpload, generateFileUploadPayload } from "@plane/services";
-import type { TIssueAttachment, TIssueAttachmentUploadResponse, TIssueServiceType } from "@plane/types";
+import type { TIssueAttachment, TIssueServiceType } from "@plane/types";
 import { EIssueServiceType } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isOnChainTaskSyncAvailable, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
-import { FileUploadService } from "@plane/services";
-import { saveAttachmentToStorage } from "@plane/utils";
+import { FileUploadService, localDB, saveDB } from "@plane/services";
+import { saveAttachmentToStorage, deleteAttachmentFromStorage } from "@plane/utils";
 
 export class IssueAttachmentService extends APIService {
   private fileUploadService: FileUploadService;
@@ -39,6 +38,13 @@ export class IssueAttachmentService extends APIService {
       throw new Error("Không thể kết nối với hệ thống Blockchain. Không thể tải file đính kèm.");
     }
 
+    // Step 1: Initial upload progress (30%)
+    uploadProgressHandler?.({
+      loaded: Math.floor(file.size * 0.3),
+      total: file.size,
+      progress: 0.3,
+    } as any);
+
     const formData = new FormData();
     formData.append("asset", file);
 
@@ -48,6 +54,13 @@ export class IssueAttachmentService extends APIService {
     } catch (uploadError) {
       throw { error: uploadError instanceof Error ? uploadError.message : "Tải file lên hệ thống phi tập trung thất bại." };
     }
+
+    // Step 2: File processed and hashed (70%)
+    uploadProgressHandler?.({
+      loaded: Math.floor(file.size * 0.7),
+      total: file.size,
+      progress: 0.7,
+    } as any);
 
     const assetId = uploadResult?.asset || uploadResult?.id || "unknown-asset";
     const evidenceReference = `${assetId}:${file.name}:${file.size}:${file.lastModified}`;
@@ -88,7 +101,7 @@ export class IssueAttachmentService extends APIService {
       }
     }
 
-    return {
+    const attachmentRecord: TIssueAttachment = {
       id: attachmentId,
       asset_url: assetUrl,
       attributes: {
@@ -104,12 +117,28 @@ export class IssueAttachmentService extends APIService {
       workspace: workspaceSlug,
       issue: issueId,
     } as unknown as TIssueAttachment;
+
+    // Persist attachment into localDB for query across sessions
+    if (!localDB.attachments) {
+      localDB.attachments = [];
+    }
+    localDB.attachments = localDB.attachments.filter((a: any) => a.id !== attachmentId);
+    localDB.attachments.push(attachmentRecord);
+    saveDB();
+
+    // Step 3: Complete progress (100%)
+    uploadProgressHandler?.({
+      loaded: file.size,
+      total: file.size,
+      progress: 1.0,
+    } as any);
+
+    return attachmentRecord;
   }
 
   async getIssueAttachments(workspaceSlug: string, projectId: string, issueId: string): Promise<TIssueAttachment[]> {
-    // TODO: Cần thay bằng gọi Smart Contract thật hoặc indexer.
-    // Tạm thời trả về mảng rỗng để không phụ thuộc vào mock server.
-    return [];
+    const allAttachments = localDB.attachments || [];
+    return allAttachments.filter((a: any) => a.issue === issueId || a.issue_id === issueId);
   }
 
   async deleteIssueAttachment(
@@ -118,6 +147,17 @@ export class IssueAttachmentService extends APIService {
     issueId: string,
     assetId: string
   ): Promise<TIssueAttachment> {
-    throw { error: "Xóa tệp đính kèm trên blockchain chưa được hỗ trợ." };
+    const allAttachments = localDB.attachments || [];
+    const target = allAttachments.find((a: any) => a.id === assetId || a.asset === assetId);
+    localDB.attachments = allAttachments.filter((a: any) => a.id !== assetId && a.asset !== assetId);
+    saveDB();
+
+    void deleteAttachmentFromStorage(assetId).catch(() => {});
+    if (target?.id && target.id !== assetId) {
+      void deleteAttachmentFromStorage(target.id).catch(() => {});
+    }
+
+    return (target || { id: assetId, issue_id: issueId }) as TIssueAttachment;
   }
 }
+

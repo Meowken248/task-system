@@ -2131,12 +2131,24 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
   // attachments
-  const attachmentsMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/attachments\/?(?:\?.*)?$/);
+  const attachmentsMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/attachments(?:\/([^/]+))?\/?(?:\?.*)?$/);
   if (attachmentsMatch) {
     const issueId = attachmentsMatch[2];
+    const attachmentId = attachmentsMatch[3];
     if (method === "get") {
+      if (attachmentId) {
+        const found = (localDB["attachments"] || []).find((a: any) => a.id === attachmentId || a.asset === attachmentId);
+        return found ? ok(found) : { data: null, status: 404 };
+      }
       const attachments = (localDB["attachments"] || []).filter((a: any) => a.issue === issueId || a.issue_id === issueId);
       return ok(attachments);
+    }
+    if (method === "delete" && attachmentId) {
+      if (localDB["attachments"]) {
+        localDB["attachments"] = localDB["attachments"].filter((a: any) => a.id !== attachmentId && a.asset !== attachmentId);
+        saveDB();
+      }
+      return ok({});
     }
   }
 
@@ -2720,13 +2732,16 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
         const projectDetail =
           item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
+        const issueAttachments = (localDB["attachments"] || []).filter(
+          (a: any) => a.issue === item.id || a.issue_id === item.id
+        );
         return ok({
           is_subscribed: false,
           issue_reactions: [],
           issue_link: [],
-          issue_attachments: [],
           parent: null,
           ...item,
+          issue_attachments: issueAttachments.length > 0 ? issueAttachments : (item.issue_attachments || []),
           project_id: item.project_id || item.project,
           workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
           state_id: item.state_id || item.state,
