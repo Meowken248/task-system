@@ -2222,6 +2222,26 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     return ok({ message: "Issues deleted successfully" });
   }
 
+  // Handle mark-default endpoint for states
+  if (url.includes("/states/") && url.includes("/mark-default/") && method === "post") {
+    const match = url.match(/\/states\/([^/]+)\/mark-default/);
+    const targetStateId = match ? match[1] : id;
+    if (targetStateId && localDB.states) {
+      const targetState = localDB.states.find((s: any) => s.id === targetStateId);
+      if (targetState) {
+        const targetProjId = targetState.project || targetState.project_id;
+        localDB.states.forEach((s: any) => {
+          if (s.project === targetProjId || s.project_id === targetProjId) {
+            s.default = s.id === targetStateId;
+          }
+        });
+        saveDB();
+        return ok(targetState);
+      }
+    }
+    return ok({ message: "Default state updated" });
+  }
+
   // Handle search-issues directly — return ISearchIssueResponse[] format
   if (collection === "search-issues" && method === "get") {
     const urlObj = new URL(url, "http://localhost");
@@ -2782,7 +2802,13 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     if (collection === "states" && url.includes("/projects/")) {
       const projId = id || url.match(/\/projects\/([^/]+)\//)?.[1];
       if (projId) {
-        const projStates = list.filter((s: any) => s.project === projId);
+        const targetProj = (localDB.projects || []).find(
+          (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+        );
+        const matchingProjIds = new Set(
+          [projId, targetProj?.id, targetProj?.identifier].filter(Boolean)
+        );
+        const projStates = list.filter((s: any) => matchingProjIds.has(s.project) || matchingProjIds.has(s.project_id));
         if (projStates.length === 0) {
           const match = url.match(/\/api\/workspaces\/([^/]+)\//);
           const wsSlug = match ? match[1] : "unknown";
@@ -2791,14 +2817,17 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
             const ws = localDB.workspaces.find((w: any) => w.slug === wsSlug);
             if (ws) wsId = ws.id;
           }
+          const actualProjId = targetProj?.id || projId;
 
           const defaultStates = [
             {
               id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
               name: "Backlog",
               group: "backlog",
-              project: projId,
+              project: actualProjId,
+              project_id: actualProjId,
               workspace: wsId,
+              workspace_id: wsId,
               sequence: 15000,
               color: "#a3a3a3",
               default: true,
@@ -2807,8 +2836,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
               id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
               name: "Unstarted",
               group: "unstarted",
-              project: projId,
+              project: actualProjId,
+              project_id: actualProjId,
               workspace: wsId,
+              workspace_id: wsId,
               sequence: 25000,
               color: "#3f3f46",
               default: false,
@@ -2817,8 +2848,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
               id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
               name: "Started",
               group: "started",
-              project: projId,
+              project: actualProjId,
+              project_id: actualProjId,
               workspace: wsId,
+              workspace_id: wsId,
               sequence: 35000,
               color: "#f59e0b",
               default: false,
@@ -2827,8 +2860,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
               id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
               name: "Completed",
               group: "completed",
-              project: projId,
+              project: actualProjId,
+              project_id: actualProjId,
               workspace: wsId,
+              workspace_id: wsId,
               sequence: 45000,
               color: "#16a34a",
               default: false,
@@ -2837,8 +2872,10 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
               id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
               name: "Cancelled",
               group: "cancelled",
-              project: projId,
+              project: actualProjId,
+              project_id: actualProjId,
               workspace: wsId,
+              workspace_id: wsId,
               sequence: 55000,
               color: "#ef4444",
               default: false,
@@ -3415,6 +3452,37 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           (l: any) => l.project === newRecord.project || l.project_id === newRecord.project_id
         );
         newRecord.sort_order = projLabels.length * 10000 + 10000;
+      }
+    }
+
+    if (collection === "states") {
+      const match = url.match(/\/projects\/([^/]+)\//);
+      if (match) {
+        const projId = match[1];
+        const project = (localDB.projects || []).find(
+          (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+        );
+        const canonicalProjId = project?.id || projId;
+        newRecord.project = canonicalProjId;
+        newRecord.project_id = canonicalProjId;
+      }
+      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+      if (wsMatch) {
+        const wsSlug = wsMatch[1];
+        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+        newRecord.workspace = ws?.id || wsSlug;
+        newRecord.workspace_id = ws?.id || wsSlug;
+      }
+      if (!newRecord.color) newRecord.color = "#3f3f46";
+      if (newRecord.default === undefined) newRecord.default = false;
+      if (newRecord.sequence === undefined) {
+        const projStates = (localDB.states || []).filter(
+          (s: any) =>
+            (s.project === newRecord.project || s.project_id === newRecord.project_id) &&
+            s.group === newRecord.group
+        );
+        const maxSeq = projStates.reduce((max: number, s: any) => Math.max(max, s.sequence || 0), 0);
+        newRecord.sequence = maxSeq > 0 ? maxSeq + 10000 : 15000;
       }
     }
 

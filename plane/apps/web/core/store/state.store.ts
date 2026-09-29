@@ -286,7 +286,15 @@ export class StateStore implements IStateStore {
   createState = async (workspaceSlug: string, projectId: string, data: Partial<IState>) =>
     await this.stateService.createState(workspaceSlug, projectId, data).then((response) => {
       runInAction(() => {
-        set(this.stateMap, [response?.id], response);
+        const fullRecord: IState = {
+          ...response,
+          project_id: response?.project_id || (response as any)?.project || projectId,
+          workspace_id: response?.workspace_id || (response as any)?.workspace || workspaceSlug,
+        };
+        this.stateMap = {
+          ...this.stateMap,
+          [response?.id]: fullRecord,
+        };
       });
       return response;
     });
@@ -303,9 +311,20 @@ export class StateStore implements IStateStore {
     const originalState = this.stateMap[stateId];
     try {
       runInAction(() => {
-        set(this.stateMap, [stateId], { ...this.stateMap?.[stateId], ...data });
+        this.stateMap = {
+          ...this.stateMap,
+          [stateId]: { ...this.stateMap?.[stateId], ...data },
+        };
       });
       const response = await this.stateService.patchState(workspaceSlug, projectId, stateId, data);
+      runInAction(() => {
+        if (response) {
+          this.stateMap = {
+            ...this.stateMap,
+            [stateId]: { ...this.stateMap?.[stateId], ...response },
+          };
+        }
+      });
       return response;
     } catch (error) {
       runInAction(() => {
@@ -328,7 +347,9 @@ export class StateStore implements IStateStore {
     if (!this.stateMap?.[stateId]) return;
     await this.stateService.deleteState(workspaceSlug, projectId, stateId).then(() => {
       runInAction(() => {
-        delete this.stateMap[stateId];
+        const nextMap = { ...this.stateMap };
+        delete nextMap[stateId];
+        this.stateMap = nextMap;
       });
     });
   };
@@ -342,12 +363,18 @@ export class StateStore implements IStateStore {
   markStateAsDefault = async (workspaceSlug: string, projectId: string, stateId: string) => {
     const originalStates = this.stateMap;
     const currentDefaultState = Object.values(this.stateMap).find(
-      (state) => state.project_id === projectId && state.default
+      (state) => (state.project_id === projectId || (state as any).project === projectId) && state.default
     );
     try {
       runInAction(() => {
-        if (currentDefaultState) set(this.stateMap, [currentDefaultState.id, "default"], false);
-        set(this.stateMap, [stateId, "default"], true);
+        const nextMap = { ...this.stateMap };
+        if (currentDefaultState && nextMap[currentDefaultState.id]) {
+          nextMap[currentDefaultState.id] = { ...nextMap[currentDefaultState.id], default: false };
+        }
+        if (nextMap[stateId]) {
+          nextMap[stateId] = { ...nextMap[stateId], default: true };
+        }
+        this.stateMap = nextMap;
       });
       await this.stateService.markDefault(workspaceSlug, projectId, stateId);
     } catch (error) {
@@ -370,10 +397,14 @@ export class StateStore implements IStateStore {
   moveStatePosition = async (workspaceSlug: string, projectId: string, stateId: string, payload: Partial<IState>) => {
     const originalStates = this.stateMap;
     try {
-      Object.entries(payload).forEach(([key, value]) => {
-        runInAction(() => {
-          set(this.stateMap, [stateId, key], value);
-        });
+      runInAction(() => {
+        this.stateMap = {
+          ...this.stateMap,
+          [stateId]: {
+            ...this.stateMap?.[stateId],
+            ...payload,
+          },
+        };
       });
       // updating using api
       await this.stateService.patchState(workspaceSlug, projectId, stateId, payload);

@@ -426,7 +426,8 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
     (localDB.users && localDB.users.length > 0) ||
     (localDB.workspaces && localDB.workspaces.length > 0) ||
     (localDB.projects && localDB.projects.length > 0) ||
-    (localDB.issues && localDB.issues.length > 0);
+    (localDB.issues && localDB.issues.length > 0) ||
+    (localDB.states && localDB.states.length > 0);
 
   const existingCID =
     lastUploadedCID ||
@@ -574,6 +575,10 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentWorkspaces = [...(localDB.workspaces || [])];
   const currentUsers = [...(localDB.users || [])];
   const currentIssues = [...(localDB.issues || [])];
+  const currentStates = [...(localDB.states || [])];
+  const currentLabels = [...(localDB.labels || [])];
+  const currentCycles = [...(localDB.cycles || [])];
+  const currentModules = [...(localDB.modules || [])];
   const currentComments = [...(localDB.issue_comments || [])];
   const currentAttachments = [...(localDB.attachments || [])];
   const currentDeployBoards = [...(localDB["project-deploy-boards"] || [])];
@@ -664,6 +669,23 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   });
 
   if (!localDB.states) localDB.states = [];
+  for (const s of currentStates) {
+    if (
+      !mergedDeletedProjects.has(s.project) &&
+      !mergedDeletedProjects.has(s.project_id)
+    ) {
+      const existingIdx = localDB.states.findIndex((existing: any) => existing.id === s.id);
+      if (existingIdx === -1) {
+        localDB.states.push(s);
+      } else {
+        const localUpdated = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+        const ipfsUpdated = localDB.states[existingIdx].updated_at ? new Date(localDB.states[existingIdx].updated_at).getTime() : 0;
+        if (localUpdated >= ipfsUpdated) {
+          localDB.states[existingIdx] = { ...localDB.states[existingIdx], ...s };
+        }
+      }
+    }
+  }
   localDB.states = localDB.states.filter(
     (s: any) => !mergedDeletedProjects.has(s.project) && !mergedDeletedProjects.has(s.project_id)
   );
@@ -692,21 +714,47 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     );
   }
 
-  if (localDB.labels) {
-    localDB.labels = localDB.labels.filter(
-      (l: any) => !mergedDeletedProjects.has(l.project) && !mergedDeletedProjects.has(l.project_id)
-    );
+  if (!localDB.labels) localDB.labels = [];
+  for (const l of currentLabels) {
+    if (
+      !mergedDeletedProjects.has(l.project) &&
+      !mergedDeletedProjects.has(l.project_id) &&
+      !localDB.labels.some((existing: any) => existing.id === l.id)
+    ) {
+      localDB.labels.push(l);
+    }
   }
-  if (localDB.cycles) {
-    localDB.cycles = localDB.cycles.filter(
-      (c: any) => !mergedDeletedProjects.has(c.project) && !mergedDeletedProjects.has(c.project_id)
-    );
+  localDB.labels = localDB.labels.filter(
+    (l: any) => !mergedDeletedProjects.has(l.project) && !mergedDeletedProjects.has(l.project_id)
+  );
+
+  if (!localDB.cycles) localDB.cycles = [];
+  for (const c of currentCycles) {
+    if (
+      !mergedDeletedProjects.has(c.project) &&
+      !mergedDeletedProjects.has(c.project_id) &&
+      !localDB.cycles.some((existing: any) => existing.id === c.id)
+    ) {
+      localDB.cycles.push(c);
+    }
   }
-  if (localDB.modules) {
-    localDB.modules = localDB.modules.filter(
-      (m: any) => !mergedDeletedProjects.has(m.project) && !mergedDeletedProjects.has(m.project_id)
-    );
+  localDB.cycles = localDB.cycles.filter(
+    (c: any) => !mergedDeletedProjects.has(c.project) && !mergedDeletedProjects.has(c.project_id)
+  );
+
+  if (!localDB.modules) localDB.modules = [];
+  for (const m of currentModules) {
+    if (
+      !mergedDeletedProjects.has(m.project) &&
+      !mergedDeletedProjects.has(m.project_id) &&
+      !localDB.modules.some((existing: any) => existing.id === m.id)
+    ) {
+      localDB.modules.push(m);
+    }
   }
+  localDB.modules = localDB.modules.filter(
+    (m: any) => !mergedDeletedProjects.has(m.project) && !mergedDeletedProjects.has(m.project_id)
+  );
   if (localDB.project_members) {
     localDB.project_members = localDB.project_members.filter(
       (pm: any) => !mergedDeletedProjects.has(pm.project) && !mergedDeletedProjects.has(pm.project_id)
@@ -1155,6 +1203,7 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
 
 // ── Connect Hooks ────────────────────────────────────────────────────────
 registerSaveHook(() => {
+  isDirtyState = true;
   scheduleIPFSUpload();
 });
 
