@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { observer } from "mobx-react";
 import { useForm, Controller } from "react-hook-form";
 // plane imports
@@ -55,11 +55,30 @@ export const CommentCreate = observer(function CommentCreate(props: TCommentCrea
     watch,
     formState: { isSubmitting },
     reset,
+    setValue,
   } = useForm<Partial<TIssueComment>>({
     defaultValues: {
       comment_html: "<p></p>",
     },
   });
+
+  useEffect(() => {
+    const handleReplyEvent = (e: any) => {
+      if (e.detail?.entityId && e.detail.entityId !== entityId) return;
+      const author = e.detail?.authorName || "user";
+      const replyHtml = `<p>@${author} </p>`;
+      editorRef.current?.setEditorValue(replyHtml);
+      setValue("comment_html", replyHtml);
+      const editorElem = document.getElementById("add_comment_" + entityId);
+      if (editorElem) {
+        editorElem.scrollIntoView({ behavior: "smooth", block: "center" });
+        const editable = editorElem.querySelector('[contenteditable="true"]') as HTMLElement | null;
+        editable?.focus();
+      }
+    };
+    window.addEventListener("plane:reply-comment", handleReplyEvent);
+    return () => window.removeEventListener("plane:reply-comment", handleReplyEvent);
+  }, [entityId, setValue]);
 
   const onSubmit = async (formData: Partial<TIssueComment>) => {
     try {
@@ -132,6 +151,7 @@ export const CommentCreate = observer(function CommentCreate(props: TCommentCrea
                 onChange={(comment_json, comment_html) => onChange(comment_html)}
                 accessSpecifier={accessValue ?? EIssueCommentAccessSpecifier.INTERNAL}
                 handleAccessChange={onAccessChange}
+                showAccessSpecifier={true}
                 isSubmitting={isSubmitting}
                 uploadFile={async (blockId, file) => {
                   const { asset_id } = await activityOperations.uploadCommentAsset(blockId, file);

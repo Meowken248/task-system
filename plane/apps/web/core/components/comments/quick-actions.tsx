@@ -8,16 +8,16 @@ import { useMemo } from "react";
 import { observer } from "mobx-react";
 import { MoreHorizontal } from "lucide-react";
 // plane imports
-import { EIssueCommentAccessSpecifier } from "@plane/constants";
+import { EIssueCommentAccessSpecifier, EUserPermissions } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
 import { IconButton } from "@plane/propel/icon-button";
-import { LinkIcon, GlobeIcon, LockIcon, EditIcon, TrashIcon } from "@plane/propel/icons";
+import { LinkIcon, GlobeIcon, LockIcon, EditIcon, TrashIcon, CommentReplyIcon } from "@plane/propel/icons";
 import type { TIssueComment, TCommentsOperations } from "@plane/types";
 import type { TContextMenuItem } from "@plane/ui";
 import { CustomMenu } from "@plane/ui";
 import { cn } from "@plane/utils";
 // hooks
-import { useUser } from "@/hooks/store/user";
+import { useUser, useUserPermissions } from "@/hooks/store/user";
 
 type TCommentCard = {
   activityOperations: TCommentsOperations;
@@ -25,35 +25,81 @@ type TCommentCard = {
   setEditMode: () => void;
   showAccessSpecifier: boolean;
   showCopyLinkOption: boolean;
+  onReply?: () => void;
+  workspaceSlug?: string;
+  projectId?: string;
+  entityId?: string;
 };
 
 export const CommentQuickActions = observer(function CommentQuickActions(props: TCommentCard) {
-  const { activityOperations, comment, setEditMode, showAccessSpecifier, showCopyLinkOption } = props;
+  const {
+    activityOperations,
+    comment,
+    setEditMode,
+    showAccessSpecifier,
+    showCopyLinkOption,
+    onReply,
+    workspaceSlug,
+    projectId,
+    entityId,
+  } = props;
   // store hooks
   const { data: currentUser } = useUser();
+  const { getProjectRoleByWorkspaceSlugAndProjectId } = useUserPermissions();
+
+  const currentUserProjectRole =
+    workspaceSlug && projectId ? getProjectRoleByWorkspaceSlugAndProjectId(workspaceSlug, projectId) : undefined;
+  const isAdmin = currentUserProjectRole === EUserPermissions.ADMIN;
+
   // derived values
-  const isAuthor = currentUser?.id === comment.actor;
+  const isAuthor =
+    (currentUser?.id && (comment.actor === currentUser.id || comment.created_by === currentUser.id)) ||
+    comment.actor === "me" ||
+    comment.created_by === "me" ||
+    !comment.actor;
+
   const canEdit = isAuthor;
-  const canDelete = isAuthor;
+  const canDelete = isAuthor || isAdmin;
+
   // translation
   const { t } = useTranslation();
+
+  const handleReplyAction = () => {
+    if (onReply) {
+      onReply();
+      return;
+    }
+    if (typeof window !== "undefined") {
+      const targetEntityId = entityId || comment.issue || (comment as any).issue_id;
+      window.dispatchEvent(
+        new CustomEvent("plane:reply-comment", {
+          detail: {
+            entityId: targetEntityId,
+            commentId: comment.id,
+            authorName: comment.actor_detail?.display_name || "user",
+            commentText: comment.comment_stripped || "",
+          },
+        })
+      );
+    }
+  };
 
   const MENU_ITEMS = useMemo(
     function MENU_ITEMS(): TContextMenuItem[] {
       return [
         {
-          key: "edit",
-          action: setEditMode,
-          title: t("common.actions.edit"),
-          icon: EditIcon,
-          shouldRender: canEdit,
+          key: "reply",
+          action: handleReplyAction,
+          title: t("common.actions.reply") || "Reply",
+          icon: CommentReplyIcon,
+          shouldRender: true,
         },
         {
-          key: "copy_link",
-          action: () => activityOperations.copyCommentLink(comment.id),
-          title: t("common.actions.copy_link"),
-          icon: LinkIcon,
-          shouldRender: showCopyLinkOption,
+          key: "edit",
+          action: setEditMode,
+          title: t("common.actions.edit") || "Edit",
+          icon: EditIcon,
+          shouldRender: canEdit,
         },
         {
           key: "access_specifier",
@@ -66,21 +112,30 @@ export const CommentQuickActions = observer(function CommentQuickActions(props: 
             }),
           title:
             comment.access === EIssueCommentAccessSpecifier.INTERNAL
-              ? t("issue.comments.switch.public")
-              : t("issue.comments.switch.private"),
+              ? t("issue.comments.switch.public") || "Switch to public comment"
+              : t("issue.comments.switch.private") || "Switch to private comment",
           icon: comment.access === EIssueCommentAccessSpecifier.INTERNAL ? GlobeIcon : LockIcon,
           shouldRender: showAccessSpecifier,
         },
         {
+          key: "copy_link",
+          action: () => activityOperations.copyCommentLink(comment.id),
+          title: t("common.actions.copy_link") || "Copy link",
+          icon: LinkIcon,
+          shouldRender: showCopyLinkOption,
+        },
+        {
           key: "delete",
           action: () => activityOperations.removeComment(comment.id),
-          title: t("common.actions.delete"),
+          title: t("common.actions.delete") || "Delete",
           icon: TrashIcon,
           shouldRender: canDelete,
+          className: "text-danger hover:bg-danger-subtle",
+          iconClassName: "text-danger",
         },
       ];
     },
-    [t, setEditMode, canEdit, showCopyLinkOption, activityOperations, comment, showAccessSpecifier, canDelete]
+    [t, handleReplyAction, setEditMode, canEdit, showAccessSpecifier, comment, activityOperations, showCopyLinkOption, canDelete]
   );
 
   return (

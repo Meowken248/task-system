@@ -140,7 +140,7 @@ export const IssueActivity = observer(function IssueActivity(props: TIssueActivi
               issueId={issueId}
               selectedFilters={selectedFilters || defaultActivityFilters}
               activityOperations={activityOperations}
-              showAccessSpecifier={!!project.anchor}
+              showAccessSpecifier={true}
               disabled={disabled}
               sortOrder={sortOrder || E_SORT_ORDER.ASC}
             />

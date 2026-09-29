@@ -11,7 +11,8 @@ import { usePathname } from "next/navigation";
 // plane imports
 import type { EditorRefApi } from "@plane/editor";
 import { useHashScroll } from "@plane/hooks";
-import { GlobeIcon, LockIcon } from "@plane/propel/icons";
+import { GlobeIcon, LockIcon, CommentReplyIcon } from "@plane/propel/icons";
+import { IconButton } from "@plane/propel/icon-button";
 import { EIssueCommentAccessSpecifier } from "@plane/types";
 import type { TCommentsOperations, TIssueComment } from "@plane/types";
 import { calculateTimeAgo, cn, getFileURL, renderFormattedDate, renderFormattedTime } from "@plane/utils";
@@ -45,6 +46,7 @@ export const CommentCardDisplay = observer(function CommentCardDisplay(props: TC
     activityOperations,
     comment,
     disabled,
+    entityId,
     projectId,
     readOnlyEditorRef,
     showAccessSpecifier,
@@ -103,6 +105,21 @@ export const CommentCardDisplay = observer(function CommentCardDisplay(props: TC
     [activityOperations, comment.id, userReactions]
   );
 
+  const handleReply = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("plane:reply-comment", {
+          detail: {
+            entityId,
+            commentId: comment.id,
+            authorName: displayName,
+            commentText: comment.comment_stripped || "",
+          },
+        })
+      );
+    }
+  }, [entityId, comment.id, displayName, comment.comment_stripped]);
+
   const shouldRenderReactions = hasReactions && !disabled;
 
   return (
@@ -135,6 +152,14 @@ export const CommentCardDisplay = observer(function CommentCardDisplay(props: TC
         </div>
         {!disabled && (
           <div className="flex shrink-0 items-center gap-1">
+            <Tooltip tooltipContent="Reply" position="bottom">
+              <IconButton
+                icon={CommentReplyIcon}
+                variant="ghost"
+                size="sm"
+                onClick={handleReply}
+              />
+            </Tooltip>
             <EmojiReactionPicker
               isOpen={isPickerOpen}
               handleToggle={setIsPickerOpen}

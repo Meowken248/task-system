@@ -815,6 +815,7 @@ export default {
     },
     actions: {
       edit: "Chỉnh sửa",
+      reply: "Trả lời",
       make_a_copy: "Tạo bản sao",
       open_in_new_tab: "Mở trong tab mới",
       copy_link: "Sao chép liên kết",

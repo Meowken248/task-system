@@ -1926,14 +1926,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         comment_html: c.comment_html || c.body || "",
         comment_stripped: c.comment_stripped || "",
         comment_json: c.comment_json || null,
-        actor: c.actor || "me",
+        actor: c.actor || activeUser?.id || "me",
         actor_detail: c.actor_detail || {
-          id: "me",
-          first_name: "Plane",
-          last_name: "Admin",
+          id: c.actor || activeUser?.id || "me",
+          first_name: activeUser?.first_name || "Plane",
+          last_name: activeUser?.last_name || "Admin",
           is_bot: false,
-          display_name: "Plane Admin",
-          avatar: "",
+          display_name: activeUser?.display_name || activeUser?.first_name || "Plane Admin",
+          avatar: activeUser?.avatar_url || "",
         },
         created_at: c.created_at,
         updated_at: c.updated_at || c.created_at,
@@ -1956,9 +1956,40 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
   // comments
-  const commentMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/comments\/?(?:\?.*)?$/);
+  const commentMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/comments(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
   if (commentMatch) {
     const issueId = commentMatch[2];
+    const commentId = commentMatch[3];
+
+    if (commentId) {
+      if (method === "patch" || method === "put") {
+        if (!localDB.comments) localDB.comments = [];
+        const cIdx = localDB.comments.findIndex((c: any) => c.id === commentId);
+        if (cIdx > -1) {
+          localDB.comments[cIdx] = {
+            ...localDB.comments[cIdx],
+            ...body,
+            updated_at: new Date().toISOString(),
+            edited_at: new Date().toISOString(),
+          };
+          saveDB();
+          return ok(localDB.comments[cIdx]);
+        }
+        return { data: null, status: 404 };
+      }
+      if (method === "delete") {
+        if (localDB.comments) {
+          localDB.comments = localDB.comments.filter((c: any) => c.id !== commentId);
+          saveDB();
+        }
+        return ok({});
+      }
+      if (method === "get") {
+        const found = (localDB.comments || []).find((c: any) => c.id === commentId);
+        return found ? ok(found) : { data: null, status: 404 };
+      }
+    }
+
     if (method === "get") {
       const comments = (localDB.comments || []).filter((c: any) => c.issue === issueId || c.issue_id === issueId);
       const issue = localDB.issues?.find((i: any) => i.id === issueId);
@@ -1967,8 +1998,16 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         issue_id: issueId,
         project_id: c.project_id || c.project || issue?.project,
         workspace_id: c.workspace_id || c.workspace || issue?.workspace,
-        actor: c.actor || "me",
-        actor_detail: { id: "me", first_name: "Plane", last_name: "Admin", is_bot: false, display_name: "Plane Admin" },
+        actor: c.actor || activeUser?.id || "me",
+        actor_detail: c.actor_detail || {
+          id: c.actor || activeUser?.id || "me",
+          first_name: activeUser?.first_name || "Plane",
+          last_name: activeUser?.last_name || "Admin",
+          is_bot: false,
+          display_name: activeUser?.display_name || activeUser?.first_name || "Plane Admin",
+          avatar: activeUser?.avatar_url || "",
+        },
+        access: c.access || "INTERNAL",
       }));
       return ok(enrichedComments);
     }
@@ -1978,6 +2017,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const urlProjMatch = url.match(/\/projects\/([^/]+)\//);
       const wsSlug = urlWsMatch ? urlWsMatch[1] : issue?.workspace || localDB.workspaces?.[0]?.slug || "";
       const projId = urlProjMatch ? urlProjMatch[1] : issue?.project || "mock-project";
+      const authorId = activeUser?.id || "me";
 
       const newComment = {
         id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
@@ -1987,19 +2027,19 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         workspace_id: wsSlug,
         project: projId,
         workspace: wsSlug,
-        actor: "me",
+        actor: authorId,
         actor_detail: {
-          id: "me",
-          first_name: "Plane",
-          last_name: "Admin",
+          id: authorId,
+          first_name: activeUser?.first_name || "Plane",
+          last_name: activeUser?.last_name || "Admin",
           is_bot: false,
-          display_name: "Plane Admin",
-          avatar: "",
+          display_name: activeUser?.display_name || activeUser?.first_name || "Plane Admin",
+          avatar: activeUser?.avatar_url || "",
         },
-        access: "EXTERNAL",
+        access: body.access || "INTERNAL",
         reaction_groups: {},
-        created_by: "me",
-        updated_by: "me",
+        created_by: authorId,
+        updated_by: authorId,
         comment_html: "",
         comment_json: {},
         comment_stripped: "",
