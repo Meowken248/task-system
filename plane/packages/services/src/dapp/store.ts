@@ -5,9 +5,22 @@ declare const process: { env: Record<string, string | undefined> };
 
 export function getEnvVar(name: string): string | undefined {
   if (typeof process !== "undefined" && process.env?.[name]) return process.env[name];
+  if (typeof import.meta !== "undefined" && (import.meta as any).env?.[name]) return (import.meta as any).env[name];
   if (typeof window !== "undefined" && (window as any).__env__?.[name]) return (window as any).__env__[name];
   if (typeof window !== "undefined" && (window as any)[name]) return (window as any)[name];
   return undefined;
+}
+
+export function getContractGas(): string {
+  return getEnvVar("VITE_CONTRACT_GAS") || "3000000";
+}
+
+export function getDefaultWorkspaceSlug(): string {
+  return getEnvVar("VITE_DEFAULT_WORKSPACE_SLUG") || "fiai";
+}
+
+export function getDefaultWorkspaceName(): string {
+  return getEnvVar("VITE_DEFAULT_WORKSPACE_NAME") || getDefaultWorkspaceSlug().toUpperCase();
 }
 
 export function getPlaneContractAddress(): string {
@@ -20,11 +33,14 @@ export function getPlaneContractAddress(): string {
 
 export const PLANE_CONTRACT = getPlaneContractAddress();
 
-// ── Default Workspace duy nhất: FIAI ─────────────────────────────────────
+// ── Default Workspace ────────────────────────────────────────────────────
+const defaultWsSlug = getDefaultWorkspaceSlug();
+const defaultWsName = getDefaultWorkspaceName();
+
 export const DEFAULT_WORKSPACE: DAppWorkspace = {
-  id: "workspace-fiai",
-  name: "FIAI",
-  slug: "fiai",
+  id: `workspace-${defaultWsSlug}`,
+  name: defaultWsName,
+  slug: defaultWsSlug,
   organization_size: "5-10",
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
@@ -32,9 +48,9 @@ export const DEFAULT_WORKSPACE: DAppWorkspace = {
   owner: {
     id: "user-default",
     email: "",
-    first_name: "FIAI",
+    first_name: defaultWsName,
     last_name: "",
-    display_name: "FIAI",
+    display_name: defaultWsName,
     avatar: "",
   },
   role: 20,
@@ -338,7 +354,7 @@ export function syncWorkspacesToCookie(cid?: string | null) {
     }));
     const val = encodeURIComponent(JSON.stringify(compact));
     document.cookie = `plane_dapp_sync_workspaces=${val}; path=/; max-age=31536000; SameSite=Lax`;
-    
+
     const cidToSync = cid || (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") || localStorage.getItem("plane_dapp_ipfs_cid_last_valid") : null);
     if (cidToSync && !cidToSync.startsWith("bafkrei")) {
       document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
@@ -570,9 +586,9 @@ export function getInstanceInfo() {
       has_llm_configured: false,
       file_size_limit: 5242880,
       is_smtp_configured: false,
-      app_base_url: typeof window !== "undefined" ? window.location.origin : "http://localhost:3000",
-      space_base_url: null,
-      admin_base_url: typeof window !== "undefined" ? window.location.origin : "http://localhost:3001",
+      app_base_url: getEnvVar("VITE_WEB_BASE_URL") || (typeof window !== "undefined" ? window.location.origin : ""),
+      space_base_url: getEnvVar("VITE_SPACE_BASE_URL") || null,
+      admin_base_url: getEnvVar("VITE_ADMIN_BASE_URL") || (typeof window !== "undefined" ? window.location.origin : ""),
       is_self_managed: true,
       ...localDB.config,
     },

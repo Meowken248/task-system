@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { syncDAppDBToChain } from "@plane/services";
 
+import { resetFiaiSDK } from "../../services/blockchain/fiai-sdk.service";
 import { resolveMetanodeWalletAddress, promptForMetanodeWalletImport } from "../../services/blockchain/metanode-wallet.service";
+
+const SIGN_NONCE_ERROR_RE = /invalid sign|invalid nonce|nonce too low|nonce has already been used|nonce conflict/i;
 
 export function SyncToChainButton() {
   const [isSyncing, setIsSyncing] = useState(false);
@@ -11,17 +14,25 @@ export function SyncToChainButton() {
     try {
       // 1. Lấy địa chỉ ví đã liên kết
       const walletAddress = await resolveMetanodeWalletAddress();
-      
+
       // 2. Gửi transaction trực tiếp (chỉ hỏi mật khẩu ký 1 lần duy nhất)
       try {
         await syncDAppDBToChain(walletAddress);
       } catch (sendErr: any) {
-        // Fallback: nếu SDK chưa nhận diện được ví, mới gọi promptForMetanodeWalletImport
         const errMsg = sendErr?.message || sendErr?.toString?.() || "";
-        if (/wallet not found|no frame found/i.test(errMsg)) {
+        if (SIGN_NONCE_ERROR_RE.test(errMsg)) {
+          // lastHash trong blockchain-bridge bị lệch so với chuỗi
+          // → reset bridge iframe để lấy lastHash mới, rồi thử lại
+          console.warn("[Sync] Phát hiện lỗi chữ ký/nonce, đang reset bridge và thử lại...", errMsg);
+          await resetFiaiSDK();
+          const refreshedWallet = await resolveMetanodeWalletAddress();
+          await syncDAppDBToChain(refreshedWallet);
+        } else if (/wallet not found|no frame found/i.test(errMsg)) {
+          // Fallback: nếu SDK chưa nhận diện được ví, mới gọi promptForMetanodeWalletImport
           const imported = await promptForMetanodeWalletImport(walletAddress);
           if (imported) {
-            await syncDAppDBToChain(walletAddress);
+            const refreshedWallet = await resolveMetanodeWalletAddress();
+            await syncDAppDBToChain(refreshedWallet);
           } else {
             throw sendErr;
           }
@@ -45,8 +56,8 @@ export function SyncToChainButton() {
   };
 
   return (
-    <button 
-      onClick={handleSync} 
+    <button
+      onClick={handleSync}
       disabled={isSyncing}
       className={`fixed bottom-4 right-4 px-4 py-2 text-white font-medium rounded shadow-lg transition-colors z-50 ${isSyncing ? "bg-gray-500 cursor-not-allowed opacity-75" : "bg-blue-600 hover:bg-blue-700 cursor-pointer"}`}
       style={{

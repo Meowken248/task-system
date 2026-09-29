@@ -3,6 +3,7 @@ import { hashPassword, getStoredCredentials, setStoredCredential, createUserObje
 import {
   localDB,
   saveDB,
+  getContractGas,
   getLoggedInUserId,
   getLoggedInEmail,
   isLoggedIn,
@@ -22,6 +23,7 @@ import {
   baseCID,
   currentUserAddress,
   getFiaiSDK,
+  getWorkspaceRegistryAddress,
   WORKSPACE_REGISTRY_ADDRESS,
   CREATE_WORKSPACE_ABI,
   ADD_MEMBER_ABI,
@@ -715,20 +717,20 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           view_props: body.view_props || { list: true, kanban: true },
           project_details: project
             ? {
-                id: project.id,
-                name: project.name,
-                identifier: project.identifier,
-                cover_image: project.cover_image,
-                description: project.description,
-                logo_props: project.logo_props,
-              }
+              id: project.id,
+              name: project.name,
+              identifier: project.identifier,
+              cover_image: project.cover_image,
+              description: project.description,
+              logo_props: project.logo_props,
+            }
             : undefined,
           workspace_detail: ws
             ? {
-                id: ws.id,
-                name: ws.name,
-                slug: ws.slug,
-              }
+              id: ws.id,
+              name: ws.name,
+              slug: ws.slug,
+            }
             : undefined,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -1181,18 +1183,19 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     // GỌI SMART CONTRACT: PlaneWorkspaceRegistry.createWorkspace
     const bridge = getFiaiSDK();
-    if (WORKSPACE_REGISTRY_ADDRESS && bridge && currentUserAddress) {
+    const wsRegistryAddr = getWorkspaceRegistryAddress();
+    if (wsRegistryAddr && bridge && currentUserAddress) {
       const initialCid = baseCID || "QmInitial";
       bridge
         .request("sendTransaction", {
           from: currentUserAddress,
-          to: WORKSPACE_REGISTRY_ADDRESS,
+          to: wsRegistryAddr,
           abiData: [CREATE_WORKSPACE_ABI],
           functionName: "createWorkspace",
           feeType: "sc",
           amount: "0",
           value: "0",
-          gas: "3000000",
+          gas: getContractGas(),
           type: "transaction",
           inputArray: [
             { name: "slug", type: "string", value: slug },
@@ -1412,6 +1415,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
 
     if (method === "patch" || method === "put" || method === "post") {
+      if (!activeUser) {
+        activeUser =
+          (localDB.users || [])[0] ||
+          createUserObject(activeUserId || "user-default", loggedInEmail || "admin@plane.local");
+        if (!localDB.users) localDB.users = [];
+        if (!localDB.users.includes(activeUser)) localDB.users.push(activeUser);
+      }
       Object.assign(activeUser, body);
       saveDB();
     }
@@ -1595,17 +1605,18 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
       const memberAddr = extractEthAddress(target?.address || target?.member || target?.email);
       const bridge = getFiaiSDK();
-      if (memberAddr && WORKSPACE_REGISTRY_ADDRESS && bridge && currentUserAddress) {
+      const wsRegistryAddr = getWorkspaceRegistryAddress();
+      if (memberAddr && wsRegistryAddr && bridge && currentUserAddress) {
         bridge
           .request("sendTransaction", {
             from: currentUserAddress,
-            to: WORKSPACE_REGISTRY_ADDRESS,
+            to: wsRegistryAddr,
             abiData: [REMOVE_MEMBER_ABI],
             functionName: "removeMember",
             feeType: "sc",
             amount: "0",
             value: "0",
-            gas: "2000000",
+            gas: getContractGas(),
             type: "transaction",
             inputArray: [
               { name: "slug", type: "string", value: wsSlug },
@@ -1640,18 +1651,19 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       if (updatedMember && body.role !== undefined) {
         const memberAddr = extractEthAddress(updatedMember.address || updatedMember.member || updatedMember.email);
         const bridge = getFiaiSDK();
-        if (memberAddr && WORKSPACE_REGISTRY_ADDRESS && bridge && currentUserAddress) {
+        const wsRegistryAddr = getWorkspaceRegistryAddress();
+        if (memberAddr && wsRegistryAddr && bridge && currentUserAddress) {
           const contractRole = mapPlaneRoleToContractRole(body.role);
           bridge
             .request("sendTransaction", {
               from: currentUserAddress,
-              to: WORKSPACE_REGISTRY_ADDRESS,
+              to: wsRegistryAddr,
               abiData: [ADD_MEMBER_ABI],
               functionName: "addMember",
               feeType: "sc",
               amount: "0",
               value: "0",
-              gas: "2000000",
+              gas: getContractGas(),
               type: "transaction",
               inputArray: [
                 { name: "slug", type: "string", value: wsSlug },
@@ -3203,18 +3215,19 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
         // Gọi smart contract PlaneWorkspaceRegistry.addMember
         const bridge = getFiaiSDK();
-        if (memberAddress && WORKSPACE_REGISTRY_ADDRESS && bridge && currentUserAddress) {
+        const wsRegistryAddr = getWorkspaceRegistryAddress();
+        if (memberAddress && wsRegistryAddr && bridge && currentUserAddress) {
           const contractRole = mapPlaneRoleToContractRole(e.role);
           bridge
             .request("sendTransaction", {
               from: currentUserAddress,
-              to: WORKSPACE_REGISTRY_ADDRESS,
+              to: wsRegistryAddr,
               abiData: [ADD_MEMBER_ABI],
               functionName: "addMember",
               feeType: "sc",
               amount: "0",
               value: "0",
-              gas: "3000000",
+              gas: getContractGas(),
               type: "transaction",
               inputArray: [
                 { name: "slug", type: "string", value: wsSlug },

@@ -1,12 +1,32 @@
 import type { AbiItem } from "@metanodejs/mtn-contract";
 import type { TIssue, TIssuePriorities } from "@plane/types";
 import { planeTaskManagerAbi } from "@/contracts/plane-task-manager.abi";
-import { getFiaiSDK, initFiaiSDK, resetFiaiSDK } from "./fiai-sdk.service";
 import {
+  getFiaiSDK,
+  getLatestCapturedWalletTxHash,
+  initFiaiSDK,
+  resetFiaiSDK,
+} from "./fiai-sdk.service";
+import {
+  isMetanodeWalletRuntimeSupported,
   isWalletAddress,
   promptForMetanodeWalletImport,
   resolveMetanodeWalletAddress,
 } from "./metanode-wallet.service";
+
+function readEnv(name: string): string {
+  const fromProcess = typeof process !== "undefined" ? process.env?.[name] : undefined;
+  const fromMeta = typeof import.meta !== "undefined" ? (import.meta as any).env?.[name] : undefined;
+  return (fromProcess ?? fromMeta ?? "").toString().trim();
+}
+
+function getContractGas(): string {
+  return readEnv("VITE_CONTRACT_GAS") || "3000000";
+}
+
+function getBlsPrivateKey(): string | undefined {
+  return readEnv("VITE_BLS_PRIVATE_KEY") || readEnv("NEXT_PUBLIC_BLS_PRIVATE_KEY") || undefined;
+}
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 let pendingCreateAssigneeWallet = ZERO_ADDRESS;
@@ -49,10 +69,10 @@ type HashLike = {
 };
 
 const DEFAULT_TRANSACTION_TIMEOUT_MS = 60_000;
-const TRANSACTION_HASH_POLL_INTERVAL_MS = 500;
+const TRANSACTION_HASH_POLL_INTERVAL_MS = 400;
 
 function transactionWaitTimeoutMs(): number {
-  const configured = Number(process.env.VITE_FIAI_TIMEOUT || DEFAULT_TRANSACTION_TIMEOUT_MS);
+  const configured = Number(readEnv("VITE_FIAI_TIMEOUT") || DEFAULT_TRANSACTION_TIMEOUT_MS);
   if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_TRANSACTION_TIMEOUT_MS;
   return Math.min(Math.max(configured, 10_000), 300_000);
 }
@@ -78,7 +98,9 @@ function normalizeTransactionHash(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const candidate = value.trim();
   const normalized = candidate.startsWith("0x") || candidate.startsWith("0X") ? candidate.slice(2) : candidate;
-  return /^[a-fA-F0-9]{64}$/.test(normalized) ? `0x${normalized}` : null;
+  if (!/^[a-fA-F0-9]{64}$/.test(normalized)) return null;
+  if (/^0{64}$/.test(normalized)) return null;
+  return `0x${normalized.toLowerCase()}`;
 }
 
 function transactionHash(value: unknown, includeLastHash = false, visited = new WeakSet<object>()): string | null {
@@ -150,10 +172,68 @@ function blockchainErrorMessage(error: unknown): string {
   return "Unknown blockchain error.";
 }
 
+function sha256Fallback(bytes: Uint8Array): string {
+  const K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+  const rotr = (n: number, x: number) => (x >>> n) | (x << (32 - n));
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+
+  const bitLen = bytes.length * 8;
+  const totalLen = (((bytes.length + 8) >> 6) + 1) << 6;
+  const padded = new Uint8Array(totalLen);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(totalLen - 8, Math.floor(bitLen / 0x100000000), false);
+  view.setUint32(totalLen - 4, bitLen >>> 0, false);
+
+  const W = new Int32Array(64);
+  for (let offset = 0; offset < totalLen; offset += 64) {
+    for (let i = 0; i < 16; i++) W[i] = view.getInt32(offset + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(7, W[i - 15]) ^ rotr(18, W[i - 15]) ^ (W[i - 15] >>> 3);
+      const s1 = rotr(17, W[i - 2]) ^ rotr(19, W[i - 2]) ^ (W[i - 2] >>> 10);
+      W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(6, e) ^ rotr(11, e) ^ rotr(25, e);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + K[i] + W[i]) | 0;
+      const S0 = rotr(2, a) ^ rotr(13, a) ^ rotr(22, a);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) | 0;
+      h = g; g = f; f = e; e = (d + temp1) | 0;
+      d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+    }
+    h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0;
+    h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + h) | 0;
+  }
+  return (
+    "0x" +
+    [h0, h1, h2, h3, h4, h5, h6, h7]
+      .map((v) => (v >>> 0).toString(16).padStart(8, "0"))
+      .join("")
+  );
+}
+
 export async function hashTaskValue(value: unknown): Promise<string> {
   const input = typeof value === "string" ? value : JSON.stringify(value);
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  return `0x${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  const bytes = new TextEncoder().encode(input);
+  if (typeof crypto !== "undefined" && crypto.subtle?.digest) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return `0x${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  }
+  return sha256Fallback(bytes);
 }
 
 function priorityValue(priority: TIssuePriorities | null | undefined): number {
@@ -178,7 +258,7 @@ function enqueueTransaction<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 function isNonceError(error: unknown): boolean {
-  return /invalid nonce|nonce too low|nonce has already been used|replacement transaction underpriced|nonce conflict/i.test(
+  return /invalid nonce|nonce too low|nonce has already been used|replacement transaction underpriced|nonce conflict|invalid sign/i.test(
     blockchainErrorMessage(error)
   );
 }
@@ -187,47 +267,111 @@ function isConfirmationTimeoutError(error: unknown): boolean {
   return /transaction not confirmed|confirmation.*timed out|\b408\b/i.test(blockchainErrorMessage(error));
 }
 
+async function fetchRpcAccountLastHash(address: string, timeoutMs = 4000): Promise<string | null> {
+  const rpcUrl = readEnv("VITE_RPC_URL");
+  if (!rpcUrl || typeof fetch === "undefined") return null;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "mtn_getAccountState",
+        params: [address, "latest"],
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return normalizeTransactionHash(json?.result?.lastHash ?? json?.result?.last_hash);
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function readLatestWalletTxHash(
+  bridge: NonNullable<ReturnType<typeof getFiaiSDK>>,
+  from: string
+): Promise<string | null> {
+  // 1. Check hash captured directly from blockchain-bridge -> updateWalletInfo
+  const captured = normalizeTransactionHash(getLatestCapturedWalletTxHash(from));
+
+  // 2. Query live account state directly from RPC node (no cache, no password prompt)
+  const rpcHash = await fetchRpcAccountLastHash(from, 3500);
+  if (rpcHash) return rpcHash;
+  if (captured) return captured;
+
+  // 3. Fallback: read directly from Crypto Vault IndexedDB (getActiveWalletDapp / getAllWallets)
+  // which bypasses Crypto Vault's 60-second decryptedCache and never prompts for password.
+  const activeDapp = await bridge
+    .request("getActiveWalletDapp", { domain: window.location.hostname }, { timeout: 4000 })
+    .catch(() => null);
+  const activeHash = transactionHash(activeDapp, true);
+  if (activeHash) return activeHash;
+
+  const allWallets = await bridge.request("getAllWallets", {}, { timeout: 4000 }).catch(() => null);
+  if (Array.isArray(allWallets)) {
+    const matched = allWallets.find((w: any) => {
+      const addr = typeof w?.address === "string" ? w.address.toLowerCase() : "";
+      const normFrom = from.toLowerCase().startsWith("0x") ? from.toLowerCase() : `0x${from.toLowerCase()}`;
+      const normAddr = addr.startsWith("0x") ? addr : `0x${addr}`;
+      return normAddr === normFrom;
+    });
+    const matchedHash = transactionHash(matched, true);
+    if (matchedHash) return matchedHash;
+  }
+
+  return null;
+}
+
 async function sendContractTransactionNow(functionName: string, values: Record<string, InputValue>): Promise<string> {
-  if (typeof window !== "undefined" && !window.isSecureContext) {
+  if (typeof window !== "undefined" && !isMetanodeWalletRuntimeSupported()) {
     throw new Error(
-      "MetaNode Wallet không thể ký an toàn trên địa chỉ HTTP không bảo mật. Hãy mở http://localhost:3000 trên máy chủ hoặc dùng HTTPS."
+      "MetaNode Wallet không thể ký an toàn trên địa chỉ HTTP công cộng. Hãy mở http://localhost:3000/plane/ hoặc mạng nội bộ (LAN)."
     );
   }
   const abi = contractFunctions.find((item) => item.type === "function" && item.name === functionName);
   if (!abi) throw new Error(`Contract function ${functionName} is missing from the ABI.`);
-  const contractAddress = process.env.VITE_CONTRACT_ADDRESS?.trim() || "";
+  const contractAddress = readEnv("VITE_CONTRACT_ADDRESS");
   if (!isWalletAddress(contractAddress)) throw new Error("VITE_CONTRACT_ADDRESS is invalid.");
   let bridge = (await initFiaiSDK()) ?? getFiaiSDK();
   if (!bridge) throw new Error("FiaiSDK is not available.");
-  const from = await resolveMetanodeWalletAddress();
-  const walletInfoBeforeSend = await bridge.request("getPublicWalletInfo", { address: from }).catch(() => null);
-  const hashBeforeSend = transactionHash(walletInfoBeforeSend, true);
-  const send = () =>
+  let from = await resolveMetanodeWalletAddress();
+  const hashBeforeSend = await readLatestWalletTxHash(bridge, from).catch(() => null);
+
+  const send = (senderAddress: string) =>
     bridge!.request("sendTransaction", {
-      from,
+      from: senderAddress,
       to: contractAddress,
       abiData: [abi],
       functionName,
       feeType: "sc",
       amount: "0",
       value: "0",
-      gas: process.env.VITE_CONTRACT_GAS || "3000000",
+      gas: getContractGas(),
       type: "transaction",
       inputArray: abi.inputs.map((input) => Object.assign({}, input, { value: values[input.name ?? ""] ?? "" })),
       isReadOnly: false,
       bundleId: "",
+      blsPrivateKey: getBlsPrivateKey(),
     });
 
   const sendWithWalletRecovery = async (): Promise<unknown> => {
     try {
-      return await send();
+      return await send(from);
     } catch (error) {
       const message = blockchainErrorMessage(error);
       if (!/wallet not found/i.test(message)) throw error;
       const imported = await promptForMetanodeWalletImport(from);
       if (!imported)
         throw new Error("Không tìm thấy ví trong Crypto Vault hoặc thao tác kết nối đã hết hạn.", { cause: error });
-      return send();
+      from = await resolveMetanodeWalletAddress();
+      return send(from);
     }
   };
 
@@ -242,33 +386,27 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
       if (!bridge) throw new Error("Không thể tạo lại phiên bảo mật với Crypto Vault.", { cause: error });
       result = await sendWithWalletRecovery();
     } else if (isConfirmationTimeoutError(error)) {
-      // Blockchain Bridge can report its short confirmation timeout even after
-      // the wallet has broadcast the transaction. Do not discard a valid send:
-      // poll Crypto Vault's lastHash below before reporting a failure.
       confirmationTimeoutError = error;
     } else {
       throw new Error(message, { cause: error });
     }
   }
-  let hash = transactionHash(result);
-  if (hash === hashBeforeSend) hash = null;
 
-  // Some bridge versions acknowledge the transaction before returning its
-  // hash. Wait through temporary WebSocket reconnects until Crypto Vault
-  // exposes a new lastHash. Never accept the value from before this send.
+  let hash =
+    transactionHash(result, true) ?? normalizeTransactionHash(getLatestCapturedWalletTxHash(from));
+  if (hash && hash === hashBeforeSend) hash = null;
+
   const hashWaitTimeout = transactionWaitTimeoutMs();
   const hashWaitDeadline = Date.now() + hashWaitTimeout;
   while (!hash && Date.now() < hashWaitDeadline) {
     // eslint-disable-next-line no-await-in-loop
-    await new Promise<void>((resolve) => window.setTimeout(resolve, TRANSACTION_HASH_POLL_INTERVAL_MS));
-    if (Date.now() >= hashWaitDeadline) break;
-    const remaining = hashWaitDeadline - Date.now();
+    const walletHash = await readLatestWalletTxHash(bridge, from).catch(() => null);
+    if (walletHash && walletHash !== hashBeforeSend) {
+      hash = walletHash;
+      break;
+    }
     // eslint-disable-next-line no-await-in-loop
-    const walletInfo = await bridge
-      .request("getPublicWalletInfo", { address: from }, { timeout: Math.min(5_000, remaining) })
-      .catch(() => null);
-    const walletHash = transactionHash(walletInfo, true);
-    if (walletHash && walletHash !== hashBeforeSend) hash = walletHash;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, TRANSACTION_HASH_POLL_INTERVAL_MS));
   }
   if (!hash) {
     if (confirmationTimeoutError) {
@@ -289,39 +427,27 @@ async function sendContractTransaction(functionName: string, values: Record<stri
     try {
       return await sendContractTransactionNow(functionName, values);
     } catch (error) {
+      const msg = blockchainErrorMessage(error);
+      const isUserCancel = /cancel|user rejected|đã hủy/i.test(msg);
+      if (!isUserCancel) {
+        // Reset bridge session so blockchain-bridge's in-memory accountMap nonce
+        // is refreshed from on-chain state on the next transaction.
+        await resetFiaiSDK().catch(() => null);
+      }
       if (!isNonceError(error)) throw error;
 
-      // MetaNode may briefly retain a stale account nonce after the previous
-      // signed transaction. Recreate the secure bridge session, wait for the
-      // RPC mempool to advance, then ask the wallet to sign exactly once more.
-      await resetFiaiSDK().catch(() => null);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 1_500));
       return sendContractTransactionNow(functionName, values);
     }
   });
 }
 export function isOnChainTaskSyncEnabled(): boolean {
-  return process.env.VITE_ONCHAIN_TASKS_ENABLED === "true" && isWalletAddress(process.env.VITE_CONTRACT_ADDRESS || "");
+  return readEnv("VITE_ONCHAIN_TASKS_ENABLED") === "true" && isWalletAddress(readEnv("VITE_CONTRACT_ADDRESS"));
 }
 
 export function isOnChainTaskSyncAvailable(): boolean {
   if (!isOnChainTaskSyncEnabled()) return false;
-
-  // MetaNode relies on secure browser APIs. Plain HTTP is only considered a
-  // secure context on localhost; a LAN IP such as http://192.168.x.x is not.
-  // However, for development/testing on private networks, we treat RFC-1918
-  // private IPs as trusted (they are not reachable from the public internet).
-  if (typeof window === "undefined") return true;
-  if (window.isSecureContext) return true;
-
-  const hostname = window.location.hostname;
-  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return true;
-  // RFC-1918 private network ranges
-  if (/^10\./.test(hostname)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return true;
-  if (/^192\.168\./.test(hostname)) return true;
-
-  return false;
+  return isMetanodeWalletRuntimeSupported();
 }
 
 async function supportsAtomicHierarchy(): Promise<boolean> {
@@ -447,7 +573,7 @@ function readNumericResult(value: unknown): number | null {
 async function readContract(functionName: string, values: Record<string, InputValue>): Promise<unknown> {
   const abi = contractFunctions.find((item) => item.type === "function" && item.name === functionName);
   if (!abi) throw new Error(`Contract function ${functionName} is missing from the ABI.`);
-  const contractAddress = process.env.VITE_CONTRACT_ADDRESS?.trim() || "";
+  const contractAddress = readEnv("VITE_CONTRACT_ADDRESS");
   if (!isWalletAddress(contractAddress)) throw new Error("VITE_CONTRACT_ADDRESS is invalid.");
   await initFiaiSDK();
   const from = await resolveMetanodeWalletAddress();
@@ -462,7 +588,7 @@ async function readContract(functionName: string, values: Record<string, InputVa
       feeType: "read",
       amount: "0",
       value: "0",
-      gas: process.env.VITE_CONTRACT_GAS || "3000000",
+      gas: getContractGas(),
       type: "transaction",
       inputArray: abi.inputs.map((input) => Object.assign({}, input, { value: values[input.name ?? ""] ?? "" })),
       isReadOnly: true,

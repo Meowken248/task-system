@@ -26,26 +26,43 @@ const GET_CID_ABI = {
   stateMutability: "view"
 };
 
+function readEnv(name: string): string {
+  const fromProcess = typeof process !== "undefined" ? process.env?.[name] : undefined;
+  const fromMeta = typeof import.meta !== "undefined" ? (import.meta as any).env?.[name] : undefined;
+  return (fromProcess ?? fromMeta ?? "").toString().trim();
+}
+
+function getBlsPrivateKey(): string | undefined {
+  return readEnv("VITE_BLS_PRIVATE_KEY") || readEnv("NEXT_PUBLIC_BLS_PRIVATE_KEY") || undefined;
+}
+
+function getConfiguredIpfsGateways(cid: string): string[] {
+  const raw = readEnv("VITE_IPFS_GATEWAYS");
+  const list = raw
+    ? raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+    : [];
+  return list.map((prefix) => `${prefix.endsWith("/") ? prefix : `${prefix}/`}${cid}`);
+}
+
 export function useOffchainData(key: string) {
   const [data, setData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
   const contractAddress =
-    process.env.VITE_REGISTRY_CONTRACT_ADDRESS ||
-    process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS ||
+    readEnv("VITE_REGISTRY_CONTRACT_ADDRESS") ||
+    readEnv("NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS") ||
     "";
-  const DEFAULT_PINATA_PROXY = "https://plane-ipfs-proxy.anh2482006.workers.dev";
-  const rawProxyUrl = process.env.VITE_PINATA_PROXY_URL || DEFAULT_PINATA_PROXY;
+  const rawProxyUrl = readEnv("VITE_PINATA_PROXY_URL");
   const proxyUrl = rawProxyUrl && !rawProxyUrl.includes("your-worker") && !rawProxyUrl.includes("your-domain") ? rawProxyUrl : null;
+  const contractGas = readEnv("VITE_CONTRACT_GAS") || "3000000";
 
   // Thử lần lượt các IPFS Gateway thay vì gọi song song
   const fetchFromIPFS = async (cid: string) => {
-    const gateways = [
-      `https://gateway.pinata.cloud/ipfs/${cid}`,
-      `https://ipfs.io/ipfs/${cid}`,
-      `https://cloudflare-ipfs.com/ipfs/${cid}`
-    ];
+    const gateways = getConfiguredIpfsGateways(cid);
 
     for (const url of gateways) {
       try {
@@ -72,7 +89,7 @@ export function useOffchainData(key: string) {
         feeType: "read",
         amount: "0",
         value: "0",
-        gas: process.env.VITE_CONTRACT_GAS || "3000000",
+        gas: contractGas,
         type: "transaction",
         inputArray: [
           { ...GET_CID_ABI.inputs[0], value: userAddress },
@@ -100,7 +117,7 @@ export function useOffchainData(key: string) {
         feeType: "sc",
         amount: "0",
         value: "0",
-        gas: process.env.VITE_CONTRACT_GAS || "3000000",
+        gas: contractGas,
         type: "transaction",
         inputArray: [
           { ...SET_CID_ABI.inputs[0], value: key },
@@ -108,6 +125,7 @@ export function useOffchainData(key: string) {
         ],
         isReadOnly: false,
         bundleId: "",
+        blsPrivateKey: getBlsPrivateKey(),
       });
 
     const sendWithWalletRecovery = async (): Promise<unknown> => {
@@ -141,7 +159,7 @@ export function useOffchainData(key: string) {
       }
 
       const contractCID = await readCIDFromContract(userAddress);
-      
+
       if (!contractCID || contractCID === "") {
         if (!localCache) setData(null);
         return;
@@ -174,10 +192,10 @@ export function useOffchainData(key: string) {
           rejectPreviousRef.current(new Error("debounced"));
         }
       }
-      
+
       // Lưu hàm reject của lần gọi này để có thể reject sau nếu bị hủy
       rejectPreviousRef.current = reject;
-      
+
       debounceRef.current = setTimeout(async () => {
         setIsLoading(true);
         setError(null);
@@ -231,13 +249,13 @@ export async function migrateFromLocalStorage(key: string) {
 
     const rawData = JSON.parse(rawDataStr);
     const userAddress = await resolveMetanodeWalletAddress();
-    const DEFAULT_PINATA_PROXY = "https://plane-ipfs-proxy.anh2482006.workers.dev";
-    const rawProxyUrl = process.env.VITE_PINATA_PROXY_URL || DEFAULT_PINATA_PROXY;
+    const rawProxyUrl = readEnv("VITE_PINATA_PROXY_URL");
     const proxyUrl = rawProxyUrl && !rawProxyUrl.includes("your-worker") && !rawProxyUrl.includes("your-domain") ? rawProxyUrl : null;
     const contractAddress =
-      process.env.VITE_REGISTRY_CONTRACT_ADDRESS ||
-      process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS ||
+      readEnv("VITE_REGISTRY_CONTRACT_ADDRESS") ||
+      readEnv("NEXT_PUBLIC_REGISTRY_CONTRACT_ADDRESS") ||
       "";
+    const contractGas = readEnv("VITE_CONTRACT_GAS") || "3000000";
 
     if (!proxyUrl) {
       console.warn("[OffchainData] Migration skipped: IPFS proxy not configured.");
@@ -249,10 +267,10 @@ export async function migrateFromLocalStorage(key: string) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(rawData)
     });
-    
+
     if (!response.ok) throw new Error("Migration failed at IPFS upload");
     const { cid } = await response.json();
-    
+
     let bridge = (await initFiaiSDK()) ?? getFiaiSDK();
     if (!bridge) throw new Error("FiaiSDK is not available.");
 
@@ -265,7 +283,7 @@ export async function migrateFromLocalStorage(key: string) {
         feeType: "sc",
         amount: "0",
         value: "0",
-        gas: process.env.VITE_CONTRACT_GAS || "3000000",
+        gas: contractGas,
         type: "transaction",
         inputArray: [
           { ...SET_CID_ABI.inputs[0], value: key },
@@ -273,15 +291,16 @@ export async function migrateFromLocalStorage(key: string) {
         ],
         isReadOnly: false,
         bundleId: "",
+        blsPrivateKey: getBlsPrivateKey(),
       });
 
     // 1. Chờ transaction on-chain hoàn tất
-    await send(); 
+    await send();
 
     // 2. Chuyển đổi cache và XÓA key cũ
     window.localStorage.setItem(`offchain_${key}`, JSON.stringify(rawData));
     window.localStorage.setItem(`offchain_cid_${key}`, cid);
-    window.localStorage.removeItem(key); 
+    window.localStorage.removeItem(key);
 
     console.log(`Migration successful for key: ${key}`);
     return true;

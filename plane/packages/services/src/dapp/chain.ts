@@ -4,6 +4,8 @@ import {
   saveDB,
   getDBSnapshot,
   getEnvVar,
+  getContractGas,
+  getDefaultWorkspaceSlug,
   getLoggedInUserId,
   syncWorkspacesToCookie,
   registerSaveHook,
@@ -70,6 +72,10 @@ export function getWorkspaceRegistryAddress(): string {
     getEnvVar("NEXT_PUBLIC_WORKSPACE_REGISTRY_ADDRESS") ||
     ""
   );
+}
+
+export function getBlsPrivateKey(): string | undefined {
+  return getEnvVar("VITE_BLS_PRIVATE_KEY") || getEnvVar("NEXT_PUBLIC_BLS_PRIVATE_KEY") || undefined;
 }
 
 export const CONTRACT_ADDRESS = getRegistryContractAddress();
@@ -152,14 +158,24 @@ export function getFiaiSDK(): any {
   return null;
 }
 
-export const DEFAULT_PROXY_URL = "https://plane-ipfs-proxy.anh2482006.workers.dev";
 const PLACEHOLDER_PATTERNS = ["your-worker", "your-subdomain", "your-domain", "example.com"];
 
 export function getProxyUrl(): string | null {
-  const envUrl = getEnvVar("VITE_PINATA_PROXY_URL");
-  const url = envUrl || DEFAULT_PROXY_URL;
-  if (PLACEHOLDER_PATTERNS.some(p => url.includes(p))) return null;
+  const url = (getEnvVar("VITE_PINATA_PROXY_URL") || "").trim();
+  if (!url) return null;
+  if (PLACEHOLDER_PATTERNS.some((p) => url.includes(p))) return null;
   return url;
+}
+
+export function getConfiguredIpfsGateways(cid: string): string[] {
+  const raw = (getEnvVar("VITE_IPFS_GATEWAYS") || "").trim();
+  const list = raw
+    ? raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+    : [];
+  return list.map((prefix) => `${prefix.endsWith("/") ? prefix : `${prefix}/`}${cid}`);
 }
 
 // ── Direct RPC (bypass Bridge iframe for read-only calls) ──────────────
@@ -167,9 +183,10 @@ const GET_CID_SELECTOR = "0xfa3e97e7";
 const GET_WORKSPACE_CID_SELECTOR = "0xdf48cfdc";
 const GET_USER_WORKSPACES_SELECTOR = "0xd7d19c4e";
 const GET_WORKSPACE_SELECTOR = "0x1cd7381a";
+const GET_MEMBER_ROLE_SELECTOR = "0x419f02f0";
 
 export function getRpcUrl(): string {
-  return getEnvVar("VITE_RPC_URL") || "http://192.168.1.231:10747";
+  return (getEnvVar("VITE_RPC_URL") || "").trim();
 }
 
 function padHex(hex: string, bytes: number): string {
@@ -187,7 +204,7 @@ export function abiEncodeGetCID(userAddress: string, key: string): string {
   const addressHex = padHex(userAddress, 32);
   const offsetHex = padHex("40", 32);
   const keyBytes = utf8ToHex(key);
-  const keyLen = key.length;
+  const keyLen = keyBytes.length / 2;
   const keyLenHex = padHex(keyLen.toString(16), 32);
   const keyDataHex = keyBytes.padEnd(Math.ceil(keyBytes.length / 64) * 64, "0");
   return GET_CID_SELECTOR + addressHex + offsetHex + keyLenHex + keyDataHex;
@@ -196,7 +213,8 @@ export function abiEncodeGetCID(userAddress: string, key: string): string {
 export function abiEncodeGetWorkspaceCID(slug: string): string {
   const offsetHex = padHex("20", 32);
   const slugBytes = utf8ToHex(slug);
-  const slugLenHex = padHex(slug.length.toString(16), 32);
+  const slugLen = slugBytes.length / 2;
+  const slugLenHex = padHex(slugLen.toString(16), 32);
   const slugDataHex = slugBytes.padEnd(Math.ceil(slugBytes.length / 64) * 64, "0");
   return GET_WORKSPACE_CID_SELECTOR + offsetHex + slugLenHex + slugDataHex;
 }
@@ -209,9 +227,28 @@ export function abiEncodeGetUserWorkspaces(userAddress: string): string {
 export function abiEncodeGetWorkspace(slug: string): string {
   const offsetHex = padHex("20", 32);
   const slugBytes = utf8ToHex(slug);
-  const slugLenHex = padHex(slug.length.toString(16), 32);
+  const slugLen = slugBytes.length / 2;
+  const slugLenHex = padHex(slugLen.toString(16), 32);
   const slugDataHex = slugBytes.padEnd(Math.ceil(slugBytes.length / 64) * 64, "0");
   return GET_WORKSPACE_SELECTOR + offsetHex + slugLenHex + slugDataHex;
+}
+
+export function abiEncodeGetMemberRole(slug: string, userAddress: string): string {
+  const offsetHex = padHex("40", 32);
+  const addressHex = padHex(userAddress, 32);
+  const slugBytes = utf8ToHex(slug);
+  const slugLen = slugBytes.length / 2;
+  const slugLenHex = padHex(slugLen.toString(16), 32);
+  const slugDataHex = slugBytes.padEnd(Math.ceil(slugBytes.length / 64) * 64, "0");
+  return GET_MEMBER_ROLE_SELECTOR + offsetHex + addressHex + slugLenHex + slugDataHex;
+}
+
+export function decodeAbiUint8(hexResult: string): number {
+  if (!hexResult || hexResult === "0x") return 0;
+  const data = hexResult.startsWith("0x") ? hexResult.slice(2) : hexResult;
+  if (data.length < 64) return 0;
+  const parsed = parseInt(data.slice(0, 64), 16);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export function decodeAbiString(hexResult: string): string {
@@ -502,12 +539,7 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
     }
   } catch { }
 
-  const gateways = [
-    `https://gateway.pinata.cloud/ipfs/${cleanCid}`,
-    `https://cloudflare-ipfs.com/ipfs/${cleanCid}`,
-    `https://ipfs.io/ipfs/${cleanCid}`,
-    `https://dweb.link/ipfs/${cleanCid}`,
-  ];
+  const gateways = getConfiguredIpfsGateways(cleanCid);
 
   for (const gw of gateways) {
     try {
@@ -736,7 +768,7 @@ export function resolveDBConflict(choice: "USE_CHAIN" | "USE_LOCAL", cid: string
     void uploadToIPFS();
   }
 }
-  
+
 export async function restoreFromIPFS(cid: string): Promise<boolean> {
   const cleanCid = cid.trim();
   if (!cleanCid) return false;
@@ -764,6 +796,9 @@ if (typeof window !== "undefined") {
 async function _initDAppDB() {
   if (typeof window === "undefined") return { status: "OK" };
   const activeWallet = await getWalletAddress().catch(() => null);
+  const registryAddr = getRegistryContractAddress();
+  const wsRegistryAddr = getWorkspaceRegistryAddress();
+  const defaultSlug = getDefaultWorkspaceSlug();
 
   const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const urlCid = urlParams?.get("cid");
@@ -785,14 +820,14 @@ async function _initDAppDB() {
       }
     }
 
-    if (!candidateCid && WORKSPACE_REGISTRY_ADDRESS) {
+    if (!candidateCid && wsRegistryAddr) {
       try {
-        const wsInfoCalldata = abiEncodeGetWorkspace("fiai");
-        const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 3000);
+        const wsInfoCalldata = abiEncodeGetWorkspace(defaultSlug);
+        const wsInfoRaw = await directRpcRead(wsRegistryAddr, wsInfoCalldata, 3000);
         const wsInfo = decodeAbiWorkspace(wsInfoRaw);
         if (wsInfo?.ipfsCID && wsInfo.ipfsCID.trim() !== "") {
           candidateCid = wsInfo.ipfsCID.trim();
-          console.log(`[DApp DB] Tìm thấy CID workspace "fiai" từ contract:`, candidateCid);
+          console.log(`[DApp DB] Tìm thấy CID workspace "${defaultSlug}" từ contract:`, candidateCid);
         }
       } catch { }
     }
@@ -843,30 +878,32 @@ async function _initDAppDB() {
     }
 
     let onChainUserCid = "";
-    try {
-      const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
-      const rawResult = await directRpcRead(CONTRACT_ADDRESS, calldata, 8000);
-      onChainUserCid = decodeAbiString(rawResult);
-    } catch { }
+    if (registryAddr) {
+      try {
+        const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
+        const rawResult = await directRpcRead(registryAddr, calldata, 8000);
+        onChainUserCid = decodeAbiString(rawResult);
+      } catch { }
+    }
 
     let onChainWorkspaceCid = "";
-    if (WORKSPACE_REGISTRY_ADDRESS) {
+    if (wsRegistryAddr) {
       try {
         const userWsCalldata = abiEncodeGetUserWorkspaces(currentUserAddress as string);
-        const userWsRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, userWsCalldata, 8000);
+        const userWsRaw = await directRpcRead(wsRegistryAddr, userWsCalldata, 8000);
         const userWsSlugs = decodeAbiStringArray(userWsRaw);
 
         if (!localDB.workspaces) localDB.workspaces = [];
         const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
         const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
-        const slugsToCheck = Array.from(new Set([...userWsSlugs, "fiai"])).filter(
+        const slugsToCheck = Array.from(new Set([...userWsSlugs, defaultSlug])).filter(
           (s) => !deletedWsSlugs.has(s) && !deletedWsIds.has(s)
         );
 
         for (const slug of slugsToCheck) {
           try {
             const wsInfoCalldata = abiEncodeGetWorkspace(slug);
-            const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 5000);
+            const wsInfoRaw = await directRpcRead(wsRegistryAddr, wsInfoCalldata, 5000);
             const wsInfo = decodeAbiWorkspace(wsInfoRaw);
             if (wsInfo && wsInfo.name) {
               const existingIdx = localDB.workspaces.findIndex((w: any) => w.slug === slug);
@@ -895,7 +932,7 @@ async function _initDAppDB() {
     }
 
     const onChainCid = onChainWorkspaceCid || onChainUserCid;
-    baseCID = onChainCid || "";
+    baseCID = onChainUserCid || "";
 
     const cachedIpfsCid =
       localStorage.getItem(`plane_dapp_ipfs_cid_${currentUserAddress}`) ||
@@ -940,10 +977,13 @@ export async function initDAppDB() {
 export async function syncDAppDBToChain(forcedWallet?: string) {
   const activeWallet = forcedWallet || getStoredWalletAddress();
   if (!activeWallet) throw new Error("Chưa kết nối ví. Vui lòng kết nối ví từ giao diện.");
-  if (currentUserAddress && activeWallet.toLowerCase() !== currentUserAddress.toLowerCase()) {
-    throw new Error("Tài khoản ví đã thay đổi. Vui lòng tải lại trang để nạp dữ liệu của ví mới.");
-  }
   currentUserAddress = activeWallet;
+
+  const registryAddr = getRegistryContractAddress();
+  const wsRegistryAddr = getWorkspaceRegistryAddress();
+  const contractGas = getContractGas();
+  const blsPrivateKey = getBlsPrivateKey();
+  const defaultSlug = getDefaultWorkspaceSlug();
 
   let cid = isDirtyState ? null : getLastUploadedCID();
   if (!cid) {
@@ -972,68 +1012,32 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
     }
   } catch { }
 
-  // 1. Refresh actual on-chain CID from OffchainDataRegistry
-  let onChainUserCid = "";
-  try {
-    const calldata = abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db");
-    const rawResult = await directRpcRead(CONTRACT_ADDRESS, calldata, 5000);
-    onChainUserCid = decodeAbiString(rawResult) || "";
-  } catch (e) {
-    console.warn("[DApp Sync] Không đọc được on-chain CID trước khi gửi:", e);
-  }
-
-  // If baseCID was not initialized (empty string) but on-chain has a valid CID,
-  // sync baseCID with the on-chain value to prevent false optimistic concurrency conflict
-  if (!baseCID && onChainUserCid) {
-    baseCID = onChainUserCid;
-  }
-
-  // 2. Send transaction to OffchainDataRegistry
-  // Try setCIDIfMatches first for optimistic concurrency protection, fallback to setCID if mismatch
-  try {
+  // 1. Send authoritative setCID transaction to OffchainDataRegistry
+  // Using setCID directly avoids CID_CONFLICT reverts when baseCID came from a shared workspace CID,
+  // and prevents poisoning blockchain-bridge's in-memory account nonce cache.
+  if (registryAddr) {
     await bridge.request("sendTransaction", {
       from: currentUserAddress as string,
-      to: CONTRACT_ADDRESS,
-      abiData: [SET_CID_IF_MATCHES_ABI],
-      functionName: "setCIDIfMatches",
-      feeType: "sc",
-      amount: "0",
-      value: "0",
-      gas: "3000000",
-      type: "transaction",
-      inputArray: [
-        { ...SET_CID_IF_MATCHES_ABI.inputs[0], value: "plane_dapp_db" },
-        { ...SET_CID_IF_MATCHES_ABI.inputs[1], value: baseCID },
-        { ...SET_CID_IF_MATCHES_ABI.inputs[2], value: cid }
-      ],
-      isReadOnly: false,
-      bundleId: "",
-    });
-  } catch (err: any) {
-    const errMsg = err?.message || err?.toString?.() || "";
-    console.warn("[DApp Sync] setCIDIfMatches failed, falling back to setCID:", errMsg);
-    // Use authoritative setCID to write new CID directly
-    await bridge.request("sendTransaction", {
-      from: currentUserAddress as string,
-      to: CONTRACT_ADDRESS,
+      to: registryAddr,
       abiData: [SET_CID_ABI],
       functionName: "setCID",
       feeType: "sc",
       amount: "0",
       value: "0",
-      gas: "3000000",
+      gas: contractGas,
       type: "transaction",
       inputArray: [
         { ...SET_CID_ABI.inputs[0], value: "plane_dapp_db" },
-        { ...SET_CID_ABI.inputs[1], value: cid }
+        { ...SET_CID_ABI.inputs[1], value: cid },
       ],
       isReadOnly: false,
       bundleId: "",
+      ...(blsPrivateKey ? { blsPrivateKey } : {}),
     });
   }
 
-  // 3. Workspace Registry update
-  if (WORKSPACE_REGISTRY_ADDRESS && bridge) {
+  // 2. Workspace Registry update (only if workspace doesn't exist yet or caller is Owner/Admin on-chain)
+  if (wsRegistryAddr && bridge) {
     try {
       const activeUserId = getLoggedInUserId();
       const activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId);
@@ -1055,66 +1059,89 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
         }
       }
       if (!activeSlug) {
-        activeSlug = activeUser?.last_workspace_slug || localDB.workspaces?.[0]?.slug || "fiai";
+        activeSlug = activeUser?.last_workspace_slug || localDB.workspaces?.[0]?.slug || defaultSlug;
       }
 
       const targetWs = (localDB.workspaces || []).find((w: any) => w.slug === activeSlug) || localDB.workspaces?.[0];
-      const targetSlug = targetWs?.slug || activeSlug || "fiai";
+      const targetSlug = targetWs?.slug || activeSlug || defaultSlug;
       const targetName = targetWs?.name || targetSlug.toUpperCase();
 
       let wsExistsOnChain = false;
+      let canUpdateWorkspace = false;
       try {
         const wsInfoCalldata = abiEncodeGetWorkspace(targetSlug);
-        const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 3000);
+        const wsInfoRaw = await directRpcRead(wsRegistryAddr, wsInfoCalldata, 3000);
         const wsInfo = decodeAbiWorkspace(wsInfoRaw);
-        if (wsInfo && wsInfo.name) {
+        const zeroAddr = "0x0000000000000000000000000000000000000000";
+        if (wsInfo && wsInfo.owner && wsInfo.owner.toLowerCase() !== zeroAddr && wsInfo.name) {
           wsExistsOnChain = true;
+          if (wsInfo.owner.toLowerCase() === (currentUserAddress as string).toLowerCase()) {
+            canUpdateWorkspace = true;
+          } else {
+            const roleCalldata = abiEncodeGetMemberRole(targetSlug, currentUserAddress as string);
+            const roleRaw = await directRpcRead(wsRegistryAddr, roleCalldata, 3000).catch(() => "0x");
+            const memberRole = decodeAbiUint8(roleRaw);
+            // Role.Admin = 2, Role.Owner = 3 in PlaneWorkspaceRegistry.sol
+            canUpdateWorkspace = memberRole >= 2;
+          }
         }
       } catch {
         wsExistsOnChain = false;
       }
 
       if (wsExistsOnChain) {
-        await bridge.request("sendTransaction", {
-          from: currentUserAddress as string,
-          to: WORKSPACE_REGISTRY_ADDRESS,
-          abiData: [UPDATE_WORKSPACE_CID_ABI],
-          functionName: "updateWorkspaceCID",
-          feeType: "sc",
-          amount: "0",
-          value: "0",
-          gas: "3000000",
-          type: "transaction",
-          inputArray: [
-            { name: "slug", type: "string", value: targetSlug },
-            { name: "newCid", type: "string", value: cid },
-          ],
-          isReadOnly: false,
-          bundleId: "",
-        }).catch((updateErr: any) => {
-          console.warn("[DApp Sync] updateWorkspaceCID failed:", updateErr);
-        });
+        if (canUpdateWorkspace) {
+          await bridge
+            .request("sendTransaction", {
+              from: currentUserAddress as string,
+              to: wsRegistryAddr,
+              abiData: [UPDATE_WORKSPACE_CID_ABI],
+              functionName: "updateWorkspaceCID",
+              feeType: "sc",
+              amount: "0",
+              value: "0",
+              gas: contractGas,
+              type: "transaction",
+              inputArray: [
+                { name: "slug", type: "string", value: targetSlug },
+                { name: "newCid", type: "string", value: cid },
+              ],
+              isReadOnly: false,
+              bundleId: "",
+              ...(blsPrivateKey ? { blsPrivateKey } : {}),
+            })
+            .catch((updateErr: any) => {
+              console.warn("[DApp Sync] updateWorkspaceCID failed:", updateErr);
+            });
+        } else {
+          console.info(
+            `[DApp Sync] Bỏ qua updateWorkspaceCID("${targetSlug}") vì ví ${currentUserAddress} không phải Owner/Admin của workspace trên contract.`
+          );
+        }
       } else {
-        await bridge.request("sendTransaction", {
-          from: currentUserAddress as string,
-          to: WORKSPACE_REGISTRY_ADDRESS,
-          abiData: [CREATE_WORKSPACE_ABI],
-          functionName: "createWorkspace",
-          feeType: "sc",
-          amount: "0",
-          value: "0",
-          gas: "3000000",
-          type: "transaction",
-          inputArray: [
-            { name: "slug", type: "string", value: targetSlug },
-            { name: "name", type: "string", value: targetName },
-            { name: "initialCid", type: "string", value: cid },
-          ],
-          isReadOnly: false,
-          bundleId: "",
-        }).catch((createErr: any) => {
-          console.warn("[DApp Sync] createWorkspace failed:", createErr);
-        });
+        await bridge
+          .request("sendTransaction", {
+            from: currentUserAddress as string,
+            to: wsRegistryAddr,
+            abiData: [CREATE_WORKSPACE_ABI],
+            functionName: "createWorkspace",
+            feeType: "sc",
+            amount: "0",
+            value: "0",
+            gas: contractGas,
+            type: "transaction",
+            inputArray: [
+              { name: "slug", type: "string", value: targetSlug },
+              { name: "name", type: "string", value: targetName },
+              { name: "initialCid", type: "string", value: cid },
+            ],
+            isReadOnly: false,
+            bundleId: "",
+            ...(blsPrivateKey ? { blsPrivateKey } : {}),
+          })
+          .catch((createErr: any) => {
+            console.warn("[DApp Sync] createWorkspace failed:", createErr);
+          });
       }
     } catch (wsErr) {
       console.warn("[DApp Sync] Workspace registry error:", wsErr);
