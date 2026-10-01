@@ -28,7 +28,7 @@ import { DeleteIssueModal } from "../../delete-issue-modal";
 import { CreateUpdateIssueModal } from "../../issue-modal/modal";
 import type { IQuickActionProps } from "../list/list-view-types";
 import type { MenuItemFactoryProps } from "./helper";
-import { useCycleIssueMenuItems } from "./helper";
+import { useCycleIssueMenuItems, getDuplicateIssuePayload } from "./helper";
 
 export const CycleIssueQuickActions = observer(function CycleIssueQuickActions(props: IQuickActionProps) {
   const {
@@ -67,14 +67,7 @@ export const CycleIssueQuickActions = observer(function CycleIssueQuickActions(p
 
   const activeLayout = `${issuesFilter.issueFilters?.displayFilters?.layout} layout`;
 
-  const duplicateIssuePayload = omit(
-    {
-      ...issue,
-      name: `${issue.name} (copy)`,
-      sourceIssueId: issue.id,
-    },
-    ["id"]
-  );
+  const duplicateIssuePayload = getDuplicateIssuePayload(issue);
 
   // Menu items and modals using helper
   const menuItemProps: MenuItemFactoryProps = {

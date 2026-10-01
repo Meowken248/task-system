@@ -2292,6 +2292,65 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     if (method === "post") return ok({ ...body });
   }
 
+  // cycle-issues endpoint
+  const cycleIssuesMatch = url.match(/\/cycles\/([^/]+)\/cycle-issues(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
+  if (cycleIssuesMatch) {
+    const cycleId = cycleIssuesMatch[1];
+    const bridgeId = cycleIssuesMatch[2];
+    if (method === "post") {
+      const issueIds = Array.isArray(body?.issues) ? body.issues : [];
+      if (localDB.issues) {
+        localDB.issues.forEach((i: any) => {
+          if (issueIds.includes(i.id)) {
+            i.cycle_id = cycleId;
+            i.cycle = cycleId;
+          }
+        });
+        saveDB();
+      }
+      return ok({ message: "Issues added to cycle", issues: issueIds });
+    }
+    if (method === "delete") {
+      if (localDB.issues && bridgeId) {
+        const issue = localDB.issues.find((i: any) => i.id === bridgeId);
+        if (issue) {
+          issue.cycle_id = null;
+          issue.cycle = null;
+          saveDB();
+        }
+      }
+      return ok({ message: "Issue removed from cycle" });
+    }
+    if (method === "get") {
+      const issues = (localDB.issues || []).filter((i: any) => i.cycle_id === cycleId || i.cycle === cycleId);
+      return ok(issues);
+    }
+  }
+
+  // module-issues endpoint
+  const moduleIssuesMatch = url.match(/\/modules\/([^/]+)\/module-issues(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
+  if (moduleIssuesMatch) {
+    const moduleId = moduleIssuesMatch[1];
+    if (method === "post") {
+      const issueIds = Array.isArray(body?.issues) ? body.issues : [];
+      if (localDB.issues) {
+        localDB.issues.forEach((i: any) => {
+          if (issueIds.includes(i.id)) {
+            const currentModules = Array.isArray(i.module_ids) ? i.module_ids : [];
+            if (!currentModules.includes(moduleId)) {
+              i.module_ids = [...currentModules, moduleId];
+            }
+          }
+        });
+        saveDB();
+      }
+      return ok({ message: "Issues added to module", issues: issueIds });
+    }
+    if (method === "get") {
+      return ok([]);
+    }
+  }
+
 
   // ── Workspace Global Search endpoint (Power-K command palette) ───────
   const workspaceSearchMatch = url.match(/\/workspaces\/([^/?]+)\/search(?:\/|\?|$)/);
@@ -3542,15 +3601,26 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         }
       };
 
+      const targetProjForGroup = (localDB.projects || []).find(
+        (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+      );
+      const matchingProjIdsForGroup = new Set(
+        [projId, targetProjForGroup?.id, targetProjForGroup?.identifier].filter(Boolean)
+      );
+      const projectStatesForGroup = (localDB.states || []).filter(
+        (s: any) => matchingProjIdsForGroup.has(s.project) || matchingProjIdsForGroup.has(s.project_id)
+      );
+
       // Pre-initialize groups so empty groups work and show_empty_groups can render
       if (canonicalGroupBy === "state" && collection === "issues") {
-        const states = (localDB.states || []).filter((s: any) => s.project === projId || s.project_id === projId);
-        states.forEach((s: any) => ensureGroup(s.id));
+        projectStatesForGroup.forEach((s: any) => ensureGroup(s.id));
         ensureGroup("None");
       } else if (canonicalGroupBy === "priority") {
         ["urgent", "high", "medium", "low", "none"].forEach((p) => ensureGroup(p));
       } else if (canonicalGroupBy === "labels") {
-        const labels = (localDB.labels || []).filter((l: any) => l.project === projId || l.project_id === projId);
+        const labels = (localDB.labels || []).filter(
+          (l: any) => matchingProjIdsForGroup.has(l.project) || matchingProjIdsForGroup.has(l.project_id)
+        );
         labels.forEach((l: any) => ensureGroup(l.id));
         ensureGroup("None");
       } else if (canonicalGroupBy === "state_detail.group") {
@@ -3563,7 +3633,16 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
       list.forEach((item: any) => {
         if (canonicalGroupBy === "state") {
-          const key = item.state_id || item.state || "None";
+          let key = item.state_id || item.state;
+          const matchingState = projectStatesForGroup.find((s: any) => s.id === key);
+          if (!matchingState && projectStatesForGroup.length > 0) {
+            const defaultState = projectStatesForGroup.find((s: any) => s.default) || projectStatesForGroup[0];
+            key = defaultState.id;
+            item.state_id = key;
+            item.state = key;
+            item.state_detail = defaultState;
+          }
+          if (!key) key = "None";
           ensureGroup(key);
           groupedResults[key].results.push(item);
           groupedResults[key].total_results++;
@@ -3885,6 +3964,34 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         );
         const maxSeq = projectIssues.reduce((max: number, issue: any) => Math.max(max, issue.sequence_id || 0), 0);
         newRecord.sequence_id = maxSeq + 1;
+
+        // Ensure state_id belongs to this project
+        const projStates = (localDB.states || []).filter(
+          (s: any) => validProjKeys.has(s.project) || validProjKeys.has(s.project_id)
+        );
+        const stateMatches = projStates.find(
+          (s: any) => s.id === (newRecord.state_id || newRecord.state)
+        );
+        if (!stateMatches && projStates.length > 0) {
+          const defaultState = projStates.find((s: any) => s.default) || projStates[0];
+          newRecord.state_id = defaultState.id;
+          newRecord.state = defaultState.id;
+          newRecord.state_detail = defaultState;
+        } else if (stateMatches) {
+          newRecord.state_id = stateMatches.id;
+          newRecord.state = stateMatches.id;
+          newRecord.state_detail = stateMatches;
+        }
+      }
+
+      if (newRecord.parent_id === "" || newRecord.parent_id === "null" || newRecord.parent_id === "undefined") {
+        newRecord.parent_id = null;
+      }
+      if (newRecord.parent === "" || newRecord.parent === "null" || newRecord.parent === "undefined") {
+        newRecord.parent = null;
+      }
+      if (newRecord.cycle_id === "" || newRecord.cycle_id === "null" || newRecord.cycle_id === "undefined") {
+        newRecord.cycle_id = null;
       }
     }
 

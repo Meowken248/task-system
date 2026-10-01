@@ -137,35 +137,30 @@ export class IssueService extends APIService {
       throw error?.response?.data ?? error;
     }
 
-    if (!isOnChainTaskSyncAvailable()) {
-      throw new Error("Không thể kết nối với hệ thống Blockchain. Không thể tạo Task.");
-    }
+    if (isOnChainTaskSyncAvailable()) {
+      try {
+        const chainResult = await createIssueOnChain(issue);
+        const transactionHash = chainResult.transactionHash;
+        const assigneeWallet = chainResult.assigneeWallet;
 
-    let transactionHash: string;
-    let assigneeWallet: string;
-    try {
-      const chainResult = await createIssueOnChain(issue);
-      transactionHash = chainResult.transactionHash;
-      assigneeWallet = chainResult.assigneeWallet;
-    } catch (chainError) {
-      const message = chainError instanceof Error ? chainError.message : "Giao dịch blockchain bị hủy hoặc thất bại.";
-      throw { error: message, isChainError: true };
+        void blockchainTrackingService
+          .recordTaskCreation(workspaceSlug, projectId, {
+            issueId: issue.id,
+            issueName: issue.name,
+            parentIssueId: issue.parent_id,
+            targetDate: issue.target_date,
+            priority: issue.priority,
+            assigneeWallet,
+            assigneeId: issue.assignee_ids?.[0],
+            transactionHash,
+          })
+          .catch((trackingError) => {
+            console.warn("Task đã được tạo on-chain; audit đang chờ tự đồng bộ.", trackingError);
+          });
+      } catch (chainError) {
+        console.warn("Tạo task on-chain không thành công; nội dung vẫn được lưu:", chainError);
+      }
     }
-
-    void blockchainTrackingService
-      .recordTaskCreation(workspaceSlug, projectId, {
-        issueId: issue.id,
-        issueName: issue.name,
-        parentIssueId: issue.parent_id,
-        targetDate: issue.target_date,
-        priority: issue.priority,
-        assigneeWallet,
-        assigneeId: issue.assignee_ids?.[0],
-        transactionHash,
-      })
-      .catch((trackingError) => {
-        console.warn("Task đã được tạo on-chain; audit đang chờ tự đồng bộ.", trackingError);
-      });
 
     return issue;
   }

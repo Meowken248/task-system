@@ -5,6 +5,7 @@
  */
 
 import { useMemo } from "react";
+import { omit } from "lodash-es";
 import { XCircle, ArchiveRestoreIcon } from "lucide-react";
 // plane imports
 import { useTranslation } from "@plane/i18n";
@@ -15,6 +16,35 @@ import type { TContextMenuItem } from "@plane/ui";
 import { copyUrlToClipboard, generateWorkItemLink } from "@plane/utils";
 // types
 import { createCopyMenuWithDuplication } from "@/plane-web/components/issues/issue-layouts/quick-action-dropdowns";
+
+export const getDuplicateIssuePayload = (issue: TIssue): Partial<TIssue> & { sourceIssueId: string } => {
+  const sanitized = omit(issue, [
+    "id",
+    "sequence_id",
+    "sort_order",
+    "parent",
+    "parent_id",
+    "sub_issues_count",
+    "created_at",
+    "updated_at",
+    "created_by",
+    "updated_by",
+    "state_detail",
+    "project_detail",
+    "issue_reactions",
+    "issue_attachments",
+    "issue_link",
+    "is_subscribed",
+    "cycle_id",
+    "module_ids",
+  ]);
+
+  return {
+    ...sanitized,
+    name: `${issue.name} (copy)`,
+    sourceIssueId: issue.id,
+  };
+};
 
 // Generic helper function to handle optional function calls gracefully
 // Overload for functions without parameters
