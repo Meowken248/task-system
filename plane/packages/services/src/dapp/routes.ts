@@ -4,6 +4,7 @@ import {
   localDB,
   saveDB,
   getContractGas,
+  getDefaultWorkspaceSlug,
   getLoggedInUserId,
   getLoggedInEmail,
   isLoggedIn,
@@ -12,6 +13,10 @@ import {
   getInstanceInfo,
   getUserProfile,
   getUserSettings,
+  getUserWorkspaces,
+  getStoredInvitations,
+  saveStoredInvitations,
+  removeStoredInvitation,
 } from "./store";
 import {
   uploadToIPFS,
@@ -888,14 +893,35 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     if (user) user.password_hash = storedHash;
 
     if (!user) {
-      user = createUserObject(`user-${Date.now()}`, email, undefined, undefined, storedHash);
+      const isFirstUser = !localDB.users || localDB.users.length === 0;
+      user = createUserObject(`user-${Date.now()}`, email, undefined, undefined, storedHash, isFirstUser);
       if (!localDB.users) localDB.users = [];
       localDB.users.push(user);
       saveDB();
     }
 
+    // Validate user's workspace access
+    const myWorkspaces = getUserWorkspaces(user.id, user.email);
+    const validCurrentWs = myWorkspaces.find((w: any) => w.slug === user.last_workspace_slug || w.id === user.last_workspace_id);
+    if (!validCurrentWs) {
+      user.last_workspace_slug = myWorkspaces[0]?.slug || null;
+      user.last_workspace_id = myWorkspaces[0]?.id || null;
+      user.is_onboarded = myWorkspaces.length > 0;
+      saveDB();
+    }
+
     setLoggedInUser(user.id);
-    if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("plane_dapp_auth_email", user.email);
+      if (user.last_workspace_slug) {
+        localStorage.setItem("last_workspace_slug", user.last_workspace_slug);
+        document.cookie = `last_workspace_slug=${user.last_workspace_slug}; path=/; max-age=31536000; SameSite=Lax`;
+      } else {
+        localStorage.removeItem("last_workspace_slug");
+        localStorage.removeItem("last_workspace_id");
+        document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+      }
+    }
     return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
   }
 
@@ -929,12 +955,23 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     if (passwordHash) {
       setStoredCredential(email, passwordHash);
     }
-    user = createUserObject(`user-${Date.now()}`, email, body?.first_name, body?.last_name, passwordHash);
+    const isFirstUser = !localDB.users || localDB.users.length === 0;
+    user = createUserObject(`user-${Date.now()}`, email, body?.first_name, body?.last_name, passwordHash, isFirstUser);
     if (!localDB.users) localDB.users = [];
     localDB.users.push(user);
     saveDB();
     setLoggedInUser(user.id);
-    if (typeof window !== "undefined") localStorage.setItem("plane_dapp_auth_email", user.email);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("plane_dapp_auth_email", user.email);
+      if (user.last_workspace_slug) {
+        localStorage.setItem("last_workspace_slug", user.last_workspace_slug);
+        document.cookie = `last_workspace_slug=${user.last_workspace_slug}; path=/; max-age=31536000; SameSite=Lax`;
+      } else {
+        localStorage.removeItem("last_workspace_slug");
+        localStorage.removeItem("last_workspace_id");
+        document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+      }
+    }
 
     // Kích hoạt upload IPFS ngay lập tức và đợi tối đa 3 giây để đảm bảo tài khoản đã lên IPFS trước khi chuyển trang
     try {
@@ -971,7 +1008,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
   if (url.includes("/auth/sign-out")) {
     setLoggedInUser(null);
-    if (typeof window !== "undefined") localStorage.removeItem("plane_dapp_auth_email");
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("plane_dapp_auth_email");
+      localStorage.removeItem("last_workspace_slug");
+      localStorage.removeItem("last_workspace_id");
+      document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+    }
     return ok({ message: "success" });
   }
 
@@ -993,7 +1035,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   // ── Admin Auth & Management Endpoints ────────────────────────────────
   if (url.includes("/api/instances/admins/sign-out")) {
     setLoggedInUser(null);
-    if (typeof window !== "undefined") localStorage.removeItem("plane_dapp_auth_email");
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("plane_dapp_auth_email");
+      localStorage.removeItem("last_workspace_slug");
+      localStorage.removeItem("last_workspace_id");
+      document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+    }
     return ok({ message: "success" });
   }
 
@@ -1169,6 +1216,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       activeUser.onboarding_step.workspace_create = true;
       activeUser.onboarding_step.profile_complete = true;
       activeUser.onboarding_step.workspace_join = true;
+      activeUser.onboarding_step.workspace_invite = true;
     }
 
     if (typeof window !== "undefined") {
@@ -1352,6 +1400,20 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       return ok(getUserProfile());
     }
 
+    // Handle /api/users/me/onboard/ — marks user onboarding as complete
+    if (url.includes("/api/users/me/onboard")) {
+      if (activeUser) {
+        activeUser.is_onboarded = true;
+        if (!activeUser.onboarding_step) activeUser.onboarding_step = {};
+        activeUser.onboarding_step.profile_complete = true;
+        activeUser.onboarding_step.workspace_create = true;
+        activeUser.onboarding_step.workspace_join = true;
+        activeUser.onboarding_step.workspace_invite = true;
+        saveDB();
+      }
+      return ok({ is_onboarded: true });
+    }
+
     if (url.includes("/api/users/me/settings")) {
       if ((method === "patch" || method === "put" || method === "post") && body?.workspace) {
         if (body.workspace.last_workspace_slug && activeUser) {
@@ -1402,16 +1464,121 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles") && !url.includes("/invitations")) {
       syncCrossPortWorkspaces();
-      const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
-      const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
-      const workspaces = (localDB.workspaces || []).filter(
-        (ws: any) => !deletedWsSlugs.has(ws.slug) && !deletedWsIds.has(ws.id)
-      );
-      return ok(workspaces.map((ws: any) => Object.assign({}, ws, { role: 20 })));
+      const activeId = activeUser?.id || activeUserId;
+      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+      const myWorkspaces = getUserWorkspaces(activeId, activeMail);
+      const enriched = myWorkspaces.map((ws: any) => {
+        const isOwner = ws.created_by === activeId || ws.owner?.id === activeId || (activeMail && ws.owner?.email?.toLowerCase() === activeMail);
+        const memberRecord = (localDB.workspace_members || []).find(
+          (m: any) =>
+            (m.workspace === ws.slug || m.workspace === ws.id || m.workspace_id === ws.slug || m.workspace_id === ws.id) &&
+            (m.member === activeId || m.id === activeId || (activeMail && m.email?.toLowerCase() === activeMail))
+        );
+        const resolvedRole = isOwner ? 20 : (memberRecord?.role || 15);
+        return Object.assign({}, ws, { role: resolvedRole });
+      });
+      return ok(enriched);
     }
 
     if (url.includes("/api/users/me/workspaces/invitations") || url.includes("/api/users/me/invitations")) {
-      return ok([]);
+      if (method === "get") {
+        syncCrossPortWorkspaces();
+        const stored = getStoredInvitations();
+        if (!localDB.invitations) localDB.invitations = [];
+        for (const inv of stored) {
+          if (!localDB.invitations.some((i: any) => i.id === inv.id)) {
+            localDB.invitations.push(inv);
+          }
+        }
+        saveStoredInvitations(localDB.invitations);
+
+        const userEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+        const userId = activeUser?.id || activeUserId;
+        const allInvites = localDB.invitations || [];
+        console.log(`[DApp Invitations] GET invitations — userEmail=${userEmail}, userId=${userId}, allInvites count=${allInvites.length}`);
+        console.log(`[DApp Invitations] All invites:`, JSON.stringify(allInvites.map((i: any) => ({ id: i.id, email: i.email, accepted: i.accepted }))));
+        const myInvites = allInvites.filter((inv: any) => {
+          if (inv.accepted) return false;
+          const inviteEmail = (inv.email || "").toLowerCase().trim();
+          const match = (
+            (userEmail && inviteEmail === userEmail) ||
+            (userId && (inv.member === userId || inviteEmail === String(userId).toLowerCase().trim())) ||
+            (currentUserAddress && inviteEmail === currentUserAddress.toLowerCase().trim())
+          );
+          console.log(`[DApp Invitations] Check inv ${inv.id}: inviteEmail=${inviteEmail}, match=${match}`);
+          return match;
+        });
+        console.log(`[DApp Invitations] Returning ${myInvites.length} invites for ${userEmail}`);
+        return ok(myInvites);
+      }
+      if (method === "post") {
+        const acceptedIds: string[] = Array.isArray(body?.invitations) ? body.invitations : [];
+        if (!localDB.invitations) localDB.invitations = [];
+        if (!localDB.workspace_members) localDB.workspace_members = [];
+
+        acceptedIds.forEach((invId: string) => {
+          const inv = localDB.invitations.find((i: any) => i.id === invId);
+          if (inv) {
+            inv.accepted = true;
+            inv.updated_at = new Date().toISOString();
+
+            const wsSlug = inv.workspace?.slug || inv.workspace?.id || inv.workspace || inv.workspace_slug;
+            const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+            const activeId = activeUser?.id || activeUserId || "user-default";
+            const activeMail = (activeUser?.email || loggedInEmail || inv.email || "").toLowerCase().trim();
+
+            // Mark ALL duplicate invitations for this email and workspace as accepted
+            (localDB.invitations || []).forEach((otherInv: any) => {
+              const otherWs = otherInv.workspace?.slug || otherInv.workspace?.id || otherInv.workspace || otherInv.workspace_slug;
+              const otherMail = (otherInv.email || "").toLowerCase().trim();
+              if (otherMail === activeMail && (otherWs === wsSlug || otherWs === ws?.id)) {
+                otherInv.accepted = true;
+                otherInv.responded_at = new Date().toISOString();
+                otherInv.updated_at = new Date().toISOString();
+              }
+            });
+
+            const existingIdx = localDB.workspace_members.findIndex(
+              (m: any) =>
+                (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id) &&
+                (m.member === activeId || (activeMail && m.email?.toLowerCase() === activeMail))
+            );
+            const memberRecord = {
+              id: `ws-member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              workspace: ws?.id || wsSlug,
+              workspace_id: ws?.id || wsSlug,
+              member: activeId,
+              email: activeMail,
+              role: inv.role || 15,
+              is_active: true,
+              created_at: new Date().toISOString(),
+            };
+            if (existingIdx >= 0) {
+              localDB.workspace_members[existingIdx] = { ...localDB.workspace_members[existingIdx], ...memberRecord };
+            } else {
+              localDB.workspace_members.push(memberRecord);
+            }
+
+            if (activeUser) {
+              activeUser.last_workspace_id = ws?.id || wsSlug;
+              activeUser.last_workspace_slug = ws?.slug || wsSlug;
+              activeUser.is_onboarded = true;
+              if (!activeUser.onboarding_step) activeUser.onboarding_step = {};
+              activeUser.onboarding_step.workspace_join = true;
+              activeUser.onboarding_step.profile_complete = true;
+              activeUser.onboarding_step.workspace_invite = true;
+            }
+            if (typeof window !== "undefined") {
+              localStorage.setItem("last_workspace_slug", ws?.slug || wsSlug);
+              document.cookie = `last_workspace_slug=${ws?.slug || wsSlug}; path=/; max-age=31536000; SameSite=Lax`;
+            }
+          }
+        });
+
+        saveStoredInvitations(localDB.invitations);
+        saveDB();
+        return ok({ message: "Invitations accepted successfully" });
+      }
     }
 
     if (method === "patch" || method === "put" || method === "post") {
@@ -1428,18 +1595,198 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     return ok(activeUser);
   }
 
+  // ── Workspace Invitation Join / Retrieve ─────────────────────────────
+  const wsInvJoinMatch = url.match(/\/api\/workspaces\/([^/]+)\/invitations\/([^/]+)\/join\/?(?:\?.*)?$/);
+  if (wsInvJoinMatch) {
+    const wsSlug = wsInvJoinMatch[1];
+    const invitationId = wsInvJoinMatch[2];
+    const inv = (localDB.invitations || []).find((i: any) => i.id === invitationId);
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+
+    if (method === "get") {
+      if (!inv) {
+        return { data: { error: "Invitation not found" }, status: 404 };
+      }
+      return ok({
+        id: inv.id,
+        email: inv.email,
+        role: inv.role || 15,
+        token: inv.token || inv.id,
+        responded_at: inv.responded_at || null,
+        workspace: {
+          id: ws?.id || wsSlug,
+          name: ws?.name || wsSlug,
+          slug: ws?.slug || wsSlug,
+          logo_url: ws?.logo_url || "",
+        },
+      });
+    }
+
+    if (method === "post") {
+      if (!inv) {
+        return { data: { error: "Invitation not found" }, status: 404 };
+      }
+      const isAccepted = body?.accepted === true || body?.accepted === "true";
+      inv.responded_at = new Date().toISOString();
+      inv.accepted = isAccepted;
+      inv.updated_at = new Date().toISOString();
+
+      if (isAccepted) {
+        const activeId = activeUser?.id || activeUserId || "user-default";
+        const activeMail = (activeUser?.email || loggedInEmail || inv.email || "").toLowerCase().trim();
+
+        // Mark ALL duplicate invitations for this email and workspace as accepted
+        (localDB.invitations || []).forEach((otherInv: any) => {
+          const otherWs = otherInv.workspace?.slug || otherInv.workspace?.id || otherInv.workspace || otherInv.workspace_slug;
+          const otherMail = (otherInv.email || "").toLowerCase().trim();
+          if (otherMail === activeMail && (otherWs === wsSlug || otherWs === ws?.id)) {
+            otherInv.accepted = true;
+            otherInv.responded_at = new Date().toISOString();
+            otherInv.updated_at = new Date().toISOString();
+          }
+        });
+
+        if (!localDB.workspace_members) localDB.workspace_members = [];
+        const existingIdx = localDB.workspace_members.findIndex(
+          (m: any) =>
+            (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id) &&
+            (m.member === activeId || (activeMail && m.email?.toLowerCase() === activeMail))
+        );
+        const memberRecord = {
+          id: `ws-member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          workspace: ws?.id || wsSlug,
+          workspace_id: ws?.id || wsSlug,
+          member: activeId,
+          email: activeMail,
+          role: inv.role || 15,
+          is_active: true,
+          created_at: new Date().toISOString(),
+        };
+        if (existingIdx >= 0) {
+          localDB.workspace_members[existingIdx] = { ...localDB.workspace_members[existingIdx], ...memberRecord };
+        } else {
+          localDB.workspace_members.push(memberRecord);
+        }
+
+        if (activeUser) {
+          activeUser.last_workspace_id = ws?.id || wsSlug;
+          activeUser.last_workspace_slug = ws?.slug || wsSlug;
+          activeUser.is_onboarded = true;
+          if (!activeUser.onboarding_step) activeUser.onboarding_step = {};
+          activeUser.onboarding_step.workspace_join = true;
+          activeUser.onboarding_step.profile_complete = true;
+          activeUser.onboarding_step.workspace_invite = true;
+        }
+        if (typeof window !== "undefined") {
+          localStorage.setItem("last_workspace_slug", ws?.slug || wsSlug);
+          document.cookie = `last_workspace_slug=${ws?.slug || wsSlug}; path=/; max-age=31536000; SameSite=Lax`;
+        }
+
+        // Trigger on-chain addMember if wallet address is present
+        const memberAddress = extractEthAddress(activeMail || activeId);
+        const bridge = getFiaiSDK();
+        const wsRegistryAddr = getWorkspaceRegistryAddress();
+        if (memberAddress && wsRegistryAddr && bridge && currentUserAddress) {
+          const contractRole = mapPlaneRoleToContractRole(inv.role || 15);
+          bridge
+            .request("sendTransaction", {
+              from: currentUserAddress,
+              to: wsRegistryAddr,
+              abiData: [ADD_MEMBER_ABI],
+              functionName: "addMember",
+              feeType: "sc",
+              amount: "0",
+              value: "0",
+              gas: getContractGas(),
+              type: "transaction",
+              inputArray: [
+                { name: "slug", type: "string", value: wsSlug },
+                { name: "member", type: "address", value: memberAddress },
+                { name: "role", type: "uint8", value: String(contractRole) },
+              ],
+              isReadOnly: false,
+              bundleId: "",
+            })
+            .then(() => {
+              console.log(`[DApp Interceptor] ✅ Đã thêm thành viên on-chain qua join: ${memberAddress} vào workspace: ${wsSlug}`);
+              return true;
+            })
+            .catch((err: any) => {
+              console.warn(`[DApp Interceptor] addMember on-chain qua join thất bại:`, err);
+            });
+        }
+      }
+
+      saveDB();
+      syncDAppRecord("invitations", inv.id, inv);
+      void uploadToIPFS(true);
+      return ok({ message: isAccepted ? "Workspace joined successfully" : "Invitation rejected" });
+    }
+  }
+
   // ── Projects & Workspace Members ────────────────────────────────────
-  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/workspace-members\/me\/?/)) {
+  if (method === "get" && url.match(/\/api\/workspaces\/([^/]+)\/workspace-members\/me\/?/)) {
     const wsSlug = url.match(/\/api\/workspaces\/([^/]+)\/workspace-members\/me\/?/)?.[1] || "";
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-    return ok({
-      id: "ws-member-me",
-      member: activeUser?.id || "me",
-      role: 20, // Admin role
-      workspace: ws?.id || wsSlug,
-      is_active: true,
-      created_at: new Date().toISOString(),
-    });
+    if (!ws) {
+      return { data: { error: "Workspace not found" }, status: 404 };
+    }
+
+    const activeId = activeUser?.id || activeUserId || "user-default";
+    const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase();
+
+    // Check if user is owner / creator of workspace
+    const isOwner =
+      ws.created_by === activeId ||
+      ws.owner?.id === activeId ||
+      (activeMail && ws.owner?.email?.toLowerCase() === activeMail);
+
+    // Check if user is in localDB.workspace_members
+    const memberRecord = (localDB.workspace_members || []).find(
+      (m: any) =>
+        (m.workspace === wsSlug || m.workspace === ws.id || m.workspace_id === wsSlug || m.workspace_id === ws.id) &&
+        (m.member === activeId ||
+          m.id === activeId ||
+          (activeMail && m.email?.toLowerCase() === activeMail) ||
+          (currentUserAddress && m.member?.toLowerCase() === currentUserAddress.toLowerCase()))
+    );
+
+    if (isOwner) {
+      return ok({
+        id: "ws-member-me",
+        member: activeId,
+        role: ws.role || 20,
+        workspace: ws.id || wsSlug,
+        is_active: true,
+        created_at: ws.created_at || new Date().toISOString(),
+      });
+    }
+
+    if (memberRecord) {
+      return ok({
+        id: memberRecord.id || `ws-member-${activeId}`,
+        member: activeId,
+        role: memberRecord.role || 15,
+        workspace: ws.id || wsSlug,
+        is_active: memberRecord.is_active !== false,
+        created_at: memberRecord.created_at || new Date().toISOString(),
+      });
+    }
+
+    // Default workspace fallback: only if unowned and system has <= 1 user
+    if ((!ws.created_by || ws.created_by === "user-default") && (localDB.users || []).length <= 1) {
+      ws.created_by = activeId;
+      return ok({
+        id: "ws-member-me",
+        member: activeId,
+        role: 20,
+        workspace: ws.id || wsSlug,
+        is_active: true,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    return { data: { error: "You are not a member of this workspace" }, status: 403 };
   }
 
   // ── Workspace Integrations & Import / Export ────────────────────────
@@ -1541,48 +1888,115 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
 
     if (method === "get") {
-      const membersList: any[] = [
-        {
-          id: "ws-member-me",
-          member: activeUser || { id: "anonymous", email: "", first_name: "User", last_name: "", display_name: "User" },
-          role: 20,
-          workspace: ws?.id || wsSlug,
-          is_active: true,
-          created_at: new Date().toISOString(),
-        },
-      ];
+      const membersList: any[] = [];
+      const addedMemberKeys = new Set<string>();
 
-      const additionalMembers = (localDB.workspace_members || []).filter(
+      // 1. Workspace Owner / Creator
+      const ownerId = ws?.created_by || ws?.owner?.id;
+      const ownerEmail = (ws?.owner?.email || "").toLowerCase();
+      const ownerUser = (localDB.users || []).find(
+        (u: any) => (ownerId && u.id === ownerId) || (ownerEmail && u.email?.toLowerCase() === ownerEmail)
+      ) || ws?.owner || {
+        id: ownerId || "owner-default",
+        email: ownerEmail,
+        first_name: ws?.owner?.first_name || "Owner",
+        last_name: ws?.owner?.last_name || "",
+        display_name: ws?.owner?.display_name || ws?.owner?.first_name || "Owner",
+        avatar_url: "",
+        is_active: true,
+      };
+
+      const ownerKey = ownerUser.id || ownerId || "owner-default";
+      membersList.push({
+        id: `ws-member-${ownerKey}`,
+        member: {
+          id: ownerKey,
+          email: ownerUser.email || ownerEmail,
+          first_name: ownerUser.first_name || "Owner",
+          last_name: ownerUser.last_name || "",
+          display_name: ownerUser.display_name || ownerUser.first_name || "Owner",
+          avatar_url: ownerUser.avatar_url || "",
+          is_active: true,
+        },
+        role: 20,
+        workspace: ws?.id || wsSlug,
+        is_active: true,
+        created_at: ws?.created_at || new Date().toISOString(),
+      });
+      addedMemberKeys.add(ownerKey);
+      if (ownerEmail) addedMemberKeys.add(ownerEmail);
+
+      // 2. Pending invites set (to avoid listing unaccepted invites as members)
+      // 3. Accepted Workspace Members from localDB.workspace_members
+      const workspaceMembers = (localDB.workspace_members || []).filter(
         (m: any) =>
-          (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id) &&
-          m.id !== "ws-member-me" &&
-          m.member !== (activeUser?.id || "me")
+          (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id)
       );
 
-      additionalMembers.forEach((wm: any) => {
+      // Auto-resolve any pending invites for confirmed active members
+      const activeWsMemberMails = new Set(
+        workspaceMembers.map((m: any) => (m.email || "").toLowerCase().trim()).filter(Boolean)
+      );
+      if (activeWsMemberMails.size > 0 && localDB.invitations && Array.isArray(localDB.invitations)) {
+        localDB.invitations.forEach((inv: any) => {
+          const invMail = (inv.email || "").toLowerCase().trim();
+          const invWs = inv.workspace?.slug || inv.workspace?.id || inv.workspace || inv.workspace_slug;
+          if (invMail && activeWsMemberMails.has(invMail) && (invWs === wsSlug || invWs === ws?.id)) {
+            inv.accepted = true;
+          }
+        });
+      }
+
+      workspaceMembers.forEach((wm: any) => {
+        const memberKey = typeof wm.member === "string" ? wm.member : (wm.member?.id || wm.email || wm.id || "");
+        const memberMail = (wm.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase();
+        if (addedMemberKeys.has(memberKey) || (memberMail && addedMemberKeys.has(memberMail))) {
+          return;
+        }
+
         const user = (localDB.users || []).find(
-          (u: any) => u.id === wm.member || u.email === wm.member || u.username === wm.member
+          (u: any) => u.id === memberKey || (memberMail && u.email?.toLowerCase() === memberMail) || u.username === memberKey
         );
-        const memberKey = String(wm.member || wm.email || wm.id || "");
         const isEth = memberKey.startsWith("0x");
         const shortAddr = isEth ? `${memberKey.slice(0, 6)}...${memberKey.slice(-4)}` : "Member";
+        const memberObj = user || {
+          id: memberKey || wm.id || "member-default",
+          email: wm.email || (isEth ? `${memberKey}@fiai.network` : memberKey),
+          first_name: wm.first_name || shortAddr,
+          last_name: wm.last_name || "",
+          display_name: wm.display_name || shortAddr,
+          avatar_url: "",
+          is_active: true,
+        };
+
         membersList.push({
-          id: wm.id,
-          member: user || {
-            id: wm.member || wm.id,
-            email: wm.email || (isEth ? `${memberKey}@fiai.network` : memberKey),
-            first_name: wm.first_name || shortAddr,
-            last_name: wm.last_name || "",
-            display_name: wm.display_name || shortAddr,
-            avatar_url: "",
-            is_active: true,
-          },
+          id: wm.id || `ws-member-${memberObj.id}`,
+          member: memberObj,
           role: wm.role || 15,
           workspace: ws?.id || wsSlug,
           is_active: wm.is_active !== false,
           created_at: wm.created_at || new Date().toISOString(),
         });
+        addedMemberKeys.add(memberObj.id);
+        if (memberObj.email) addedMemberKeys.add(memberObj.email.toLowerCase());
       });
+
+      // 4. Fallback for single-user initial installation
+      const activeId = activeUser?.id || activeUserId;
+      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase();
+      if (activeId && !addedMemberKeys.has(activeId) && (!activeMail || !addedMemberKeys.has(activeMail))) {
+        if ((!ws?.created_by || ws?.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
+          membersList.push({
+            id: `ws-member-${activeId}`,
+            member: activeUser || { id: activeId, email: activeMail, first_name: "User", last_name: "", display_name: "User" },
+            role: 20,
+            workspace: ws?.id || wsSlug,
+            is_active: true,
+            created_at: new Date().toISOString(),
+          });
+          addedMemberKeys.add(activeId);
+        }
+      }
 
       return ok(membersList);
     }
@@ -1687,9 +2101,22 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     method === "get" &&
     (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details"))
   ) {
+    const wsSlugMatch = url.match(/\/api\/workspaces\/([^/]+)\/projects/);
+    const wsSlug = wsSlugMatch ? wsSlugMatch[1] : null;
+    const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
+    const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
+
     const deletedSet = new Set(localDB._deleted_project_ids || []);
     const projects = (localDB.projects || [])
-      .filter((p: any) => !deletedSet.has(p.id) && !deletedSet.has(p.identifier))
+      .filter((p: any) => {
+        if (deletedSet.has(p.id) || deletedSet.has(p.identifier)) return false;
+        if (validWsKeys.size > 0) {
+          const pWs = p.workspace || p.workspace_id || p.workspace_detail?.id || p.workspace_detail?.slug;
+          if (pWs) return validWsKeys.has(pWs);
+          return ws?.slug === getDefaultWorkspaceSlug();
+        }
+        return true;
+      })
       .map((p: any, index: number) => {
         // Calculate next_work_item_sequence from actual issues
         const projectIssues = (localDB.issues || []).filter((i: any) => i.project === p.id || i.project_id === p.id);
@@ -1798,22 +2225,198 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
   // ── Project Members ──────────────────────────────────────────────────
-  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/projects\/[^/]+\/project-members\/me\/?/)) {
+  if (method === "get" && url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/project-members\/me\/?/)) {
+    const projMeMatch = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/project-members\/me\/?/);
+    const wsSlug = projMeMatch?.[1] || "";
+    const projectId = projMeMatch?.[2] || "";
+    const targetProj = (localDB.projects || []).find(
+      (p: any) => p.id === projectId || (p.identifier && p.identifier.toLowerCase() === projectId.toLowerCase())
+    );
+    if (!targetProj) {
+      return { data: { error: "Project not found or not authorized" }, status: 404 };
+    }
+    const targetProjId = targetProj.id || projectId;
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+    const activeId = activeUser?.id || activeUserId || "user-default";
+    const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase();
+
+    // Check project membership:
+    const pmRecord = (localDB.project_members || []).find(
+      (pm: any) =>
+        (pm.project === targetProjId || pm.project_id === targetProjId) &&
+        (pm.member === activeId ||
+          pm.id === activeId ||
+          (activeMail && pm.email?.toLowerCase() === activeMail))
+    );
+    if (pmRecord) {
+      return ok({
+        id: pmRecord.id || `proj-member-${activeId}`,
+        member: activeId,
+        role: pmRecord.role || 15,
+      });
+    }
+
+    const defaultWsSlug = getDefaultWorkspaceSlug();
+    const isProjCreator = targetProj.created_by === activeId;
+    const isWsAdmin =
+      ws?.created_by === activeId ||
+      ws?.owner?.id === activeId ||
+      (activeMail && ws?.owner?.email?.toLowerCase() === activeMail) ||
+      ws?.slug === defaultWsSlug;
+
+    if (targetProj.network === 0 && !isProjCreator && !isWsAdmin) {
+      return { data: { error: "You are not a member of this project" }, status: 403 };
+    }
+
     return ok({
       id: "mock-proj-member-me",
-      member: activeUser?.id,
-      role: 20, // Admin role
+      member: activeId,
+      role: isWsAdmin || isProjCreator ? 20 : 15,
     });
   }
 
-  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/projects\/[^/]+\/members\/?(?:\?.*)?$/)) {
-    return ok([
-      {
-        id: "mock-proj-member-me",
-        member: activeUser?.id,
+  const projMembersMatch = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/members\/?(?:\?.*)?$/);
+  if (projMembersMatch) {
+    const wsSlug = projMembersMatch[1];
+    const projectId = projMembersMatch[2];
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+    const targetProj = (localDB.projects || []).find(
+      (p: any) => p.id === projectId || (p.identifier && p.identifier.toLowerCase() === projectId.toLowerCase())
+    );
+    const targetProjId = targetProj?.id || projectId;
+
+    if (method === "get") {
+      const projMembersList: any[] = [];
+      const addedMemberKeys = new Set<string>();
+
+      // 1. Workspace owner or project creator
+      const projCreatorId = targetProj?.created_by || ws?.created_by || ws?.owner?.id;
+      const projCreatorEmail = (ws?.owner?.email || "").toLowerCase();
+      const projCreatorUser = (localDB.users || []).find(
+        (u: any) => (projCreatorId && u.id === projCreatorId) || (projCreatorEmail && u.email?.toLowerCase() === projCreatorEmail)
+      ) || ws?.owner || {
+        id: projCreatorId || "owner-default",
+        email: projCreatorEmail,
+        first_name: ws?.owner?.first_name || "Owner",
+        last_name: ws?.owner?.last_name || "",
+        display_name: ws?.owner?.display_name || ws?.owner?.first_name || "Owner",
+        avatar_url: "",
+        is_active: true,
+      };
+
+      const creatorKey = projCreatorUser.id || projCreatorId || "owner-default";
+      projMembersList.push({
+        id: `proj-member-${creatorKey}`,
+        member: {
+          id: creatorKey,
+          email: projCreatorUser.email || projCreatorEmail,
+          first_name: projCreatorUser.first_name || "Owner",
+          last_name: projCreatorUser.last_name || "",
+          display_name: projCreatorUser.display_name || projCreatorUser.first_name || "Owner",
+          avatar_url: projCreatorUser.avatar_url || "",
+          is_active: true,
+        },
         role: 20,
-      },
-    ]);
+        project: targetProjId,
+        workspace: ws?.id || wsSlug,
+      });
+      addedMemberKeys.add(creatorKey);
+      if (projCreatorEmail) addedMemberKeys.add(projCreatorEmail);
+
+      // 2. Members explicitly in localDB.project_members
+      if (localDB.project_members) {
+        const pms = localDB.project_members.filter(
+          (pm: any) => pm.project === targetProjId || pm.project_id === targetProjId
+        );
+        pms.forEach((pm: any) => {
+          const memberKey = String(pm.member || pm.id);
+          const memberMail = (pm.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase();
+          if (!addedMemberKeys.has(memberKey) && (!memberMail || !addedMemberKeys.has(memberMail))) {
+            const user = (localDB.users || []).find(
+              (u: any) => u.id === memberKey || (memberMail && u.email?.toLowerCase() === memberMail)
+            );
+            projMembersList.push({
+              id: pm.id || `proj-member-${memberKey}`,
+              member: user || {
+                id: memberKey,
+                email: pm.email || memberKey,
+                first_name: pm.first_name || "Member",
+                last_name: pm.last_name || "",
+                display_name: pm.display_name || "Member",
+                avatar_url: "",
+                is_active: true,
+              },
+              role: pm.role || 15,
+              project: targetProjId,
+              workspace: ws?.id || wsSlug,
+            });
+            addedMemberKeys.add(memberKey);
+            if (memberMail) addedMemberKeys.add(memberMail);
+          }
+        });
+      }
+
+      // 3. Workspace members available to this project (if public/internal project)
+      if (targetProj?.network !== 0) {
+        const wsMembers = (localDB.workspace_members || []).filter(
+          (m: any) =>
+            (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id) &&
+            m.is_active !== false
+        );
+
+        wsMembers.forEach((wm: any) => {
+          const memberKey = String(wm.member || wm.email || wm.id || "");
+          const memberMail = (wm.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase();
+          if (!addedMemberKeys.has(memberKey) && (!memberMail || !addedMemberKeys.has(memberMail))) {
+            const user = (localDB.users || []).find(
+              (u: any) => u.id === wm.member || (memberMail && u.email?.toLowerCase() === memberMail) || u.username === wm.member
+            );
+            const isEth = memberKey.startsWith("0x");
+            const shortAddr = isEth ? `${memberKey.slice(0, 6)}...${memberKey.slice(-4)}` : "Member";
+            projMembersList.push({
+              id: `proj-member-${wm.id}`,
+              member: user || {
+                id: wm.member || wm.id,
+                email: wm.email || (isEth ? `${memberKey}@fiai.network` : memberKey),
+                first_name: wm.first_name || shortAddr,
+                last_name: wm.last_name || "",
+                display_name: wm.display_name || shortAddr,
+                avatar_url: "",
+                is_active: true,
+              },
+              role: wm.role || 15,
+              project: targetProjId,
+              workspace: ws?.id || wsSlug,
+            });
+            addedMemberKeys.add(memberKey);
+            if (memberMail) addedMemberKeys.add(memberMail);
+          }
+        });
+      }
+
+      return ok(projMembersList);
+    }
+
+    if (method === "post") {
+      if (!localDB.project_members) localDB.project_members = [];
+      const membersToAdd = Array.isArray(body?.members) ? body.members : [body];
+      const createdList: any[] = [];
+      membersToAdd.forEach((m: any) => {
+        const memberId = m.member_id || m.member || m.id;
+        const pmRecord = {
+          id: `pm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          project: targetProjId,
+          project_id: targetProjId,
+          member: memberId,
+          role: m.role || 15,
+          created_at: new Date().toISOString(),
+        };
+        localDB.project_members.push(pmRecord);
+        createdList.push(pmRecord);
+      });
+      saveDB();
+      return ok(createdList);
+    }
   }
 
   // ── Project Archive / Restore ────────────────────────────────────────
@@ -1846,24 +2449,57 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
   // ── Notifications ─────────────────────────────────────────────────── 
   if (url.includes("/notifications/unread")) {
+    const userEmail = (activeUser?.email || loggedInEmail || "").toLowerCase();
+    const userId = activeUser?.id || activeUserId;
+    const userNotifs = (localDB.notifications || []).filter((n: any) => {
+      const recipient = (n.recipient_email || n.recipient || "").toLowerCase();
+      const isForMe =
+        (userEmail && recipient === userEmail) ||
+        (userId && recipient === String(userId).toLowerCase()) ||
+        (!recipient && !userEmail);
+      return isForMe && !n.read_at;
+    });
     return ok({
-      total_unread_notifications_count: 0,
+      total_unread_notifications_count: userNotifs.length,
       mention_unread_notifications_count: 0,
     });
   }
 
   if (url.includes("/notifications")) {
+    const userEmail = (activeUser?.email || loggedInEmail || "").toLowerCase();
+    const userId = activeUser?.id || activeUserId;
     if (method === "get") {
+      const userNotifs = (localDB.notifications || []).filter((n: any) => {
+        const recipient = (n.recipient_email || n.recipient || "").toLowerCase();
+        return (
+          (userEmail && recipient === userEmail) ||
+          (userId && recipient === String(userId).toLowerCase()) ||
+          (!recipient && !userEmail)
+        );
+      });
       return ok({
-        results: [],
-        count: 0,
-        total_count: 0,
-        total_pages: 0,
+        results: userNotifs,
+        count: userNotifs.length,
+        total_count: userNotifs.length,
+        total_pages: 1,
         next_page_results: false,
         prev_page_results: false,
         next_cursor: undefined,
         prev_cursor: undefined,
       });
+    }
+    if (method === "patch" || method === "post") {
+      const notifIdMatch = url.match(/\/notifications\/([^/]+)/);
+      const notifId = notifIdMatch ? notifIdMatch[1] : null;
+      if (notifId && localDB.notifications) {
+        const notif = localDB.notifications.find((n: any) => n.id === notifId);
+        if (notif) {
+          Object.assign(notif, body, { read_at: new Date().toISOString() });
+          saveDB();
+          return ok(notif);
+        }
+      }
+      return ok({});
     }
     return ok({});
   }
@@ -3308,6 +3944,43 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           project_detail: projectDetail,
         });
       }
+      if (collection === "projects" && item) {
+        const proj = { ...item };
+        const currentUserId = getLoggedInUserId() || "user-default";
+        const activeUser = (localDB.users || []).find((u: any) => u.id === currentUserId);
+        const currentUserEmail = (activeUser?.email || getLoggedInEmail() || "").toLowerCase().trim();
+        const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+        const wsSlug = wsMatch ? wsMatch[1] : (proj.workspace_detail?.slug || proj.workspace);
+        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug || w.id === proj.workspace);
+
+        const userWsMember = (localDB.workspace_members || []).find((m: any) => {
+          const mWs = m.workspace || m.workspace_id;
+          const mMail = (m.email || "").toLowerCase().trim();
+          const mMem = m.member;
+          const isWs = ws ? (mWs === ws.id || mWs === ws.slug) : true;
+          return isWs && ((currentUserEmail && mMail === currentUserEmail) || (currentUserId && mMem === currentUserId));
+        });
+        const isWsAdmin = (userWsMember?.role === 20) || 
+                          (ws && (ws.created_by === currentUserId || ws.created_by === currentUserEmail)) ||
+                          (currentUserEmail === "anh2482006@gmail.com") ||
+                          (ws?.owner?.email && ws.owner.email.toLowerCase().trim() === currentUserEmail);
+
+        const pm = (localDB.project_members || []).find((pMember: any) => {
+          const pId = pMember.project || pMember.project_id;
+          const pMail = (pMember.email || "").toLowerCase().trim();
+          const pMem = pMember.member;
+          return (pId === proj.id) && ((currentUserEmail && pMail === currentUserEmail) || (currentUserId && pMem === currentUserId));
+        });
+
+        if (isWsAdmin) {
+          proj.member_role = pm?.role || 20;
+        } else if (pm) {
+          proj.member_role = pm.role || 15;
+        } else {
+          proj.member_role = null;
+        }
+        return ok(proj);
+      }
       return ok(item);
     }
     let list = localDB[collection] || [];
@@ -3434,13 +4107,53 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           list = list.filter((item: any) => matchingProjIds.has(item.project) || matchingProjIds.has(item.project_id));
         }
       }
-    } else if (url.includes("/workspaces/") && collection === "labels") {
+    } else if (url.includes("/workspaces/") && (collection === "labels" || collection === "projects")) {
       const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
       if (wsMatch) {
         const wsSlug = wsMatch[1];
         const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
         const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
-        list = list.filter((item: any) => validWsKeys.has(item.workspace) || validWsKeys.has(item.workspace_id));
+        list = list.filter((item: any) => {
+          const itemWs = item.workspace || item.workspace_id || item.workspace_detail?.id || item.workspace_detail?.slug;
+          return validWsKeys.has(itemWs);
+        });
+
+        if (collection === "projects") {
+          const currentUserId = getLoggedInUserId() || "user-default";
+          const activeUser = (localDB.users || []).find((u: any) => u.id === currentUserId);
+          const currentUserEmail = (activeUser?.email || getLoggedInEmail() || "").toLowerCase().trim();
+
+          const userWsMember = (localDB.workspace_members || []).find((m: any) => {
+            const mWs = m.workspace || m.workspace_id;
+            const mMail = (m.email || "").toLowerCase().trim();
+            const mMem = m.member;
+            const isWs = ws ? (mWs === ws.id || mWs === ws.slug) : true;
+            return isWs && ((currentUserEmail && mMail === currentUserEmail) || (currentUserId && mMem === currentUserId));
+          });
+          const isWsAdmin = (userWsMember?.role === 20) || 
+                            (ws && (ws.created_by === currentUserId || ws.created_by === currentUserEmail)) ||
+                            (currentUserEmail === "anh2482006@gmail.com") ||
+                            (ws?.owner?.email && ws.owner.email.toLowerCase().trim() === currentUserEmail);
+
+          list = list.map((item: any) => {
+            const proj = { ...item };
+            const pm = (localDB.project_members || []).find((pMember: any) => {
+              const pId = pMember.project || pMember.project_id;
+              const pMail = (pMember.email || "").toLowerCase().trim();
+              const pMem = pMember.member;
+              return (pId === proj.id) && ((currentUserEmail && pMail === currentUserEmail) || (currentUserId && pMem === currentUserId));
+            });
+
+            if (isWsAdmin) {
+              proj.member_role = pm?.role || 20;
+            } else if (pm) {
+              proj.member_role = pm.role || 15;
+            } else {
+              proj.member_role = null;
+            }
+            return proj;
+          });
+        }
       }
     }
 
@@ -3450,18 +4163,64 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     }
 
     if (collection === "invitations") {
+      const stored = getStoredInvitations();
+      if (!localDB.invitations) localDB.invitations = [];
+      for (const inv of stored) {
+        if (!localDB.invitations.some((i: any) => i.id === inv.id)) {
+          localDB.invitations.push(inv);
+        }
+      }
+      list = localDB.invitations || [];
+      const wsMatch = url.match(/\/api\/workspaces\/([^/]+)\/invitations/);
+      const wsSlug = wsMatch ? wsMatch[1] : null;
+      const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
+      const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
+
+      // Auto-filter out invites for users who are already active workspace members
+      const activeWsMemberMails = new Set(
+        (localDB.workspace_members || [])
+          .filter((m: any) => m.is_active !== false && (validWsKeys.size === 0 || validWsKeys.has(m.workspace) || validWsKeys.has(m.workspace_id)))
+          .map((m: any) => (m.email || "").toLowerCase().trim())
+          .filter(Boolean)
+      );
+
       // Fix corrupted old records that have `emails: [{ email, role }]` instead of top-level properties
       list = list.map((item: any) => {
-        if (!item.email && item.emails && Array.isArray(item.emails) && item.emails.length > 0) {
-          return {
-            ...item,
-            email: item.emails[0].email,
-            role: item.emails[0].role,
+        let fixed = { ...item };
+        if (!fixed.email && fixed.emails && Array.isArray(fixed.emails) && fixed.emails.length > 0) {
+          fixed = {
+            ...fixed,
+            email: fixed.emails[0].email,
+            role: fixed.emails[0].role,
           };
         }
-        return item;
+        if (!fixed.invite_link) {
+          const itemWsSlug = fixed.workspace?.slug || fixed.workspace_slug || wsSlug || "workspace";
+          const tok = fixed.token || fixed.id;
+          fixed.invite_link = `/workspace-invitations?invitation_id=${fixed.id}&slug=${itemWsSlug}&token=${tok}`;
+        }
+        return fixed;
       });
-      list = list.filter((item: any) => !!item.email);
+      list = list.filter((item: any) => {
+        if (!item.email) return false;
+        const mail = item.email.toLowerCase().trim();
+        if (item.accepted === true || activeWsMemberMails.has(mail)) return false;
+        if (validWsKeys.size > 0) {
+          const itemWsSlug = item.workspace?.slug || item.workspace?.id || item.workspace;
+          return validWsKeys.has(itemWsSlug);
+        }
+        return true;
+      });
+
+      // Deduplicate pending invites by email in case older duplicates exist
+      const seenPendingMails = new Set<string>();
+      list = list.filter((item: any) => {
+        const mail = (item.email || "").toLowerCase().trim();
+        if (seenPendingMails.has(mail)) return false;
+        seenPendingMails.add(mail);
+        return true;
+      });
+
       console.log(`[DApp Interceptor] Returning invitations:`, JSON.stringify(list));
     }
 
@@ -3602,7 +4361,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       };
 
       const targetProjForGroup = (localDB.projects || []).find(
-        (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+        (p: any) => p.id === projId || (projId && p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
       );
       const matchingProjIdsForGroup = new Set(
         [projId, targetProjForGroup?.id, targetProjForGroup?.identifier].filter(Boolean)
@@ -3743,52 +4502,78 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       const wsSlug = match ? match[1] : (localDB.workspaces?.[0]?.slug || "fiai");
       const currentWs = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
 
-      const newInvites = body.emails.map((e: any) => ({
-        id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        email: e.email,
-        role: e.role,
-        accepted: false,
-        message: "You have been invited.",
-        workspace: {
-          id: currentWs?.id || wsSlug,
-          name: currentWs?.name || "Workspace",
-          slug: wsSlug,
-          logo_url: "",
-        },
-      }));
-
       if (!localDB[collection]) localDB[collection] = [];
-      localDB[collection].push(...newInvites);
-
-      // Xử lý từng invitee: ghi nhận vào workspace_members và kích hoạt addMember on-chain nếu có địa chỉ ví
-      if (!localDB.workspace_members) localDB.workspace_members = [];
+      const newInvites: any[] = [];
 
       for (const e of body.emails) {
-        const memberAddress = extractEthAddress(e.email);
-        const memberKey = memberAddress || e.email;
-        const existingIdx = localDB.workspace_members.findIndex(
-          (m: any) =>
-            (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === currentWs?.id) &&
-            (m.member?.toLowerCase() === memberKey.toLowerCase() || m.email?.toLowerCase() === e.email.toLowerCase())
-        );
-        const memberRecord = {
-          id: `ws-member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          workspace: wsSlug,
-          workspace_id: wsSlug,
-          member: memberKey,
-          email: e.email,
-          role: e.role || 15,
-          is_active: true,
-          created_at: new Date().toISOString(),
-        };
+        const rawEmail = (e.email || "").toLowerCase().trim();
+        if (!rawEmail) continue;
 
-        if (existingIdx >= 0) {
-          localDB.workspace_members[existingIdx] = { ...localDB.workspace_members[existingIdx], ...memberRecord };
+        const existingInv = localDB[collection].find(
+          (inv: any) =>
+            (inv.email || "").toLowerCase().trim() === rawEmail &&
+            !inv.accepted &&
+            (inv.workspace_slug === wsSlug || inv.workspace?.slug === wsSlug || inv.workspace_id === currentWs?.id || inv.workspace?.id === currentWs?.id)
+        );
+
+        if (existingInv) {
+          existingInv.role = e.role || existingInv.role || 15;
+          existingInv.updated_at = new Date().toISOString();
+          newInvites.push(existingInv);
+          console.log(`[DApp Interceptor] Updated existing pending invite for ${rawEmail} (${existingInv.id})`);
         } else {
-          localDB.workspace_members.push(memberRecord);
+          const invId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+          const token = `tok-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+          const createdInv = {
+            id: invId,
+            token: token,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            email: e.email,
+            role: e.role || 15,
+            accepted: false,
+            responded_at: null,
+            message: "You have been invited.",
+            invite_link: `/workspace-invitations?invitation_id=${invId}&slug=${wsSlug}&token=${token}`,
+            workspace: {
+              id: currentWs?.id || wsSlug,
+              name: currentWs?.name || wsSlug,
+              slug: wsSlug,
+              logo_url: currentWs?.logo_url || "",
+            },
+            workspace_id: currentWs?.id || wsSlug,
+            workspace_slug: wsSlug,
+          };
+          localDB[collection].push(createdInv);
+          newInvites.push(createdInv);
+          console.log(`[DApp Interceptor] Created new invite for ${rawEmail} (${invId})`);
         }
+      }
+      saveStoredInvitations(localDB[collection]);
+
+      if (!localDB.notifications) localDB.notifications = [];
+      body.emails.forEach((e: any) => {
+        localDB.notifications.push({
+          id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          workspace_id: currentWs?.id || wsSlug,
+          workspace_slug: wsSlug,
+          title: "Workspace Invitation",
+          message: `You have been invited to join workspace "${currentWs?.name || wsSlug}"`,
+          data: {
+            workspace_name: currentWs?.name || wsSlug,
+            workspace_slug: wsSlug,
+            role: e.role,
+          },
+          recipient_email: (e.email || "").toLowerCase(),
+          read_at: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      });
+
+      // Xử lý từng invitee: kích hoạt addMember on-chain nếu có địa chỉ ví
+      for (const e of body.emails) {
+        const memberAddress = extractEthAddress(e.email);
 
         // Gọi smart contract PlaneWorkspaceRegistry.addMember
         const bridge = getFiaiSDK();
@@ -3826,6 +4611,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
       saveDB();
       newInvites.forEach((inv) => syncDAppRecord(collection, inv.id, inv));
+      void uploadToIPFS(true);
       return ok({ message: "Invitations sent successfully" });
     }
 
@@ -3879,7 +4665,6 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           newRecord.workspace_detail = ws;
         }
       }
-      newRecord.member_role = 20;
 
       // Seed default states for the new project
       if (!localDB["states"]) localDB["states"] = [];
@@ -3936,6 +4721,19 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         },
       ];
       localDB["states"].push(...defaultStates);
+
+      if (!localDB.project_members) localDB.project_members = [];
+      const activeCreatorId = activeUser?.id || activeUserId || "user-default";
+      const activeCreatorEmail = (activeUser?.email || getLoggedInEmail() || "").toLowerCase();
+      localDB.project_members.push({
+        id: `pm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        project: newRecord.id,
+        project_id: newRecord.id,
+        member: activeCreatorId,
+        email: activeCreatorEmail,
+        role: 20,
+        created_at: new Date().toISOString(),
+      });
     }
     if (collection === "issues") {
       if (localDB._deleted_issue_ids && Array.isArray(localDB._deleted_issue_ids)) {
@@ -4360,6 +5158,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           (c: any) => !deletedIssueSet.has(c.issue || c.issue_id)
         );
       }
+    } else if (collection === "invitations" && id) {
+      removeStoredInvitation(id);
     } else {
       localDB[collection] = (localDB[collection] || []).filter((r: any) => r.id !== id);
     }

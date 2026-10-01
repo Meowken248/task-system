@@ -44,7 +44,8 @@ export function createUserObject(
   email: string,
   firstName?: string,
   lastName?: string,
-  passwordHash?: string
+  passwordHash?: string,
+  isFirstUser = false
 ): DAppUser {
   const cleanEmail = (email || "").trim();
   const fName = firstName || (cleanEmail ? cleanEmail.split("@")[0] : "Admin");
@@ -68,16 +69,16 @@ export function createUserObject(
     is_email_verified: true,
     is_password_autoset: false,
     is_tour_completed: true,
-    is_onboarded: true,
+    is_onboarded: isFirstUser,
     onboarding_step: {
-      workspace_join: true,
+      workspace_join: isFirstUser,
       profile_complete: true,
-      workspace_create: true,
+      workspace_create: isFirstUser,
       workspace_invite: true,
     },
     mobile_number: null,
-    last_workspace_id: "workspace-fiai",
-    last_workspace_slug: "fiai",
+    last_workspace_id: isFirstUser ? "workspace-fiai" : null,
+    last_workspace_slug: isFirstUser ? "fiai" : null,
     user_timezone: "Asia/Ho_Chi_Minh",
     username: cleanEmail ? cleanEmail.split("@")[0] : id,
     last_login_medium: "email",

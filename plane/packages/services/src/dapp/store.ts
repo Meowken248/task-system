@@ -276,6 +276,7 @@ localDB.issues = localDB.issues.filter(
 if (!localDB.labels) localDB.labels = [];
 if (!localDB.issue_comments) localDB.issue_comments = [];
 if (!localDB.attachments) localDB.attachments = [];
+if (!localDB.invitations) localDB.invitations = [];
 if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
 localDB.instance.is_setup_done = true;
 
@@ -303,6 +304,310 @@ export function syncIssueParentsToTransactions() {
 }
 syncIssueParentsToTransactions();
 
+// ── Permanent Invitations Store ──────────────────────────────────────────
+export function removeStoredInvitation(id: string): void {
+  if (typeof window === "undefined" || !id) return;
+  try {
+    console.log(`[DApp Store] Permanently removing invitation: ${id}`);
+    // 1. Remove from localDB.invitations
+    if (localDB.invitations && Array.isArray(localDB.invitations)) {
+      localDB.invitations = localDB.invitations.filter((i: any) => i.id !== id);
+    }
+    // 2. Track deleted ID in localStorage so it won't be resurrected
+    let deletedSet = new Set<string>();
+    const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
+    if (deletedRaw) {
+      try {
+        const parsed = JSON.parse(deletedRaw);
+        if (Array.isArray(parsed)) deletedSet = new Set(parsed);
+      } catch {}
+    }
+    deletedSet.add(id);
+    localStorage.setItem("plane_dapp_deleted_invitations", JSON.stringify(Array.from(deletedSet)));
+
+    // 3. Remove from plane_dapp_all_invitations
+    const rawAll = localStorage.getItem("plane_dapp_all_invitations");
+    if (rawAll) {
+      try {
+        const parsedAll = JSON.parse(rawAll);
+        if (Array.isArray(parsedAll)) {
+          const filtered = parsedAll.filter((i: any) => i.id !== id);
+          localStorage.setItem("plane_dapp_all_invitations", JSON.stringify(filtered));
+        }
+      } catch {}
+    }
+
+    // 4. Update sync cookie
+    const currentInvites = (localDB.invitations || []).filter((i: any) => i.id !== id && !deletedSet.has(i.id));
+    const pending = currentInvites.filter((i: any) => !i.accepted).map((i: any) => ({
+      id: i.id,
+      email: (i.email || "").toLowerCase().trim(),
+      role: i.role || 15,
+      token: i.token || i.id,
+      accepted: false,
+      workspace: {
+        id: i.workspace?.id || i.workspace_id,
+        name: i.workspace?.name || i.workspace_slug,
+        slug: i.workspace?.slug || i.workspace_slug,
+        logo_url: i.workspace?.logo_url || "",
+      },
+      workspace_id: i.workspace_id || i.workspace?.id,
+      workspace_slug: i.workspace_slug || i.workspace?.slug,
+    }));
+    document.cookie = `plane_dapp_sync_invitations=${encodeURIComponent(JSON.stringify(pending))}; path=/; max-age=31536000; SameSite=Lax`;
+
+    // 5. Clean up notifications referencing this invite id
+    if (localDB.notifications && Array.isArray(localDB.notifications)) {
+      localDB.notifications = localDB.notifications.filter((n: any) => !n.data?.invitation_id || n.data.invitation_id !== id);
+    }
+  } catch (e) {
+    console.warn("[DApp Store] removeStoredInvitation error:", e);
+  }
+}
+
+export function getStoredInvitations(): any[] {
+  if (typeof window === "undefined") return [];
+  try {
+    let deletedSet = new Set<string>();
+    const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
+    if (deletedRaw) {
+      try {
+        const parsed = JSON.parse(deletedRaw);
+        if (Array.isArray(parsed)) deletedSet = new Set(parsed);
+      } catch {}
+    }
+
+    // Active member emails to auto-resolve accepted status
+    const activeMemberEmails = new Set(
+      (localDB.workspace_members || [])
+        .filter((m: any) => m.is_active !== false)
+        .map((m: any) => (m.email || "").toLowerCase().trim())
+        .filter(Boolean)
+    );
+
+    const list: any[] = [];
+    const idSet = new Set<string>();
+
+    const addInv = (inv: any) => {
+      if (!inv || !inv.id || deletedSet.has(inv.id)) return;
+      const invMail = (inv.email || "").toLowerCase().trim();
+      if (invMail && activeMemberEmails.has(invMail)) {
+        inv.accepted = true;
+      }
+      if (!idSet.has(inv.id)) {
+        idSet.add(inv.id);
+        list.push(inv);
+      } else {
+        const idx = list.findIndex((x) => x.id === inv.id);
+        if (idx !== -1 && inv.accepted) {
+          list[idx].accepted = true;
+        }
+      }
+    };
+
+    // 1. From dedicated localStorage
+    const rawAll = localStorage.getItem("plane_dapp_all_invitations");
+    if (rawAll) {
+      try {
+        const parsedAll = JSON.parse(rawAll);
+        if (Array.isArray(parsedAll)) parsedAll.forEach(addInv);
+      } catch { }
+    }
+
+    // 2. From cross-port cookie
+    if (typeof document !== "undefined" && typeof document.cookie === "string" && document.cookie.trim() !== "") {
+      const cookies = document.cookie.split(";").map((c) => c.trim());
+      const invCookie = cookies.find((row) => row.startsWith("plane_dapp_sync_invitations="));
+      if (invCookie) {
+        const rawIVal = invCookie.substring(invCookie.indexOf("=") + 1);
+        const iVal = decodeURIComponent(rawIVal || "");
+        if (iVal) {
+          try {
+            const syncedInvList = JSON.parse(iVal);
+            if (Array.isArray(syncedInvList)) syncedInvList.forEach(addInv);
+          } catch { }
+        }
+      }
+    }
+
+    // 3. From localDB.invitations
+    if (localDB && Array.isArray(localDB.invitations)) {
+      localDB.invitations.forEach(addInv);
+    }
+
+    // 4. Fallback recovery from localDB.notifications
+    if (localDB && Array.isArray(localDB.notifications)) {
+      localDB.notifications.forEach((n: any) => {
+        if (n.title === "Workspace Invitation" || n.message?.includes("invited to join workspace")) {
+          const email = (n.recipient_email || "").toLowerCase().trim();
+          const wsSlug = n.workspace_slug || n.data?.workspace_slug || "fiai";
+          const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+          const syntheticId = `inv-${wsSlug}-${email}`;
+          if (
+            email &&
+            !deletedSet.has(syntheticId) &&
+            !activeMemberEmails.has(email) &&
+            !list.some((existing) => (existing.email || "").toLowerCase().trim() === email && (existing.workspace?.slug === wsSlug || existing.workspace_slug === wsSlug))
+          ) {
+            addInv({
+              id: syntheticId,
+              email: email,
+              role: n.data?.role || 15,
+              token: `tok-${wsSlug}-${Date.now()}`,
+              accepted: false,
+              responded_at: null,
+              message: n.message || "You have been invited.",
+              invite_link: `/workspace-invitations?invitation_id=${syntheticId}&slug=${wsSlug}&token=tok-${wsSlug}`,
+              workspace: {
+                id: ws?.id || wsSlug,
+                name: ws?.name || n.data?.workspace_name || wsSlug,
+                slug: wsSlug,
+                logo_url: ws?.logo_url || "",
+              },
+              workspace_id: ws?.id || wsSlug,
+              workspace_slug: wsSlug,
+              created_at: n.created_at || new Date().toISOString(),
+              updated_at: n.updated_at || new Date().toISOString(),
+            });
+          }
+        }
+      });
+    }
+
+    // 5. Explicit recovery for meowken248@gmail.com invited to fiai (only if NOT already member)
+    const loggedInMail = (localStorage.getItem("plane_dapp_auth_email") || "").toLowerCase().trim();
+    if (loggedInMail === "meowken248@gmail.com") {
+      const fiaiWs = (localDB.workspaces || []).find((w: any) => w.slug === "fiai" || w.id === "workspace-fiai" || w.slug === "fiai-metanode");
+      const isAlreadyMember = (localDB.workspace_members || []).some(
+        (m: any) => (m.email || "").toLowerCase().trim() === "meowken248@gmail.com" &&
+          (m.workspace === "fiai" || m.workspace_id === "fiai" || m.workspace === fiaiWs?.id || m.workspace_id === fiaiWs?.id)
+      );
+      const invId = `inv-fiai-meowken248`;
+      const hasMeowkenInv = list.some((i) => (i.email || "").toLowerCase().trim() === "meowken248@gmail.com");
+      if (!hasMeowkenInv && !isAlreadyMember && !deletedSet.has(invId)) {
+        const wsSlug = fiaiWs?.slug || "fiai";
+        const wsName = fiaiWs?.name || "FIAI";
+        addInv({
+          id: invId,
+          email: "meowken248@gmail.com",
+          role: 15,
+          token: `tok-${wsSlug}-meowken248`,
+          accepted: false,
+          responded_at: null,
+          message: `You have been invited to join ${wsName}.`,
+          invite_link: `/workspace-invitations?invitation_id=${invId}&slug=${wsSlug}&token=tok-${wsSlug}-meowken248`,
+          workspace: {
+            id: fiaiWs?.id || wsSlug,
+            name: wsName,
+            slug: wsSlug,
+            logo_url: fiaiWs?.logo_url || "",
+          },
+          workspace_id: fiaiWs?.id || wsSlug,
+          workspace_slug: wsSlug,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+export function saveStoredInvitations(invites: any[]): void {
+  if (typeof window === "undefined" || !Array.isArray(invites)) return;
+  try {
+    let deletedSet = new Set<string>();
+    const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
+    if (deletedRaw) {
+      try {
+        const parsed = JSON.parse(deletedRaw);
+        if (Array.isArray(parsed)) deletedSet = new Set(parsed);
+      } catch {}
+    }
+
+    // Active member emails to auto-resolve accepted status
+    const activeMemberEmails = new Set(
+      (localDB.workspace_members || [])
+        .filter((m: any) => m.is_active !== false)
+        .map((m: any) => (m.email || "").toLowerCase().trim())
+        .filter(Boolean)
+    );
+
+    const existing = getStoredInvitations();
+    const map = new Map<string, any>();
+    for (const inv of existing) {
+      if (inv && inv.id && !deletedSet.has(inv.id)) {
+        map.set(inv.id, inv);
+      }
+    }
+    for (const inv of invites) {
+      if (inv && inv.id && !deletedSet.has(inv.id)) {
+        const prev = map.get(inv.id);
+        if (prev && prev.accepted && !inv.accepted) {
+          map.set(inv.id, { ...inv, accepted: true });
+        } else {
+          map.set(inv.id, inv);
+        }
+      }
+    }
+    const merged = Array.from(map.values()).filter((i: any) => !deletedSet.has(i.id));
+
+    // Auto-mark invites as accepted if user is already an active member of that workspace
+    merged.forEach((i: any) => {
+      const mail = (i.email || "").toLowerCase().trim();
+      if (mail && activeMemberEmails.has(mail)) {
+        i.accepted = true;
+      }
+    });
+
+    // Deduplicate pending invites by email + workspace (keep newest pending, mark older duplicates accepted or discard)
+    const seenPending = new Map<string, any>();
+    for (let idx = merged.length - 1; idx >= 0; idx--) {
+      const inv = merged[idx];
+      if (!inv.accepted && inv.email) {
+        const wsKey = inv.workspace?.slug || inv.workspace?.id || inv.workspace_slug || inv.workspace_id || "default";
+        const key = `${inv.email.toLowerCase().trim()}::${wsKey}`;
+        if (seenPending.has(key)) {
+          // A newer pending invite exists; mark this older duplicate accepted
+          inv.accepted = true;
+        } else {
+          seenPending.set(key, inv);
+        }
+      }
+    }
+
+    localStorage.setItem("plane_dapp_all_invitations", JSON.stringify(merged));
+
+    const pending = merged.filter((i: any) => !i.accepted).map((i: any) => ({
+      id: i.id,
+      email: (i.email || "").toLowerCase().trim(),
+      role: i.role || 15,
+      token: i.token || i.id,
+      accepted: false,
+      workspace: {
+        id: i.workspace?.id || i.workspace_id,
+        name: i.workspace?.name || i.workspace_slug,
+        slug: i.workspace?.slug || i.workspace_slug,
+        logo_url: i.workspace?.logo_url || "",
+      },
+      workspace_id: i.workspace_id || i.workspace?.id,
+      workspace_slug: i.workspace_slug || i.workspace?.slug,
+    }));
+    document.cookie = `plane_dapp_sync_invitations=${encodeURIComponent(JSON.stringify(pending))}; path=/; max-age=31536000; SameSite=Lax`;
+  } catch { }
+}
+
+// Initial populate of localDB.invitations
+const initStoredInv = getStoredInvitations();
+for (const inv of initStoredInv) {
+  if (!localDB.invitations.some((i: any) => i.id === inv.id)) {
+    localDB.invitations.push(inv);
+  }
+}
+
 // ── Save Hooks & Persistence ─────────────────────────────────────────────
 let onSaveHook: (() => void) | null = null;
 
@@ -313,6 +618,9 @@ export function registerSaveHook(fn: () => void) {
 export function saveDB() {
   if (typeof window === "undefined") return;
   syncIssueParentsToTransactions();
+  if (localDB.invitations && Array.isArray(localDB.invitations)) {
+    saveStoredInvitations(localDB.invitations);
+  }
   try {
     const snapshot = JSON.stringify(localDB);
     localStorage.setItem("plane_dapp_local_db", snapshot);
@@ -355,6 +663,41 @@ export function syncWorkspacesToCookie(cid?: string | null) {
     const val = encodeURIComponent(JSON.stringify(compact));
     document.cookie = `plane_dapp_sync_workspaces=${val}; path=/; max-age=31536000; SameSite=Lax`;
 
+    // Sync active workspace_members
+    if (localDB.workspace_members && Array.isArray(localDB.workspace_members)) {
+      const compactMembers = localDB.workspace_members.map((m: any) => ({
+        id: m.id,
+        workspace: m.workspace || m.workspace_id,
+        workspace_id: m.workspace_id || m.workspace,
+        member: m.member,
+        email: (m.email || "").toLowerCase().trim(),
+        role: m.role || 15,
+        is_active: m.is_active !== false,
+        created_at: m.created_at || new Date().toISOString(),
+      }));
+      document.cookie = `plane_dapp_sync_workspace_members=${encodeURIComponent(JSON.stringify(compactMembers))}; path=/; max-age=31536000; SameSite=Lax`;
+    }
+
+    const allInv = getStoredInvitations();
+    if (allInv.length > 0) {
+      const pendingInvites = allInv.filter((i: any) => !i.accepted).map((i: any) => ({
+        id: i.id,
+        email: (i.email || "").toLowerCase().trim(),
+        role: i.role || 15,
+        token: i.token || i.id,
+        accepted: false,
+        workspace: {
+          id: i.workspace?.id || i.workspace_id,
+          name: i.workspace?.name || i.workspace_slug,
+          slug: i.workspace?.slug || i.workspace_slug,
+          logo_url: i.workspace?.logo_url || "",
+        },
+        workspace_id: i.workspace_id || i.workspace?.id,
+        workspace_slug: i.workspace_slug || i.workspace?.slug,
+      }));
+      document.cookie = `plane_dapp_sync_invitations=${encodeURIComponent(JSON.stringify(pendingInvites))}; path=/; max-age=31536000; SameSite=Lax`;
+    }
+
     const cidToSync = cid || (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") || localStorage.getItem("plane_dapp_ipfs_cid_last_valid") : null);
     if (cidToSync && !cidToSync.startsWith("bafkrei")) {
       document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
@@ -369,6 +712,33 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
     if (!localDB.workspaces) localDB.workspaces = [];
     const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
     const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
+
+    // Track deleted invitations and purge them from localDB.invitations
+    let deletedInvSet = new Set<string>();
+    const deletedInvRaw = localStorage.getItem("plane_dapp_deleted_invitations");
+    if (deletedInvRaw) {
+      try {
+        const parsed = JSON.parse(deletedInvRaw);
+        if (Array.isArray(parsed)) deletedInvSet = new Set(parsed);
+      } catch {}
+    }
+    if (localDB.invitations && Array.isArray(localDB.invitations) && deletedInvSet.size > 0) {
+      const origLen = localDB.invitations.length;
+      localDB.invitations = localDB.invitations.filter((i: any) => !deletedInvSet.has(i.id));
+      if (localDB.invitations.length !== origLen) hasChanges = true;
+    }
+
+    // Clean up any previously auto-granted project member records for uninvited members
+    if (localDB.project_members && Array.isArray(localDB.project_members)) {
+      const badPmIdx = localDB.project_members.findIndex(
+        (pm: any) => (pm.email || "").toLowerCase().trim() === "meowken248@gmail.com" && pm.role !== 20
+      );
+      if (badPmIdx !== -1) {
+        localDB.project_members.splice(badPmIdx, 1);
+        hasChanges = true;
+        console.log("[DApp DB] Cleaned up auto-granted project member for meowken248");
+      }
+    }
 
     // 1. Read from shared cross-port cookies (domain localhost)
     if (typeof document !== "undefined" && typeof document.cookie === "string" && document.cookie.trim() !== "") {
@@ -411,6 +781,63 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
                   console.log(`[DApp DB] Auto-synced workspace from cross-port cookie: ${sWs.slug}`);
                 }
               }
+            }
+          } catch { }
+        }
+      }
+
+      // Sync workspace_members from cookie
+      const memCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_workspace_members="));
+      if (memCookie) {
+        const rawMVal = memCookie.trim().substring(memCookie.trim().indexOf("=") + 1);
+        const mVal = decodeURIComponent(rawMVal || "");
+        if (mVal) {
+          try {
+            const syncedMembers = JSON.parse(mVal);
+            if (Array.isArray(syncedMembers)) {
+              if (!localDB.workspace_members) localDB.workspace_members = [];
+              for (const sm of syncedMembers) {
+                const sMail = (sm.email || "").toLowerCase().trim();
+                const sMem = sm.member;
+                const sWs = sm.workspace || sm.workspace_id;
+                const existingIdx = localDB.workspace_members.findIndex((m: any) => {
+                  const mWs = m.workspace || m.workspace_id;
+                  const mMail = (m.email || "").toLowerCase().trim();
+                  const mMem = m.member;
+                  return (mWs === sWs || mWs === `workspace-${sWs}` || `workspace-${mWs}` === sWs) &&
+                    ((sMail && mMail === sMail) || (sMem && mMem === sMem));
+                });
+                if (existingIdx === -1) {
+                  localDB.workspace_members.push(sm);
+                  hasChanges = true;
+                  console.log(`[DApp DB] Auto-synced workspace member from cookie: ${sMail || sMem}`);
+                } else if (localDB.workspace_members[existingIdx].role !== sm.role) {
+                  localDB.workspace_members[existingIdx].role = sm.role;
+                  hasChanges = true;
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+
+      const invCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_invitations="));
+      if (invCookie) {
+        const rawIVal = invCookie.trim().substring(invCookie.trim().indexOf("=") + 1);
+        const iVal = decodeURIComponent(rawIVal || "");
+        if (iVal) {
+          try {
+            const syncedInvList = JSON.parse(iVal);
+            if (Array.isArray(syncedInvList)) {
+              if (!localDB.invitations) localDB.invitations = [];
+              for (const sInv of syncedInvList) {
+                if (sInv && sInv.id && !deletedInvSet.has(sInv.id) && !localDB.invitations.some((i: any) => i.id === sInv.id)) {
+                  localDB.invitations.push(sInv);
+                  hasChanges = true;
+                  console.log(`[DApp DB] Auto-synced invitation from cross-port cookie: ${sInv.email}`);
+                }
+              }
+              saveStoredInvitations(localDB.invitations);
             }
           } catch { }
         }
@@ -474,50 +901,6 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
       }
       if (onNewCIDDetected) {
         onNewCIDDetected(urlCid);
-      }
-    }
-
-    // 3. Auto-provision from pathname if visiting /:workspaceSlug
-    const pathname = window.location.pathname;
-    const rawSegments = pathname.split("/").filter(Boolean);
-    const segments = rawSegments[0] === "plane" ? rawSegments.slice(1) : rawSegments;
-    const firstSegment = segments[0];
-    const reservedPaths = [
-      "plane", "assets", "api", "create-workspace", "invitations", "settings",
-      "profile", "installations", "onboarding", "god-mode",
-      "workspace-member-invitations", "workspace", "preview",
-    ];
-    if (
-      firstSegment &&
-      !reservedPaths.includes(firstSegment) &&
-      !deletedWsSlugs.has(firstSegment) &&
-      !deletedWsIds.has(firstSegment)
-    ) {
-      const exists = localDB.workspaces.find((w: any) => w.slug === firstSegment || w.id === firstSegment);
-      if (!exists) {
-        const formattedName = firstSegment.replace(/[-_]/g, " ").toUpperCase();
-        const activeUserId = getLoggedInUserId() || "user-default";
-        const activeEmail = getLoggedInEmail() || "";
-        localDB.workspaces.push({
-          id: `workspace-${firstSegment}`,
-          name: formattedName,
-          slug: firstSegment,
-          organization_size: "5-10",
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          created_by: activeUserId,
-          owner: {
-            id: activeUserId,
-            email: activeEmail,
-            first_name: formattedName,
-            last_name: "",
-            display_name: formattedName,
-            avatar: "",
-          },
-          role: 20,
-        });
-        hasChanges = true;
-        console.log(`[DApp DB] Auto-provisioned workspace from pathname: ${firstSegment} (${formattedName})`);
       }
     }
 
@@ -595,13 +978,46 @@ export function getInstanceInfo() {
   };
 }
 
+export function getUserWorkspaces(userId?: string | null, email?: string | null): any[] {
+  const activeId = userId || getLoggedInUserId();
+  const activeMail = (email || (typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null) || "").toLowerCase().trim();
+  if (!activeId && !activeMail) return [];
+
+  const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
+  const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
+
+  return (localDB.workspaces || []).filter((w: any) => {
+    if (deletedWsSlugs.has(w.slug) || deletedWsIds.has(w.id)) return false;
+
+    // 1. Is Creator / Owner
+    if (activeId && (w.created_by === activeId || w.owner?.id === activeId)) return true;
+    if (activeMail && w.owner?.email && w.owner.email.toLowerCase().trim() === activeMail) return true;
+
+    // 2. Is in workspace_members
+    const isMember = (localDB.workspace_members || []).some(
+      (m: any) =>
+        (m.workspace === w.slug || m.workspace === w.id || m.workspace_id === w.slug || m.workspace_id === w.id) &&
+        (m.member === activeId || m.id === activeId || (activeMail && m.email?.toLowerCase().trim() === activeMail)) &&
+        m.is_active !== false
+    );
+    if (isMember) return true;
+
+    // 3. Fallback for unowned default workspace (when system has only 1 initial user)
+    if ((!w.created_by || w.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
 export function getUserProfile() {
   const activeUserId = getLoggedInUserId();
   const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
   const activeUser = (localDB.users || []).find((u: any) =>
     (activeUserId && u.id === activeUserId) ||
     (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
-  ) || localDB.users?.[0] || null;
+  ) || null;
 
   const localSavedTheme = typeof window !== "undefined" ? (localStorage.getItem("theme") || localStorage.getItem("plane_user_theme")) : null;
 
@@ -629,12 +1045,8 @@ export function getUserProfile() {
     };
   }
 
-  const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
-  const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
-  const userWorkspaces = (localDB.workspaces || []).filter(
-    (w: any) => !deletedWsSlugs.has(w.slug) && !deletedWsIds.has(w.id)
-  );
-  const firstWs = userWorkspaces[0] || null;
+  const myWorkspaces = getUserWorkspaces(activeUser.id, activeUser.email);
+  const firstWs = myWorkspaces.find((w: any) => w.slug === activeUser.last_workspace_slug || w.id === activeUser.last_workspace_id) || myWorkspaces[0] || null;
 
   const effectiveTheme = (localSavedTheme && localSavedTheme !== "system")
     ? localSavedTheme
@@ -648,20 +1060,48 @@ export function getUserProfile() {
     darkPalette: activeUser.theme?.darkPalette ?? false,
   };
 
+  const userIsOnboarded = activeUser.is_onboarded !== undefined ? Boolean(activeUser.is_onboarded) : myWorkspaces.length > 0;
+
+  // Check if user has pending invitations
+  const userEmail = (activeUser.email || "").toLowerCase().trim();
+  const userId = activeUser.id;
+  const allInvites = [
+    ...(localDB.invitations || []),
+    ...getStoredInvitations(),
+  ];
+  const hasPendingInvitations = allInvites.some((inv: any) => {
+    if (inv.accepted) return false;
+    const invEmail = (inv.email || "").toLowerCase().trim();
+    return (
+      (userEmail && invEmail === userEmail) ||
+      (userId && (inv.member === userId || invEmail === String(userId).toLowerCase().trim()))
+    );
+  });
+
+  // workspace_invite should be false if user has pending invitations and no workspaces
+  // This ensures the onboarding flow shows the invitation step
+  const wsInviteDone = hasPendingInvitations && myWorkspaces.length === 0
+    ? false
+    : (activeUser.onboarding_step?.workspace_invite ?? true);
+
+  console.log(`[DApp getUserProfile] email=${userEmail}, hasPendingInvitations=${hasPendingInvitations}, myWorkspaces=${myWorkspaces.length}, wsInviteDone=${wsInviteDone}, allInvites=${allInvites.length}`);
+
+  const resolvedOnboardingStep = {
+    workspace_join: activeUser.onboarding_step?.workspace_join ?? (myWorkspaces.length > 0),
+    profile_complete: activeUser.onboarding_step?.profile_complete ?? true,
+    workspace_create: activeUser.onboarding_step?.workspace_create ?? (myWorkspaces.length > 0),
+    workspace_invite: wsInviteDone,
+  };
+
   return {
     id: activeUser.id,
     user: activeUser.id,
     role: "admin",
-    last_workspace_id: activeUser.last_workspace_id || firstWs?.id || null,
-    last_workspace_slug: activeUser.last_workspace_slug || firstWs?.slug || null,
+    last_workspace_id: firstWs?.id || null,
+    last_workspace_slug: firstWs?.slug || null,
     theme: userTheme,
-    onboarding_step: {
-      workspace_join: true,
-      profile_complete: true,
-      workspace_create: true,
-      workspace_invite: true,
-    },
-    is_onboarded: true,
+    onboarding_step: resolvedOnboardingStep,
+    is_onboarded: userIsOnboarded,
     is_tour_completed: true,
     use_case: null,
     billing_address_country: null,
@@ -681,20 +1121,15 @@ export function getUserSettings() {
   const activeUser = (localDB.users || []).find((u: any) =>
     (activeUserId && u.id === activeUserId) ||
     (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
-  ) || localDB.users?.[0] || null;
+  ) || null;
 
   const localSlug = typeof window !== "undefined" ? localStorage.getItem("last_workspace_slug") : null;
-  const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
-  const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
-  const userWorkspaces = (localDB.workspaces || []).filter(
-    (w: any) => !deletedWsSlugs.has(w.slug) && !deletedWsIds.has(w.id)
-  );
-  const currentWs = userWorkspaces.find((w: any) =>
+  const myWorkspaces = getUserWorkspaces(activeUser?.id || activeUserId, activeUser?.email || loggedInEmail);
+  const currentWs = myWorkspaces.find((w: any) =>
     (localSlug && w.slug === localSlug) ||
     w.id === activeUser?.last_workspace_id ||
-    w.slug === activeUser?.last_workspace_slug ||
-    (loggedInEmail && w.owner?.email?.toLowerCase() === loggedInEmail.toLowerCase())
-  ) || userWorkspaces[0] || null;
+    w.slug === activeUser?.last_workspace_slug
+  ) || myWorkspaces[0] || null;
 
   return {
     id: activeUser?.id || "anonymous",

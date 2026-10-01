@@ -155,7 +155,8 @@ export const ProjectAuthWrapper = observer(function ProjectAuthWrapper(props: IP
   // already enforces workspace/project access on the API. Relying only on the
   // asynchronously populated permission map can turn an accessible project into
   // a misleading Project not found screen.
-  const canAccessCurrentProject = hasPermissionToCurrentProject || Boolean(projectDetails);
+  const canAccessCurrentProject =
+    !projectDetailsError && (hasPermissionToCurrentProject || Boolean(projectDetails));
 
   if (isProjectLoading) return null;
 

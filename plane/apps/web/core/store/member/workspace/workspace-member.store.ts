@@ -203,12 +203,13 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
     const workspaceSlug = this.routerStore.workspaceSlug;
     if (!workspaceSlug) return null;
     const workspaceMember = this.workspaceMemberMap?.[workspaceSlug]?.[userId];
-    if (!workspaceMember) return null;
+    const userDetails = this.memberRoot?.memberMap?.[workspaceMember?.member];
+    if (!workspaceMember || !userDetails) return null;
 
     const memberDetails: IWorkspaceMember = {
       id: workspaceMember.id,
       role: workspaceMember.role,
-      member: this.memberRoot?.memberMap?.[workspaceMember.member],
+      member: userDetails,
       is_active: workspaceMember.is_active,
     };
     return memberDetails;

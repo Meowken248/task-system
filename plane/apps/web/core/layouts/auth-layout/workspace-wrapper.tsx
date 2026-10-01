@@ -74,8 +74,8 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
 
   // fetching user workspace information
   useSWR(
-    workspaceSlug && currentWorkspace ? WORKSPACE_MEMBER_ME_INFORMATION(workspaceSlug.toString()) : null,
-    workspaceSlug && currentWorkspace ? () => fetchUserWorkspaceInfo(workspaceSlug.toString()) : null,
+    workspaceSlug ? WORKSPACE_MEMBER_ME_INFORMATION(workspaceSlug.toString()) : null,
+    workspaceSlug ? () => fetchUserWorkspaceInfo(workspaceSlug.toString()) : null,
     { revalidateIfStale: false, revalidateOnFocus: false }
   );
   useSWR(
@@ -148,6 +148,37 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
     );
   }
 
+  // while user does not have access to view that workspace
+  if (currentWorkspaceInfo === undefined) {
+    return (
+      <div className={`h-screen w-full overflow-hidden bg-surface-1`}>
+        <div className="grid h-full place-items-center p-4">
+          <div className="space-y-8 text-center">
+            <div className="space-y-2">
+              <h3 className="text-16 font-semibold">Not Authorized!</h3>
+              <p className="mx-auto w-1/2 text-13 text-secondary">
+                You{"'"}re not a member of this workspace. Please contact the workspace admin to get an invitation or
+                check your pending invitations.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2">
+              <Link href="/invitations">
+                <span>
+                  <Button variant="secondary">Check pending invites</Button>
+                </span>
+              </Link>
+              <Link href="/create-workspace">
+                <span>
+                  <Button variant="primary">Create new workspace</Button>
+                </span>
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // if workspaces are there and we are trying to access the workspace that we are not part of then show the existing workspaces
   if (currentWorkspace === undefined && !currentWorkspaceInfo) {
     return (
@@ -197,37 +228,6 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
           </div>
 
           <div className="absolute top-0 bottom-0 left-4 w-0 bg-layer-1 md:w-0.5" />
-        </div>
-      </div>
-    );
-  }
-
-  // while user does not have access to view that workspace
-  if (currentWorkspaceInfo === undefined) {
-    return (
-      <div className={`h-screen w-full overflow-hidden bg-surface-1`}>
-        <div className="grid h-full place-items-center p-4">
-          <div className="space-y-8 text-center">
-            <div className="space-y-2">
-              <h3 className="text-16 font-semibold">Not Authorized!</h3>
-              <p className="mx-auto w-1/2 text-13 text-secondary">
-                You{"'"}re not a member of this workspace. Please contact the workspace admin to get an invitation or
-                check your pending invitations.
-              </p>
-            </div>
-            <div className="flex items-center justify-center gap-2">
-              <Link href="/invitations">
-                <span>
-                  <Button variant="secondary">Check pending invites</Button>
-                </span>
-              </Link>
-              <Link href="/create-workspace">
-                <span>
-                  <Button variant="primary">Create new workspace</Button>
-                </span>
-              </Link>
-            </div>
-          </div>
         </div>
       </div>
     );

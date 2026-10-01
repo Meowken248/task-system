@@ -11,6 +11,8 @@ import {
   registerSaveHook,
   syncCrossPortWorkspaces,
   DEFAULT_WORKSPACE,
+  getStoredInvitations,
+  saveStoredInvitations,
 } from "./store";
 import { setStoredCredential } from "./auth";
 
@@ -574,6 +576,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
 
   const currentWorkspaces = [...(localDB.workspaces || [])];
   const currentUsers = [...(localDB.users || [])];
+  const currentProjects = [...(localDB.projects || [])];
   const currentIssues = [...(localDB.issues || [])];
   const currentStates = [...(localDB.states || [])];
   const currentLabels = [...(localDB.labels || [])];
@@ -583,6 +586,10 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentAttachments = [...(localDB.attachments || [])];
   const currentDeployBoards = [...(localDB["project-deploy-boards"] || [])];
   const currentMembers = [...(localDB.members || [])];
+  const currentWorkspaceMembers = [...(localDB.workspace_members || [])];
+  const currentProjectMembers = [...(localDB.project_members || [])];
+  const currentInvitations = [...getStoredInvitations(), ...(localDB.invitations || [])];
+  const currentNotifications = [...(localDB.notifications || [])];
   const currentIssueRelations = [...(localDB.issue_relations || [])];
   const mergedDeletedWorkspaces = new Set<string>([
     ...(localDB._deleted_workspace_ids || []),
@@ -662,6 +669,20 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   }
 
   if (!localDB.projects) localDB.projects = [];
+  for (const p of currentProjects) {
+    if (!mergedDeletedProjects.has(p.id) && !mergedDeletedProjects.has(p.identifier)) {
+      const existingIdx = localDB.projects.findIndex((existing: any) => existing.id === p.id || (p.identifier && existing.identifier === p.identifier));
+      if (existingIdx === -1) {
+        localDB.projects.push(p);
+      } else {
+        const localUpdated = p.updated_at ? new Date(p.updated_at).getTime() : 0;
+        const ipfsUpdated = localDB.projects[existingIdx].updated_at ? new Date(localDB.projects[existingIdx].updated_at).getTime() : 0;
+        if (localUpdated >= ipfsUpdated) {
+          localDB.projects[existingIdx] = { ...localDB.projects[existingIdx], ...p };
+        }
+      }
+    }
+  }
   localDB.projects = localDB.projects.filter(
     (p: any) => !mergedDeletedProjects.has(p.id) && !mergedDeletedProjects.has(p.identifier)
   );
@@ -696,10 +717,18 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     if (
       !mergedDeletedProjects.has(issue.project) &&
       !mergedDeletedProjects.has(issue.project_id) &&
-      !mergedDeletedIssues.has(issue.id) &&
-      !localDB.issues.some((i: any) => i.id === issue.id)
+      !mergedDeletedIssues.has(issue.id)
     ) {
-      localDB.issues.push(issue);
+      const existingIdx = localDB.issues.findIndex((i: any) => i.id === issue.id);
+      if (existingIdx === -1) {
+        localDB.issues.push(issue);
+      } else {
+        const localUpdated = issue.updated_at ? new Date(issue.updated_at).getTime() : 0;
+        const ipfsUpdated = localDB.issues[existingIdx].updated_at ? new Date(localDB.issues[existingIdx].updated_at).getTime() : 0;
+        if (localUpdated >= ipfsUpdated) {
+          localDB.issues[existingIdx] = { ...localDB.issues[existingIdx], ...issue };
+        }
+      }
     }
   }
   localDB.issues = localDB.issues.filter(
@@ -756,10 +785,67 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   localDB.modules = localDB.modules.filter(
     (m: any) => !mergedDeletedProjects.has(m.project) && !mergedDeletedProjects.has(m.project_id)
   );
-  if (localDB.project_members) {
-    localDB.project_members = localDB.project_members.filter(
-      (pm: any) => !mergedDeletedProjects.has(pm.project) && !mergedDeletedProjects.has(pm.project_id)
+
+  if (!localDB.workspace_members) localDB.workspace_members = [];
+  for (const wm of currentWorkspaceMembers) {
+    const existingIdx = localDB.workspace_members.findIndex(
+      (m: any) =>
+        (m.workspace === wm.workspace || m.workspace_id === wm.workspace_id) &&
+        (m.member === wm.member || (wm.email && m.email?.toLowerCase() === wm.email.toLowerCase()))
     );
+    if (existingIdx === -1) {
+      localDB.workspace_members.push(wm);
+    } else {
+      localDB.workspace_members[existingIdx] = { ...localDB.workspace_members[existingIdx], ...wm };
+    }
+  }
+
+  if (!localDB.project_members) localDB.project_members = [];
+  for (const pm of currentProjectMembers) {
+    const existingIdx = localDB.project_members.findIndex(
+      (m: any) =>
+        (m.project === pm.project || m.project_id === pm.project_id) &&
+        (m.member === pm.member || (pm.email && m.email?.toLowerCase() === pm.email.toLowerCase()))
+    );
+    if (existingIdx === -1) {
+      localDB.project_members.push(pm);
+    } else {
+      localDB.project_members[existingIdx] = { ...localDB.project_members[existingIdx], ...pm };
+    }
+  }
+  localDB.project_members = localDB.project_members.filter(
+    (pm: any) => !mergedDeletedProjects.has(pm.project) && !mergedDeletedProjects.has(pm.project_id)
+  );
+
+  let deletedInvSet = new Set<string>();
+  if (typeof window !== "undefined") {
+    const deletedInvRaw = localStorage.getItem("plane_dapp_deleted_invitations");
+    if (deletedInvRaw) {
+      try {
+        const parsed = JSON.parse(deletedInvRaw);
+        if (Array.isArray(parsed)) deletedInvSet = new Set(parsed);
+      } catch {}
+    }
+  }
+
+  if (!localDB.invitations) localDB.invitations = [];
+  for (const inv of currentInvitations) {
+    if (deletedInvSet.has(inv.id)) continue;
+    const existingIdx = localDB.invitations.findIndex((i: any) => i.id === inv.id);
+    if (existingIdx === -1) {
+      localDB.invitations.push(inv);
+    } else {
+      if (inv.accepted) localDB.invitations[existingIdx].accepted = true;
+    }
+  }
+  localDB.invitations = localDB.invitations.filter((i: any) => !deletedInvSet.has(i.id));
+  saveStoredInvitations(localDB.invitations);
+
+  if (!localDB.notifications) localDB.notifications = [];
+  for (const n of currentNotifications) {
+    if (!localDB.notifications.some((existing: any) => existing.id === n.id)) {
+      localDB.notifications.push(n);
+    }
   }
   if (!localDB.issue_comments) localDB.issue_comments = [];
   for (const c of currentComments) {
@@ -928,8 +1014,11 @@ async function _initDAppDB() {
   }
 
   if (currentUserAddress && activeWallet.toLowerCase() !== currentUserAddress.toLowerCase()) {
+    const preservedInv = [...getStoredInvitations(), ...(localDB.invitations || [])];
     for (const key in localDB) delete localDB[key];
     Object.assign(localDB, JSON.parse(JSON.stringify(defaultDB)));
+    localDB.invitations = preservedInv;
+    saveStoredInvitations(preservedInv);
   }
   currentUserAddress = activeWallet;
 

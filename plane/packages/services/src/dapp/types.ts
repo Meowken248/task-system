@@ -23,8 +23,8 @@ export interface DAppUser {
   is_onboarded: boolean;
   onboarding_step: Record<string, boolean>;
   mobile_number: string | null;
-  last_workspace_id: string;
-  last_workspace_slug: string;
+  last_workspace_id: string | null;
+  last_workspace_slug: string | null;
   user_timezone: string;
   username: string;
   last_login_medium: string;

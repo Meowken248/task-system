@@ -73,14 +73,14 @@ export const ProjectMemberListItem = observer(function ProjectMemberListItem(pro
         <ConfirmProjectMemberRemove
           isOpen={removeMemberModal !== null}
           onClose={() => setRemoveMemberModal(null)}
-          data={{ id: removeMemberModal.member.id, display_name: removeMemberModal.member.display_name || "" }}
-          onSubmit={() => handleRemove(removeMemberModal.member.id)}
+          data={{ id: removeMemberModal.member?.id || "", display_name: removeMemberModal.member?.display_name || "" }}
+          onSubmit={() => handleRemove(removeMemberModal.member?.id || "")}
         />
       )}
       <Table
         columns={columns}
-        data={(memberDetails?.filter((member): member is IProjectMemberDetails => member !== null) ?? []) as any}
-        keyExtractor={(rowData) => rowData?.member.id ?? ""}
+        data={(memberDetails?.filter((member): member is IProjectMemberDetails => member !== null && Boolean(member?.member)) ?? []) as any}
+        keyExtractor={(rowData) => rowData?.member?.id ?? (rowData as any)?.id ?? ""}
         tHeadClassName="border-b border-subtle"
         thClassName="text-left font-medium divide-x-0 text-placeholder"
         tBodyClassName="divide-y-0"
