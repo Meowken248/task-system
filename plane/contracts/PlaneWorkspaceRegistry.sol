@@ -71,16 +71,39 @@ contract PlaneWorkspaceRegistry {
     error InvalidSlug();
     error CIDConflict();
 
+    address public operator;
+
+    constructor() {
+        operator = msg.sender;
+    }
+
+    function setOperator(address newOperator) external {
+        if (msg.sender != operator) revert Unauthorized();
+        if (newOperator == address(0)) revert InvalidAddress();
+        operator = newOperator;
+    }
+
     modifier onlyWorkspaceAdmin(string calldata slug) {
         if (!_workspaces[slug].exists) revert WorkspaceNotFound();
-        Role role = _workspaceMembers[slug][msg.sender];
-        if (role != Role.Admin && role != Role.Owner) revert Unauthorized();
+        if (msg.sender != operator) {
+            Role role = _workspaceMembers[slug][msg.sender];
+            if (role != Role.Admin && role != Role.Owner) revert Unauthorized();
+        }
         _;
     }
 
     modifier onlyWorkspaceOwner(string calldata slug) {
         if (!_workspaces[slug].exists) revert WorkspaceNotFound();
-        if (_workspaces[slug].owner != msg.sender) revert Unauthorized();
+        if (msg.sender != operator && _workspaces[slug].owner != msg.sender) revert Unauthorized();
+        _;
+    }
+
+    modifier onlyWorkspaceMember(string calldata slug) {
+        if (!_workspaces[slug].exists) revert WorkspaceNotFound();
+        if (msg.sender != operator) {
+            Role role = _workspaceMembers[slug][msg.sender];
+            if (role == Role.None) revert Unauthorized();
+        }
         _;
     }
 
@@ -116,13 +139,30 @@ contract PlaneWorkspaceRegistry {
         emit WorkspaceCreated(slug, name, msg.sender, initialCid, block.timestamp);
     }
 
-    /// @notice Update the workspace IPFS CID (Admin or Owner only)
+    /// @notice Allow an invited team member to join the workspace on-chain
+    /// @param slug The workspace slug
+    function joinWorkspace(string calldata slug) external {
+        if (!_workspaces[slug].exists) revert WorkspaceNotFound();
+
+        bool isNew = _workspaceMembers[slug][msg.sender] == Role.None;
+        if (isNew) {
+            _workspaceMembers[slug][msg.sender] = Role.Member;
+            _workspaceMemberList[slug].push(msg.sender);
+            if (!_userHasWorkspace[msg.sender][slug]) {
+                _userHasWorkspace[msg.sender][slug] = true;
+                _userWorkspaces[msg.sender].push(slug);
+            }
+            emit MemberAdded(slug, msg.sender, Role.Member, msg.sender);
+        }
+    }
+
+    /// @notice Update the workspace IPFS CID (Any workspace member)
     /// @param slug The workspace slug
     /// @param newCid The new IPFS CID to store
     function updateWorkspaceCID(
         string calldata slug,
         string calldata newCid
-    ) external onlyWorkspaceAdmin(slug) {
+    ) external onlyWorkspaceMember(slug) {
         _workspaces[slug].ipfsCID = newCid;
         _workspaces[slug].updatedAt = block.timestamp;
         emit WorkspaceCIDUpdated(slug, newCid, msg.sender, block.timestamp);
@@ -136,7 +176,7 @@ contract PlaneWorkspaceRegistry {
         string calldata slug,
         string calldata expectedOldCid,
         string calldata newCid
-    ) external onlyWorkspaceAdmin(slug) {
+    ) external onlyWorkspaceMember(slug) {
         if (keccak256(bytes(_workspaces[slug].ipfsCID)) != keccak256(bytes(expectedOldCid))) {
             revert CIDConflict();
         }
@@ -145,7 +185,7 @@ contract PlaneWorkspaceRegistry {
         emit WorkspaceCIDUpdated(slug, newCid, msg.sender, block.timestamp);
     }
 
-    /// @notice Add or update a member's role in the workspace (Owner only)
+    /// @notice Add or update a member's role in the workspace (Admin or Owner)
     /// @param slug The workspace slug
     /// @param member The address of the team member
     /// @param role Member or Admin
@@ -153,7 +193,7 @@ contract PlaneWorkspaceRegistry {
         string calldata slug,
         address member,
         Role role
-    ) external onlyWorkspaceOwner(slug) {
+    ) external onlyWorkspaceAdmin(slug) {
         if (member == address(0)) revert InvalidAddress();
         if (role == Role.None || role == Role.Owner) revert Unauthorized();
 
@@ -171,20 +211,37 @@ contract PlaneWorkspaceRegistry {
         emit MemberAdded(slug, member, role, msg.sender);
     }
 
-    /// @notice Remove a member from the workspace (Owner only)
+    /// @notice Remove a member from the workspace (Admin or Owner)
     /// @param slug The workspace slug
     /// @param member The address of the member to remove
     function removeMember(
         string calldata slug,
         address member
-    ) external onlyWorkspaceOwner(slug) {
+    ) external onlyWorkspaceAdmin(slug) {
         if (member == address(0)) revert InvalidAddress();
-        if (member == msg.sender) revert Unauthorized(); // Owner cannot remove self
+        if (member == _workspaces[slug].owner) revert Unauthorized(); // Cannot remove workspace owner
+        if (msg.sender != _workspaces[slug].owner && _workspaceMembers[slug][member] == Role.Admin) {
+            revert Unauthorized(); // Admin cannot remove another admin
+        }
 
         _workspaceMembers[slug][member] = Role.None;
         _userHasWorkspace[member][slug] = false;
 
         emit MemberRemoved(slug, member, msg.sender);
+    }
+
+    /// @notice Set or transfer workspace owner
+    /// @param slug The workspace slug
+    /// @param newOwner The new owner address
+    function setWorkspaceOwner(
+        string calldata slug,
+        address newOwner
+    ) external {
+        if (!_workspaces[slug].exists) revert WorkspaceNotFound();
+        if (msg.sender != operator && _workspaces[slug].owner != msg.sender) revert Unauthorized();
+        if (newOwner == address(0)) revert InvalidAddress();
+        _workspaces[slug].owner = newOwner;
+        _workspaceMembers[slug][newOwner] = Role.Owner;
     }
 
     /// @notice Get workspace summary and latest IPFS CID

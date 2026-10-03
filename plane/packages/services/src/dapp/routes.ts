@@ -37,6 +37,7 @@ import {
   extractEthAddress,
   syncDAppRecord,
   getLastUploadedCID,
+  joinWorkspaceOnChain,
 } from "./chain";
 
 export { ok, parseApiUrl };
@@ -50,7 +51,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
   let activeUser = (localDB.users || []).find((u: any) =>
     (activeUserId && u.id === activeUserId) ||
-    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
+    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase()) ||
+    (currentUserAddress && (
+      u.id?.toLowerCase() === currentUserAddress.toLowerCase() ||
+      u.email?.toLowerCase().startsWith(currentUserAddress.toLowerCase()) ||
+      u.username?.toLowerCase() === currentUserAddress.toLowerCase()
+    ))
   );
   if (!activeUser && activeUserId && loggedInEmail) {
     activeUser = createUserObject(activeUserId, loggedInEmail);
@@ -58,7 +64,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     localDB.users.push(activeUser);
     saveDB();
   }
-  if (!activeUser && (localDB.users || []).length > 0) {
+  if (!activeUser && (localDB.users || []).length === 1 && !loggedInEmail && !currentUserAddress) {
     activeUser = localDB.users[0];
   }
 
@@ -1572,11 +1578,16 @@ export async function handleRoute(method: string, url: string, body: Record<stri
               localStorage.setItem("last_workspace_slug", ws?.slug || wsSlug);
               document.cookie = `last_workspace_slug=${ws?.slug || wsSlug}; path=/; max-age=31536000; SameSite=Lax`;
             }
+
+            if (wsSlug) {
+              void joinWorkspaceOnChain(wsSlug);
+            }
           }
         });
 
         saveStoredInvitations(localDB.invitations);
         saveDB();
+        void uploadToIPFS(true);
         return ok({ message: "Invitations accepted successfully" });
       }
     }
@@ -1635,11 +1646,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         const activeId = activeUser?.id || activeUserId || "user-default";
         const activeMail = (activeUser?.email || loggedInEmail || inv.email || "").toLowerCase().trim();
 
-        // Mark ALL duplicate invitations for this email and workspace as accepted
+        // Mark ALL duplicate invitations for this email and workspace as accepted (with prefix match)
         (localDB.invitations || []).forEach((otherInv: any) => {
           const otherWs = otherInv.workspace?.slug || otherInv.workspace?.id || otherInv.workspace || otherInv.workspace_slug;
           const otherMail = (otherInv.email || "").toLowerCase().trim();
-          if (otherMail === activeMail && (otherWs === wsSlug || otherWs === ws?.id)) {
+          const isTargetWs = !otherWs || otherWs === wsSlug || otherWs === ws?.id;
+          const mailMatched = otherMail === activeMail;
+          if (mailMatched && isTargetWs) {
             otherInv.accepted = true;
             otherInv.responded_at = new Date().toISOString();
             otherInv.updated_at = new Date().toISOString();
@@ -1650,13 +1663,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         const existingIdx = localDB.workspace_members.findIndex(
           (m: any) =>
             (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id) &&
-            (m.member === activeId || (activeMail && m.email?.toLowerCase() === activeMail))
+            ((activeId && activeId !== "user-default" && m.member === activeId) || (activeMail && (m.email || "").toLowerCase().trim() === activeMail))
         );
+        const resolvedMemberId = (activeId && activeId !== "user-default") ? activeId : (activeMail ? `user-${activeMail.split("@")[0]}` : `member-${Date.now()}`);
         const memberRecord = {
           id: `ws-member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           workspace: ws?.id || wsSlug,
           workspace_id: ws?.id || wsSlug,
-          member: activeId,
+          member: resolvedMemberId,
           email: activeMail,
           role: inv.role || 15,
           is_active: true,
@@ -1682,38 +1696,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           document.cookie = `last_workspace_slug=${ws?.slug || wsSlug}; path=/; max-age=31536000; SameSite=Lax`;
         }
 
-        // Trigger on-chain addMember if wallet address is present
-        const memberAddress = extractEthAddress(activeMail || activeId);
-        const bridge = getFiaiSDK();
-        const wsRegistryAddr = getWorkspaceRegistryAddress();
-        if (memberAddress && wsRegistryAddr && bridge && currentUserAddress) {
-          const contractRole = mapPlaneRoleToContractRole(inv.role || 15);
-          bridge
-            .request("sendTransaction", {
-              from: currentUserAddress,
-              to: wsRegistryAddr,
-              abiData: [ADD_MEMBER_ABI],
-              functionName: "addMember",
-              feeType: "sc",
-              amount: "0",
-              value: "0",
-              gas: getContractGas(),
-              type: "transaction",
-              inputArray: [
-                { name: "slug", type: "string", value: wsSlug },
-                { name: "member", type: "address", value: memberAddress },
-                { name: "role", type: "uint8", value: String(contractRole) },
-              ],
-              isReadOnly: false,
-              bundleId: "",
-            })
-            .then(() => {
-              console.log(`[DApp Interceptor] ✅ Đã thêm thành viên on-chain qua join: ${memberAddress} vào workspace: ${wsSlug}`);
-              return true;
-            })
-            .catch((err: any) => {
-              console.warn(`[DApp Interceptor] addMember on-chain qua join thất bại:`, err);
-            });
+        // Trigger on-chain joinWorkspace
+        if (wsSlug) {
+          void joinWorkspaceOnChain(wsSlug);
         }
       }
 
@@ -1888,14 +1873,15 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
 
     if (method === "get") {
+      syncCrossPortWorkspaces();
       const membersList: any[] = [];
       const addedMemberKeys = new Set<string>();
 
       // 1. Workspace Owner / Creator
       const ownerId = ws?.created_by || ws?.owner?.id;
-      const ownerEmail = (ws?.owner?.email || "").toLowerCase();
+      const ownerEmail = (ws?.owner?.email || "").toLowerCase().trim();
       const ownerUser = (localDB.users || []).find(
-        (u: any) => (ownerId && u.id === ownerId) || (ownerEmail && u.email?.toLowerCase() === ownerEmail)
+        (u: any) => (ownerId && ownerId !== "user-default" && u.id === ownerId) || (ownerEmail && (u.email || "").toLowerCase().trim() === ownerEmail)
       ) || ws?.owner || {
         id: ownerId || "owner-default",
         email: ownerEmail,
@@ -1923,7 +1909,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         is_active: true,
         created_at: ws?.created_at || new Date().toISOString(),
       });
-      addedMemberKeys.add(ownerKey);
+      if (ownerKey !== "user-default" && ownerKey !== "owner-default") {
+        addedMemberKeys.add(ownerKey);
+      }
       if (ownerEmail) addedMemberKeys.add(ownerEmail);
 
       // 2. Pending invites set (to avoid listing unaccepted invites as members)
@@ -1933,38 +1921,61 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id)
       );
 
-      // Auto-resolve any pending invites for confirmed active members
+      // Auto-resolve any pending invites for confirmed active members (with alias/prefix support)
       const activeWsMemberMails = new Set(
         workspaceMembers.map((m: any) => (m.email || "").toLowerCase().trim()).filter(Boolean)
       );
       if (activeWsMemberMails.size > 0 && localDB.invitations && Array.isArray(localDB.invitations)) {
+        let invChanged = false;
         localDB.invitations.forEach((inv: any) => {
           const invMail = (inv.email || "").toLowerCase().trim();
           const invWs = inv.workspace?.slug || inv.workspace?.id || inv.workspace || inv.workspace_slug;
-          if (invMail && activeWsMemberMails.has(invMail) && (invWs === wsSlug || invWs === ws?.id)) {
-            inv.accepted = true;
+          const isTargetWs = !invWs || invWs === wsSlug || invWs === ws?.id;
+          if (invMail && isTargetWs) {
+            let matched = activeWsMemberMails.has(invMail);
+            if (!matched) {
+              for (const actMail of Array.from(activeWsMemberMails)) {
+                const actPrefix = String(actMail).split("@")[0];
+                const invPrefix = invMail.split("@")[0];
+                if ((actPrefix.length >= 6 && invPrefix.startsWith(actPrefix)) || (invPrefix.length >= 6 && actPrefix.startsWith(invPrefix))) {
+                  matched = true;
+                  break;
+                }
+              }
+            }
+            if (matched && !inv.accepted) {
+              inv.accepted = true;
+              invChanged = true;
+            }
           }
         });
+        if (invChanged) {
+          saveStoredInvitations(localDB.invitations);
+        }
       }
 
       workspaceMembers.forEach((wm: any) => {
-        const memberKey = typeof wm.member === "string" ? wm.member : (wm.member?.id || wm.email || wm.id || "");
-        const memberMail = (wm.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase();
-        if (addedMemberKeys.has(memberKey) || (memberMail && addedMemberKeys.has(memberMail))) {
+        let memberKey = typeof wm.member === "string" ? wm.member : (wm.member?.id || wm.email || wm.id || "");
+        const memberMail = (wm.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase().trim();
+        if (memberKey === "user-default" || !memberKey) {
+          memberKey = memberMail ? `user-${memberMail.split("@")[0]}` : wm.id || `member-${Date.now()}`;
+        }
+        if ((memberMail && addedMemberKeys.has(memberMail)) || (memberKey !== "user-default" && addedMemberKeys.has(memberKey))) {
           return;
         }
 
         const user = (localDB.users || []).find(
-          (u: any) => u.id === memberKey || (memberMail && u.email?.toLowerCase() === memberMail) || u.username === memberKey
+          (u: any) => u.id === memberKey || (memberMail && (u.email || "").toLowerCase().trim() === memberMail) || u.username === memberKey
         );
         const isEth = memberKey.startsWith("0x");
         const shortAddr = isEth ? `${memberKey.slice(0, 6)}...${memberKey.slice(-4)}` : "Member";
+        const namePart = memberMail.includes("@") ? memberMail.split("@")[0] : shortAddr;
         const memberObj = user || {
-          id: memberKey || wm.id || "member-default",
+          id: memberKey || wm.id || `member-${namePart}`,
           email: wm.email || (isEth ? `${memberKey}@fiai.network` : memberKey),
-          first_name: wm.first_name || shortAddr,
+          first_name: wm.first_name || namePart,
           last_name: wm.last_name || "",
-          display_name: wm.display_name || shortAddr,
+          display_name: wm.display_name || wm.first_name || namePart,
           avatar_url: "",
           is_active: true,
         };
@@ -1977,13 +1988,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           is_active: wm.is_active !== false,
           created_at: wm.created_at || new Date().toISOString(),
         });
-        addedMemberKeys.add(memberObj.id);
-        if (memberObj.email) addedMemberKeys.add(memberObj.email.toLowerCase());
+        if (memberObj.id && memberObj.id !== "user-default") addedMemberKeys.add(memberObj.id);
+        if (memberObj.email) addedMemberKeys.add(memberObj.email.toLowerCase().trim());
       });
 
       // 4. Fallback for single-user initial installation
       const activeId = activeUser?.id || activeUserId;
-      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase();
+      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
       if (activeId && !addedMemberKeys.has(activeId) && (!activeMail || !addedMemberKeys.has(activeMail))) {
         if ((!ws?.created_by || ws?.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
           membersList.push({
@@ -2104,7 +2115,22 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const wsSlugMatch = url.match(/\/api\/workspaces\/([^/]+)\/projects/);
     const wsSlug = wsSlugMatch ? wsSlugMatch[1] : null;
     const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
+    const canonicalWsId = ws?.id || wsSlug;
     const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
+
+    const currentUserId = activeUser?.id || activeUserId;
+    const currentUserEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+
+    // Check if user is Workspace Admin/Owner
+    const wsMember = (localDB.workspace_members || []).find(
+      (wm: any) =>
+        (wm.workspace === ws?.id || wm.workspace === ws?.slug || wm.workspace === wsSlug) &&
+        (wm.member === currentUserId || (currentUserEmail && (wm.email || "").toLowerCase().trim() === currentUserEmail))
+    );
+    const isWsAdmin =
+      Boolean(ws && (ws.created_by === currentUserId || ws.owner?.id === currentUserId || (currentUserEmail && ws.owner?.email?.toLowerCase().trim() === currentUserEmail))) ||
+      (currentUserEmail === "anh2482006@gmail.com") ||
+      Boolean(wsMember && Number(wsMember.role) >= 20);
 
     const deletedSet = new Set(localDB._deleted_project_ids || []);
     const projects = (localDB.projects || [])
@@ -2118,11 +2144,42 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         return true;
       })
       .map((p: any, index: number) => {
+        const pm = (localDB.project_members || []).find((pMember: any) => {
+          const pId = pMember.project || pMember.project_id;
+          const pMail = (pMember.email || "").toLowerCase().trim();
+          const pMem = String(pMember.member || "");
+          return (pId === p.id) && (
+            (currentUserEmail && pMail === currentUserEmail) ||
+            (currentUserId && currentUserId !== "user-default" && pMem === currentUserId)
+          );
+        });
+
+        const isProjCreator = Boolean(
+          (currentUserId && currentUserId !== "user-default" && (p.created_by === currentUserId || p.owner === currentUserId || p.owner?.id === currentUserId)) ||
+          (currentUserEmail && (
+            (p.created_by && p.created_by.toLowerCase().trim() === currentUserEmail) ||
+            (p.owner?.email && p.owner.email.toLowerCase().trim() === currentUserEmail) ||
+            (currentUserEmail === "anh2482006@gmail.com" && (!p.created_by || p.created_by === "user-default"))
+          ))
+        );
+
+        let resolvedRole: number = 20;
+        if (pm && pm.role) {
+          resolvedRole = pm.role;
+        } else if (isProjCreator || isWsAdmin) {
+          resolvedRole = 20;
+        } else if (p.member_role) {
+          resolvedRole = p.member_role;
+        }
+
         // Calculate next_work_item_sequence from actual issues
         const projectIssues = (localDB.issues || []).filter((i: any) => i.project === p.id || i.project_id === p.id);
         const maxSeq = projectIssues.reduce((max: number, i: any) => Math.max(max, i.sequence_id || 0), 0);
         const sortOrder = typeof p.sort_order === "number" ? p.sort_order : (index + 1) * 10000;
         return Object.assign({}, p, {
+          workspace: canonicalWsId || p.workspace,
+          workspace_detail: ws || p.workspace_detail,
+          member_role: resolvedRole,
           next_work_item_sequence: maxSeq + 1,
           sort_order: sortOrder,
         });
@@ -2141,7 +2198,37 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       );
       if (projectIdx > -1 && !deletedSet.has(localDB.projects[projectIdx].id)) {
         if (method === "get") {
-          return ok(localDB.projects[projectIdx]);
+          const p = localDB.projects[projectIdx];
+          const wsSlugMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
+          const wsSlug = wsSlugMatch ? wsSlugMatch[1] : null;
+          const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
+          const canonicalWsId = ws?.id || wsSlug;
+
+          const currentUserId = activeUser?.id || activeUserId;
+          const currentUserEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+          const pm = (localDB.project_members || []).find((pMember: any) => {
+            const pId = pMember.project || pMember.project_id;
+            const pMail = (pMember.email || "").toLowerCase().trim();
+            const pMem = String(pMember.member || "");
+            return (pId === p.id) && (
+              (currentUserEmail && pMail === currentUserEmail) ||
+              (currentUserId && currentUserId !== "user-default" && pMem === currentUserId)
+            );
+          });
+          const isProjCreator = Boolean(
+            (currentUserId && currentUserId !== "user-default" && (p.created_by === currentUserId || p.owner === currentUserId || p.owner?.id === currentUserId)) ||
+            (currentUserEmail && (
+              (p.created_by && p.created_by.toLowerCase().trim() === currentUserEmail) ||
+              (p.owner?.email && p.owner.email.toLowerCase().trim() === currentUserEmail) ||
+              (currentUserEmail === "anh2482006@gmail.com" && (!p.created_by || p.created_by === "user-default"))
+            ))
+          );
+          const resolvedRole = (pm && pm.role) ? pm.role : (isProjCreator ? 20 : (p.member_role || 20));
+          return ok(Object.assign({}, p, {
+            workspace: canonicalWsId || p.workspace,
+            workspace_detail: ws || p.workspace_detail,
+            member_role: resolvedRole,
+          }));
         }
         if (method === "patch" || method === "put") {
           localDB.projects[projectIdx] = {
@@ -3946,36 +4033,42 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
       if (collection === "projects" && item) {
         const proj = { ...item };
-        const currentUserId = getLoggedInUserId() || "user-default";
-        const activeUser = (localDB.users || []).find((u: any) => u.id === currentUserId);
-        const currentUserEmail = (activeUser?.email || getLoggedInEmail() || "").toLowerCase().trim();
+        const currentUserId = getLoggedInUserId();
+        const currentUserEmail = (getLoggedInEmail() || "").toLowerCase().trim();
+        const activeUser = (localDB.users || []).find((u: any) =>
+          (currentUserId && u.id === currentUserId) ||
+          (currentUserEmail && u.email?.toLowerCase() === currentUserEmail)
+        );
+        const resolvedUserId = activeUser?.id || currentUserId;
+        const resolvedEmail = (activeUser?.email || currentUserEmail || "").toLowerCase().trim();
+
         const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
         const wsSlug = wsMatch ? wsMatch[1] : (proj.workspace_detail?.slug || proj.workspace);
         const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug || w.id === proj.workspace);
 
-        const userWsMember = (localDB.workspace_members || []).find((m: any) => {
-          const mWs = m.workspace || m.workspace_id;
-          const mMail = (m.email || "").toLowerCase().trim();
-          const mMem = m.member;
-          const isWs = ws ? (mWs === ws.id || mWs === ws.slug) : true;
-          return isWs && ((currentUserEmail && mMail === currentUserEmail) || (currentUserId && mMem === currentUserId));
-        });
-        const isWsAdmin = (userWsMember?.role === 20) || 
-                          (ws && (ws.created_by === currentUserId || ws.created_by === currentUserEmail)) ||
-                          (currentUserEmail === "anh2482006@gmail.com") ||
-                          (ws?.owner?.email && ws.owner.email.toLowerCase().trim() === currentUserEmail);
-
         const pm = (localDB.project_members || []).find((pMember: any) => {
           const pId = pMember.project || pMember.project_id;
           const pMail = (pMember.email || "").toLowerCase().trim();
-          const pMem = pMember.member;
-          return (pId === proj.id) && ((currentUserEmail && pMail === currentUserEmail) || (currentUserId && pMem === currentUserId));
+          const pMem = String(pMember.member || "");
+          return (pId === proj.id) && (
+            (resolvedEmail && pMail === resolvedEmail) ||
+            (resolvedUserId && resolvedUserId !== "user-default" && pMem === resolvedUserId)
+          );
         });
 
-        if (isWsAdmin) {
-          proj.member_role = pm?.role || 20;
-        } else if (pm) {
-          proj.member_role = pm.role || 15;
+        const isProjCreator = Boolean(
+          (resolvedUserId && resolvedUserId !== "user-default" && (proj.created_by === resolvedUserId || proj.owner === resolvedUserId)) ||
+          (resolvedEmail && (
+            (proj.created_by && proj.created_by.toLowerCase().trim() === resolvedEmail) ||
+            (proj.owner?.email && proj.owner.email.toLowerCase().trim() === resolvedEmail) ||
+            (resolvedEmail === "anh2482006@gmail.com" && (!proj.created_by || proj.created_by === "user-default"))
+          ))
+        );
+
+        if (pm && pm.role) {
+          proj.member_role = pm.role;
+        } else if (isProjCreator) {
+          proj.member_role = 20;
         } else {
           proj.member_role = null;
         }
@@ -4119,35 +4212,40 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         });
 
         if (collection === "projects") {
-          const currentUserId = getLoggedInUserId() || "user-default";
-          const activeUser = (localDB.users || []).find((u: any) => u.id === currentUserId);
-          const currentUserEmail = (activeUser?.email || getLoggedInEmail() || "").toLowerCase().trim();
-
-          const userWsMember = (localDB.workspace_members || []).find((m: any) => {
-            const mWs = m.workspace || m.workspace_id;
-            const mMail = (m.email || "").toLowerCase().trim();
-            const mMem = m.member;
-            const isWs = ws ? (mWs === ws.id || mWs === ws.slug) : true;
-            return isWs && ((currentUserEmail && mMail === currentUserEmail) || (currentUserId && mMem === currentUserId));
-          });
-          const isWsAdmin = (userWsMember?.role === 20) || 
-                            (ws && (ws.created_by === currentUserId || ws.created_by === currentUserEmail)) ||
-                            (currentUserEmail === "anh2482006@gmail.com") ||
-                            (ws?.owner?.email && ws.owner.email.toLowerCase().trim() === currentUserEmail);
+          const currentUserId = getLoggedInUserId();
+          const currentUserEmail = (getLoggedInEmail() || "").toLowerCase().trim();
+          const activeUser = (localDB.users || []).find((u: any) =>
+            (currentUserId && u.id === currentUserId) ||
+            (currentUserEmail && u.email?.toLowerCase() === currentUserEmail)
+          );
+          const resolvedUserId = activeUser?.id || currentUserId;
+          const resolvedEmail = (activeUser?.email || currentUserEmail || "").toLowerCase().trim();
 
           list = list.map((item: any) => {
             const proj = { ...item };
             const pm = (localDB.project_members || []).find((pMember: any) => {
               const pId = pMember.project || pMember.project_id;
               const pMail = (pMember.email || "").toLowerCase().trim();
-              const pMem = pMember.member;
-              return (pId === proj.id) && ((currentUserEmail && pMail === currentUserEmail) || (currentUserId && pMem === currentUserId));
+              const pMem = String(pMember.member || "");
+              return (pId === proj.id) && (
+                (resolvedEmail && pMail === resolvedEmail) ||
+                (resolvedUserId && resolvedUserId !== "user-default" && pMem === resolvedUserId)
+              );
             });
 
-            if (isWsAdmin) {
-              proj.member_role = pm?.role || 20;
-            } else if (pm) {
-              proj.member_role = pm.role || 15;
+            const isProjCreator = Boolean(
+              (resolvedUserId && resolvedUserId !== "user-default" && (proj.created_by === resolvedUserId || proj.owner === resolvedUserId)) ||
+              (resolvedEmail && (
+                (proj.created_by && proj.created_by.toLowerCase().trim() === resolvedEmail) ||
+                (proj.owner?.email && proj.owner.email.toLowerCase().trim() === resolvedEmail) ||
+                (resolvedEmail === "anh2482006@gmail.com" && (!proj.created_by || proj.created_by === "user-default"))
+              ))
+            );
+
+            if (pm && pm.role) {
+              proj.member_role = pm.role;
+            } else if (isProjCreator) {
+              proj.member_role = 20;
             } else {
               proj.member_role = null;
             }
@@ -4163,6 +4261,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     }
 
     if (collection === "invitations") {
+      syncCrossPortWorkspaces();
       const stored = getStoredInvitations();
       if (!localDB.invitations) localDB.invitations = [];
       for (const inv of stored) {
@@ -4177,7 +4276,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
 
       // Auto-filter out invites for users who are already active workspace members
-      const activeWsMemberMails = new Set(
+      const activeWsMemberMails = new Set<string>(
         (localDB.workspace_members || [])
           .filter((m: any) => m.is_active !== false && (validWsKeys.size === 0 || validWsKeys.has(m.workspace) || validWsKeys.has(m.workspace_id)))
           .map((m: any) => (m.email || "").toLowerCase().trim())
@@ -4657,14 +4756,18 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         );
       }
       const match = url.match(/\/api\/workspaces\/([^/]+)\//);
-      if (match) {
-        const wsSlug = match[1];
-        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug);
-        if (ws) {
-          newRecord.workspace = ws.id;
-          newRecord.workspace_detail = ws;
-        }
-      }
+      const wsSlug = match ? match[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+      const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+      
+      const activeCreatorId = activeUser?.id || activeUserId || "user-default";
+      const activeCreatorEmail = (activeUser?.email || getLoggedInEmail() || "").toLowerCase().trim();
+      const creatorUserObj = activeUser || (localDB.users || []).find((u: any) => u.id === activeCreatorId) || (localDB.users || [])[0];
+
+      newRecord.workspace = ws?.id || wsSlug;
+      newRecord.workspace_detail = ws || { id: newRecord.workspace, slug: wsSlug, name: wsSlug.toUpperCase() };
+      newRecord.created_by = activeCreatorId;
+      newRecord.owner = creatorUserObj;
+      newRecord.member_role = 20;
 
       // Seed default states for the new project
       if (!localDB["states"]) localDB["states"] = [];
@@ -4723,17 +4826,23 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       localDB["states"].push(...defaultStates);
 
       if (!localDB.project_members) localDB.project_members = [];
-      const activeCreatorId = activeUser?.id || activeUserId || "user-default";
-      const activeCreatorEmail = (activeUser?.email || getLoggedInEmail() || "").toLowerCase();
-      localDB.project_members.push({
-        id: `pm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        project: newRecord.id,
-        project_id: newRecord.id,
-        member: activeCreatorId,
-        email: activeCreatorEmail,
-        role: 20,
-        created_at: new Date().toISOString(),
-      });
+      const existingPmIdx = localDB.project_members.findIndex(
+        (pm: any) =>
+          (pm.project === newRecord.id || pm.project_id === newRecord.id) &&
+          (pm.member === activeCreatorId || (activeCreatorEmail && (pm.email || "").toLowerCase().trim() === activeCreatorEmail))
+      );
+      if (existingPmIdx === -1) {
+        localDB.project_members.push({
+          id: `pm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          project: newRecord.id,
+          project_id: newRecord.id,
+          member: activeCreatorId,
+          email: activeCreatorEmail,
+          role: 20,
+          created_at: new Date().toISOString(),
+        });
+      }
+      void uploadToIPFS(true);
     }
     if (collection === "issues") {
       if (localDB._deleted_issue_ids && Array.isArray(localDB._deleted_issue_ids)) {
@@ -4872,6 +4981,14 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     syncDAppRecord(collection, newRecord.id, newRecord);
 
     let returnedRecord = { ...newRecord };
+
+    if (collection === "projects") {
+      returnedRecord.member_role = 20;
+      returnedRecord.created_by = newRecord.created_by;
+      returnedRecord.owner = newRecord.owner;
+      returnedRecord.workspace = newRecord.workspace;
+      returnedRecord.workspace_detail = newRecord.workspace_detail;
+    }
 
     // Generic mapping for all records
     if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
@@ -5190,6 +5307,9 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
     return { collection: "workspaces", id: rest[1], isPaginated: false };
   }
   if (rest.length === 4 && rest[0] === "workspaces" && rest[2] === "projects") {
+    if (rest[3] === "details") {
+      return { collection: "projects", id: null, isPaginated: false };
+    }
     return { collection: "projects", id: rest[3], isPaginated: false };
   }
 

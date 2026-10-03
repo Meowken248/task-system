@@ -137,6 +137,16 @@ export const REMOVE_MEMBER_ABI = {
   stateMutability: "nonpayable",
 };
 
+export const JOIN_WORKSPACE_ABI = {
+  type: "function",
+  name: "joinWorkspace",
+  inputs: [
+    { internalType: "string", name: "slug", type: "string" },
+  ],
+  outputs: [],
+  stateMutability: "nonpayable",
+};
+
 export function extractEthAddress(input: string | undefined | null): string | null {
   if (!input) return null;
   const clean = input.trim().toLowerCase();
@@ -488,6 +498,9 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
 
     try {
       sessionStorage.setItem(`ipfs_${cid}`, serialized);
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(`ipfs_${cid}`, serialized);
+      }
     } catch { }
 
     lastUploadedCID = cid;
@@ -499,12 +512,100 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
     localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cid);
     syncWorkspacesToCookie(cid);
     console.log(`[DApp DB] ✅ Auto-save IPFS thành công: ${cid}`);
+
+    const wsRegistryAddr = getWorkspaceRegistryAddress();
+    if (wsRegistryAddr) {
+      const defaultSlug = getDefaultWorkspaceSlug();
+      const activeSlug =
+        (typeof localStorage !== "undefined" && localStorage.getItem("last_workspace_slug")) ||
+        localDB.workspaces?.[0]?.slug ||
+        defaultSlug;
+      void commitWorkspaceCID(activeSlug, cid);
+    }
+
     return cid;
   } catch (err) {
     console.error("[DApp DB] IPFS upload lỗi:", err);
     return null;
   } finally {
     isUploadingIPFS = false;
+  }
+}
+
+export async function commitWorkspaceCID(slug: string, newCid: string): Promise<boolean> {
+  const wsRegistryAddr = getWorkspaceRegistryAddress();
+  if (!wsRegistryAddr || !newCid) return false;
+
+  const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
+  const userAddr = currentUserAddress || getStoredWalletAddress();
+
+  if (!bridge || !userAddr) {
+    console.log(`[DApp Chain] Chưa kết nối ví trên trình duyệt hoặc Bridge chưa sẵn sàng. Bỏ qua ghi on-chain trực tiếp.`);
+    return false;
+  }
+
+  try {
+    console.log(`[DApp Chain] Đang gửi transaction updateWorkspaceCID("${slug}", "${newCid}") qua ví người dùng (${userAddr})...`);
+    await bridge.request("sendTransaction", {
+      from: userAddr,
+      to: wsRegistryAddr,
+      abiData: [UPDATE_WORKSPACE_CID_ABI],
+      functionName: "updateWorkspaceCID",
+      feeType: "sc",
+      amount: "0",
+      value: "0",
+      gas: getContractGas(),
+      type: "transaction",
+      inputArray: [
+        { name: "slug", type: "string", value: slug },
+        { name: "newCid", type: "string", value: newCid },
+      ],
+      isReadOnly: false,
+      bundleId: "",
+      ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
+    });
+    console.log(`[DApp Chain] ✅ updateWorkspaceCID thành công qua ví người dùng!`);
+    return true;
+  } catch (bridgeErr) {
+    console.warn(`[DApp Chain] Giao dịch updateWorkspaceCID qua ví người dùng không thành công:`, bridgeErr);
+    return false;
+  }
+}
+
+export async function joinWorkspaceOnChain(slug: string): Promise<boolean> {
+  const wsRegistryAddr = getWorkspaceRegistryAddress();
+  if (!wsRegistryAddr || !slug) return false;
+
+  const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
+  const userAddr = currentUserAddress || getStoredWalletAddress();
+
+  if (!bridge || !userAddr) {
+    console.log(`[DApp Chain] Chưa kết nối ví. Bỏ qua ghi on-chain joinWorkspace.`);
+    return false;
+  }
+
+  try {
+    console.log(`[DApp Chain] Đang gửi transaction joinWorkspace("${slug}") qua ví người dùng (${userAddr})...`);
+    await bridge.request("sendTransaction", {
+      from: userAddr,
+      to: wsRegistryAddr,
+      abiData: [JOIN_WORKSPACE_ABI],
+      functionName: "joinWorkspace",
+      feeType: "sc",
+      amount: "0",
+      value: "0",
+      gas: getContractGas(),
+      type: "transaction",
+      inputArray: [{ name: "slug", type: "string", value: slug }],
+      isReadOnly: false,
+      bundleId: "",
+      ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
+    });
+    console.log(`[DApp Chain] ✅ joinWorkspace thành công qua ví người dùng: ${slug}`);
+    return true;
+  } catch (err) {
+    console.warn(`[DApp Chain] joinWorkspace on-chain thất bại (có thể đã là thành viên):`, err);
+    return false;
   }
 }
 
@@ -535,7 +636,9 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
   const cleanCid = cid.trim();
 
   try {
-    const cached = sessionStorage.getItem(`ipfs_${cleanCid}`);
+    const cached =
+      sessionStorage.getItem(`ipfs_${cleanCid}`) ||
+      (typeof localStorage !== "undefined" ? localStorage.getItem(`ipfs_${cleanCid}`) : null);
     if (cached) {
       const json = JSON.parse(cached);
       if (json && typeof json === "object") return json;
@@ -548,13 +651,25 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
-      const res = await fetch(gw, { signal: controller.signal });
+      const res = await fetch(gw, {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
       clearTimeout(timeoutId);
       if (res.ok) {
-        const json = await res.json();
-        if (json && typeof json === "object") {
-          console.log(`[DApp DB] Tải thành công từ IPFS gateway: ${gw}`);
-          return json;
+        const text = await res.text();
+        if (text && text.trim().startsWith("{")) {
+          const json = JSON.parse(text);
+          if (json && typeof json === "object") {
+            console.log(`[DApp DB] Tải thành công từ IPFS gateway: ${gw}`);
+            try {
+              sessionStorage.setItem(`ipfs_${cleanCid}`, text);
+              if (typeof localStorage !== "undefined") {
+                localStorage.setItem(`ipfs_${cleanCid}`, text);
+              }
+            } catch { }
+            return json;
+          }
         }
       }
     } catch (err) {
@@ -942,7 +1057,7 @@ if (typeof window !== "undefined") {
 }
 
 // ── Database Initializer with Smart Contract / IPFS ──────────────────────
-async function _initDAppDB() {
+async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: any }> {
   if (typeof window === "undefined") return { status: "OK" };
   const activeWallet = await getWalletAddress().catch(() => null);
   const registryAddr = getRegistryContractAddress();
@@ -1048,8 +1163,10 @@ async function _initDAppDB() {
         if (!localDB.workspaces) localDB.workspaces = [];
         const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
         const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
-        const slugsToCheck = Array.from(new Set([...userWsSlugs, defaultSlug])).filter(
-          (s) => !deletedWsSlugs.has(s) && !deletedWsIds.has(s)
+        const urlSlug = urlParams?.get("slug") || "";
+        const savedLastSlug = (typeof localStorage !== "undefined" ? localStorage.getItem("last_workspace_slug") : "") || "";
+        const slugsToCheck = Array.from(new Set([...userWsSlugs, defaultSlug, urlSlug, savedLastSlug])).filter(
+          (s) => Boolean(s) && !deletedWsSlugs.has(s) && !deletedWsIds.has(s)
         );
 
         for (const slug of slugsToCheck) {
@@ -1079,28 +1196,50 @@ async function _initDAppDB() {
             }
           } catch { }
         }
-        syncWorkspacesToCookie();
       } catch { }
+    }
+
+    let cookieCid = "";
+    if (typeof document !== "undefined") {
+      const cookies = document.cookie ? document.cookie.split(";") : [];
+      const cidCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_cid="));
+      if (cidCookie) {
+        const raw = cidCookie.trim().substring(cidCookie.trim().indexOf("=") + 1);
+        cookieCid = decodeURIComponent(raw || "").trim();
+      }
     }
 
     const onChainCid = onChainWorkspaceCid || onChainUserCid;
     baseCID = onChainUserCid || "";
 
     const cachedIpfsCid =
-      localStorage.getItem(`plane_dapp_ipfs_cid_${currentUserAddress}`) ||
-      localStorage.getItem("plane_dapp_ipfs_cid_local");
-    const targetCID = onChainCid || cachedIpfsCid;
+      cookieCid ||
+      localStorage.getItem("plane_dapp_ipfs_cid_local") ||
+      localStorage.getItem("plane_dapp_ipfs_cid_last_valid") ||
+      localStorage.getItem(`plane_dapp_ipfs_cid_${currentUserAddress}`);
+    const targetCID = cachedIpfsCid || onChainCid;
 
     if (targetCID && targetCID !== "") {
       const ipfsDB = await fetchFromIPFS(targetCID);
       if (ipfsDB) {
-        if (onChainCid && cachedIpfsCid && onChainCid !== cachedIpfsCid) {
-          console.warn(`[DApp DB] Phát hiện xung đột CID: On-chain (${onChainCid}) vs IPFS (${cachedIpfsCid})`);
-          isDAppDBInitialized = true;
-          return { status: "CONFLICT", cid: onChainCid, ipfsDB };
-        }
         applyOffchainDB(ipfsDB);
         lastUploadedCID = targetCID;
+        if (typeof window !== "undefined") {
+          localStorage.setItem("plane_dapp_ipfs_cid_local", targetCID);
+          localStorage.setItem("plane_dapp_ipfs_cid_last_valid", targetCID);
+        }
+        syncWorkspacesToCookie(targetCID);
+        isDAppDBInitialized = true;
+        return { status: "OK" };
+      }
+    }
+
+    if (onChainCid && onChainCid !== targetCID) {
+      const ipfsDB = await fetchFromIPFS(onChainCid);
+      if (ipfsDB) {
+        applyOffchainDB(ipfsDB);
+        lastUploadedCID = onChainCid;
+        syncWorkspacesToCookie(onChainCid);
         isDAppDBInitialized = true;
         return { status: "OK" };
       }
@@ -1115,7 +1254,7 @@ async function _initDAppDB() {
   }
 }
 
-export async function initDAppDB() {
+export async function initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: any }> {
   const timeoutMs = 20000;
   const timeoutTask = new Promise<never>((_, reject) => {
     setTimeout(() => {

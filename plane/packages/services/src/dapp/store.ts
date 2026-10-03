@@ -273,6 +273,7 @@ localDB.issues = localDB.issues.filter(
     !initDeletedSet.has(i.project_id) &&
     !initDeletedIssueSet.has(i.id)
 );
+if (!localDB.project_members) localDB.project_members = [];
 if (!localDB.labels) localDB.labels = [];
 if (!localDB.issue_comments) localDB.issue_comments = [];
 if (!localDB.attachments) localDB.attachments = [];
@@ -388,10 +389,27 @@ export function getStoredInvitations(): any[] {
     const list: any[] = [];
     const idSet = new Set<string>();
 
+    const isMemberMatch = (targetMail: string) => {
+      if (!targetMail) return false;
+      const cleanTarget = targetMail.toLowerCase().trim();
+      if (activeMemberEmails.has(cleanTarget)) return true;
+      const targetPrefix = cleanTarget.split("@")[0];
+      for (const actMail of Array.from(activeMemberEmails)) {
+        const actPrefix = String(actMail).split("@")[0];
+        if (
+          (actPrefix.length >= 6 && targetPrefix.startsWith(actPrefix)) ||
+          (targetPrefix.length >= 6 && actPrefix.startsWith(targetPrefix))
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     const addInv = (inv: any) => {
       if (!inv || !inv.id || deletedSet.has(inv.id)) return;
       const invMail = (inv.email || "").toLowerCase().trim();
-      if (invMail && activeMemberEmails.has(invMail)) {
+      if (invMail && isMemberMatch(invMail)) {
         inv.accepted = true;
       }
       if (!idSet.has(inv.id)) {
@@ -446,7 +464,7 @@ export function getStoredInvitations(): any[] {
           if (
             email &&
             !deletedSet.has(syntheticId) &&
-            !activeMemberEmails.has(email) &&
+            !isMemberMatch(email) &&
             !list.some((existing) => (existing.email || "").toLowerCase().trim() === email && (existing.workspace?.slug === wsSlug || existing.workspace_slug === wsSlug))
           ) {
             addInv({
@@ -472,42 +490,6 @@ export function getStoredInvitations(): any[] {
           }
         }
       });
-    }
-
-    // 5. Explicit recovery for meowken248@gmail.com invited to fiai (only if NOT already member)
-    const loggedInMail = (localStorage.getItem("plane_dapp_auth_email") || "").toLowerCase().trim();
-    if (loggedInMail === "meowken248@gmail.com") {
-      const fiaiWs = (localDB.workspaces || []).find((w: any) => w.slug === "fiai" || w.id === "workspace-fiai" || w.slug === "fiai-metanode");
-      const isAlreadyMember = (localDB.workspace_members || []).some(
-        (m: any) => (m.email || "").toLowerCase().trim() === "meowken248@gmail.com" &&
-          (m.workspace === "fiai" || m.workspace_id === "fiai" || m.workspace === fiaiWs?.id || m.workspace_id === fiaiWs?.id)
-      );
-      const invId = `inv-fiai-meowken248`;
-      const hasMeowkenInv = list.some((i) => (i.email || "").toLowerCase().trim() === "meowken248@gmail.com");
-      if (!hasMeowkenInv && !isAlreadyMember && !deletedSet.has(invId)) {
-        const wsSlug = fiaiWs?.slug || "fiai";
-        const wsName = fiaiWs?.name || "FIAI";
-        addInv({
-          id: invId,
-          email: "meowken248@gmail.com",
-          role: 15,
-          token: `tok-${wsSlug}-meowken248`,
-          accepted: false,
-          responded_at: null,
-          message: `You have been invited to join ${wsName}.`,
-          invite_link: `/workspace-invitations?invitation_id=${invId}&slug=${wsSlug}&token=tok-${wsSlug}-meowken248`,
-          workspace: {
-            id: fiaiWs?.id || wsSlug,
-            name: wsName,
-            slug: wsSlug,
-            logo_url: fiaiWs?.logo_url || "",
-          },
-          workspace_id: fiaiWs?.id || wsSlug,
-          workspace_slug: wsSlug,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-      }
     }
 
     return list;
@@ -555,10 +537,27 @@ export function saveStoredInvitations(invites: any[]): void {
     }
     const merged = Array.from(map.values()).filter((i: any) => !deletedSet.has(i.id));
 
+    const isMemberMatch = (targetMail: string) => {
+      if (!targetMail) return false;
+      const cleanTarget = targetMail.toLowerCase().trim();
+      if (activeMemberEmails.has(cleanTarget)) return true;
+      const targetPrefix = cleanTarget.split("@")[0];
+      for (const actMail of Array.from(activeMemberEmails)) {
+        const actPrefix = String(actMail).split("@")[0];
+        if (
+          (actPrefix.length >= 6 && targetPrefix.startsWith(actPrefix)) ||
+          (targetPrefix.length >= 6 && actPrefix.startsWith(targetPrefix))
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     // Auto-mark invites as accepted if user is already an active member of that workspace
     merged.forEach((i: any) => {
       const mail = (i.email || "").toLowerCase().trim();
-      if (mail && activeMemberEmails.has(mail)) {
+      if (mail && isMemberMatch(mail)) {
         i.accepted = true;
       }
     });
@@ -627,9 +626,77 @@ export function saveDB() {
     sessionStorage.setItem("plane_dapp_latest_db", snapshot);
   } catch { }
   syncWorkspacesToCookie();
+  try {
+    const curCid = (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") : null);
+    dappSyncChannel?.postMessage({
+      type: "SYNC_STATE",
+      cid: curCid,
+      members: localDB.workspace_members || [],
+      invitations: localDB.invitations || [],
+    });
+  } catch { }
   if (onSaveHook) {
     onSaveHook();
   }
+}
+
+export const dappSyncChannel = typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
+  ? new BroadcastChannel("plane_dapp_sync_channel")
+  : null;
+
+if (dappSyncChannel) {
+  dappSyncChannel.onmessage = (event) => {
+    try {
+      const { type, cid, members, invitations } = event.data || {};
+      if (type === "SYNC_STATE") {
+        let updated = false;
+        if (members && Array.isArray(members)) {
+          if (!localDB.workspace_members) localDB.workspace_members = [];
+          for (const m of members) {
+            const mMail = (m.email || "").toLowerCase().trim();
+            const existingIdx = localDB.workspace_members.findIndex(
+              (x: any) => (mMail && (x.email || "").toLowerCase().trim() === mMail) || (m.member && x.member === m.member)
+            );
+            if (existingIdx === -1) {
+              localDB.workspace_members.push(m);
+              updated = true;
+            } else if (localDB.workspace_members[existingIdx].role !== m.role) {
+              localDB.workspace_members[existingIdx].role = m.role;
+              updated = true;
+            }
+          }
+        }
+        if (invitations && Array.isArray(invitations)) {
+          if (!localDB.invitations) localDB.invitations = [];
+          for (const inv of invitations) {
+            const existingIdx = localDB.invitations.findIndex((x: any) => x.id === inv.id);
+            if (existingIdx === -1) {
+              localDB.invitations.push(inv);
+              updated = true;
+            } else if (inv.accepted && !localDB.invitations[existingIdx].accepted) {
+              localDB.invitations[existingIdx].accepted = true;
+              updated = true;
+            }
+          }
+          saveStoredInvitations(localDB.invitations);
+        }
+        if (cid && !cid.startsWith("bafkrei") && cid !== localStorage.getItem("plane_dapp_ipfs_cid_local")) {
+          localStorage.setItem("plane_dapp_ipfs_cid_local", cid);
+          localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cid);
+          if (typeof window !== "undefined" && (window as any).restoreFromIPFS) {
+            void (window as any).restoreFromIPFS(cid);
+          }
+        }
+        if (updated) {
+          const snapshot = JSON.stringify(localDB);
+          localStorage.setItem("plane_dapp_local_db", snapshot);
+          sessionStorage.setItem("plane_dapp_latest_db", snapshot);
+        }
+      }
+    } catch (err) {
+      console.warn("[DApp DB] BroadcastChannel message error:", err);
+    }
+  };
 }
 
 export function getDBSnapshot(): Record<string, any> {
@@ -696,6 +763,11 @@ export function syncWorkspacesToCookie(cid?: string | null) {
         workspace_slug: i.workspace_slug || i.workspace?.slug,
       }));
       document.cookie = `plane_dapp_sync_invitations=${encodeURIComponent(JSON.stringify(pendingInvites))}; path=/; max-age=31536000; SameSite=Lax`;
+
+      const acceptedIds = allInv.filter((i: any) => i.accepted).map((i: any) => i.id);
+      if (acceptedIds.length > 0) {
+        document.cookie = `plane_dapp_sync_accepted_invitations=${encodeURIComponent(JSON.stringify(acceptedIds))}; path=/; max-age=31536000; SameSite=Lax`;
+      }
     }
 
     const cidToSync = cid || (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") || localStorage.getItem("plane_dapp_ipfs_cid_last_valid") : null);
@@ -726,18 +798,6 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
       const origLen = localDB.invitations.length;
       localDB.invitations = localDB.invitations.filter((i: any) => !deletedInvSet.has(i.id));
       if (localDB.invitations.length !== origLen) hasChanges = true;
-    }
-
-    // Clean up any previously auto-granted project member records for uninvited members
-    if (localDB.project_members && Array.isArray(localDB.project_members)) {
-      const badPmIdx = localDB.project_members.findIndex(
-        (pm: any) => (pm.email || "").toLowerCase().trim() === "meowken248@gmail.com" && pm.role !== 20
-      );
-      if (badPmIdx !== -1) {
-        localDB.project_members.splice(badPmIdx, 1);
-        hasChanges = true;
-        console.log("[DApp DB] Cleaned up auto-granted project member for meowken248");
-      }
     }
 
     // 1. Read from shared cross-port cookies (domain localhost)
@@ -821,6 +881,45 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
         }
       }
 
+      const accCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_accepted_invitations="));
+      if (accCookie) {
+        const rawAVal = accCookie.trim().substring(accCookie.trim().indexOf("=") + 1);
+        const aVal = decodeURIComponent(rawAVal || "");
+        if (aVal) {
+          try {
+            const accIds = JSON.parse(aVal);
+            if (Array.isArray(accIds) && localDB.invitations) {
+              const accSet = new Set(accIds);
+              for (const inv of localDB.invitations) {
+                if (accSet.has(inv.id) && !inv.accepted) {
+                  inv.accepted = true;
+                  hasChanges = true;
+                }
+              }
+            }
+          } catch { }
+        }
+      }
+
+      // Auto-resolve invitations for active workspace members (including typo/alias invites)
+      if (localDB.workspace_members && localDB.invitations) {
+        const activeMails = new Set(
+          localDB.workspace_members
+            .filter((m: any) => m.is_active !== false)
+            .map((m: any) => (m.email || "").toLowerCase().trim())
+            .filter(Boolean)
+        );
+        for (const inv of localDB.invitations) {
+          const invMail = (inv.email || "").toLowerCase().trim();
+          if (invMail && (activeMails.has(invMail) || (activeMails.has("meowken248@gmail.com") && invMail.startsWith("meowken248")))) {
+            if (!inv.accepted) {
+              inv.accepted = true;
+              hasChanges = true;
+            }
+          }
+        }
+      }
+
       const invCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_invitations="));
       if (invCookie) {
         const rawIVal = invCookie.trim().substring(invCookie.trim().indexOf("=") + 1);
@@ -849,8 +948,11 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
         const cVal = decodeURIComponent(rawCVal || "");
         if (cVal && !cVal.startsWith("bafkrei") && cVal !== localStorage.getItem("plane_dapp_ipfs_cid_local")) {
           localStorage.setItem("plane_dapp_ipfs_cid_local", cVal);
+          localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cVal);
           if (onNewCIDDetected) {
             onNewCIDDetected(cVal);
+          } else if (typeof window !== "undefined" && (window as any).restoreFromIPFS) {
+            void (window as any).restoreFromIPFS(cVal);
           }
         }
       }

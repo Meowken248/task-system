@@ -33,7 +33,11 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
       | "getWorkspace"
       | "getWorkspaceCID"
       | "getWorkspaceMembers"
+      | "joinWorkspace"
+      | "operator"
       | "removeMember"
+      | "setOperator"
+      | "setWorkspaceOwner"
       | "updateWorkspaceCID"
       | "updateWorkspaceCIDIfMatches"
       | "workspaceExists"
@@ -76,7 +80,20 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     values: [string]
   ): string;
   encodeFunctionData(
+    functionFragment: "joinWorkspace",
+    values: [string]
+  ): string;
+  encodeFunctionData(functionFragment: "operator", values?: undefined): string;
+  encodeFunctionData(
     functionFragment: "removeMember",
+    values: [string, AddressLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "setOperator",
+    values: [AddressLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "setWorkspaceOwner",
     values: [string, AddressLike]
   ): string;
   encodeFunctionData(
@@ -118,7 +135,20 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(
+    functionFragment: "joinWorkspace",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(functionFragment: "operator", data: BytesLike): Result;
+  decodeFunctionResult(
     functionFragment: "removeMember",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "setOperator",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "setWorkspaceOwner",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -315,8 +345,24 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
 
   getWorkspaceMembers: TypedContractMethod<[slug: string], [string[]], "view">;
 
+  joinWorkspace: TypedContractMethod<[slug: string], [void], "nonpayable">;
+
+  operator: TypedContractMethod<[], [string], "view">;
+
   removeMember: TypedContractMethod<
     [slug: string, member: AddressLike],
+    [void],
+    "nonpayable"
+  >;
+
+  setOperator: TypedContractMethod<
+    [newOperator: AddressLike],
+    [void],
+    "nonpayable"
+  >;
+
+  setWorkspaceOwner: TypedContractMethod<
+    [slug: string, newOwner: AddressLike],
     [void],
     "nonpayable"
   >;
@@ -380,9 +426,25 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     nameOrSignature: "getWorkspaceMembers"
   ): TypedContractMethod<[slug: string], [string[]], "view">;
   getFunction(
+    nameOrSignature: "joinWorkspace"
+  ): TypedContractMethod<[slug: string], [void], "nonpayable">;
+  getFunction(
+    nameOrSignature: "operator"
+  ): TypedContractMethod<[], [string], "view">;
+  getFunction(
     nameOrSignature: "removeMember"
   ): TypedContractMethod<
     [slug: string, member: AddressLike],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "setOperator"
+  ): TypedContractMethod<[newOperator: AddressLike], [void], "nonpayable">;
+  getFunction(
+    nameOrSignature: "setWorkspaceOwner"
+  ): TypedContractMethod<
+    [slug: string, newOwner: AddressLike],
     [void],
     "nonpayable"
   >;
