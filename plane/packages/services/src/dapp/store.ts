@@ -636,13 +636,20 @@ export function saveDB() {
   } catch { }
   syncWorkspacesToCookie();
   try {
-    const curCid = (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") : null);
-    dappSyncChannel?.postMessage({
-      type: "SYNC_STATE",
-      cid: curCid,
-      members: localDB.workspace_members || [],
-      invitations: localDB.invitations || [],
-    });
+    const isSpaceViewer = typeof window !== "undefined" && (
+      window.location.port === "3002" ||
+      window.location.pathname.startsWith("/spaces") ||
+      window.location.pathname.startsWith("/issues/")
+    );
+    if (!isSpaceViewer) {
+      const curCid = (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") : null);
+      dappSyncChannel?.postMessage({
+        type: "SYNC_STATE",
+        cid: curCid,
+        members: localDB.workspace_members || [],
+        invitations: localDB.invitations || [],
+      });
+    }
   } catch { }
   if (onSaveHook) {
     onSaveHook();
@@ -690,10 +697,14 @@ if (dappSyncChannel) {
           saveStoredInvitations(localDB.invitations);
         }
         if (cid && !cid.startsWith("bafkrei") && cid !== localStorage.getItem("plane_dapp_ipfs_cid_local")) {
-          localStorage.setItem("plane_dapp_ipfs_cid_local", cid);
-          localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cid);
-          if (typeof window !== "undefined" && (window as any).restoreFromIPFS) {
-            void (window as any).restoreFromIPFS(cid);
+          if (typeof window !== "undefined" && (window as any).__isDAppDirty) {
+            console.log("[DApp DB] Đang có thay đổi chưa lưu tại local, bỏ qua BroadcastChannel CID sync.");
+          } else {
+            localStorage.setItem("plane_dapp_ipfs_cid_local", cid);
+            localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cid);
+            if (typeof window !== "undefined" && (window as any).restoreFromIPFS) {
+              void (window as any).restoreFromIPFS(cid);
+            }
           }
         }
         if (updated) {
@@ -779,9 +790,16 @@ export function syncWorkspacesToCookie(cid?: string | null) {
       }
     }
 
-    const cidToSync = cid || (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") || localStorage.getItem("plane_dapp_ipfs_cid_last_valid") : null);
-    if (cidToSync && !cidToSync.startsWith("bafkrei")) {
-      document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
+    const isSpaceViewer = typeof window !== "undefined" && (
+      window.location.port === "3002" ||
+      window.location.pathname.startsWith("/spaces") ||
+      window.location.pathname.startsWith("/issues/")
+    );
+    if (!isSpaceViewer) {
+      const cidToSync = cid || (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") || localStorage.getItem("plane_dapp_ipfs_cid_last_valid") : null);
+      if (cidToSync && !cidToSync.startsWith("bafkrei")) {
+        document.cookie = `plane_dapp_sync_cid=${encodeURIComponent(cidToSync)}; path=/; max-age=31536000; SameSite=Lax`;
+      }
     }
   } catch { }
 }
@@ -956,12 +974,16 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
         const rawCVal = cidCookie.trim().substring(cidCookie.trim().indexOf("=") + 1);
         const cVal = decodeURIComponent(rawCVal || "");
         if (cVal && !cVal.startsWith("bafkrei") && cVal !== localStorage.getItem("plane_dapp_ipfs_cid_local")) {
-          localStorage.setItem("plane_dapp_ipfs_cid_local", cVal);
-          localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cVal);
-          if (onNewCIDDetected) {
-            onNewCIDDetected(cVal);
-          } else if (typeof window !== "undefined" && (window as any).restoreFromIPFS) {
-            void (window as any).restoreFromIPFS(cVal);
+          if (typeof window !== "undefined" && (window as any).__isDAppDirty) {
+            console.log("[DApp DB] Đang có thay đổi chưa lưu tại local, bỏ qua đồng bộ từ cookie.");
+          } else {
+            localStorage.setItem("plane_dapp_ipfs_cid_local", cVal);
+            localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cVal);
+            if (onNewCIDDetected) {
+              onNewCIDDetected(cVal);
+            } else if (typeof window !== "undefined" && (window as any).restoreFromIPFS) {
+              void (window as any).restoreFromIPFS(cVal);
+            }
           }
         }
       }

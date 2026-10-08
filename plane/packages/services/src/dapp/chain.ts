@@ -351,17 +351,28 @@ export function getStoredWalletAddress(): string | null {
   if (typeof window === "undefined") return null;
   if (currentUserAddress) return currentUserAddress;
   try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith("plane_dapp_db_0x")) {
-        const addr = key.replace("plane_dapp_db_", "");
-        if (/^0x[a-fA-F0-9]{40}$/.test(addr)) return addr;
-      }
+    const directKeys = [
+      "plane_active_wallet_address",
+      "active_wallet_address",
+      "plane_last_active_wallet",
+      "metanode:active_wallet",
+      "plane_dapp_auth_user",
+    ];
+    for (const key of directKeys) {
+      const val = localStorage.getItem(key)?.trim() || "";
+      if (/^0x[a-fA-F0-9]{40}$/.test(val)) return val;
     }
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (key && key.startsWith("plane:metanode-wallet:")) {
         const addr = localStorage.getItem(key)?.trim() || "";
+        if (/^0x[a-fA-F0-9]{40}$/.test(addr)) return addr;
+      }
+    }
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("plane_dapp_db_0x")) {
+        const addr = key.replace("plane_dapp_db_", "");
         if (/^0x[a-fA-F0-9]{40}$/.test(addr)) return addr;
       }
     }
@@ -414,6 +425,27 @@ let isUploadingIPFS = false;
 let isDirtyState = false;
 let isDAppDBInitialized = false;
 
+export function checkHasRealContent(): boolean {
+  const hasRealWorkspaces = (localDB.workspaces || []).some(
+    (w: any) => w && w.slug && (w.slug !== DEFAULT_WORKSPACE.slug || (localDB.projects && localDB.projects.length > 0))
+  );
+  const hasRealProjects = Array.isArray(localDB.projects) && localDB.projects.length > 0;
+  const hasRealIssues = Array.isArray(localDB.issues) && localDB.issues.length > 0;
+  const hasRealStates = Array.isArray(localDB.states) && localDB.states.length > 0;
+  return hasRealProjects || hasRealIssues || (hasRealWorkspaces && (hasRealStates || hasRealProjects));
+}
+
+export function getIsDirtyState(): boolean {
+  return isDirtyState;
+}
+
+export function setDirtyState(val: boolean): void {
+  isDirtyState = val;
+  if (typeof window !== "undefined") {
+    (window as any).__isDAppDirty = val;
+  }
+}
+
 function getDBStorageKey(): string {
   return currentUserAddress || "local";
 }
@@ -434,12 +466,7 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
     return null;
   }
 
-  const hasRealContent =
-    (localDB.users && localDB.users.length > 0) ||
-    (localDB.workspaces && localDB.workspaces.length > 0) ||
-    (localDB.projects && localDB.projects.length > 0) ||
-    (localDB.issues && localDB.issues.length > 0) ||
-    (localDB.states && localDB.states.length > 0);
+  const hasRealContent = checkHasRealContent();
 
   const existingCID =
     lastUploadedCID ||
@@ -452,7 +479,7 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
     return null;
   }
 
-  if (!force && existingCID && !existingCID.startsWith("bafkrei") && !hasRealContent) {
+  if (existingCID && !existingCID.startsWith("bafkrei") && !hasRealContent) {
     console.warn("[DApp DB] Chặn upload IPFS rỗng: Tránh ghi đè mất dữ liệu cũ trên IPFS:", existingCID);
     return existingCID;
   }
@@ -505,7 +532,7 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
 
     lastUploadedCID = cid;
     lastUploadedDataHash = serialized;
-    isDirtyState = false;
+    setDirtyState(false);
     const storageKey = getDBStorageKey();
     localStorage.setItem(`plane_dapp_ipfs_cid_${storageKey}`, cid);
     localStorage.setItem("plane_dapp_ipfs_cid_local", cid);
@@ -731,6 +758,10 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentInvitations = [...getStoredInvitations(), ...(localDB.invitations || [])];
   const currentNotifications = [...(localDB.notifications || [])];
   const currentIssueRelations = [...(localDB.issue_relations || [])];
+  const currentPages = [...(localDB.pages || [])];
+  const currentViews = [...(localDB.views || [])];
+  const currentEstimates = [...(localDB.estimates || [])];
+  const currentTransactions = [...(localDB["blockchain-transactions"] || [])];
   const mergedDeletedWorkspaces = new Set<string>([
     ...(localDB._deleted_workspace_ids || []),
     ...(ipfsDB._deleted_workspace_ids || []),
@@ -815,8 +846,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       if (existingIdx === -1) {
         localDB.projects.push(p);
       } else {
-        const localUpdated = p.updated_at ? new Date(p.updated_at).getTime() : 0;
-        const ipfsUpdated = localDB.projects[existingIdx].updated_at ? new Date(localDB.projects[existingIdx].updated_at).getTime() : 0;
+        const localUpdated = p.updated_at ? new Date(p.updated_at).getTime() : (p.created_at ? new Date(p.created_at).getTime() : 0);
+        const ipfsUpdated = localDB.projects[existingIdx].updated_at ? new Date(localDB.projects[existingIdx].updated_at).getTime() : (localDB.projects[existingIdx].created_at ? new Date(localDB.projects[existingIdx].created_at).getTime() : 0);
         if (localUpdated >= ipfsUpdated) {
           localDB.projects[existingIdx] = { ...localDB.projects[existingIdx], ...p };
         }
@@ -840,8 +871,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       if (existingIdx === -1) {
         localDB.states.push(s);
       } else {
-        const localUpdated = s.updated_at ? new Date(s.updated_at).getTime() : 0;
-        const ipfsUpdated = localDB.states[existingIdx].updated_at ? new Date(localDB.states[existingIdx].updated_at).getTime() : 0;
+        const localUpdated = s.updated_at ? new Date(s.updated_at).getTime() : (s.created_at ? new Date(s.created_at).getTime() : 0);
+        const ipfsUpdated = localDB.states[existingIdx].updated_at ? new Date(localDB.states[existingIdx].updated_at).getTime() : (localDB.states[existingIdx].created_at ? new Date(localDB.states[existingIdx].created_at).getTime() : 0);
         if (localUpdated >= ipfsUpdated) {
           localDB.states[existingIdx] = { ...localDB.states[existingIdx], ...s };
         }
@@ -863,8 +894,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       if (existingIdx === -1) {
         localDB.issues.push(issue);
       } else {
-        const localUpdated = issue.updated_at ? new Date(issue.updated_at).getTime() : 0;
-        const ipfsUpdated = localDB.issues[existingIdx].updated_at ? new Date(localDB.issues[existingIdx].updated_at).getTime() : 0;
+        const localUpdated = issue.updated_at ? new Date(issue.updated_at).getTime() : (issue.created_at ? new Date(issue.created_at).getTime() : 0);
+        const ipfsUpdated = localDB.issues[existingIdx].updated_at ? new Date(localDB.issues[existingIdx].updated_at).getTime() : (localDB.issues[existingIdx].created_at ? new Date(localDB.issues[existingIdx].created_at).getTime() : 0);
         if (localUpdated >= ipfsUpdated) {
           localDB.issues[existingIdx] = { ...localDB.issues[existingIdx], ...issue };
         }
@@ -1025,6 +1056,61 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       localDB.issue_relations.push(r);
     }
   }
+
+  if (!localDB.pages) localDB.pages = [];
+  for (const page of currentPages) {
+    if (
+      !mergedDeletedProjects.has(page.project) &&
+      !mergedDeletedProjects.has(page.project_id)
+    ) {
+      const existingIdx = localDB.pages.findIndex((p: any) => p.id === page.id);
+      if (existingIdx === -1) {
+        localDB.pages.push(page);
+      } else {
+        const localUpdated = page.updated_at ? new Date(page.updated_at).getTime() : (page.created_at ? new Date(page.created_at).getTime() : 0);
+        const ipfsUpdated = localDB.pages[existingIdx].updated_at ? new Date(localDB.pages[existingIdx].updated_at).getTime() : (localDB.pages[existingIdx].created_at ? new Date(localDB.pages[existingIdx].created_at).getTime() : 0);
+        if (localUpdated >= ipfsUpdated) {
+          localDB.pages[existingIdx] = { ...localDB.pages[existingIdx], ...page };
+        }
+      }
+    }
+  }
+  localDB.pages = localDB.pages.filter(
+    (p: any) => !mergedDeletedProjects.has(p.project) && !mergedDeletedProjects.has(p.project_id)
+  );
+
+  if (!localDB.views) localDB.views = [];
+  for (const v of currentViews) {
+    if (
+      !mergedDeletedProjects.has(v.project) &&
+      !mergedDeletedProjects.has(v.project_id) &&
+      !localDB.views.some((existing: any) => existing.id === v.id)
+    ) {
+      localDB.views.push(v);
+    }
+  }
+  localDB.views = localDB.views.filter(
+    (v: any) => !mergedDeletedProjects.has(v.project) && !mergedDeletedProjects.has(v.project_id)
+  );
+
+  if (!localDB.estimates) localDB.estimates = [];
+  for (const est of currentEstimates) {
+    if (
+      !mergedDeletedProjects.has(est.project) &&
+      !mergedDeletedProjects.has(est.project_id) &&
+      !localDB.estimates.some((existing: any) => existing.id === est.id)
+    ) {
+      localDB.estimates.push(est);
+    }
+  }
+
+  if (!localDB["blockchain-transactions"]) localDB["blockchain-transactions"] = [];
+  for (const tx of currentTransactions) {
+    if (!localDB["blockchain-transactions"].some((existing: any) => existing.id === tx.id)) {
+      localDB["blockchain-transactions"].push(tx);
+    }
+  }
+
   if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
   localDB.instance.is_setup_done = true;
 
@@ -1154,13 +1240,20 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
   }
 
   if (currentUserAddress && activeWallet.toLowerCase() !== currentUserAddress.toLowerCase()) {
-    const preservedInv = [...getStoredInvitations(), ...(localDB.invitations || [])];
-    for (const key in localDB) delete localDB[key];
-    Object.assign(localDB, JSON.parse(JSON.stringify(defaultDB)));
-    localDB.invitations = preservedInv;
-    saveStoredInvitations(preservedInv);
+    const prevMatches = (localDB.users || []).some((u: any) => u.id?.toLowerCase() === currentUserAddress?.toLowerCase());
+    if (prevMatches) {
+      console.log(`[DApp DB] Phát hiện đổi tài khoản ví từ ${currentUserAddress} sang ${activeWallet}.`);
+      const preservedInv = [...getStoredInvitations(), ...(localDB.invitations || [])];
+      for (const key in localDB) delete localDB[key];
+      Object.assign(localDB, JSON.parse(JSON.stringify(defaultDB)));
+      localDB.invitations = preservedInv;
+      saveStoredInvitations(preservedInv);
+    }
   }
   currentUserAddress = activeWallet;
+  if (typeof window !== "undefined") {
+    localStorage.setItem("plane_active_wallet_address", activeWallet);
+  }
 
   try {
     const isMock = getEnvVar("VITE_MOCK_FIAI") === "true";
@@ -1294,6 +1387,12 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   const activeWallet = forcedWallet || getStoredWalletAddress();
   if (!activeWallet) throw new Error("Chưa kết nối ví. Vui lòng kết nối ví từ giao diện.");
   currentUserAddress = activeWallet;
+
+  const hasRealContent = checkHasRealContent();
+  if (!hasRealContent) {
+    console.warn("[DApp Sync] Chặn đồng bộ on-chain: Cơ sở dữ liệu đang rỗng (chưa có dự án hoặc công việc).");
+    throw new Error("Không có dữ liệu thực (dự án hoặc công việc) để đồng bộ lên Blockchain. Vui lòng tạo dự án/công việc trước.");
+  }
 
   const registryAddr = getRegistryContractAddress();
   const wsRegistryAddr = getWorkspaceRegistryAddress();
@@ -1471,12 +1570,16 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
 
 // ── Connect Hooks ────────────────────────────────────────────────────────
 registerSaveHook(() => {
-  isDirtyState = true;
+  setDirtyState(true);
   scheduleIPFSUpload();
 });
 
 syncCrossPortWorkspaces(async (newCid) => {
   try {
+    if (isDirtyState) {
+      console.log("[DApp DB] Bỏ qua sync cross-port vì đang có dữ liệu chưa lưu tại local.");
+      return;
+    }
     const ipfsDB = await fetchFromIPFS(newCid);
     if (ipfsDB) {
       applyOffchainDB(ipfsDB);

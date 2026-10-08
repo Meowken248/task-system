@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import * as dotenv from "dotenv";
 import { reactRouter } from "@react-router/dev/vite";
@@ -5,7 +6,11 @@ import { defineConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { joinUrlPath } from "@plane/utils";
 
+const isBuild = process.argv.includes("build") || process.env.npm_lifecycle_event === "build";
 dotenv.config({ path: path.resolve(__dirname, ".env") });
+if (isBuild && fs.existsSync(path.resolve(__dirname, ".env.production"))) {
+  dotenv.config({ path: path.resolve(__dirname, ".env.production"), override: true });
+}
 
 // Expose only vars starting with VITE_
 const viteEnv = Object.keys(process.env)

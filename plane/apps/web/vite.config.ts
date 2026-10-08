@@ -32,10 +32,13 @@ function rootServiceWorkerPlugin(): Plugin {
   };
 }
 
+const isBuild = process.argv.includes("build") || process.env.npm_lifecycle_event === "build";
 dotenv.config({ path: path.resolve(__dirname, ".env") });
+if (isBuild && fs.existsSync(path.resolve(__dirname, ".env.production"))) {
+  dotenv.config({ path: path.resolve(__dirname, ".env.production"), override: true });
+}
 const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8080";
 
-const isBuild = process.argv.includes("build") || process.env.npm_lifecycle_event === "build";
 const defaultBasename = isBuild ? "/plane" : "";
 const routerBasename = (process.env.VITE_ROUTER_BASENAME ?? defaultBasename).replace(/\/+$/, "");
 const basePublicPath = routerBasename ? `${routerBasename}/` : "/";
