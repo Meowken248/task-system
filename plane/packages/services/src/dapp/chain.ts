@@ -513,14 +513,17 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
     syncWorkspacesToCookie(cid);
     console.log(`[DApp DB] ✅ Auto-save IPFS thành công: ${cid}`);
 
-    const wsRegistryAddr = getWorkspaceRegistryAddress();
-    if (wsRegistryAddr) {
-      const defaultSlug = getDefaultWorkspaceSlug();
-      const activeSlug =
-        (typeof localStorage !== "undefined" && localStorage.getItem("last_workspace_slug")) ||
-        localDB.workspaces?.[0]?.slug ||
-        defaultSlug;
-      void commitWorkspaceCID(activeSlug, cid);
+    const shouldAutoCommitOnChain = getEnvVar("VITE_AUTO_COMMIT_ONCHAIN") === "true";
+    if (shouldAutoCommitOnChain) {
+      const wsRegistryAddr = getWorkspaceRegistryAddress();
+      if (wsRegistryAddr) {
+        const defaultSlug = getDefaultWorkspaceSlug();
+        const activeSlug =
+          (typeof localStorage !== "undefined" && localStorage.getItem("last_workspace_slug")) ||
+          localDB.workspaces?.[0]?.slug ||
+          defaultSlug;
+        void commitWorkspaceCID(activeSlug, cid);
+      }
     }
 
     return cid;
@@ -529,6 +532,18 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
     return null;
   } finally {
     isUploadingIPFS = false;
+  }
+}
+
+export async function isVaultLocked(): Promise<boolean> {
+  try {
+    const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
+    if (!bridge) return true;
+    const status = await bridge.request("getVaultStatus", {}).catch(() => null);
+    if (!status || typeof status !== "object") return false;
+    return Boolean((status as any).isLocked);
+  } catch {
+    return false;
   }
 }
 
@@ -541,6 +556,11 @@ export async function commitWorkspaceCID(slug: string, newCid: string): Promise<
 
   if (!bridge || !userAddr) {
     console.log(`[DApp Chain] Chưa kết nối ví trên trình duyệt hoặc Bridge chưa sẵn sàng. Bỏ qua ghi on-chain trực tiếp.`);
+    return false;
+  }
+
+  if (await isVaultLocked()) {
+    console.log(`[DApp Chain] Crypto Vault đang khóa. Bỏ qua ghi updateWorkspaceCID on-chain ngầm.`);
     return false;
   }
 
@@ -581,6 +601,11 @@ export async function joinWorkspaceOnChain(slug: string): Promise<boolean> {
 
   if (!bridge || !userAddr) {
     console.log(`[DApp Chain] Chưa kết nối ví. Bỏ qua ghi on-chain joinWorkspace.`);
+    return false;
+  }
+
+  if (await isVaultLocked()) {
+    console.log(`[DApp Chain] Crypto Vault đang khóa. Bỏ qua ghi joinWorkspace on-chain ngầm.`);
     return false;
   }
 

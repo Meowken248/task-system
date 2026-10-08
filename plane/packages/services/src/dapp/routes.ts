@@ -4121,7 +4121,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
     });
 
-    if (saveNeeded) saveDB();
+    if (saveNeeded && method !== "get") saveDB();
   }
 
   if (method === "get") {
@@ -4354,7 +4354,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           ];
           list.push(...defaultStates);
           (localDB as any)["states"] = list;
-          saveDB();
+          if (method !== "get") saveDB();
         }
       }
     }
