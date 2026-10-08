@@ -2564,13 +2564,58 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (!localDB.notifications) localDB.notifications = [];
 
+    // Deduplicate any existing duplicate notifications in localDB.notifications
+    if (Array.isArray(localDB.notifications) && localDB.notifications.length > 1) {
+      const seenNotifs = new Set<string>();
+      const deduped: any[] = [];
+      for (const n of localDB.notifications) {
+        if (!n || !n.id) continue;
+        let dedupKey = String(n.id);
+        if (n?.data?.issue_activity?.field === "daily_report") {
+          const issueId = n.data?.issue?.id || n.entity_identifier || "";
+          const val = n.data?.issue_activity?.new_value || n.message || "";
+          const txHash = n.data?.transaction_hash || "";
+          const txId = n.data?.transaction_id || "";
+          const time = n.created_at ? new Date(n.created_at).getTime() : 0;
+          const timeBucket = Math.floor(time / 120000); // 2-minute bucket
+          dedupKey = txHash ? `tx:${txHash}` : txId ? `id:${txId}` : `rep:${issueId}:${val}:${timeBucket}`;
+        }
+        if (seenNotifs.has(dedupKey)) {
+          continue;
+        }
+        seenNotifs.add(dedupKey);
+        deduped.push(n);
+      }
+      if (deduped.length !== localDB.notifications.length) {
+        localDB.notifications = deduped;
+        saveDB();
+      }
+    }
+
+    // Comprehensive index of all existing notification keys
+    const existingNotifKeys = new Set<string>();
+    for (const n of localDB.notifications || []) {
+      if (n.id) {
+        existingNotifKeys.add(String(n.id));
+        if (String(n.id).startsWith("notif-rep-")) existingNotifKeys.add(String(n.id).slice("notif-rep-".length));
+        if (String(n.id).startsWith("notif-inv-")) existingNotifKeys.add(String(n.id).slice("notif-inv-".length));
+        if (String(n.id).startsWith("notif-report-")) existingNotifKeys.add(String(n.id).slice("notif-report-".length));
+      }
+      if (n.data?.invitation_id) existingNotifKeys.add(String(n.data.invitation_id));
+      if (n.data?.transaction_id) existingNotifKeys.add(String(n.data.transaction_id));
+      if (n.data?.transaction_hash) existingNotifKeys.add(String(n.data.transaction_hash));
+      if (n.data?.client_event_id) existingNotifKeys.add(String(n.data.client_event_id));
+      if (n.data?.issue_activity?.id) {
+        const actId = String(n.data.issue_activity.id);
+        existingNotifKeys.add(actId);
+        if (actId.startsWith("act-")) existingNotifKeys.add(actId.slice(4));
+      }
+    }
+
     // Auto-sync stored pending invitations into notifications if missing
-    const existingNotifKeys = new Set(
-      (localDB.notifications || []).map((n: any) => n.entity_identifier || n.data?.invitation_id || n.id)
-    );
     const allStoredInvs = [...(localDB.invitations || []), ...getStoredInvitations()];
     for (const inv of allStoredInvs) {
-      if (inv && inv.id && !existingNotifKeys.has(inv.id)) {
+      if (inv && inv.id && !existingNotifKeys.has(inv.id) && !existingNotifKeys.has(`notif-inv-${inv.id}`)) {
         const invWsSlug = inv.workspace?.slug || inv.workspace_slug || notifWsSlug || "fiai";
         const invWs = (localDB.workspaces || []).find((w: any) => w.slug === invWsSlug || w.id === invWsSlug) || notifWs;
         const invWsId = invWs?.id || invWsSlug;
@@ -2613,6 +2658,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           updated_at: inv.updated_at || new Date().toISOString(),
         });
         existingNotifKeys.add(inv.id);
+        existingNotifKeys.add(`notif-inv-${inv.id}`);
       }
     }
 
@@ -2621,8 +2667,15 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       (tx: any) => tx.event_type === "daily_report"
     );
     for (const rep of existingReportTxs) {
-      const repKey = rep.id || rep.transaction_hash || rep.client_event_id;
-      if (repKey && !existingNotifKeys.has(repKey)) {
+      const repKey = rep.transaction_hash || rep.id || rep.client_event_id;
+      if (
+        repKey &&
+        !existingNotifKeys.has(repKey) &&
+        !existingNotifKeys.has(`notif-rep-${repKey}`) &&
+        !(rep.transaction_hash && existingNotifKeys.has(rep.transaction_hash)) &&
+        !(rep.id && existingNotifKeys.has(rep.id)) &&
+        !(rep.client_event_id && existingNotifKeys.has(rep.client_event_id))
+      ) {
         const repIssue = (localDB.issues || []).find((i: any) => i.id === rep.issue_id);
         const repProj = (localDB.projects || []).find((p: any) => p.id === rep.project || p.id === repIssue?.project);
         const repWs = notifWs;
@@ -2653,6 +2706,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             is_bot: false,
           },
           data: {
+            transaction_id: repKey,
+            transaction_hash: rep.transaction_hash || "",
+            client_event_id: rep.client_event_id || "",
             issue: {
               id: rep.issue_id || repIssue?.id,
               sequence_id: repIssue?.sequence_id || 1,
@@ -2680,6 +2736,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           updated_at: rep.recorded_at || rep.created_at || new Date().toISOString(),
         });
         existingNotifKeys.add(repKey);
+        existingNotifKeys.add(`notif-rep-${repKey}`);
+        if (rep.id) existingNotifKeys.add(rep.id);
+        if (rep.transaction_hash) existingNotifKeys.add(rep.transaction_hash);
+        if (rep.client_event_id) existingNotifKeys.add(rep.client_event_id);
       }
     }
 
@@ -2751,8 +2811,25 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
 
     if (method === "get") {
+      const seenResultKeys = new Set<string>();
       const userNotifs = (localDB.notifications || [])
         .filter(filterNotifForUser)
+        .filter((n: any) => {
+          if (!n || !n.id) return false;
+          let rKey = String(n.id);
+          if (n?.data?.issue_activity?.field === "daily_report") {
+            const txH = n.data?.transaction_hash;
+            const txI = n.data?.transaction_id;
+            const iId = n.data?.issue?.id || n.entity_identifier || "";
+            const val = n.data?.issue_activity?.new_value || n.message || "";
+            const t = n.created_at ? new Date(n.created_at).getTime() : 0;
+            const tb = Math.floor(t / 120000);
+            rKey = txH ? `tx:${txH}` : txI ? `id:${txI}` : `rep:${iId}:${val}:${tb}`;
+          }
+          if (seenResultKeys.has(rKey)) return false;
+          seenResultKeys.add(rKey);
+          return true;
+        })
         .map((n: any) => ({
           ...n,
           workspace: canonicalNotifWsId,
@@ -5019,59 +5096,72 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       };
 
       if (newRecord.event_type === "daily_report") {
-        const notifId = `notif-report-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        localDB.notifications.unshift({
-          id: notifId,
-          workspace: canonicalWsId,
-          workspace_id: canonicalWsId,
-          workspace_slug: wsSlug,
-          project: targetProjId,
-          project_id: targetProjId,
-          entity_identifier: targetIssue?.id || newRecord.issue_id,
-          entity_name: "issue",
-          title: `Báo cáo tiến độ: ${targetIssue?.name || newRecord.issue_name || "Công việc"}`,
-          message: newRecord.work || `Đã cập nhật tiến độ ${newRecord.progress || 0}%`,
-          sender: reporterUserObj.id,
-          receiver: "all",
-          recipient_email: "all",
-          recipient: "all",
-          triggered_by: reporterUserObj.id,
-          triggered_by_details: {
-            id: reporterUserObj.id,
-            first_name: reporterUserObj.first_name || newRecord.reporter_name || "Thành viên",
-            last_name: reporterUserObj.last_name || "",
-            display_name: reporterUserObj.display_name || newRecord.reporter_name || reporterUserObj.first_name || "Thành viên",
-            avatar_url: reporterUserObj.avatar_url || "",
-            is_bot: false,
-          },
-          data: {
-            issue: {
-              id: targetIssue?.id || newRecord.issue_id,
-              sequence_id: targetIssue?.sequence_id || 1,
-              identifier: targetProj?.identifier || "TASK",
-              name: targetIssue?.name || newRecord.issue_name || "Công việc",
-              state_name: targetIssue?.state_detail?.name || "In Progress",
-              state_group: targetIssue?.state_detail?.group || "started",
+        const repKey = newRecord.transaction_hash || newRecord.id || newRecord.client_event_id || `${Date.now()}`;
+        const notifId = `notif-rep-${repKey}`;
+        const alreadyExists = (localDB.notifications || []).some(
+          (n: any) =>
+            n.id === notifId ||
+            n.data?.transaction_id === repKey ||
+            (newRecord.transaction_hash && n.data?.transaction_hash === newRecord.transaction_hash) ||
+            (newRecord.id && n.data?.transaction_id === newRecord.id)
+        );
+        if (!alreadyExists) {
+          localDB.notifications.unshift({
+            id: notifId,
+            workspace: canonicalWsId,
+            workspace_id: canonicalWsId,
+            workspace_slug: wsSlug,
+            project: targetProjId,
+            project_id: targetProjId,
+            entity_identifier: targetIssue?.id || newRecord.issue_id,
+            entity_name: "issue",
+            title: `Báo cáo tiến độ: ${targetIssue?.name || newRecord.issue_name || "Công việc"}`,
+            message: newRecord.work || `Đã cập nhật tiến độ ${newRecord.progress || 0}%`,
+            sender: reporterUserObj.id,
+            receiver: "all",
+            recipient_email: "all",
+            recipient: "all",
+            triggered_by: reporterUserObj.id,
+            triggered_by_details: {
+              id: reporterUserObj.id,
+              first_name: reporterUserObj.first_name || newRecord.reporter_name || "Thành viên",
+              last_name: reporterUserObj.last_name || "",
+              display_name: reporterUserObj.display_name || newRecord.reporter_name || reporterUserObj.first_name || "Thành viên",
+              avatar_url: reporterUserObj.avatar_url || "",
+              is_bot: false,
             },
-            issue_activity: {
-              id: `act-${Date.now()}`,
-              actor: reporterUserObj.id,
-              field: "daily_report",
-              issue_comment: newRecord.evidence || "",
-              verb: "created",
-              new_value: `${newRecord.progress ?? 0}% - ${newRecord.work || "Báo cáo công việc"}`,
-              old_value: newRecord.difficulty ? `Độ khó: ${newRecord.difficulty}` : "",
+            data: {
+              transaction_id: repKey,
+              transaction_hash: newRecord.transaction_hash || "",
+              client_event_id: newRecord.client_event_id || "",
+              issue: {
+                id: targetIssue?.id || newRecord.issue_id,
+                sequence_id: targetIssue?.sequence_id || 1,
+                identifier: targetProj?.identifier || "TASK",
+                name: targetIssue?.name || newRecord.issue_name || "Công việc",
+                state_name: targetIssue?.state_detail?.name || "In Progress",
+                state_group: targetIssue?.state_detail?.group || "started",
+              },
+              issue_activity: {
+                id: `act-${repKey}`,
+                actor: reporterUserObj.id,
+                field: "daily_report",
+                issue_comment: newRecord.evidence || "",
+                verb: "created",
+                new_value: `${newRecord.progress ?? 0}% - ${newRecord.work || "Báo cáo công việc"}`,
+                old_value: newRecord.difficulty ? `Độ khó: ${newRecord.difficulty}` : "",
+              },
             },
-          },
-          read_at: null,
-          archived_at: null,
-          snoozed_till: null,
-          is_inbox_issue: false,
-          is_mentioned_notification: false,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          created_by: reporterUserObj.id,
-        });
+            read_at: null,
+            archived_at: null,
+            snoozed_till: null,
+            is_inbox_issue: false,
+            is_mentioned_notification: false,
+            created_at: newRecord.recorded_at || new Date().toISOString(),
+            updated_at: newRecord.recorded_at || new Date().toISOString(),
+            created_by: reporterUserObj.id,
+          });
+        }
       } else if (newRecord.event_type === "assign_task") {
         const notifId = `notif-assign-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
         localDB.notifications.unshift({
