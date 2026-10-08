@@ -760,6 +760,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentIssueRelations = [...(localDB.issue_relations || [])];
   const currentPages = [...(localDB.pages || [])];
   const currentViews = [...(localDB.views || [])];
+  const currentInboxIssues = [...(localDB.inbox_issues || [])];
   const currentEstimates = [...(localDB.estimates || [])];
   const currentTransactions = [...(localDB["blockchain-transactions"] || [])];
   const mergedDeletedWorkspaces = new Set<string>([
@@ -1091,6 +1092,20 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   }
   localDB.views = localDB.views.filter(
     (v: any) => !mergedDeletedProjects.has(v.project) && !mergedDeletedProjects.has(v.project_id)
+  );
+
+  if (!localDB.inbox_issues) localDB.inbox_issues = [];
+  for (const ib of currentInboxIssues) {
+    if (
+      !mergedDeletedProjects.has(ib.project) &&
+      !mergedDeletedProjects.has(ib.project_id) &&
+      !localDB.inbox_issues.some((existing: any) => existing.id === ib.id)
+    ) {
+      localDB.inbox_issues.push(ib);
+    }
+  }
+  localDB.inbox_issues = localDB.inbox_issues.filter(
+    (ib: any) => !mergedDeletedProjects.has(ib.project) && !mergedDeletedProjects.has(ib.project_id)
   );
 
   if (!localDB.estimates) localDB.estimates = [];

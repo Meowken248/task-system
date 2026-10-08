@@ -2196,6 +2196,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           member_role: resolvedRole,
           next_work_item_sequence: maxSeq + 1,
           sort_order: sortOrder,
+          cycle_view: p.cycle_view ?? true,
+          module_view: p.module_view ?? true,
+          issue_views_view: p.issue_views_view ?? true,
+          page_view: p.page_view ?? true,
+          inbox_view: p.inbox_view ?? true,
         });
       });
     return ok(projects);
@@ -2242,6 +2247,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             workspace: canonicalWsId || p.workspace,
             workspace_detail: ws || p.workspace_detail,
             member_role: resolvedRole,
+            cycle_view: p.cycle_view ?? true,
+            module_view: p.module_view ?? true,
+            issue_views_view: p.issue_views_view ?? true,
+            page_view: p.page_view ?? true,
+            inbox_view: p.inbox_view ?? true,
           }));
         }
         if (method === "patch" || method === "put") {
@@ -3284,18 +3294,47 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     return ok([]);
   }
 
-  // modules endpoint for an issue
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/modules\/?(?:\?.*)?$/)) {
-    if (method === "get") return ok([]);
-    if (method === "post") return ok({ ...body });
+  // ── 1. Cycles Endpoints ───────────────────────────────────────────────
+  // Date check endpoint
+  if (url.match(/\/cycles\/date-check\/?(?:\?.*)?$/) && method.toLowerCase() === "post") {
+    return ok({ status: true });
   }
 
-  // cycle-issues endpoint
+  // Progress endpoints
+  const cycleProgressMatch = url.match(/\/cycles\/([^/]+)\/(?:progress|cycle-progress)\/?(?:\?.*)?$/);
+  if (cycleProgressMatch && method.toLowerCase() === "get") {
+    const cycleId = cycleProgressMatch[1];
+    const cycleIssues = (localDB.issues || []).filter((i: any) => i.cycle_id === cycleId || i.cycle === cycleId);
+    const completed = cycleIssues.filter((i: any) => i.state_detail?.group === "completed" || i.state === "completed").length;
+    const started = cycleIssues.filter((i: any) => i.state_detail?.group === "started" || i.state === "started").length;
+    const unstarted = cycleIssues.filter((i: any) => i.state_detail?.group === "unstarted" || i.state === "unstarted").length;
+    const backlog = cycleIssues.filter((i: any) => i.state_detail?.group === "backlog" || i.state === "backlog").length;
+    const cancelled = cycleIssues.filter((i: any) => i.state_detail?.group === "cancelled" || i.state === "cancelled").length;
+    return ok({
+      total_issues: cycleIssues.length,
+      completed_issues: completed,
+      started_issues: started,
+      unstarted_issues: unstarted,
+      backlog_issues: backlog,
+      cancelled_issues: cancelled,
+    });
+  }
+
+  // Analytics endpoint
+  const cycleAnalyticsMatch = url.match(/\/cycles\/([^/]+)\/analytics\/?(?:\?.*)?$/);
+  if (cycleAnalyticsMatch && method.toLowerCase() === "get") {
+    return ok({
+      distribution: [],
+      estimate_distribution: [],
+    });
+  }
+
+  // Cycle issues endpoint
   const cycleIssuesMatch = url.match(/\/cycles\/([^/]+)\/cycle-issues(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
   if (cycleIssuesMatch) {
     const cycleId = cycleIssuesMatch[1];
     const bridgeId = cycleIssuesMatch[2];
-    if (method === "post") {
+    if (method.toLowerCase() === "post") {
       const issueIds = Array.isArray(body?.issues) ? body.issues : [];
       if (localDB.issues) {
         localDB.issues.forEach((i: any) => {
@@ -3308,7 +3347,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
       return ok({ message: "Issues added to cycle", issues: issueIds });
     }
-    if (method === "delete") {
+    if (method.toLowerCase() === "delete") {
       if (localDB.issues && bridgeId) {
         const issue = localDB.issues.find((i: any) => i.id === bridgeId);
         if (issue) {
@@ -3319,17 +3358,71 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
       return ok({ message: "Issue removed from cycle" });
     }
-    if (method === "get") {
+    if (method.toLowerCase() === "get") {
       const issues = (localDB.issues || []).filter((i: any) => i.cycle_id === cycleId || i.cycle === cycleId);
-      return ok(issues);
+      return ok({
+        results: issues,
+        total_count: issues.length,
+        total_results: issues.length,
+        next_cursor: null,
+        prev_cursor: null,
+        next_page_results: false,
+        prev_page_results: false,
+        total_pages: 1,
+      });
     }
   }
 
-  // module-issues endpoint
-  const moduleIssuesMatch = url.match(/\/modules\/([^/]+)\/module-issues(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
+  // Cycle transfer issues endpoint
+  const cycleTransferMatch = url.match(/\/cycles\/([^/]+)\/transfer-issues\/?(?:\?.*)?$/);
+  if (cycleTransferMatch && method.toLowerCase() === "post") {
+    const cycleId = cycleTransferMatch[1];
+    const newCycleId = body?.new_cycle_id;
+    if (localDB.issues && newCycleId) {
+      localDB.issues.forEach((i: any) => {
+        if (i.cycle_id === cycleId || i.cycle === cycleId) {
+          i.cycle_id = newCycleId;
+          i.cycle = newCycleId;
+        }
+      });
+      saveDB();
+    }
+    return ok({ message: "Issues transferred" });
+  }
+
+  // Cycle archive / restore
+  const cycleArchiveMatch = url.match(/\/cycles\/([^/]+)\/archive\/?(?:\?.*)?$/);
+  if (cycleArchiveMatch) {
+    const cycleId = cycleArchiveMatch[1];
+    const cycle = (localDB.cycles || []).find((c: any) => c.id === cycleId);
+    if (method.toLowerCase() === "post") {
+      if (cycle) cycle.archived_at = new Date().toISOString();
+      saveDB();
+      return ok({ archived_at: cycle?.archived_at || new Date().toISOString() });
+    }
+    if (method.toLowerCase() === "delete") {
+      if (cycle) cycle.archived_at = null;
+      saveDB();
+      return ok({ message: "Cycle restored" });
+    }
+  }
+
+  if (url.includes("/archived-cycles") && method.toLowerCase() === "get") {
+    const archived = (localDB.cycles || []).filter((c: any) => !!c.archived_at);
+    return ok(archived);
+  }
+
+  if (url.includes("/user-favorite-cycles")) {
+    return ok({ message: "Success" });
+  }
+
+  // ── 2. Modules Endpoints ──────────────────────────────────────────────
+  // Module issues endpoint (supports both /modules/:id/issues/ and /modules/:id/module-issues/)
+  const moduleIssuesMatch = url.match(/\/modules\/([^/]+)\/(?:issues|module-issues)(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
   if (moduleIssuesMatch) {
     const moduleId = moduleIssuesMatch[1];
-    if (method === "post") {
+    const targetIssueId = moduleIssuesMatch[2];
+    if (method.toLowerCase() === "post") {
       const issueIds = Array.isArray(body?.issues) ? body.issues : [];
       if (localDB.issues) {
         localDB.issues.forEach((i: any) => {
@@ -3344,8 +3437,334 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
       return ok({ message: "Issues added to module", issues: issueIds });
     }
-    if (method === "get") {
-      return ok([]);
+    if (method.toLowerCase() === "delete" && targetIssueId) {
+      if (localDB.issues) {
+        const issue = localDB.issues.find((i: any) => i.id === targetIssueId);
+        if (issue && Array.isArray(issue.module_ids)) {
+          issue.module_ids = issue.module_ids.filter((m: string) => m !== moduleId);
+          saveDB();
+        }
+      }
+      return ok({ message: "Issue removed from module" });
+    }
+    if (method.toLowerCase() === "get") {
+      const issues = (localDB.issues || []).filter((i: any) => {
+        return (
+          (Array.isArray(i.module_ids) && i.module_ids.includes(moduleId)) ||
+          (Array.isArray(i.modules) && i.modules.includes(moduleId)) ||
+          i.module === moduleId
+        );
+      });
+      return ok({
+        results: issues,
+        total_count: issues.length,
+        total_results: issues.length,
+        next_cursor: null,
+        prev_cursor: null,
+        next_page_results: false,
+        prev_page_results: false,
+        total_pages: 1,
+      });
+    }
+  }
+
+  // Modules attached to an issue
+  const issueModulesMatch = url.match(/\/(?:issues|work-items|epics)\/([^/]+)\/modules\/?(?:\?.*)?$/);
+  if (issueModulesMatch) {
+    const issueId = issueModulesMatch[1];
+    if (method.toLowerCase() === "get") {
+      const issue = (localDB.issues || []).find((i: any) => i.id === issueId);
+      const modIds = new Set(Array.isArray(issue?.module_ids) ? issue.module_ids : []);
+      const matchedModules = (localDB.modules || []).filter((m: any) => modIds.has(m.id));
+      return ok(matchedModules);
+    }
+    if (method.toLowerCase() === "post") {
+      const issue = (localDB.issues || []).find((i: any) => i.id === issueId);
+      if (issue) {
+        if (Array.isArray(body?.modules)) {
+          issue.module_ids = body.modules;
+        }
+        saveDB();
+      }
+      return ok({ ...body });
+    }
+  }
+
+  // Module archive / restore
+  const moduleArchiveMatch = url.match(/\/modules\/([^/]+)\/archive\/?(?:\?.*)?$/);
+  if (moduleArchiveMatch) {
+    const moduleId = moduleArchiveMatch[1];
+    const mod = (localDB.modules || []).find((m: any) => m.id === moduleId);
+    if (method.toLowerCase() === "post") {
+      if (mod) mod.archived_at = new Date().toISOString();
+      saveDB();
+      return ok({ archived_at: mod?.archived_at || new Date().toISOString() });
+    }
+    if (method.toLowerCase() === "delete") {
+      if (mod) mod.archived_at = null;
+      saveDB();
+      return ok({ message: "Module restored" });
+    }
+  }
+
+  if (url.includes("/archived-modules") && method.toLowerCase() === "get") {
+    const archived = (localDB.modules || []).filter((m: any) => !!m.archived_at);
+    return ok(archived);
+  }
+
+  if (url.includes("/user-favorite-modules")) {
+    return ok({ message: "Success" });
+  }
+
+  // ── 3. Views Endpoints ────────────────────────────────────────────────
+  // View issues endpoint (/views/:id/issues/)
+  const viewIssuesMatch = url.match(/\/views\/([^/]+)\/issues\/?(?:\?.*)?$/);
+  if (viewIssuesMatch && method.toLowerCase() === "get") {
+    const viewId = viewIssuesMatch[1];
+    const targetView = (localDB.views || []).find((v: any) => v.id === viewId);
+    const projMatch = url.match(/\/projects\/([^/]+)\//);
+    const projId = targetView?.project || targetView?.project_id || (projMatch ? projMatch[1] : null);
+
+    const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
+    let list = (localDB.issues || []).filter((i: any) => !deletedIssueSet.has(i.id));
+    if (projId) {
+      list = list.filter((i: any) => i.project === projId || i.project_id === projId);
+    }
+    return ok({
+      results: list,
+      total_count: list.length,
+      total_results: list.length,
+      next_cursor: null,
+      prev_cursor: null,
+      next_page_results: false,
+      prev_page_results: false,
+      total_pages: 1,
+    });
+  }
+
+  if (url.includes("/user-favorite-views")) {
+    return ok({ message: "Success" });
+  }
+
+  // ── 4. Pages Endpoints ────────────────────────────────────────────────
+  // Page description endpoint (/pages/:id/description/)
+  const pageDescriptionMatch = url.match(/\/pages\/([^/]+)\/description\/?(?:\?.*)?$/);
+  if (pageDescriptionMatch) {
+    const pageId = pageDescriptionMatch[1];
+    const page = (localDB.pages || []).find((p: any) => p.id === pageId);
+    if (method.toLowerCase() === "get") {
+      return ok(page?.description_html || page?.description || "");
+    }
+    if (method.toLowerCase() === "patch") {
+      if (page) {
+        if (body?.description_html !== undefined) page.description_html = body.description_html;
+        if (body?.description_json !== undefined) page.description_json = body.description_json;
+        if (body?.description_binary !== undefined) page.description_binary = body.description_binary;
+        if (body?.description !== undefined) page.description = body.description;
+        page.updated_at = new Date().toISOString();
+        saveDB();
+      }
+      return ok({ message: "Description updated" });
+    }
+  }
+
+  // Page Actions (access, archive, lock, duplicate, move)
+  const pageActionMatch = url.match(/\/pages\/([^/]+)\/(access|archive|lock|duplicate|move)\/?(?:\?.*)?$/);
+  if (pageActionMatch) {
+    const pageId = pageActionMatch[1];
+    const action = pageActionMatch[2];
+    const page = (localDB.pages || []).find((p: any) => p.id === pageId);
+    if (action === "access" && method.toLowerCase() === "post") {
+      if (page && body?.access) page.access = body.access;
+      saveDB();
+      return ok({ message: "Access updated" });
+    }
+    if (action === "archive") {
+      if (method.toLowerCase() === "post") {
+        if (page) page.archived_at = new Date().toISOString();
+        saveDB();
+        return ok({ archived_at: page?.archived_at || new Date().toISOString() });
+      }
+      if (method.toLowerCase() === "delete") {
+        if (page) page.archived_at = null;
+        saveDB();
+        return ok({ message: "Page restored" });
+      }
+    }
+    if (action === "lock") {
+      if (page) page.is_locked = method.toLowerCase() === "post";
+      saveDB();
+      return ok({ is_locked: page?.is_locked ?? true });
+    }
+    if (action === "duplicate" && method.toLowerCase() === "post") {
+      if (page) {
+        const newPage = {
+          ...page,
+          id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+          name: `${page.name} (Copy)`,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        if (!localDB.pages) localDB.pages = [];
+        localDB.pages.push(newPage);
+        saveDB();
+        return ok(newPage);
+      }
+    }
+    if (action === "move" && method.toLowerCase() === "post") {
+      if (page && body?.new_project_id) {
+        page.project = body.new_project_id;
+        page.project_id = body.new_project_id;
+        saveDB();
+        return ok(page);
+      }
+    }
+  }
+
+  if (url.includes("/favorite-pages")) {
+    if (method.toLowerCase() === "get") return ok([]);
+    return ok({ message: "Success" });
+  }
+
+  if (url.includes("/archived-pages") && method.toLowerCase() === "get") {
+    const archivedPages = (localDB.pages || []).filter((p: any) => !!p.archived_at);
+    return ok(archivedPages);
+  }
+
+  // ── 5. Intake (Inbox) Endpoints ───────────────────────────────────────
+  // Intake State endpoint (/intake-state/)
+  const intakeStateMatch = url.match(/\/projects\/([^/]+)\/intake-state\/?(?:\?.*)?$/);
+  if (intakeStateMatch && method.toLowerCase() === "get") {
+    const projectId = intakeStateMatch[1];
+    const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+    const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+    const wsId = ws?.id || wsSlug;
+    return ok({
+      id: `intake-state-${projectId}`,
+      color: "#3f3f46",
+      default: true,
+      description: "Intake / Triage State",
+      group: "triage",
+      name: "Triage",
+      project_id: projectId,
+      sequence: 10000,
+      workspace_id: wsId,
+    });
+  }
+
+  // Inbox Issues endpoint (/inbox-issues/)
+  const inboxIssuesMatch = url.match(/\/projects\/([^/]+)\/inbox-issues(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
+  if (inboxIssuesMatch) {
+    const projectId = inboxIssuesMatch[1];
+    const targetInboxIssueId = inboxIssuesMatch[2];
+    const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+    const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+    const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+    const wsId = ws?.id || wsSlug;
+
+    if (!localDB.inbox_issues) localDB.inbox_issues = [];
+
+    if (method.toLowerCase() === "get") {
+      if (targetInboxIssueId) {
+        const item = localDB.inbox_issues.find((i: any) => i.id === targetInboxIssueId);
+        if (!item) return { data: null, status: 404 };
+        return ok(item);
+      }
+      const list = localDB.inbox_issues
+        .filter((i: any) => i.project_id === projectId || i.project === projectId)
+        .map((item: any) => {
+          const matchedIssue = (localDB.issues || []).find((iss: any) => iss.id === (item.issue_id || item.issue?.id));
+          return {
+            ...item,
+            issue: matchedIssue || item.issue || {},
+          };
+        });
+      return ok({
+        results: list,
+        total_count: list.length,
+        total_results: list.length,
+        next_cursor: null,
+        prev_cursor: null,
+        next_page_results: false,
+        prev_page_results: false,
+        total_pages: 1,
+      });
+    }
+
+    if (method.toLowerCase() === "post") {
+      const issueData = body?.issue || body || {};
+      const newIssueId = issueData.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+      const projectStates = (localDB.states || []).filter((s: any) => s.project === projectId || s.project_id === projectId);
+      const defaultState = projectStates.find((s: any) => s.default) || projectStates[0] || { id: "default-state", name: "Backlog", group: "backlog" };
+
+      const createdIssue = {
+        id: newIssueId,
+        name: issueData.name || "Untitled issue",
+        description_html: issueData.description_html || "",
+        project: projectId,
+        project_id: projectId,
+        workspace: wsId,
+        workspace_id: wsId,
+        state: issueData.state || defaultState.id,
+        state_id: issueData.state || defaultState.id,
+        state_detail: defaultState,
+        priority: issueData.priority || "none",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        created_by: activeUserId || "user-1",
+        ...issueData,
+      };
+      if (!localDB.issues) localDB.issues = [];
+      localDB.issues.push(createdIssue);
+
+      const createdInboxIssue = {
+        id: body?.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+        status: -2, // PENDING
+        snoozed_till: null,
+        duplicate_to: undefined,
+        source: body?.source || "IN_APP",
+        issue: createdIssue,
+        issue_id: createdIssue.id,
+        project: projectId,
+        project_id: projectId,
+        workspace: wsId,
+        workspace_id: wsId,
+        created_by: activeUserId || "user-1",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      localDB.inbox_issues.push(createdInboxIssue);
+      saveDB();
+      return ok(createdInboxIssue);
+    }
+
+    if (method.toLowerCase() === "patch" && targetInboxIssueId) {
+      const idx = localDB.inbox_issues.findIndex((i: any) => i.id === targetInboxIssueId);
+      if (idx > -1) {
+        localDB.inbox_issues[idx] = {
+          ...localDB.inbox_issues[idx],
+          ...body,
+          updated_at: new Date().toISOString(),
+        };
+        if (body?.status === 1) {
+          const underlyingId = localDB.inbox_issues[idx].issue_id;
+          const issue = (localDB.issues || []).find((iss: any) => iss.id === underlyingId);
+          if (issue && body?.issue?.state_id) {
+            issue.state_id = body.issue.state_id;
+            issue.state = body.issue.state_id;
+          }
+        }
+        saveDB();
+        return ok(localDB.inbox_issues[idx]);
+      }
+      return { data: null, status: 404 };
+    }
+
+    if (method.toLowerCase() === "delete" && targetInboxIssueId) {
+      localDB.inbox_issues = localDB.inbox_issues.filter((i: any) => i.id !== targetInboxIssueId);
+      saveDB();
+      return ok({ message: "Inbox issue deleted" });
     }
   }
 
@@ -4347,7 +4766,20 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         } else {
           proj.member_role = null;
         }
+        proj.cycle_view = proj.cycle_view ?? true;
+        proj.module_view = proj.module_view ?? true;
+        proj.issue_views_view = proj.issue_views_view ?? true;
+        proj.page_view = proj.page_view ?? true;
+        proj.inbox_view = proj.inbox_view ?? true;
         return ok(proj);
+      }
+      if (item && ["cycles", "modules", "views", "pages"].includes(collection)) {
+        const enriched = { ...item };
+        if (enriched.project && !enriched.project_id) enriched.project_id = enriched.project;
+        if (enriched.project_id && !enriched.project) enriched.project = enriched.project_id;
+        if (enriched.workspace && !enriched.workspace_id) enriched.workspace_id = enriched.workspace;
+        if (enriched.workspace_id && !enriched.workspace) enriched.workspace = enriched.workspace_id;
+        return ok(enriched);
       }
       return ok(item);
     }
@@ -4454,7 +4886,9 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       if (!item || typeof item !== "object") return item;
       const res = { ...item };
       if (res.project && !res.project_id) res.project_id = res.project;
+      if (res.project_id && !res.project) res.project = res.project_id;
       if (res.workspace && !res.workspace_id) res.workspace_id = res.workspace;
+      if (res.workspace_id && !res.workspace) res.workspace = res.workspace_id;
       return res;
     });
 
@@ -4470,7 +4904,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           [projId, targetProj?.id, targetProj?.identifier].filter(Boolean)
         );
         if (
-          ["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules", "blockchain-transactions"].includes(collection)
+          ["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules", "views", "pages", "blockchain-transactions"].includes(collection)
         ) {
           list = list.filter((item: any) => {
             if (matchingProjIds.has(item.project) || matchingProjIds.has(item.project_id)) return true;
@@ -4509,6 +4943,11 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
           list = list.map((item: any) => {
             const proj = { ...item };
+            proj.cycle_view = proj.cycle_view ?? true;
+            proj.module_view = proj.module_view ?? true;
+            proj.issue_views_view = proj.issue_views_view ?? true;
+            proj.page_view = proj.page_view ?? true;
+            proj.inbox_view = proj.inbox_view ?? true;
             const pm = (localDB.project_members || []).find((pMember: any) => {
               const pId = pMember.project || pMember.project_id;
               const pMail = (pMember.email || "").toLowerCase().trim();
@@ -5442,6 +5881,42 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
     }
 
+    if (["cycles", "modules", "views", "pages"].includes(collection)) {
+      const match = url.match(/\/projects\/([^/]+)\//);
+      if (match) {
+        const projId = match[1];
+        const project = (localDB.projects || []).find(
+          (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+        );
+        const canonicalProjId = project?.id || projId;
+        newRecord.project = canonicalProjId;
+        newRecord.project_id = canonicalProjId;
+        if (project) {
+          newRecord.project_detail = project;
+        }
+      }
+      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+      if (wsMatch) {
+        const wsSlug = wsMatch[1];
+        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+        newRecord.workspace = ws?.id || wsSlug;
+        newRecord.workspace_id = ws?.id || wsSlug;
+        if (ws) {
+          newRecord.workspace_detail = ws;
+        }
+      }
+      newRecord.owned_by = newRecord.owned_by || activeUserId || "user-1";
+      newRecord.created_by = newRecord.created_by || activeUserId || "user-1";
+      if (collection === "views") {
+        newRecord.query_data = newRecord.query_data || {};
+      }
+      if (collection === "pages") {
+        newRecord.access = newRecord.access ?? 0;
+        newRecord.color = newRecord.color || "#3f3f46";
+        newRecord.description_html = newRecord.description_html || "<p></p>";
+      }
+    }
+
     if (collection === "projects" && newRecord.sort_order === undefined) {
       newRecord.sort_order = ((localDB.projects || []).length + 1) * 10000;
     }
@@ -5469,12 +5944,20 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       returnedRecord.owner = newRecord.owner;
       returnedRecord.workspace = newRecord.workspace;
       returnedRecord.workspace_detail = newRecord.workspace_detail;
+      returnedRecord.cycle_view = returnedRecord.cycle_view ?? true;
+      returnedRecord.module_view = returnedRecord.module_view ?? true;
+      returnedRecord.issue_views_view = returnedRecord.issue_views_view ?? true;
+      returnedRecord.page_view = returnedRecord.page_view ?? true;
+      returnedRecord.inbox_view = returnedRecord.inbox_view ?? true;
     }
 
     // Generic mapping for all records
     if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
+    if (returnedRecord.project_id && !returnedRecord.project) returnedRecord.project = returnedRecord.project_id;
     if (returnedRecord.workspace && !returnedRecord.workspace_id)
       returnedRecord.workspace_id = returnedRecord.workspace;
+    if (returnedRecord.workspace_id && !returnedRecord.workspace)
+      returnedRecord.workspace = returnedRecord.workspace_id;
 
     if (collection === "issues") {
       const stateDetail =
@@ -5643,6 +6126,15 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       if (localDB.modules) {
         localDB.modules = localDB.modules.filter((m: any) => m.workspace !== targetId && m.workspace !== targetSlug);
       }
+      if (localDB.views) {
+        localDB.views = localDB.views.filter((v: any) => v.workspace !== targetId && v.workspace !== targetSlug);
+      }
+      if (localDB.pages) {
+        localDB.pages = localDB.pages.filter((p: any) => p.workspace !== targetId && p.workspace !== targetSlug);
+      }
+      if (localDB.inbox_issues) {
+        localDB.inbox_issues = localDB.inbox_issues.filter((i: any) => i.workspace !== targetId && i.workspace !== targetSlug);
+      }
       if (localDB.workspace_members) {
         localDB.workspace_members = localDB.workspace_members.filter(
           (m: any) => m.workspace !== targetId && m.workspace !== targetSlug && m.workspace_id !== targetId && m.workspace_id !== targetSlug
@@ -5731,6 +6223,15 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       }
       if (localDB.modules) {
         localDB.modules = localDB.modules.filter((m: any) => m.project !== targetId && m.project_id !== targetId);
+      }
+      if (localDB.views) {
+        localDB.views = localDB.views.filter((v: any) => v.project !== targetId && v.project_id !== targetId);
+      }
+      if (localDB.pages) {
+        localDB.pages = localDB.pages.filter((p: any) => p.project !== targetId && p.project_id !== targetId);
+      }
+      if (localDB.inbox_issues) {
+        localDB.inbox_issues = localDB.inbox_issues.filter((i: any) => i.project !== targetId && i.project_id !== targetId);
       }
       if (localDB.project_members) {
         localDB.project_members = localDB.project_members.filter((pm: any) => pm.project !== targetId && pm.project_id !== targetId);

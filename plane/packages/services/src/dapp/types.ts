@@ -61,6 +61,7 @@ export interface DAppDatabase {
   cycles: any[];
   modules: any[];
   pages: any[];
+  inbox_issues?: any[];
   instance: Record<string, any>;
   _deleted_project_ids?: string[];
   _deleted_issue_ids?: string[];

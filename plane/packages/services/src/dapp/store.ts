@@ -71,6 +71,7 @@ export const defaultDB: DAppDatabase = {
   cycles: [],
   modules: [],
   pages: [],
+  inbox_issues: [],
   instance: {
     id: "instance-main",
     instance_id: "instance-main",
