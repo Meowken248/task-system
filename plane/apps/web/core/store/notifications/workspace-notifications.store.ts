@@ -124,7 +124,19 @@ export class WorkspaceNotificationStore implements IWorkspaceNotificationStore {
       ["desc"]
     );
     const workspaceNotificationIds = workspaceNotifications
-      .filter((n) => n.workspace === workspaceId)
+      .filter((n) => {
+        if (!n) return false;
+        if (n.workspace === workspaceId) return true;
+        const currentWs = this.store.workspaceRoot.getWorkspaceById(workspaceId);
+        if (
+          currentWs &&
+          (n.workspace === currentWs.slug ||
+            (n as any).workspace_id === workspaceId ||
+            (n as any).workspace_id === currentWs.slug)
+        )
+          return true;
+        return false;
+      })
       .filter((n) =>
         this.currentNotificationTab === ENotificationTab.MENTIONS
           ? n.is_mentioned_notification

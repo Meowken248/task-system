@@ -27,6 +27,7 @@ import {
   abiEncodeGetWorkspace,
   baseCID,
   currentUserAddress,
+  getStoredWalletAddress,
   getFiaiSDK,
   getWorkspaceRegistryAddress,
   WORKSPACE_REGISTRY_ADDRESS,
@@ -2535,35 +2536,217 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
   // ── Notifications ─────────────────────────────────────────────────── 
-  if (url.includes("/notifications/unread")) {
-    const userEmail = (activeUser?.email || loggedInEmail || "").toLowerCase();
-    const userId = activeUser?.id || activeUserId;
-    const userNotifs = (localDB.notifications || []).filter((n: any) => {
-      const recipient = (n.recipient_email || n.recipient || "").toLowerCase();
-      const isForMe =
-        (userEmail && recipient === userEmail) ||
-        (userId && recipient === String(userId).toLowerCase()) ||
-        (!recipient && !userEmail);
-      return isForMe && !n.read_at;
-    });
-    return ok({
-      total_unread_notifications_count: userNotifs.length,
-      mention_unread_notifications_count: 0,
-    });
-  }
-
   if (url.includes("/notifications")) {
-    const userEmail = (activeUser?.email || loggedInEmail || "").toLowerCase();
+    const notifWsMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
+    const notifWsSlug = notifWsMatch ? notifWsMatch[1] : null;
+    const notifWs = notifWsSlug
+      ? (localDB.workspaces || []).find((w: any) => w.slug === notifWsSlug || w.id === notifWsSlug)
+      : (localDB.workspaces?.[0] || null);
+    const canonicalNotifWsId = notifWs?.id || notifWsSlug || "workspace-fiai";
+    const validNotifWsKeys = new Set([notifWsSlug, notifWs?.id, notifWs?.slug, canonicalNotifWsId].filter(Boolean));
+
+    const userEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
     const userId = activeUser?.id || activeUserId;
-    if (method === "get") {
-      const userNotifs = (localDB.notifications || []).filter((n: any) => {
-        const recipient = (n.recipient_email || n.recipient || "").toLowerCase();
-        return (
-          (userEmail && recipient === userEmail) ||
-          (userId && recipient === String(userId).toLowerCase()) ||
-          (!recipient && !userEmail)
-        );
+    const userWallet = (getStoredWalletAddress() || (activeUser as any)?.wallet_address || "").toLowerCase().trim();
+
+    if (!localDB.notifications) localDB.notifications = [];
+
+    // Auto-sync stored pending invitations into notifications if missing
+    const existingNotifKeys = new Set(
+      (localDB.notifications || []).map((n: any) => n.entity_identifier || n.data?.invitation_id || n.id)
+    );
+    const allStoredInvs = [...(localDB.invitations || []), ...getStoredInvitations()];
+    for (const inv of allStoredInvs) {
+      if (inv && inv.id && !existingNotifKeys.has(inv.id)) {
+        const invWsSlug = inv.workspace?.slug || inv.workspace_slug || notifWsSlug || "fiai";
+        const invWs = (localDB.workspaces || []).find((w: any) => w.slug === invWsSlug || w.id === invWsSlug) || notifWs;
+        const invWsId = invWs?.id || invWsSlug;
+        const invRole = inv.role || 15;
+        localDB.notifications.push({
+          id: `notif-inv-${inv.id}`,
+          workspace: invWsId,
+          workspace_id: invWsId,
+          workspace_slug: invWsSlug,
+          title: "Workspace Invitation",
+          message: `You have been invited to join workspace "${invWs?.name || invWsSlug}"`,
+          entity_name: "workspace_invitation",
+          entity_identifier: inv.id,
+          sender: inv.created_by || "admin",
+          receiver: (inv.email || "").toLowerCase().trim(),
+          recipient_email: (inv.email || "").toLowerCase().trim(),
+          recipient: (inv.email || "").toLowerCase().trim(),
+          triggered_by: inv.created_by || "admin",
+          triggered_by_details: {
+            id: inv.created_by || "admin",
+            first_name: "Workspace",
+            last_name: "Admin",
+            display_name: "Workspace Admin",
+            avatar_url: "",
+            is_bot: false,
+          },
+          data: {
+            workspace_name: invWs?.name || invWsSlug,
+            workspace_slug: invWsSlug,
+            role: invRole,
+            invitation_id: inv.id,
+            invite_link: inv.invite_link || `/workspace-invitations?invitation_id=${inv.id}&slug=${invWsSlug}&token=${inv.token || inv.id}`,
+          },
+          read_at: null,
+          archived_at: null,
+          snoozed_till: null,
+          is_inbox_issue: false,
+          is_mentioned_notification: false,
+          created_at: inv.created_at || new Date().toISOString(),
+          updated_at: inv.updated_at || new Date().toISOString(),
+        });
+        existingNotifKeys.add(inv.id);
+      }
+    }
+
+    // Auto-sync stored daily reports into notifications if missing
+    const existingReportTxs = (localDB["blockchain-transactions"] || []).filter(
+      (tx: any) => tx.event_type === "daily_report"
+    );
+    for (const rep of existingReportTxs) {
+      const repKey = rep.id || rep.transaction_hash || rep.client_event_id;
+      if (repKey && !existingNotifKeys.has(repKey)) {
+        const repIssue = (localDB.issues || []).find((i: any) => i.id === rep.issue_id);
+        const repProj = (localDB.projects || []).find((p: any) => p.id === rep.project || p.id === repIssue?.project);
+        const repWs = notifWs;
+        const repWsId = repWs?.id || canonicalNotifWsId;
+        const repUser = (localDB.users || []).find((u: any) => u.id === rep.reporter_id) || activeUser;
+        localDB.notifications.push({
+          id: `notif-rep-${repKey}`,
+          workspace: repWsId,
+          workspace_id: repWsId,
+          workspace_slug: repWs?.slug || notifWsSlug || "fiai",
+          project: repProj?.id || repIssue?.project || "default-proj",
+          project_id: repProj?.id || repIssue?.project || "default-proj",
+          entity_identifier: rep.issue_id || repKey,
+          entity_name: "issue",
+          title: `Báo cáo tiến độ: ${rep.issue_name || repIssue?.name || "Công việc"}`,
+          message: rep.work || `Đã cập nhật tiến độ ${rep.progress || 0}%`,
+          sender: rep.reporter_id || "user-1",
+          receiver: "all",
+          recipient_email: "all",
+          recipient: "all",
+          triggered_by: rep.reporter_id || "user-1",
+          triggered_by_details: {
+            id: rep.reporter_id || "user-1",
+            first_name: repUser?.first_name || rep.reporter_name || "Thành viên",
+            last_name: repUser?.last_name || "",
+            display_name: repUser?.display_name || rep.reporter_name || repUser?.first_name || "Thành viên",
+            avatar_url: repUser?.avatar_url || "",
+            is_bot: false,
+          },
+          data: {
+            issue: {
+              id: rep.issue_id || repIssue?.id,
+              sequence_id: repIssue?.sequence_id || 1,
+              identifier: repProj?.identifier || "TASK",
+              name: rep.issue_name || repIssue?.name || "Công việc",
+              state_name: repIssue?.state_detail?.name || "In Progress",
+              state_group: repIssue?.state_detail?.group || "started",
+            },
+            issue_activity: {
+              id: `act-${repKey}`,
+              actor: rep.reporter_id || "user-1",
+              field: "daily_report",
+              issue_comment: rep.evidence || "",
+              verb: "created",
+              new_value: `${rep.progress ?? 0}% - ${rep.work || "Báo cáo tiến độ"}`,
+              old_value: rep.difficulty ? `Độ khó: ${rep.difficulty}` : "",
+            },
+          },
+          read_at: null,
+          archived_at: null,
+          snoozed_till: null,
+          is_inbox_issue: false,
+          is_mentioned_notification: false,
+          created_at: rep.recorded_at || rep.created_at || new Date().toISOString(),
+          updated_at: rep.recorded_at || rep.created_at || new Date().toISOString(),
+        });
+        existingNotifKeys.add(repKey);
+      }
+    }
+
+    const filterNotifForUser = (n: any) => {
+      // Workspace check
+      if (validNotifWsKeys.size > 0) {
+        const nWs = n.workspace || n.workspace_id || n.workspace_slug;
+        if (nWs && !validNotifWsKeys.has(nWs)) return false;
+      }
+
+      const recipient = (n.recipient_email || n.recipient || n.receiver || "").toLowerCase().trim();
+      if (!recipient || recipient === "all" || recipient === "members") return true;
+
+      if (userEmail && (recipient === userEmail || recipient.includes(userEmail) || userEmail.includes(recipient))) return true;
+      if (userId && recipient === String(userId).toLowerCase()) return true;
+      if (userWallet && (recipient.includes(userWallet) || userWallet.includes(recipient))) return true;
+
+      return false;
+    };
+
+    if (url.includes("/notifications/unread")) {
+      const userNotifs = (localDB.notifications || []).filter((n: any) => filterNotifForUser(n) && !n.read_at && !n.archived_at);
+      return ok({
+        total_unread_notifications_count: userNotifs.length,
+        mention_unread_notifications_count: 0,
       });
+    }
+
+    if (url.includes("/notifications/mark-all-read") && method === "post") {
+      (localDB.notifications || []).forEach((n: any) => {
+        if (filterNotifForUser(n)) {
+          n.read_at = new Date().toISOString();
+        }
+      });
+      saveDB();
+      return ok({ message: "Marked all as read" });
+    }
+
+    const readMatch = url.match(/\/notifications\/([^/]+)\/read\/?$/);
+    if (readMatch) {
+      const nId = readMatch[1];
+      const targetNotif = (localDB.notifications || []).find((n: any) => n.id === nId);
+      if (targetNotif) {
+        if (method === "delete") {
+          targetNotif.read_at = null;
+        } else {
+          targetNotif.read_at = new Date().toISOString();
+        }
+        saveDB();
+        return ok(targetNotif);
+      }
+      return ok({});
+    }
+
+    const archiveMatch = url.match(/\/notifications\/([^/]+)\/archive\/?$/);
+    if (archiveMatch) {
+      const aId = archiveMatch[1];
+      const targetNotif = (localDB.notifications || []).find((n: any) => n.id === aId);
+      if (targetNotif) {
+        if (method === "delete") {
+          targetNotif.archived_at = null;
+        } else {
+          targetNotif.archived_at = new Date().toISOString();
+        }
+        saveDB();
+        return ok(targetNotif);
+      }
+      return ok({});
+    }
+
+    if (method === "get") {
+      const userNotifs = (localDB.notifications || [])
+        .filter(filterNotifForUser)
+        .map((n: any) => ({
+          ...n,
+          workspace: canonicalNotifWsId,
+          workspace_id: canonicalNotifWsId,
+          is_mentioned_notification: Boolean(n.is_mentioned_notification),
+        }));
+
       return ok({
         results: userNotifs,
         count: userNotifs.length,
@@ -2575,19 +2758,21 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         prev_cursor: undefined,
       });
     }
+
     if (method === "patch" || method === "post") {
       const notifIdMatch = url.match(/\/notifications\/([^/]+)/);
       const notifId = notifIdMatch ? notifIdMatch[1] : null;
       if (notifId && localDB.notifications) {
         const notif = localDB.notifications.find((n: any) => n.id === notifId);
         if (notif) {
-          Object.assign(notif, body, { read_at: new Date().toISOString() });
+          Object.assign(notif, body, { updated_at: new Date().toISOString() });
           saveDB();
           return ok(notif);
         }
       }
       return ok({});
     }
+
     return ok({});
   }
 
@@ -4197,7 +4382,18 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
         if (
           ["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules", "blockchain-transactions"].includes(collection)
         ) {
-          list = list.filter((item: any) => matchingProjIds.has(item.project) || matchingProjIds.has(item.project_id));
+          list = list.filter((item: any) => {
+            if (matchingProjIds.has(item.project) || matchingProjIds.has(item.project_id)) return true;
+            if (collection === "blockchain-transactions" && item.issue_id) {
+              const matchedIss = (localDB.issues || []).find((i: any) => i.id === item.issue_id);
+              if (matchedIss && (matchingProjIds.has(matchedIss.project) || matchingProjIds.has(matchedIss.project_id))) {
+                item.project = matchedIss.project || matchedIss.project_id;
+                item.project_id = matchedIss.project_id || matchedIss.project;
+                return true;
+              }
+            }
+            return false;
+          });
         }
       }
     } else if (url.includes("/workspaces/") && (collection === "labels" || collection === "projects")) {
@@ -4258,6 +4454,20 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     // Filter sub-resources by issue ID
     if (["comments", "history", "issue_reactions"].includes(collection) && id) {
       list = list.filter((item: any) => item.issue === id || item.issue_id === id);
+    }
+
+    if (collection === "blockchain-transactions") {
+      try {
+        const urlObj = new URL(url, "http://localhost");
+        const assigneeIdParam = urlObj.searchParams.get("assignee_id");
+        const issueIdParam = urlObj.searchParams.get("issue_id");
+        if (assigneeIdParam) {
+          list = list.filter((tx: any) => tx.assignee_id === assigneeIdParam || tx.assignee_wallet?.toLowerCase() === assigneeIdParam.toLowerCase());
+        }
+        if (issueIdParam) {
+          list = list.filter((tx: any) => tx.issue_id === issueIdParam);
+        }
+      } catch { }
     }
 
     if (collection === "invitations") {
@@ -4651,20 +4861,47 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       saveStoredInvitations(localDB[collection]);
 
       if (!localDB.notifications) localDB.notifications = [];
+      const invWsId = currentWs?.id || wsSlug;
       body.emails.forEach((e: any) => {
+        const rawMail = (e.email || "").toLowerCase().trim();
+        const matchingInv = newInvites.find((inv: any) => (inv.email || "").toLowerCase().trim() === rawMail);
+        const invId = matchingInv?.id || `inv-${Date.now()}`;
+        const inviteLink = matchingInv?.invite_link || `/workspace-invitations?invitation_id=${invId}&slug=${wsSlug}&token=${matchingInv?.token || invId}`;
+
         localDB.notifications.push({
-          id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          workspace_id: currentWs?.id || wsSlug,
+          id: `notif-inv-${invId}`,
+          workspace: invWsId,
+          workspace_id: invWsId,
           workspace_slug: wsSlug,
           title: "Workspace Invitation",
           message: `You have been invited to join workspace "${currentWs?.name || wsSlug}"`,
+          entity_name: "workspace_invitation",
+          entity_identifier: invId,
+          sender: activeUserId || "admin",
+          receiver: rawMail,
+          recipient_email: rawMail,
+          recipient: rawMail,
+          triggered_by: activeUserId || "admin",
+          triggered_by_details: {
+            id: activeUser?.id || activeUserId || "admin",
+            first_name: activeUser?.first_name || "Workspace",
+            last_name: activeUser?.last_name || "Admin",
+            display_name: activeUser?.display_name || activeUser?.first_name || "Workspace Admin",
+            avatar_url: activeUser?.avatar_url || "",
+            is_bot: false,
+          },
           data: {
             workspace_name: currentWs?.name || wsSlug,
             workspace_slug: wsSlug,
-            role: e.role,
+            role: e.role || 15,
+            invitation_id: invId,
+            invite_link: inviteLink,
           },
-          recipient_email: (e.email || "").toLowerCase(),
           read_at: null,
+          archived_at: null,
+          snoozed_till: null,
+          is_inbox_issue: false,
+          is_mentioned_notification: false,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         });
@@ -4735,6 +4972,147 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       ) {
         newRecord.reporter_id = activeUserId;
         newRecord.reporter_name = activeUser?.display_name || activeUser?.first_name || activeUserId;
+      }
+
+      // Generate in-app notifications for daily reports and task assignments
+      if (!localDB.notifications) localDB.notifications = [];
+      const wsMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
+      const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+      const currentWs = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+      const canonicalWsId = currentWs?.id || wsSlug;
+
+      const projMatch = url.match(/\/projects\/([^/]+)\//);
+      const projId = projMatch ? projMatch[1] : (newRecord.project || newRecord.project_id);
+      const targetProj = (localDB.projects || []).find((p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === String(projId).toLowerCase()));
+      const targetProjId = targetProj?.id || projId || "default-proj";
+      const targetIssue = (localDB.issues || []).find((i: any) => i.id === newRecord.issue_id);
+
+      newRecord.project = targetProjId;
+      newRecord.project_id = targetProjId;
+      newRecord.workspace = canonicalWsId;
+      newRecord.workspace_id = canonicalWsId;
+      newRecord.workspace_slug = wsSlug;
+      if (!newRecord.issue_name && targetIssue?.name) {
+        newRecord.issue_name = targetIssue.name;
+      }
+
+      const reporterUserObj = activeUser || (localDB.users || []).find((u: any) => u.id === newRecord.reporter_id) || {
+        id: newRecord.reporter_id || activeUserId || "user-1",
+        first_name: newRecord.reporter_name || "Thành viên",
+        last_name: "",
+        display_name: newRecord.reporter_name || "Thành viên",
+        avatar_url: "",
+        is_bot: false,
+      };
+
+      if (newRecord.event_type === "daily_report") {
+        const notifId = `notif-report-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        localDB.notifications.unshift({
+          id: notifId,
+          workspace: canonicalWsId,
+          workspace_id: canonicalWsId,
+          workspace_slug: wsSlug,
+          project: targetProjId,
+          project_id: targetProjId,
+          entity_identifier: targetIssue?.id || newRecord.issue_id,
+          entity_name: "issue",
+          title: `Báo cáo tiến độ: ${targetIssue?.name || newRecord.issue_name || "Công việc"}`,
+          message: newRecord.work || `Đã cập nhật tiến độ ${newRecord.progress || 0}%`,
+          sender: reporterUserObj.id,
+          receiver: "all",
+          recipient_email: "all",
+          recipient: "all",
+          triggered_by: reporterUserObj.id,
+          triggered_by_details: {
+            id: reporterUserObj.id,
+            first_name: reporterUserObj.first_name || newRecord.reporter_name || "Thành viên",
+            last_name: reporterUserObj.last_name || "",
+            display_name: reporterUserObj.display_name || newRecord.reporter_name || reporterUserObj.first_name || "Thành viên",
+            avatar_url: reporterUserObj.avatar_url || "",
+            is_bot: false,
+          },
+          data: {
+            issue: {
+              id: targetIssue?.id || newRecord.issue_id,
+              sequence_id: targetIssue?.sequence_id || 1,
+              identifier: targetProj?.identifier || "TASK",
+              name: targetIssue?.name || newRecord.issue_name || "Công việc",
+              state_name: targetIssue?.state_detail?.name || "In Progress",
+              state_group: targetIssue?.state_detail?.group || "started",
+            },
+            issue_activity: {
+              id: `act-${Date.now()}`,
+              actor: reporterUserObj.id,
+              field: "daily_report",
+              issue_comment: newRecord.evidence || "",
+              verb: "created",
+              new_value: `${newRecord.progress ?? 0}% - ${newRecord.work || "Báo cáo công việc"}`,
+              old_value: newRecord.difficulty ? `Độ khó: ${newRecord.difficulty}` : "",
+            },
+          },
+          read_at: null,
+          archived_at: null,
+          snoozed_till: null,
+          is_inbox_issue: false,
+          is_mentioned_notification: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          created_by: reporterUserObj.id,
+        });
+      } else if (newRecord.event_type === "assign_task") {
+        const notifId = `notif-assign-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        localDB.notifications.unshift({
+          id: notifId,
+          workspace: canonicalWsId,
+          workspace_id: canonicalWsId,
+          workspace_slug: wsSlug,
+          project: targetProjId,
+          project_id: targetProjId,
+          entity_identifier: targetIssue?.id || newRecord.issue_id,
+          entity_name: "issue",
+          title: `Giao việc: ${targetIssue?.name || newRecord.issue_name || "Công việc"}`,
+          message: `Đã giao công việc cho ${newRecord.assignee_name || "bạn"}`,
+          sender: reporterUserObj.id,
+          receiver: newRecord.assignee_id || "all",
+          recipient_email: newRecord.assignee_id || "all",
+          recipient: newRecord.assignee_id || "all",
+          triggered_by: reporterUserObj.id,
+          triggered_by_details: {
+            id: reporterUserObj.id,
+            first_name: reporterUserObj.first_name || "Quản trị",
+            last_name: reporterUserObj.last_name || "",
+            display_name: reporterUserObj.display_name || reporterUserObj.first_name || "Quản trị",
+            avatar_url: reporterUserObj.avatar_url || "",
+            is_bot: false,
+          },
+          data: {
+            issue: {
+              id: targetIssue?.id || newRecord.issue_id,
+              sequence_id: targetIssue?.sequence_id || 1,
+              identifier: targetProj?.identifier || "TASK",
+              name: targetIssue?.name || newRecord.issue_name || "Công việc",
+              state_name: targetIssue?.state_detail?.name || "Assigned",
+              state_group: targetIssue?.state_detail?.group || "unstarted",
+            },
+            issue_activity: {
+              id: `act-${Date.now()}`,
+              actor: reporterUserObj.id,
+              field: "assignees",
+              issue_comment: "",
+              verb: "created",
+              new_value: newRecord.assignee_name || "bạn",
+              old_value: "",
+            },
+          },
+          read_at: null,
+          archived_at: null,
+          snoozed_till: null,
+          is_inbox_issue: false,
+          is_mentioned_notification: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          created_by: reporterUserObj.id,
+        });
       }
     }
     if (collection === "workspaces" && !newRecord.slug)

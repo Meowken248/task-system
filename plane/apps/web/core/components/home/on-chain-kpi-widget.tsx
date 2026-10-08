@@ -4,7 +4,15 @@ import {
   blockchainTrackingService,
   type TBlockchainTrackingRecord,
 } from "@/services/blockchain/blockchain-tracking.service";
-import { getIssueOnChainProgress, getWalletKPI, type OnChainKPI } from "@/services/blockchain/plane-task-chain.service";
+import {
+  getIssueOnChainProgress,
+  getIssueOnChainTaskDetails,
+  getIssueOnChainReports,
+  getWalletKPI,
+  type OnChainKPI,
+  type OnChainTaskDetails,
+  type OnChainDailyReport,
+} from "@/services/blockchain/plane-task-chain.service";
 import { ProjectService } from "@/services/project";
 import { IssueService } from "@/services/issue";
 import type { TIssue } from "@plane/types";
@@ -149,6 +157,9 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
   const [planeTasks, setPlaneTasks] = useState<TIssue[]>([]);
   const [kpi, setKpi] = useState<OnChainKPI | undefined>();
   const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [selectedTaskDetails, setSelectedTaskDetails] = useState<OnChainTaskDetails | null>(null);
+  const [selectedTaskOnChainReports, setSelectedTaskOnChainReports] = useState<OnChainDailyReport[]>([]);
+  const [loadingTaskDetails, setLoadingTaskDetails] = useState(false);
   const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(new Set());
   const [onChainProgress, setOnChainProgress] = useState<Record<string, number>>({});
   const [loadingProjects, setLoadingProjects] = useState(true);
@@ -335,18 +346,71 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
   const projectLeafTasks = tasks.length > 0 ? (rootTasks.length > 0 ? rootTasks.flatMap((task) => collectLeafTasks(task)) : tasks) : [];
   const selectedTaskLeafTasks = selectedTask ? collectLeafTasks(selectedTask) : [];
   const projectKpi = aggregateKpi(tasks, onChainProgress);
-  const selectedTaskKpi = aggregateKpi(selectedTaskLeafTasks, onChainProgress);
+  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
   const creation = selectedTask?.records.find((record) => record.event_type === "create_task");
-  const assignment =
+  const onChainCreatedAt = selectedTaskDetails?.createdAt
+    ? new Date(selectedTaskDetails.createdAt * 1000).toISOString()
+    : undefined;
+
+  const rawAssignment =
     selectedTask?.records.find((record) => record.event_type === "assign_task") ??
     (creation?.assignee_wallet ? creation : undefined);
-  const reports = selectedTask?.records.filter((record) => record.event_type === "daily_report") ?? [];
+
+  const hasOnChainAssignee = Boolean(
+    selectedTaskDetails?.assignee && selectedTaskDetails.assignee.toLowerCase() !== ZERO_ADDRESS
+  );
+
+  const assignment = useMemo(() => {
+    if (rawAssignment) return rawAssignment;
+    if (hasOnChainAssignee && selectedTaskDetails) {
+      return {
+        event_type: "assign_task" as const,
+        assignee_wallet: selectedTaskDetails.assignee,
+        recorded_at: (selectedTaskDetails.updatedAt || selectedTaskDetails.createdAt)
+          ? new Date((selectedTaskDetails.updatedAt || selectedTaskDetails.createdAt) * 1000).toISOString()
+          : undefined,
+        assignee_name: undefined,
+        assignee_id: undefined,
+        transaction_hash: undefined,
+      } as unknown as TBlockchainTrackingRecord;
+    }
+    return undefined;
+  }, [rawAssignment, hasOnChainAssignee, selectedTaskDetails]);
+
+  const rawReports = selectedTask?.records.filter((record) => record.event_type === "daily_report") ?? [];
+  const reports = useMemo(() => {
+    if (rawReports.length > 0) return rawReports;
+    return selectedTaskOnChainReports.map((r, idx) => ({
+      report_id: `chain-report-${idx}`,
+      event_type: "daily_report" as const,
+      recorded_at: r.reportedAt ? new Date(r.reportedAt * 1000).toISOString() : undefined,
+      progress: r.progress,
+      reporter_name: assignment?.assignee_name || (currentUser?.display_name || currentUser?.first_name || "Nhân viên"),
+      reporter_id: assignment?.assignee_id,
+      work: r.workHash && r.workHash !== "0x" ? `On-chain Hash: ${r.workHash}` : "Đã ghi nhận trên smart contract",
+      difficulty: r.difficultyHash && r.difficultyHash !== "0x" ? `On-chain Hash: ${r.difficultyHash}` : "Không có",
+      evidence: r.evidenceHash && r.evidenceHash !== "0x" ? `On-chain Hash: ${r.evidenceHash}` : "Không có",
+      transaction_hash: undefined,
+      on_chain: true,
+    } as unknown as TBlockchainTrackingRecord));
+  }, [rawReports, selectedTaskOnChainReports, assignment, currentUser]);
+
   const contentRecords = selectedTask?.records.filter((record) => record.event_type === "task_content") ?? [];
   const progress = selectedTask ? displayTaskProgress(selectedTask) : 0;
+
+  const rawSelectedTaskKpi = aggregateKpi(selectedTaskLeafTasks, onChainProgress);
+  const selectedTaskKpi = useMemo(() => {
+    if (selectedTaskChildren.length === 0 && reports.length > rawSelectedTaskKpi.reports) {
+      return { ...rawSelectedTaskKpi, reports: reports.length };
+    }
+    return rawSelectedTaskKpi;
+  }, [rawSelectedTaskKpi, selectedTaskChildren.length, reports.length]);
 
   const selectProject = async (projectId: string) => {
     setSelectedProjectId(projectId);
     setSelectedTaskId("");
+    setSelectedTaskDetails(null);
+    setSelectedTaskOnChainReports([]);
     setRecords([]);
     setPlaneTasks([]);
     setKpi(undefined);
@@ -377,24 +441,67 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     }
   };
 
-  const selectTask = async (task: TaskOption) => {
+  const selectTask = (task: TaskOption) => {
     setSelectedTaskId(task.id);
-    setKpi(undefined);
-    setError("");
-    const latestAssignment =
-      task.records.find((record) => record.event_type === "assign_task") ??
-      task.records.find((record) => record.event_type === "create_task" && record.assignee_wallet);
-    if (!latestAssignment?.assignee_wallet) return;
-    setLoadingKpi(true);
-    try {
-      const result = await getWalletKPI(latestAssignment.assignee_wallet);
-      setKpi(result.kpi);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Không đọc được KPI nhân viên từ contract.");
-    } finally {
-      setLoadingKpi(false);
-    }
   };
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedTaskId) {
+      setSelectedTaskDetails(null);
+      setSelectedTaskOnChainReports([]);
+      setKpi(undefined);
+      return;
+    }
+    const currentTask = tasks.find((t) => t.id === selectedTaskId);
+    if (!currentTask) return;
+
+    const loadTaskOnChainData = async () => {
+      setLoadingTaskDetails(true);
+      setError("");
+      try {
+        const [details, chainReports] = await Promise.all([
+          getIssueOnChainTaskDetails(currentTask.id).catch(() => null),
+          getIssueOnChainReports(currentTask.id).catch(() => [] as OnChainDailyReport[]),
+        ]);
+        if (!active) return;
+        setSelectedTaskDetails(details);
+        setSelectedTaskOnChainReports(chainReports);
+
+        const latestAssignment =
+          currentTask.records.find((record) => record.event_type === "assign_task") ??
+          currentTask.records.find((record) => record.event_type === "create_task" && record.assignee_wallet);
+
+        const targetWallet =
+          latestAssignment?.assignee_wallet ||
+          (details?.assignee && details.assignee.toLowerCase() !== ZERO_ADDRESS ? details.assignee : undefined);
+
+        if (targetWallet) {
+          setLoadingKpi(true);
+          try {
+            const result = await getWalletKPI(targetWallet);
+            if (active) setKpi(result.kpi);
+          } catch (err) {
+            if (active) setError(err instanceof Error ? err.message : "Không đọc được KPI nhân viên từ contract.");
+          } finally {
+            if (active) setLoadingKpi(false);
+          }
+        } else {
+          if (active) setKpi(undefined);
+        }
+      } catch (err) {
+        if (active) setError(err instanceof Error ? err.message : "Không đọc được thông tin on-chain.");
+      } finally {
+        if (active) setLoadingTaskDetails(false);
+      }
+    };
+
+    void loadTaskOnChainData();
+
+    return () => {
+      active = false;
+    };
+  }, [selectedTaskId, tasks]);
 
   const kpiItems = kpi
     ? [
@@ -456,7 +563,11 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
               {children.length > 0 && <span className="text-10 text-tertiary">({children.length})</span>}
             </span>
             <span className="mt-1 flex items-center justify-between text-10 text-tertiary">
-              <span>{task.records.filter((record) => record.event_type === "daily_report").length} báo cáo</span>
+              <span>
+                {task.id === selectedTaskId
+                  ? reports.length
+                  : task.records.filter((record) => record.event_type === "daily_report").length} báo cáo
+              </span>
               <span>{taskValue}%</span>
             </span>
             <span className="bg-surface-3 mt-2 block h-1 overflow-hidden rounded-full" aria-hidden="true">
@@ -589,7 +700,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                 <div className="min-w-0">
                   <p className="text-10 text-tertiary">{selectedTask.identifier || selectedProject?.identifier || "TASK"}</p>
                   <h3 className="mt-1 truncate text-16 font-semibold text-primary">{selectedTask.identifier ? `[${selectedTask.identifier}] ` : ""}{selectedTask.name}</h3>
-                  <p className="mt-1 text-11 text-tertiary">Tạo on-chain: {formatDateTime(creation?.recorded_at)}</p>
+                  <p className="mt-1 text-11 text-tertiary">Tạo on-chain: {formatDateTime(creation?.recorded_at, onChainCreatedAt)}</p>
                 </div>
                 <div className="rounded-lg border border-subtle bg-surface-1/70 px-3 py-2 text-right backdrop-blur-md">
                   <p className="text-10 text-tertiary">Tiến độ mới nhất</p>
@@ -660,7 +771,11 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                         {assignment.assignee_name ||
                           (assignment.assignee_id?.startsWith("user-")
                             ? currentUser?.display_name || currentUser?.first_name || "Bạn (You)"
-                            : assignment.assignee_id)}
+                            : assignment.assignee_id) ||
+                          (assignment.assignee_wallet?.toLowerCase() === (currentUser as any)?.wallet_address?.toLowerCase()
+                            ? currentUser?.display_name || currentUser?.first_name || "Bạn (You)"
+                            : undefined) ||
+                          "Nhân viên được giao"}
                       </span>
                     </div>
                     <div>
@@ -734,9 +849,13 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                           <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">
                             Tiến độ {report.progress ?? 0}%
                           </span>
-                          {report.on_chain === false && (
+                          {report.on_chain === false ? (
                             <span className="rounded-md bg-layer-2 px-2 py-1 text-10 font-medium text-secondary">
                               Lưu nội bộ
+                            </span>
+                          ) : (
+                            <span className="rounded-md bg-accent-primary/10 px-2 py-1 text-10 font-medium text-accent-primary">
+                              On-chain
                             </span>
                           )}
                         </div>

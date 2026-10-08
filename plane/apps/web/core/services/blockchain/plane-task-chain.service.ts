@@ -654,6 +654,100 @@ export async function getIssueOnChainProgress(issueId: string): Promise<number> 
   return progress;
 }
 
+export type OnChainTaskDetails = {
+  taskId: number;
+  creator: string;
+  assignee: string;
+  createdAt: number;
+  updatedAt: number;
+  dueAt: number;
+  progress: number;
+  priority: number;
+  status: number;
+};
+
+export type OnChainDailyReport = {
+  reportedAt: number;
+  progress: number;
+  workHash: string;
+  difficultyHash: string;
+  evidenceHash: string;
+};
+
+export async function getIssueOnChainTaskDetails(issueId: string): Promise<OnChainTaskDetails | null> {
+  try {
+    const taskId = await getIssueTaskId(issueId);
+    const raw = await readContract("getTask", { taskId });
+    if (!raw) return null;
+    if (Array.isArray(raw) && raw.length >= 10) {
+      return {
+        taskId,
+        creator: String(raw[2] || ""),
+        assignee: String(raw[3] || ""),
+        createdAt: Number(raw[4] || 0),
+        updatedAt: Number(raw[5] || 0),
+        dueAt: Number(raw[6] || 0),
+        progress: Number(raw[7] || 0),
+        priority: Number(raw[8] || 0),
+        status: Number(raw[9] || 0),
+      };
+    }
+    if (typeof raw === "object") {
+      const obj = raw as Record<string, any>;
+      return {
+        taskId,
+        creator: String(obj.creator || ""),
+        assignee: String(obj.assignee || ""),
+        createdAt: Number(obj.createdAt || 0),
+        updatedAt: Number(obj.updatedAt || 0),
+        dueAt: Number(obj.dueAt || 0),
+        progress: Number(obj.progress || 0),
+        priority: Number(obj.priority || 0),
+        status: Number(obj.status || 0),
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getIssueOnChainReports(issueId: string): Promise<OnChainDailyReport[]> {
+  try {
+    const taskId = await getIssueTaskId(issueId);
+    const countRaw = await readContract("getReportCount", { taskId });
+    const count = readNumericResult(countRaw);
+    if (!count || count <= 0) return [];
+    const reports: OnChainDailyReport[] = [];
+    for (let i = 0; i < count; i++) {
+      try {
+        const rRaw = await readContract("getDailyReport", { taskId, reportId: i });
+        if (Array.isArray(rRaw) && rRaw.length >= 5) {
+          reports.push({
+            reportedAt: Number(rRaw[0] || 0),
+            progress: Number(rRaw[1] || 0),
+            workHash: String(rRaw[2] || ""),
+            difficultyHash: String(rRaw[3] || ""),
+            evidenceHash: String(rRaw[4] || ""),
+          });
+        } else if (typeof rRaw === "object" && rRaw !== null) {
+          const rObj = rRaw as Record<string, any>;
+          reports.push({
+            reportedAt: Number(rObj.reportedAt || 0),
+            progress: Number(rObj.progress || 0),
+            workHash: String(rObj.workHash || ""),
+            difficultyHash: String(rObj.difficultyHash || ""),
+            evidenceHash: String(rObj.evidenceHash || ""),
+          });
+        }
+      } catch { }
+    }
+    return reports;
+  } catch {
+    return [];
+  }
+}
+
 export type OnChainSubTaskStats = {
   activeCount: number;
   completedCount: number;

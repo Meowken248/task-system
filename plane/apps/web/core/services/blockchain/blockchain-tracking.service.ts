@@ -41,13 +41,19 @@ type TTrackingOutboxEntry = {
 
 const TRACKING_OUTBOX_KEY = "plane:blockchain-tracking-outbox:v1";
 
+function readEnv(name: string): string {
+  const fromProcess = typeof process !== "undefined" ? process.env?.[name] : undefined;
+  const fromMeta = typeof import.meta !== "undefined" ? (import.meta as any).env?.[name] : undefined;
+  return (fromProcess ?? fromMeta ?? "").toString().trim();
+}
+
 class BlockchainTrackingService extends APIService {
   constructor() {
     super(API_BASE_URL);
   }
 
   private currentContractRecords(records: TBlockchainTrackingRecord[]): TBlockchainTrackingRecord[] {
-    const currentContractAddress = process.env.VITE_CONTRACT_ADDRESS?.trim().toLowerCase();
+    const currentContractAddress = readEnv("VITE_CONTRACT_ADDRESS").toLowerCase();
     if (!currentContractAddress) return records;
     return records.filter(
       (record) => !record.contract_address || record.contract_address.trim().toLowerCase() === currentContractAddress
@@ -153,8 +159,8 @@ class BlockchainTrackingService extends APIService {
       assignee_wallet: payload.assigneeWallet,
       assignee_id: payload.assigneeId,
       wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
-      contract_address: process.env.VITE_CONTRACT_ADDRESS,
-      chain_id: process.env.VITE_CHAIN_ID,
+      contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
+      chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
     });
   }
@@ -183,7 +189,7 @@ class BlockchainTrackingService extends APIService {
       priority: payload.priority,
       client_event_id: clientEventId,
       on_chain: false,
-      contract_address: process.env.VITE_CONTRACT_ADDRESS,
+      contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
     });
   }
   async recordDailyReport(
@@ -204,8 +210,8 @@ class BlockchainTrackingService extends APIService {
       issue_id: payload.issueId,
       issue_name: payload.issueName,
       wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
-      contract_address: process.env.VITE_CONTRACT_ADDRESS,
-      chain_id: process.env.VITE_CHAIN_ID,
+      contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
+      chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
       progress: payload.progress,
       work: payload.work,
@@ -236,7 +242,7 @@ class BlockchainTrackingService extends APIService {
       issue_name: payload.issueName,
       client_event_id: clientReportId,
       on_chain: false,
-      contract_address: process.env.VITE_CONTRACT_ADDRESS,
+      contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
       progress: payload.progress,
       work: payload.work,
       difficulty: payload.difficulty,
@@ -260,8 +266,8 @@ class BlockchainTrackingService extends APIService {
       issue_id: payload.issueId,
       issue_name: payload.issueName,
       wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
-      contract_address: process.env.VITE_CONTRACT_ADDRESS,
-      chain_id: process.env.VITE_CHAIN_ID,
+      contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
+      chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
       content_kind: payload.kind,
       content_reference: payload.reference,
@@ -292,8 +298,8 @@ class BlockchainTrackingService extends APIService {
       issue_id: payload.issueId,
       issue_name: payload.issueName,
       wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
-      contract_address: process.env.VITE_CONTRACT_ADDRESS,
-      chain_id: process.env.VITE_CHAIN_ID,
+      contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
+      chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
     });
   }
@@ -313,7 +319,7 @@ class BlockchainTrackingService extends APIService {
       issue_name: payload.issueName,
       client_event_id: clientEventId,
       on_chain: false,
-      contract_address: process.env.VITE_CONTRACT_ADDRESS,
+      contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
     });
   }
 
@@ -337,8 +343,8 @@ class BlockchainTrackingService extends APIService {
       assignee_wallet: payload.assigneeWallet,
       assignee_id: payload.assigneeId,
       assignee_name: payload.assigneeName,
-      contract_address: process.env.VITE_CONTRACT_ADDRESS,
-      chain_id: process.env.VITE_CHAIN_ID,
+      contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
+      chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
     });
   }

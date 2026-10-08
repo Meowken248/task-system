@@ -291,14 +291,23 @@ if (localDB.instance.id === "dapp-instance") {
 
 export function syncIssueParentsToTransactions() {
   if (localDB.issues && localDB["blockchain-transactions"]) {
-    const issueParentMap = new Map<string, string>();
+    const issueMap = new Map<string, any>();
     localDB.issues.forEach((i: any) => {
-      const parent = i.parent_id || i.parent;
-      if (parent) issueParentMap.set(i.id, parent);
+      issueMap.set(i.id, i);
     });
     localDB["blockchain-transactions"].forEach((tx: any) => {
-      if (tx.event_type === "create_task" && tx.issue_id && issueParentMap.has(tx.issue_id)) {
-        tx.parent_issue_id = issueParentMap.get(tx.issue_id);
+      if (tx.issue_id && issueMap.has(tx.issue_id)) {
+        const issue = issueMap.get(tx.issue_id);
+        if (issue) {
+          if (!tx.project) tx.project = issue.project || issue.project_id;
+          if (!tx.project_id) tx.project_id = issue.project_id || issue.project;
+          if (!tx.issue_name) tx.issue_name = issue.name;
+          if (!tx.workspace) tx.workspace = issue.workspace || issue.workspace_id;
+          const parent = issue.parent_id || issue.parent;
+          if (parent) {
+            tx.parent_issue_id = parent;
+          }
+        }
       }
     });
   }

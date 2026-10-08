@@ -276,4 +276,34 @@ export const planeTaskManagerAbi = [
     ],
     stateMutability: "view",
   },
+  {
+    type: "function",
+    name: "getReportCount",
+    inputs: [{ name: "taskId", type: "uint256", internalType: "uint256" }],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getDailyReport",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "reportId", type: "uint256", internalType: "uint256" },
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        internalType: "struct PlaneTaskManager.DailyReport",
+        components: [
+          { name: "reportedAt", type: "uint64" },
+          { name: "progress", type: "uint8" },
+          { name: "workHash", type: "bytes32" },
+          { name: "difficultyHash", type: "bytes32" },
+          { name: "evidenceHash", type: "bytes32" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
 ] as const;

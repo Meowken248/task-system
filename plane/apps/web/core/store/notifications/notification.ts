@@ -113,8 +113,11 @@ export class Notification implements INotification {
     this.snoozed_till = this.notification.snoozed_till;
     this.is_inbox_issue = this.notification.is_inbox_issue;
     this.is_mentioned_notification = this.notification.is_mentioned_notification;
-    this.workspace = this.notification.workspace;
-    this.project = this.notification.project;
+    this.workspace =
+      this.notification.workspace ||
+      (this.notification as any).workspace_id ||
+      (this.notification as any).workspace_slug;
+    this.project = this.notification.project || (this.notification as any).project_id;
     this.created_at = this.notification.created_at;
     this.updated_at = this.notification.updated_at;
     this.created_by = this.notification.created_by;
