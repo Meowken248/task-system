@@ -89,7 +89,9 @@ export class EditorAssetStore implements IEditorAssetStore {
   // actions
   private debouncedUpdateProgress = debounce((blockId: string, progress: number) => {
     runInAction(() => {
-      set(this.assetsUploadStatus, [blockId, "progress"], progress);
+      if (this.assetsUploadStatus[blockId]) {
+        set(this.assetsUploadStatus, [blockId, "progress"], progress);
+      }
     });
   }, 16);
 
@@ -131,6 +133,7 @@ export class EditorAssetStore implements IEditorAssetStore {
       console.error("Error in uploading page asset:", error);
       throw error;
     } finally {
+      this.debouncedUpdateProgress.cancel();
       runInAction(() => {
         delete this.assetsUploadStatus[blockId];
       });

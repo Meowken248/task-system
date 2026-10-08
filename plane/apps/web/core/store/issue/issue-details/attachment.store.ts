@@ -98,7 +98,7 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
   getAttachmentsUploadStatusByIssueId = computedFn((issueId: string) => {
     if (!issueId) return undefined;
     const attachmentsUploadStatus = Object.values(this.attachmentsUploadStatusMap[issueId] ?? {});
-    return attachmentsUploadStatus ?? undefined;
+    return attachmentsUploadStatus.filter((status) => Boolean(status && status.id && status.name));
   });
 
   getAttachmentsByIssueId = (issueId: string) => {
@@ -135,7 +135,9 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
 
   private debouncedUpdateProgress = debounce((issueId: string, tempId: string, progress: number) => {
     runInAction(() => {
-      set(this.attachmentsUploadStatusMap, [issueId, tempId, "progress"], progress);
+      if (this.attachmentsUploadStatusMap[issueId]?.[tempId]) {
+        set(this.attachmentsUploadStatusMap, [issueId, tempId, "progress"], progress);
+      }
     });
   }, 16);
 
@@ -178,8 +180,14 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
       console.error("Error in uploading issue attachment:", error);
       throw error;
     } finally {
+      this.debouncedUpdateProgress.cancel();
       runInAction(() => {
-        delete this.attachmentsUploadStatusMap[issueId][tempId];
+        if (this.attachmentsUploadStatusMap[issueId]) {
+          delete this.attachmentsUploadStatusMap[issueId][tempId];
+          if (Object.keys(this.attachmentsUploadStatusMap[issueId]).length === 0) {
+            delete this.attachmentsUploadStatusMap[issueId];
+          }
+        }
       });
     }
   };
