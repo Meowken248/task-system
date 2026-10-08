@@ -20,6 +20,8 @@ import { useAppTheme } from "@/hooks/store/use-app-theme";
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
 import { useProject } from "@/hooks/store/use-project";
 import { useUserPermissions } from "@/hooks/store/user";
+// plane web imports
+import { getProjectFeatureNavigation } from "@/plane-web/components/projects/navigation/helper";
 
 export type TNavigationItem = {
   name: string;
@@ -69,18 +71,23 @@ export const ProjectNavigation = observer(function ProjectNavigation(props: TPro
   };
 
   const baseNavigation = useCallback(
-    (workspaceSlug: string, projectId: string): TNavigationItem[] => [
-      {
-        i18n_key: "sidebar.work_items",
-        key: "work_items",
-        name: "Work items",
-        href: `/${workspaceSlug}/projects/${projectId}/issues`,
-        icon: WorkItemsIcon,
-        access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-        shouldRender: true,
-        sortOrder: 1,
-      },
-    ],
+    (workspaceSlug: string, projectId: string): TNavigationItem[] => {
+      if (project) {
+        return getProjectFeatureNavigation(workspaceSlug, projectId, project);
+      }
+      return [
+        {
+          i18n_key: "sidebar.work_items",
+          key: "work_items",
+          name: "Work items",
+          href: `/${workspaceSlug}/projects/${projectId}/issues`,
+          icon: WorkItemsIcon,
+          access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
+          shouldRender: true,
+          sortOrder: 1,
+        },
+      ];
+    },
     [project]
   );
 
@@ -90,7 +97,13 @@ export const ProjectNavigation = observer(function ProjectNavigation(props: TPro
       const navItems = baseNavigation(workspaceSlug, projectId);
 
       if (additionalNavigationItems) {
-        navItems.push(...additionalNavigationItems(workspaceSlug, projectId));
+        const additionalItems = additionalNavigationItems(workspaceSlug, projectId);
+        const existingKeys = new Set(navItems.map((item) => item.key));
+        for (const item of additionalItems) {
+          if (!existingKeys.has(item.key)) {
+            navItems.push(item);
+          }
+        }
       }
 
       return navItems;

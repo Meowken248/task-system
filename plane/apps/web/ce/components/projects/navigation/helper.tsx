@@ -7,19 +7,14 @@
 // plane imports
 import { EUserPermissions, EProjectFeatureKey } from "@plane/constants";
 import { CycleIcon, IntakeIcon, ModuleIcon, PageIcon, ViewsIcon, WorkItemsIcon } from "@plane/propel/icons";
+import type { IPartialProject } from "@plane/types";
 // components
 import type { TNavigationItem } from "@/components/workspace/sidebar/project-navigation";
 
 export const getProjectFeatureNavigation = (
   workspaceSlug: string,
   projectId: string,
-  project: {
-    cycle_view: boolean;
-    module_view: boolean;
-    issue_views_view: boolean;
-    page_view: boolean;
-    inbox_view: boolean;
-  }
+  project?: Partial<IPartialProject> | null
 ): TNavigationItem[] => [
   {
     i18n_key: "sidebar.work_items",
@@ -38,7 +33,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/cycles`,
     icon: CycleIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER],
-    shouldRender: false,
+    shouldRender: Boolean(project?.cycle_view),
     sortOrder: 2,
   },
   {
@@ -48,7 +43,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/modules`,
     icon: ModuleIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER],
-    shouldRender: false,
+    shouldRender: Boolean(project?.module_view),
     sortOrder: 3,
   },
   {
@@ -58,7 +53,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/views`,
     icon: ViewsIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-    shouldRender: false,
+    shouldRender: Boolean(project?.issue_views_view),
     sortOrder: 4,
   },
   {
@@ -68,7 +63,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/pages`,
     icon: PageIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-    shouldRender: false,
+    shouldRender: Boolean(project?.page_view),
     sortOrder: 5,
   },
   {
@@ -78,7 +73,7 @@ export const getProjectFeatureNavigation = (
     href: `/${workspaceSlug}/projects/${projectId}/intake`,
     icon: IntakeIcon,
     access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-    shouldRender: false,
+    shouldRender: Boolean(project?.inbox_view),
     sortOrder: 6,
   },
 ];
