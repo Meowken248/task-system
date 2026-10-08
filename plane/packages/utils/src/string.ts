@@ -72,8 +72,14 @@ export const createSimilarString = (str: string) => {
 export const copyUrlToClipboard = async (path: string) => {
   // get origin or default to empty string if not in browser
   const originUrl = typeof window !== "undefined" ? window.location.origin : "";
+  const routerBase = (typeof process !== "undefined" && (process.env?.VITE_ROUTER_BASENAME || (process.env as any)?.NEXT_PUBLIC_ROUTER_BASENAME)) || "";
+  let formattedPath = path.startsWith("/") ? path : `/${path}`;
+  if (routerBase && routerBase !== "/" && !formattedPath.startsWith(routerBase)) {
+    const cleanBase = routerBase.replace(/\/+$/, "");
+    formattedPath = `${cleanBase}${formattedPath}`;
+  }
   // create URL object and ensure proper path formatting
-  const url = new URL(path, originUrl);
+  const url = new URL(formattedPath, originUrl);
   await copyTextToClipboard(url.toString());
 };
 

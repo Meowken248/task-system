@@ -290,7 +290,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     if (!localDB["project-deploy-boards"]) localDB["project-deploy-boards"] = [];
 
     // Helper to fetch and load DB from IPFS when board is not in memory (zero localStorage dependency)
-    const ensureBoardFromIPFS = async (predicate: (b: any) => boolean): Promise<any> => {
+    const ensureBoardFromIPFS = async (predicate: (b: any) => boolean, requestedAnchor?: string): Promise<any> => {
       let cidToFetch: string | null = null;
       if (typeof window !== "undefined") {
         try {
@@ -312,12 +312,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           cidToFetch = urlSearchParams.get("cid");
         } catch { }
       }
-      if (!cidToFetch && WORKSPACE_REGISTRY_ADDRESS) {
+      if ((!cidToFetch || cidToFetch.startsWith("bafkrei")) && WORKSPACE_REGISTRY_ADDRESS) {
         try {
           const wsInfoCalldata = abiEncodeGetWorkspace("fiai");
           const wsInfoRaw = await directRpcRead(WORKSPACE_REGISTRY_ADDRESS, wsInfoCalldata, 3000);
           const wsInfo = decodeAbiWorkspace(wsInfoRaw);
-          if (wsInfo?.ipfsCID && wsInfo.ipfsCID.trim() !== "") {
+          if (wsInfo?.ipfsCID && wsInfo.ipfsCID.trim() !== "" && !wsInfo.ipfsCID.startsWith("bafkrei")) {
             cidToFetch = wsInfo.ipfsCID.trim();
           }
         } catch { }
@@ -338,16 +338,25 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
 
       let b = (localDB["project-deploy-boards"] as any[]).find(predicate);
-      if (b) return b;
+      if (b) {
+        if (requestedAnchor && !b.anchor) b.anchor = requestedAnchor;
+        return b;
+      }
 
       // Fallback matching
       if (!b && (localDB["project-deploy-boards"] || []).length > 0) {
-        b = localDB["project-deploy-boards"][0];
+        const found = localDB["project-deploy-boards"][0];
+        b = { ...found };
+        if (requestedAnchor) {
+          b.anchor = requestedAnchor;
+          b.id = "board-" + requestedAnchor;
+        }
+        return b;
       }
       if (!b) {
         const targetProj = localDB.projects?.[0] || { id: "project-fiai", identifier: "FIAI", name: "FIAI" };
         const targetWs = localDB.workspaces?.[0] || { id: "workspace-fiai", slug: "fiai", name: "FIAI" };
-        const defaultAnchor = crypto.randomUUID?.().replace(/-/g, "") || "48c26b7724a243d6a9a7a93a19b5bfb4";
+        const defaultAnchor = requestedAnchor || crypto.randomUUID?.().replace(/-/g, "") || "48c26b7724a243d6a9a7a93a19b5bfb4";
         b = {
           id: "board-" + defaultAnchor,
           anchor: defaultAnchor,
@@ -365,6 +374,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           workspace_detail: targetWs,
         };
         localDB["project-deploy-boards"].push(b);
+      }
+      if (b && requestedAnchor) {
+        b.anchor = requestedAnchor;
       }
       return b;
     };
@@ -385,7 +397,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const subResource = anchorMatch[2] || "";
 
       // Find the deploy board by anchor (loading directly from IPFS if needed)
-      let board = await ensureBoardFromIPFS((b: any) => b.anchor === anchorId || b.id === anchorId);
+      let board = await ensureBoardFromIPFS((b: any) => b.anchor === anchorId || b.id === anchorId, anchorId);
       if (!board) {
         board = (localDB["project-deploy-boards"] || [])[0];
       }
@@ -428,6 +440,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       if (subResource === "settings") {
         return ok({
           ...board,
+          anchor: anchorId,
           workspace: board.workspace || ws?.id,
           workspace_detail: board.workspace_detail || (ws ? { id: ws.id, name: ws.name, slug: ws.slug } : undefined),
           project_details: board.project_details || (project ? {
@@ -516,7 +529,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           (i: any) => projectIds.has(i.project) || projectIds.has(i.project_id) || projectIds.has(String(i.project)) || projectIds.has(String(i.project_id))
         );
 
-        if (allIssues.length === 0 && (localDB.issues || []).length > 0 && (localDB.projects || []).length <= 1) {
+        if (allIssues.length === 0 && (localDB.issues || []).length > 0) {
           allIssues = localDB.issues;
         }
 

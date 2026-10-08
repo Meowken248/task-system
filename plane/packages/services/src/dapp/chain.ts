@@ -675,7 +675,7 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
   for (const gw of gateways) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       const res = await fetch(gw, {
         signal: controller.signal,
         headers: { Accept: "application/json" },

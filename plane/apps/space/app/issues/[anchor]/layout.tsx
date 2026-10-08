@@ -39,7 +39,11 @@ export async function loader({ params }: Route.LoaderArgs) {
   }
 
   try {
-    const response = await fetch(`${process.env.VITE_API_BASE_URL}/api/public/anchor/${anchor}/meta/`);
+    const apiBase = process.env.VITE_API_BASE_URL;
+    if (!apiBase) {
+      return { metadata: null };
+    }
+    const response = await fetch(`${apiBase}/api/public/anchor/${anchor}/meta/`);
 
     if (!response.ok) {
       return { metadata: null };
