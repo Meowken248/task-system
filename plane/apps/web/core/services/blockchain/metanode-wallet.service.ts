@@ -93,7 +93,7 @@ function normalizeWalletAddress(value: string): string {
 
 function readAddress(value: unknown): string | null {
   if (typeof value === "string") {
-    if (isWalletAddress(value)) return value;
+    if (isWalletAddress(value)) return normalizeWalletAddress(value);
     try {
       return readAddress(JSON.parse(value));
     } catch {
@@ -102,7 +102,7 @@ function readAddress(value: unknown): string | null {
   }
   if (!value || typeof value !== "object") return null;
   const address = (value as WalletLike).address;
-  if (typeof address === "string" && isWalletAddress(address)) return address;
+  if (typeof address === "string" && isWalletAddress(address)) return normalizeWalletAddress(address);
   for (const nested of Object.values(value as Record<string, unknown>)) {
     const result = readAddress(nested);
     if (result) return result;
@@ -138,8 +138,9 @@ async function getActiveWalletAddress(): Promise<string | null> {
 }
 
 async function dismissMetanodeWalletPicker(address: string): Promise<void> {
+  const target = normalizeWalletAddress(address);
   const wallet = (await getWallets().catch(() => [])).find(
-    (candidate) => readAddress(candidate)?.toLowerCase() === address.toLowerCase()
+    (candidate) => readAddress(candidate)?.toLowerCase() === target
   );
 
   if (wallet) {
@@ -150,6 +151,7 @@ async function dismissMetanodeWalletPicker(address: string): Promise<void> {
 
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  window.postMessage({ type: "close-wallet-modal" }, "*");
   connectWalletPopup?.close();
   connectWalletPopup = null;
 }
@@ -200,6 +202,17 @@ async function selectAndLinkWallet(): Promise<string> {
   // Crypto Vault so the Plane flow can finish and close the picker reliably.
   let walletPickerError: unknown;
   let walletPickerAddress: string | null = null;
+  let messageAddress: string | null = null;
+  const onMessage = (event: MessageEvent) => {
+    if (event.data && typeof event.data === "object" && event.data.type === "wallet-selected") {
+      const addr = readAddress(event.data.data);
+      if (addr) messageAddress = addr;
+    }
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", onMessage);
+  }
+
   void openMetanodeWallet()
     .then((result) => {
       walletPickerAddress = readAddress(result);
@@ -212,25 +225,31 @@ async function selectAndLinkWallet(): Promise<string> {
   const deadline = Date.now() + 120_000;
   // Give the wallet picker time to render before accepting its active wallet.
   await new Promise((resolve) => window.setTimeout(resolve, 750));
-  while (Date.now() < deadline) {
-    // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
-    const selectedAddress =
-      walletPickerAddress ?? readAddress(getLastSelectedMetanodeWallet()) ?? (await getActiveWalletAddress());
-    if (selectedAddress) {
-      try {
-        // oxlint-disable-next-line no-await-in-loop -- the account link must finish before transaction signing.
-        await persistLinkedWallet(selectedAddress);
-        // oxlint-disable-next-line no-await-in-loop
-        await activateMetanodeWallet(selectedAddress).catch(() => false);
-        return normalizeWalletAddress(selectedAddress);
-      } finally {
-        // Always release the blocking wallet layer, including when profile persistence fails.
-        // oxlint-disable-next-line no-await-in-loop -- dismissal should finish before Plane continues.
-        await dismissMetanodeWalletPicker(selectedAddress);
+  try {
+    while (Date.now() < deadline) {
+      // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
+      const selectedAddress =
+        messageAddress ?? walletPickerAddress ?? readAddress(getLastSelectedMetanodeWallet()) ?? (await getActiveWalletAddress());
+      if (selectedAddress) {
+        try {
+          // oxlint-disable-next-line no-await-in-loop -- the account link must finish before transaction signing.
+          await persistLinkedWallet(selectedAddress);
+          // oxlint-disable-next-line no-await-in-loop
+          await activateMetanodeWallet(selectedAddress).catch(() => false);
+          return normalizeWalletAddress(selectedAddress);
+        } finally {
+          // Always release the blocking wallet layer, including when profile persistence fails.
+          // oxlint-disable-next-line no-await-in-loop -- dismissal should finish before Plane continues.
+          await dismissMetanodeWalletPicker(selectedAddress);
+        }
       }
+      // oxlint-disable-next-line no-await-in-loop -- polling is throttled to avoid loading Crypto Vault.
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
     }
-    // oxlint-disable-next-line no-await-in-loop -- polling is throttled to avoid loading Crypto Vault.
-    await new Promise((resolve) => window.setTimeout(resolve, 500));
+  } finally {
+    if (typeof window !== "undefined") {
+      window.removeEventListener("message", onMessage);
+    }
   }
   if (walletPickerError instanceof Error) throw walletPickerError;
   throw new Error("Đã hết thời gian chọn ví MetaNode cho tài khoản này.");
@@ -346,8 +365,12 @@ export async function resolveMetanodeWalletAddress(): Promise<string> {
 }
 
 async function hasWallet(address: string): Promise<boolean> {
+  const target = normalizeWalletAddress(address);
   const wallets = await getWallets().catch(() => []);
-  return wallets.some((wallet) => readAddress(wallet)?.toLowerCase() === address.toLowerCase());
+  return wallets.some((wallet) => {
+    const addr = readAddress(wallet);
+    return addr ? addr.toLowerCase() === target : false;
+  });
 }
 
 export async function promptForMetanodeWalletImport(address: string): Promise<boolean> {

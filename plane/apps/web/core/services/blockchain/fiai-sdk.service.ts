@@ -66,6 +66,14 @@ function registerWalletSelectionBridge(sdk: FiaiSDK): void {
     sdk.emit("wallet-changed", wallet);
   };
 
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", (event) => {
+      if (event.data && typeof event.data === "object" && event.data.type === "wallet-selected") {
+        emitWalletSelected(event.data.data);
+      }
+    });
+  }
+
   let lastWriteSenderKey = "";
 
   sdk.interceptors.request.push((request) => {

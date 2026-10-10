@@ -11,7 +11,7 @@ import { EIssueServiceType } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
-import { isOnChainTaskSyncAvailable, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
+import { isOnChainTaskSyncAvailable, issueExistsOnChain, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
 import { FileUploadService } from "@/services/file-upload.service";
 
 export class IssueCommentService extends APIService {
@@ -61,30 +61,36 @@ export class IssueCommentService extends APIService {
       .catch((error) => {
         throw error?.response?.data ?? error;
       });
-    if (!isOnChainTaskSyncAvailable()) {
-      throw new Error("Không thể kết nối với hệ thống Blockchain. Không thể tạo bình luận.");
-    }
+
     if (data.external_source === "blockchain-daily-report") return comment;
 
-    try {
-      const { transactionHash, contentHash } = await recordIssueContentOnChain(
-        issueId,
-        0,
-        comment.comment_stripped || comment.comment_html
-      );
-      void blockchainTrackingService
-        .recordTaskContent(workspaceSlug, projectId, {
-          issueId,
-          transactionHash,
-          kind: "comment",
-          reference: comment.id,
-          contentHash,
-        })
-        .catch((trackingError) => console.warn("Audit bình luận đang chờ tự đồng bộ.", trackingError));
-      return comment;
-    } catch (error) {
-      throw { error: error instanceof Error ? error.message : "Đồng bộ bình luận on-chain thất bại.", isChainError: true };
+    if (isOnChainTaskSyncAvailable()) {
+      void (async () => {
+        try {
+          const existsOnChain = await issueExistsOnChain(issueId).catch(() => false);
+          if (!existsOnChain) return;
+
+          const { transactionHash, contentHash } = await recordIssueContentOnChain(
+            issueId,
+            0,
+            comment.comment_stripped || comment.comment_html
+          );
+          void blockchainTrackingService
+            .recordTaskContent(workspaceSlug, projectId, {
+              issueId,
+              transactionHash,
+              kind: "comment",
+              reference: comment.id,
+              contentHash,
+            })
+            .catch((trackingError) => console.warn("Audit bình luận đang chờ tự đồng bộ.", trackingError));
+        } catch (chainError) {
+          console.warn("Đồng bộ bình luận on-chain không thành công; nội dung đã được lưu nội bộ:", chainError);
+        }
+      })();
     }
+
+    return comment;
   }
 
   async patchIssueComment(
