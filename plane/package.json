@@ -6,7 +6,7 @@
   "license": "AGPL-3.0",
   "repository": "https://github.com/makeplane/plane.git",
   "scripts": {
-    "build": "turbo run build",
+    "build": "turbo run build && node scripts/sync-space-build.mjs",
     "dev": "turbo run dev --concurrency=18",
     "start": "turbo run start",
     "clean": "turbo run clean && rm -rf .turbo && rm -rf .next && rm -rf node_modules && rm -rf dist",

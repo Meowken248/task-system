@@ -28,8 +28,8 @@ interface IssueMetadata {
   cover_image?: string;
 }
 
-// Loader function runs on the server and fetches metadata
-export async function loader({ params }: Route.LoaderArgs) {
+// Client loader function fetches metadata
+export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { anchor } = params;
 
   // Validate anchor before using in request (only allow alphanumeric, -, _)
@@ -58,8 +58,8 @@ export async function loader({ params }: Route.LoaderArgs) {
 }
 
 // Meta function uses the loader data to generate metadata
-export function meta({ loaderData }: Route.MetaArgs) {
-  const metadata = loaderData?.metadata;
+export function meta({ loaderData, data }: any) {
+  const metadata = (data ?? loaderData)?.metadata;
 
   const title = metadata?.name || DEFAULT_TITLE;
   const description = metadata?.description || DEFAULT_DESCRIPTION;

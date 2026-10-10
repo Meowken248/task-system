@@ -13,25 +13,28 @@ import { isValidNextPath } from "@plane/utils";
 import { UserLoggedIn } from "@/components/account/user-logged-in";
 import { LogoSpinner } from "@/components/common/logo-spinner";
 import { AuthView } from "@/components/views";
+import { PublishedAnchorView } from "@/components/issues/published-anchor-view";
 // hooks
 import { useUser } from "@/hooks/store/use-user";
 import type { Route } from "./+types/page";
-
-export const headers: Route.HeadersFunction = () => ({
-  "X-Frame-Options": "SAMEORIGIN",
-});
 
 const HomePage = observer(function HomePage() {
   const { data: currentUser, isAuthenticated, isInitializing } = useUser();
   const searchParams = useSearchParams();
   const router = useRouter();
   const nextPath = searchParams.get("next_path");
+  const anchor = searchParams.get("anchor");
 
   useEffect(() => {
+    if (anchor) return;
     if (currentUser && isAuthenticated && nextPath && isValidNextPath(nextPath)) {
       router.replace(nextPath);
     }
-  }, [currentUser, isAuthenticated, nextPath, router]);
+  }, [anchor, currentUser, isAuthenticated, nextPath, router]);
+
+  if (anchor) {
+    return <PublishedAnchorView anchor={anchor} />;
+  }
 
   if (isInitializing)
     return (

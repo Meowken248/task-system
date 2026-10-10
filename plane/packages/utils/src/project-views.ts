@@ -6,7 +6,7 @@
 
 import { isNil, orderBy } from "lodash-es";
 // plane imports
-import { SPACE_BASE_PATH, SPACE_BASE_URL } from "@plane/constants";
+import { SPACE_BASE_PATH, SPACE_BASE_URL, getSpaceAppUrl } from "@plane/constants";
 import type { IProjectView, TViewFilterProps, TViewFiltersSortBy, TViewFiltersSortKey } from "@plane/types";
 // local imports
 import { getDate } from "./datetime";
@@ -105,6 +105,6 @@ export const getValidatedViewFilters = (data: Partial<IProjectView>) => {
 export const getPublishViewLink = (anchor: string | undefined) => {
   if (!anchor) return;
 
-  const SPACE_APP_URL = (SPACE_BASE_URL.trim() === "" ? window.location.origin : SPACE_BASE_URL) + SPACE_BASE_PATH;
-  return `${SPACE_APP_URL}/views/${anchor}`;
+  const spaceAppUrl = getSpaceAppUrl();
+  return `${spaceAppUrl}/?anchor=${anchor}`;
 };

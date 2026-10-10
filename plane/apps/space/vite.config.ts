@@ -20,7 +20,10 @@ const viteEnv = Object.keys(process.env)
     return a;
   }, {});
 
-const basePath = joinUrlPath(process.env.VITE_SPACE_BASE_PATH ?? "", "/") ?? "/";
+const defaultBasePath = isBuild ? "/plane/spaces" : "/spaces";
+const rawBasePath = process.env.VITE_SPACE_BASE_PATH ?? defaultBasePath;
+const basePath = joinUrlPath(rawBasePath, "/") ?? "/";
+viteEnv.VITE_SPACE_BASE_PATH = basePath;
 
 export default defineConfig(() => ({
   base: basePath,

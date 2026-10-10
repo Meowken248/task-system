@@ -105,6 +105,15 @@ export default defineConfig(() => ({
         target: apiProxyTarget,
         changeOrigin: true,
       },
+      "/plane/spaces": {
+        target: "http://127.0.0.1:3002",
+        rewrite: (p: string) => p.replace(/^\/plane\/spaces/, "/spaces"),
+        changeOrigin: true,
+      },
+      "/spaces": {
+        target: "http://127.0.0.1:3002",
+        changeOrigin: true,
+      },
     },
   },
   // No SSR-specific overrides needed; alias resolves to ESM build

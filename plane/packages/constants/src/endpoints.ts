@@ -14,7 +14,20 @@ export const GOD_MODE_URL = encodeURI(`${ADMIN_BASE_URL}${ADMIN_BASE_PATH}`);
 // Publish App Base Url
 export const SPACE_BASE_URL = process.env.VITE_SPACE_BASE_URL || "";
 export const SPACE_BASE_PATH = process.env.VITE_SPACE_BASE_PATH || "";
-export const SITES_URL = encodeURI(`${SPACE_BASE_URL}${SPACE_BASE_PATH}`);
+export const getSpaceAppUrl = (): string => {
+  let base = (SPACE_BASE_URL || "").trim();
+  if (!base && typeof window !== "undefined") {
+    base = window.location.origin;
+  }
+  const cleanBase = base.replace(/\/+$/, "");
+  const cleanPath = (SPACE_BASE_PATH || "").trim().replace(/^\/+|\/+$/g, "");
+  if (!cleanPath) return cleanBase;
+  if (cleanBase.endsWith(`/${cleanPath}`) || cleanBase === `/${cleanPath}`) {
+    return cleanBase;
+  }
+  return `${cleanBase}/${cleanPath}`;
+};
+export const SITES_URL = encodeURI(getSpaceAppUrl());
 // Live App Base Url
 export const LIVE_BASE_URL = process.env.VITE_LIVE_BASE_URL || "";
 export const LIVE_BASE_PATH = process.env.VITE_LIVE_BASE_PATH || "";
