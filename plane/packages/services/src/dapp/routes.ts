@@ -40,6 +40,7 @@ import {
   getLastUploadedCID,
   joinWorkspaceOnChain,
 } from "./chain";
+import { sendWorkspaceInviteEmail } from "./mail";
 
 export { ok, parseApiUrl };
 
@@ -5630,6 +5631,8 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
 
   if (method === "post") {
     console.log("[DApp Interceptor] POST", collection, body);
+    const activeUserId = getLoggedInUserId();
+    const activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId);
     if (collection === "invitations" && body.emails && Array.isArray(body.emails)) {
       const match = url.match(/\/api\/workspaces\/([^/]+)\//);
       const wsSlug = match ? match[1] : (localDB.workspaces?.[0]?.slug || "fiai");
@@ -5772,6 +5775,35 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       saveDB();
       newInvites.forEach((inv) => syncDAppRecord(collection, inv.id, inv));
       void uploadToIPFS(true);
+
+      // Gửi email lời mời tham gia qua Brevo SMTP API
+      try {
+        body.emails.forEach((e: any) => {
+          const rawEmail = (e.email || "").toLowerCase().trim();
+          if (!rawEmail || !rawEmail.includes("@")) return;
+
+          const inv = newInvites.find((i: any) => (i.email || "").toLowerCase().trim() === rawEmail);
+          const inviteLink =
+            inv?.invite_link ||
+            `/workspace-invitations?invitation_id=${inv?.id || "inv"}&slug=${wsSlug}&token=${inv?.token || "tok"}`;
+
+          void sendWorkspaceInviteEmail({
+            recipientEmail: rawEmail,
+            workspaceName: currentWs?.name || wsSlug,
+            workspaceSlug: wsSlug,
+            inviteLink: inviteLink,
+            role: e.role || inv?.role || 15,
+            inviterName:
+              activeUser?.display_name ||
+              activeUser?.first_name ||
+              currentWs?.name ||
+              "Plane Workspace",
+          });
+        });
+      } catch (mailErr: any) {
+        console.warn("[DApp Interceptor] Lỗi khi gửi email mời workspace qua Brevo:", mailErr);
+      }
+
       return ok({ message: "Invitations sent successfully" });
     }
 
@@ -5781,8 +5813,6 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
       updated_at: new Date().toISOString(),
       ...body,
     };
-    const activeUserId = getLoggedInUserId();
-    const activeUser = localDB.users?.find((u: any) => u.id === activeUserId);
 
     if (collection === "blockchain-transactions") {
       newRecord.recorded_at = new Date().toISOString();
