@@ -758,6 +758,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentInvitations = [...getStoredInvitations(), ...(localDB.invitations || [])];
   const currentNotifications = [...(localDB.notifications || [])];
   const currentIssueRelations = [...(localDB.issue_relations || [])];
+  const currentIssueLinks = [...(localDB.issue_links || [])];
+  const currentReactions = [...(localDB.issue_reactions || [])];
   const currentPages = [...(localDB.pages || [])];
   const currentViews = [...(localDB.views || [])];
   const currentInboxIssues = [...(localDB.inbox_issues || [])];
@@ -1055,6 +1057,20 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       )
     ) {
       localDB.issue_relations.push(r);
+    }
+  }
+
+  if (!localDB.issue_links) localDB.issue_links = [];
+  for (const l of currentIssueLinks) {
+    if (!localDB.issue_links.some((existing: any) => existing.id === l.id)) {
+      localDB.issue_links.push(l);
+    }
+  }
+
+  if (!localDB.issue_reactions) localDB.issue_reactions = [];
+  for (const r of currentReactions) {
+    if (!localDB.issue_reactions.some((existing: any) => existing.id === r.id)) {
+      localDB.issue_reactions.push(r);
     }
   }
 

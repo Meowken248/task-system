@@ -3085,18 +3085,111 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
   }
 
-  // reactions
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/reactions\/?(?:\?.*)?$/)) {
-    if (method === "get") return ok([]);
-    if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body });
-    if (method === "delete") return ok({});
+  // reactions (issues & comments)
+  const reactionMatch = url.match(/\/(issues|work-items|epics|comments)\/([^/]+)\/reactions(?:\/([^/]+))?\/?(?:\?.*)?$/);
+  if (reactionMatch) {
+    const parentType = reactionMatch[1];
+    const parentId = reactionMatch[2];
+    const reactionParam = reactionMatch[3] ? decodeURIComponent(reactionMatch[3]) : null;
+
+    if (!localDB.issue_reactions) localDB.issue_reactions = [];
+
+    const activeUserId = getLoggedInUserId() || "user-default";
+    const activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId) || localDB.users?.[0] || {
+      id: activeUserId,
+      first_name: "User",
+      last_name: "",
+      display_name: "User",
+      avatar: "",
+    };
+
+    if (method === "get") {
+      const reactions = localDB.issue_reactions.filter((r: any) => {
+        if (parentType === "comments") {
+          return r.comment_id === parentId || r.comment === parentId;
+        }
+        return r.issue_id === parentId || r.issue === parentId;
+      });
+      return ok(reactions);
+    }
+
+    if (method === "post") {
+      const emoji = body?.reaction || "thumbsup";
+      const existing = localDB.issue_reactions.find((r: any) => {
+        const matchesParent = parentType === "comments"
+          ? (r.comment_id === parentId || r.comment === parentId)
+          : (r.issue_id === parentId || r.issue === parentId);
+        return matchesParent && r.reaction === emoji && (r.actor === activeUserId || r.actor === activeUser.id);
+      });
+      if (existing) {
+        return ok(existing);
+      }
+      const newReaction = {
+        id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+        reaction: emoji,
+        actor: activeUser.id || activeUserId,
+        actor_detail: {
+          id: activeUser.id || activeUserId,
+          first_name: activeUser.first_name || "User",
+          last_name: activeUser.last_name || "",
+          display_name: activeUser.display_name || activeUser.first_name || "User",
+          avatar: activeUser.avatar || activeUser.avatar_url || "",
+          is_bot: false,
+        },
+        issue: parentType !== "comments" ? parentId : undefined,
+        issue_id: parentType !== "comments" ? parentId : undefined,
+        comment: parentType === "comments" ? parentId : undefined,
+        comment_id: parentType === "comments" ? parentId : undefined,
+        created_at: new Date().toISOString(),
+      };
+      localDB.issue_reactions.push(newReaction);
+      saveDB();
+      return ok(newReaction);
+    }
+
+    if (method === "delete") {
+      if (reactionParam) {
+        localDB.issue_reactions = localDB.issue_reactions.filter((r: any) => {
+          const matchesParent = parentType === "comments"
+            ? (r.comment_id === parentId || r.comment === parentId)
+            : (r.issue_id === parentId || r.issue === parentId);
+          const matchesReaction = r.reaction === reactionParam || r.id === reactionParam;
+          const matchesActor = r.actor === activeUserId || r.actor === activeUser.id;
+          return !(matchesParent && matchesReaction && matchesActor);
+        });
+        saveDB();
+      }
+      return ok({ message: "Reaction deleted successfully" });
+    }
   }
 
   // sub-issues
   const subIssuesMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/sub-issues\/?(?:\?.*)?$/);
   if (subIssuesMatch) {
+    const parentId = subIssuesMatch[2];
+    const calcDistribution = (items: any[]) => {
+      const states = localDB.states || [];
+      const dist: Record<string, string[]> = {
+        backlog: [],
+        unstarted: [],
+        started: [],
+        completed: [],
+        cancelled: [],
+      };
+      items.forEach((item: any) => {
+        const sId = item.state_id || item.state;
+        const stateObj = states.find((s: any) => s.id === sId);
+        const group = (stateObj?.group || "unstarted").toLowerCase();
+        if (dist[group]) {
+          dist[group].push(item.id);
+        } else {
+          dist.unstarted.push(item.id);
+        }
+      });
+      return dist;
+    };
+
     if (method === "get") {
-      const parentId = subIssuesMatch[2];
       const subIssues = (localDB.issues || []).filter((i: any) => i.parent_id === parentId || i.parent === parentId);
 
       const enrichedSubIssues = subIssues.map((item: any) => {
@@ -3110,10 +3203,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           sub_issues_count: children.length
         };
       });
-      return ok({ sub_issues: enrichedSubIssues, state_distribution: {} });
+      return ok({ sub_issues: enrichedSubIssues, state_distribution: calcDistribution(enrichedSubIssues) });
     }
     if (method === "post") {
-      const parentId = subIssuesMatch[2];
       const subIssueIds = body.sub_issue_ids || [];
 
       let updatedSubIssues: any[] = [];
@@ -3127,14 +3219,17 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           return i;
         });
 
+        const allParentSubIssues = localDB.issues.filter((i: any) => i.parent_id === parentId || i.parent === parentId);
         const parentIdx = localDB.issues.findIndex((i: any) => i.id === parentId);
         if (parentIdx > -1) {
-          localDB.issues[parentIdx].sub_issues_count = (localDB.issues[parentIdx].sub_issues_count || 0) + updatedSubIssues.length;
+          localDB.issues[parentIdx].sub_issues_count = allParentSubIssues.length;
         }
         saveDB();
+
+        return ok({ sub_issues: updatedSubIssues, state_distribution: calcDistribution(allParentSubIssues) });
       }
 
-      return ok({ sub_issues: updatedSubIssues, state_distribution: {} });
+      return ok({ sub_issues: updatedSubIssues, state_distribution: calcDistribution([]) });
     }
   }
 
@@ -3261,10 +3356,75 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     return ok({ message: "Relation removed successfully" });
   }
 
-  // links
-  if (url.match(/\/(issues|work-items|epics)\/[^/]+\/links\/?(?:\?.*)?$/)) {
-    if (method === "get") return ok([]);
-    if (method === "post") return ok({ id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11), ...body });
+  // links & issue-links
+  const linksMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/(links|issue-links)(?:\/([^/]+))?\/?(?:\?.*)?$/);
+  if (linksMatch) {
+    const issueId = linksMatch[2];
+    const linkId = linksMatch[4];
+    if (!localDB.issue_links) localDB.issue_links = [];
+
+    if (method === "get") {
+      const links = localDB.issue_links.filter((l: any) => l.issue === issueId || l.issue_id === issueId);
+      return ok(links);
+    }
+
+    if (method === "post") {
+      const urlWsMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
+      const urlProjMatch = url.match(/\/projects\/([^/]+)\//);
+      const wsSlug = urlWsMatch ? urlWsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+      const projId = urlProjMatch ? urlProjMatch[1] : (localDB.projects?.[0]?.id || "");
+      const newLinkId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+      const newLink = {
+        id: newLinkId,
+        title: body?.title || body?.url || "",
+        url: body?.url || "",
+        issue: issueId,
+        issue_id: issueId,
+        project: projId,
+        project_id: projId,
+        workspace: wsSlug,
+        workspace_id: wsSlug,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        created_by: getLoggedInUserId() || "user-default",
+        ...body,
+      };
+      localDB.issue_links.push(newLink);
+      const targetIssue = (localDB.issues || []).find((i: any) => i.id === issueId);
+      if (targetIssue) {
+        targetIssue.link_count = (targetIssue.link_count || 0) + 1;
+      }
+      saveDB();
+      return ok(newLink);
+    }
+
+    if (method === "patch" || method === "put") {
+      if (linkId) {
+        const linkIdx = localDB.issue_links.findIndex((l: any) => l.id === linkId);
+        if (linkIdx > -1) {
+          localDB.issue_links[linkIdx] = {
+            ...localDB.issue_links[linkIdx],
+            ...body,
+            updated_at: new Date().toISOString(),
+          };
+          saveDB();
+          return ok(localDB.issue_links[linkIdx]);
+        }
+      }
+      return ok(body);
+    }
+
+    if (method === "delete") {
+      if (linkId) {
+        localDB.issue_links = localDB.issue_links.filter((l: any) => l.id !== linkId);
+        const targetIssue = (localDB.issues || []).find((i: any) => i.id === issueId);
+        if (targetIssue && (targetIssue.link_count || 0) > 0) {
+          targetIssue.link_count = targetIssue.link_count - 1;
+        }
+        saveDB();
+      }
+      return ok({ message: "Link deleted successfully" });
+    }
   }
 
   // attachments
@@ -4336,14 +4496,26 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     collection = "issues";
   }
 
+  if (collection === "issue-relation" && method === "get") {
+    return ok({ relates_to: [], duplicate: [], blocked_by: [], blocking: [] });
+  }
+  if (collection === "sub-issues" && method === "get") {
+    return ok({
+      sub_issues: [],
+      state_distribution: { backlog: [], unstarted: [], started: [], completed: [], cancelled: [] },
+    });
+  }
+  if ((collection === "links" || collection === "issue-links") && method === "get") {
+    return ok([]);
+  }
+  if (collection === "reactions" && method === "get") {
+    return ok([]);
+  }
+
   // Sub-resource collections that don't have persistent storage — return empty stubs
   const subResourceCollections = [
     "history",
     "comments",
-    "reactions",
-    "sub-issues",
-    "issue-relation",
-    "links",
     "subscriptions",
     "description-versions",
     "archive",
@@ -4981,7 +5153,7 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
     }
 
     // Filter sub-resources by issue ID
-    if (["comments", "history", "issue_reactions"].includes(collection) && id) {
+    if (["comments", "history", "issue_reactions", "reactions", "issue-links", "links"].includes(collection) && id) {
       list = list.filter((item: any) => item.issue === id || item.issue_id === id);
     }
 
@@ -6358,7 +6530,16 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
   if (resourceSegments.length === 3) {
     // /api/.../issues/:id/history  or /api/.../issues/:id/comments
     const [_parentResource, parentId, subResource] = resourceSegments;
-    const unpaginatedSub = ["comments", "history", "issue_reactions"];
+    const unpaginatedSub = [
+      "comments",
+      "history",
+      "issue_reactions",
+      "reactions",
+      "links",
+      "issue-links",
+      "sub-issues",
+      "issue-relation",
+    ];
     // Return the sub-resource as collection, with the parent id for context
     return { collection: subResource, id: parentId, isPaginated: !unpaginatedSub.includes(subResource) };
   }

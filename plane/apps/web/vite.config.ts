@@ -18,6 +18,15 @@ function rootServiceWorkerPlugin(): Plugin {
         return;
       }
     }
+    if (rawUrl.startsWith("/emojibase/")) {
+      const filePath = path.resolve(__dirname, "public", rawUrl.slice(1));
+      if (fs.existsSync(filePath)) {
+        res.setHeader("Content-Type", "application/json");
+        res.writeHead(200);
+        fs.createReadStream(filePath).pipe(res);
+        return;
+      }
+    }
     next();
   };
 

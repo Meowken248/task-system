@@ -72,6 +72,9 @@ export const defaultDB: DAppDatabase = {
   modules: [],
   pages: [],
   inbox_issues: [],
+  issue_relations: [],
+  issue_links: [],
+  issue_reactions: [],
   instance: {
     id: "instance-main",
     instance_id: "instance-main",
@@ -279,6 +282,9 @@ if (!localDB.labels) localDB.labels = [];
 if (!localDB.issue_comments) localDB.issue_comments = [];
 if (!localDB.attachments) localDB.attachments = [];
 if (!localDB.invitations) localDB.invitations = [];
+if (!localDB.issue_relations) localDB.issue_relations = [];
+if (!localDB.issue_links) localDB.issue_links = [];
+if (!localDB.issue_reactions) localDB.issue_reactions = [];
 if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
 localDB.instance.is_setup_done = true;
 
