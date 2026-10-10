@@ -65,8 +65,11 @@ export const CommentCreate = observer(function CommentCreate(props: TCommentCrea
   useEffect(() => {
     const handleReplyEvent = (e: any) => {
       if (e.detail?.entityId && e.detail.entityId !== entityId) return;
-      const author = e.detail?.authorName || "user";
-      const replyHtml = `<p>@${author} </p>`;
+      const author = (e.detail?.authorName || "user").replace(/^@+/, "");
+      const authorId = e.detail?.authorId || author;
+      const replyHtml = authorId
+        ? `<p><mention-component id="${authorId}" entity_identifier="${authorId}" entity-identifier="${authorId}" entity_name="user_mention" entity-name="user_mention">@${author}</mention-component>&nbsp;</p>`
+        : `<p>@${author}&nbsp;</p>`;
       editorRef.current?.setEditorValue(replyHtml);
       setValue("comment_html", replyHtml);
       const editorElem = document.getElementById("add_comment_" + entityId);

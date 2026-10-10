@@ -18,6 +18,7 @@ import { CustomMenu } from "@plane/ui";
 import { cn } from "@plane/utils";
 // hooks
 import { useUser, useUserPermissions } from "@/hooks/store/user";
+import { useMember } from "@/hooks/store/use-member";
 
 type TCommentCard = {
   activityOperations: TCommentsOperations;
@@ -63,6 +64,13 @@ export const CommentQuickActions = observer(function CommentQuickActions(props: 
 
   // translation
   const { t } = useTranslation();
+  const { getUserDetails } = useMember();
+  const userDetails = getUserDetails(comment.actor);
+  const displayName =
+    userDetails?.display_name ||
+    comment.actor_detail?.display_name ||
+    (comment.actor_detail as any)?.name ||
+    "User";
 
   const handleReplyAction = () => {
     if (onReply) {
@@ -71,12 +79,20 @@ export const CommentQuickActions = observer(function CommentQuickActions(props: 
     }
     if (typeof window !== "undefined") {
       const targetEntityId = entityId || comment.issue || (comment as any).issue_id;
+      const authorId =
+        (userDetails?.id) ||
+        (comment.actor_detail?.id && comment.actor_detail.id !== "me" ? comment.actor_detail.id : "") ||
+        (comment.actor && comment.actor !== "me" ? comment.actor : "") ||
+        (comment as any).created_by ||
+        displayName ||
+        "";
       window.dispatchEvent(
         new CustomEvent("plane:reply-comment", {
           detail: {
             entityId: targetEntityId,
             commentId: comment.id,
-            authorName: comment.actor_detail?.display_name || "user",
+            authorId,
+            authorName: displayName,
             commentText: comment.comment_stripped || "",
           },
         })

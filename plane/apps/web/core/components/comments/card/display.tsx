@@ -107,18 +107,26 @@ export const CommentCardDisplay = observer(function CommentCardDisplay(props: TC
 
   const handleReply = useCallback(() => {
     if (typeof window !== "undefined") {
+      const authorId =
+        (userDetails?.id) ||
+        (comment.actor_detail?.id && comment.actor_detail.id !== "me" ? comment.actor_detail.id : "") ||
+        (comment.actor && comment.actor !== "me" ? comment.actor : "") ||
+        (comment as any).created_by ||
+        displayName ||
+        "";
       window.dispatchEvent(
         new CustomEvent("plane:reply-comment", {
           detail: {
             entityId,
             commentId: comment.id,
+            authorId,
             authorName: displayName,
             commentText: comment.comment_stripped || "",
           },
         })
       );
     }
-  }, [entityId, comment.id, displayName, comment.comment_stripped]);
+  }, [entityId, comment.id, displayName, comment.comment_stripped, comment.actor_detail, comment.actor, (comment as any).created_by, userDetails?.id]);
 
   const shouldRenderReactions = hasReactions && !disabled;
 

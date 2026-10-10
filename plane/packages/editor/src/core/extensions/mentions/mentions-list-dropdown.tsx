@@ -57,6 +57,8 @@ export const MentionsListDropdown = forwardRef(function MentionsListDropdown(pro
       if (!DROPDOWN_NAVIGATION_KEYS.includes(event.key)) return false;
 
       if (event.key === "Enter") {
+        const item = sections?.[selectedIndex.section]?.items?.[selectedIndex.item];
+        if (!item) return false;
         selectItem(selectedIndex.section, selectedIndex.item);
         return true;
       }

@@ -2122,6 +2122,129 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
   }
 
+  // ── Entity Search (Mentions, Issues, Projects) ──────────────────────────
+  if (method === "get" && url.includes("/entity-search")) {
+    const wsMatch = url.match(/\/api\/workspaces\/([^/]+)\/entity-search/);
+    const wsSlug = wsMatch ? wsMatch[1] : null;
+    const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
+    const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
+
+    let count = 5;
+    let queryTypes = ["user_mention"];
+    let searchQuery = "";
+    let projectId: string | null = null;
+
+    try {
+      const parsedUrl = new URL(url, "http://localhost");
+      count = parseInt(parsedUrl.searchParams.get("count") || "5", 10) || 5;
+      const rawType = parsedUrl.searchParams.get("query_type") || "user_mention";
+      queryTypes = rawType.split(",").map((s) => s.trim().toLowerCase());
+      searchQuery = (parsedUrl.searchParams.get("query") || "").trim().replace(/^@/, "").toLowerCase();
+      projectId = parsedUrl.searchParams.get("project_id");
+    } catch {
+      const qMatch = url.match(/[?&]query=([^&]+)/);
+      if (qMatch) searchQuery = decodeURIComponent(qMatch[1]).trim().replace(/^@/, "").toLowerCase();
+      const pMatch = url.match(/[?&]project_id=([^&]+)/);
+      if (pMatch) projectId = decodeURIComponent(pMatch[1]);
+      const cMatch = url.match(/[?&]count=([^&]+)/);
+      if (cMatch) count = parseInt(cMatch[1], 10) || 5;
+      const tMatch = url.match(/[?&]query_type=([^&]+)/);
+      if (tMatch) queryTypes = decodeURIComponent(tMatch[1]).split(",").map((s) => s.trim().toLowerCase());
+    }
+
+    const response: Record<string, any> = {};
+
+    if (queryTypes.includes("user_mention")) {
+      const wsMembers = (localDB.workspace_members || []).filter((wm: any) => {
+        const wmWs = wm.workspace || wm.workspace_id;
+        return !wmWs || validWsKeys.size === 0 || validWsKeys.has(wmWs);
+      });
+
+      const memberUsers: Array<{ id: string; display_name: string; avatar_url: string }> = [];
+      const seenUserIds = new Set<string>();
+
+      for (const wm of wsMembers) {
+        const user = (localDB.users || []).find(
+          (u: any) => u.id === wm.member || u.email === wm.email || u.id === wm.id
+        );
+        const userId = user?.id || (typeof wm.member === "string" ? wm.member : wm.id) || "user";
+        if (seenUserIds.has(userId)) continue;
+        seenUserIds.add(userId);
+
+        const displayName =
+          user?.display_name || user?.first_name || wm.display_name || wm.first_name || wm.email?.split("@")[0] || "User";
+        const avatarUrl = user?.avatar_url || wm.avatar_url || "";
+
+        memberUsers.push({
+          id: userId,
+          display_name: displayName,
+          avatar_url: avatarUrl,
+        });
+      }
+
+      for (const u of localDB.users || []) {
+        if (!seenUserIds.has(u.id)) {
+          seenUserIds.add(u.id);
+          memberUsers.push({
+            id: u.id,
+            display_name: u.display_name || u.first_name || u.email?.split("@")[0] || "User",
+            avatar_url: u.avatar_url || "",
+          });
+        }
+      }
+
+      const filtered = memberUsers.filter((u) => {
+        if (!searchQuery) return true;
+        return (
+          u.display_name.toLowerCase().includes(searchQuery) ||
+          u.id.toLowerCase().includes(searchQuery)
+        );
+      });
+
+      response.user_mention = filtered.slice(0, count).map((u) => ({
+        member__id: u.id,
+        member__display_name: u.display_name,
+        member__avatar_url: u.avatar_url,
+      }));
+    }
+
+    if (queryTypes.includes("issue")) {
+      const issues = (localDB.issues || []).filter((i: any) => {
+        if (projectId && i.project_id !== projectId && i.project !== projectId) return false;
+        if (!searchQuery) return true;
+        return (i.name || "").toLowerCase().includes(searchQuery);
+      });
+      response.issue = issues.slice(0, count).map((i: any) => ({
+        id: i.id,
+        name: i.name,
+        sequence_id: i.sequence_id,
+        project_id: i.project_id || i.project,
+        project__identifier: i.project__identifier || "",
+        priority: i.priority,
+        state_id: i.state_id,
+        type_id: i.type_id,
+      }));
+    }
+
+    if (queryTypes.includes("project")) {
+      const projects = (localDB.projects || []).filter((p: any) => {
+        const pWs = p.workspace || p.workspace_id;
+        if (pWs && validWsKeys.size > 0 && !validWsKeys.has(pWs)) return false;
+        if (!searchQuery) return true;
+        return (p.name || "").toLowerCase().includes(searchQuery) || (p.identifier || "").toLowerCase().includes(searchQuery);
+      });
+      response.project = projects.slice(0, count).map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        identifier: p.identifier,
+        logo_props: p.logo_props,
+        workspace__slug: wsSlug,
+      }));
+    }
+
+    return ok(response);
+  }
+
   if (
     method === "get" &&
     (url.match(/\/api\/workspaces\/[^/]+\/projects\/?(?:\?.*)?$/) || url.includes("/projects/details"))

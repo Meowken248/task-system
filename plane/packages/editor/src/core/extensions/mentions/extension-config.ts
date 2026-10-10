@@ -25,12 +25,34 @@ export const CustomMentionExtensionConfig = Mention.extend<TMentionExtensionOpti
     return {
       [EMentionComponentAttributeNames.ID]: {
         default: null,
+        parseHTML: (element) => element.getAttribute("id"),
+        renderHTML: (attributes) => ({
+          id: attributes[EMentionComponentAttributeNames.ID],
+        }),
       },
       [EMentionComponentAttributeNames.ENTITY_IDENTIFIER]: {
         default: null,
+        parseHTML: (element) =>
+          element.getAttribute("entity_identifier") ||
+          element.getAttribute("entity-identifier") ||
+          element.getAttribute("id") ||
+          element.textContent?.replace(/^@+/, "").trim() ||
+          null,
+        renderHTML: (attributes) => ({
+          entity_identifier: attributes[EMentionComponentAttributeNames.ENTITY_IDENTIFIER],
+          "entity-identifier": attributes[EMentionComponentAttributeNames.ENTITY_IDENTIFIER],
+        }),
       },
       [EMentionComponentAttributeNames.ENTITY_NAME]: {
-        default: null,
+        default: "user_mention",
+        parseHTML: (element) =>
+          element.getAttribute("entity_name") ||
+          element.getAttribute("entity-name") ||
+          "user_mention",
+        renderHTML: (attributes) => ({
+          entity_name: attributes[EMentionComponentAttributeNames.ENTITY_NAME] ?? "user_mention",
+          "entity-name": attributes[EMentionComponentAttributeNames.ENTITY_NAME] ?? "user_mention",
+        }),
       },
     };
   },
