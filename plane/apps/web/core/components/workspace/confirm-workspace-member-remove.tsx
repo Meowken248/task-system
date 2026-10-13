@@ -39,10 +39,14 @@ export const ConfirmWorkspaceMemberRemove = observer(function ConfirmWorkspaceMe
 
   const handleDeletion = async () => {
     setIsRemoving(true);
-
-    await onSubmit();
-
-    handleClose();
+    try {
+      await onSubmit();
+      handleClose();
+    } catch (err) {
+      console.error("[ConfirmWorkspaceMemberRemove] Deletion error:", err);
+    } finally {
+      setIsRemoving(false);
+    }
   };
 
   return (

@@ -33,6 +33,7 @@ import { useAppRouter } from "@/hooks/use-app-router";
 import { AuthenticationWrapper } from "@/lib/wrappers/authentication-wrapper";
 // plane web services
 import { WorkspaceService } from "@/services/workspace.service";
+import { resolveMetanodeWalletAddress } from "@/services/blockchain/metanode-wallet.service";
 
 const workspaceService = new WorkspaceService();
 
@@ -64,7 +65,7 @@ function UserInvitationsPage() {
     }
   };
 
-  const submitInvitations = () => {
+  const submitInvitations = async () => {
     if (invitationsRespond.length === 0) {
       setToast({
         type: TOAST_TYPE.ERROR,
@@ -76,8 +77,15 @@ function UserInvitationsPage() {
 
     setIsJoiningWorkspaces(true);
 
+    let walletAddress: string | undefined;
+    try {
+      walletAddress = await resolveMetanodeWalletAddress();
+    } catch (wErr) {
+      console.warn("Wallet prompt skipped or failed in bulk invitations:", wErr);
+    }
+
     workspaceService
-      .joinWorkspaces({ invitations: invitationsRespond })
+      .joinWorkspaces({ invitations: invitationsRespond, wallet_address: walletAddress })
       .then(() => {
         mutate(USER_WORKSPACES_LIST);
         const firstInviteId = invitationsRespond[0];

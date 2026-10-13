@@ -153,8 +153,10 @@ export class WorkspaceService extends APIService {
       });
   }
 
-  async deleteWorkspaceMember(workspaceSlug: string, memberId: string): Promise<any> {
-    return this.delete(`/api/workspaces/${workspaceSlug}/members/${memberId}/`)
+  async deleteWorkspaceMember(workspaceSlug: string, memberId: string, walletAddress?: string): Promise<any> {
+    return this.delete(`/api/workspaces/${workspaceSlug}/members/${memberId}/`, {
+      params: walletAddress ? { wallet_address: walletAddress } : undefined,
+    })
       .then((response) => response?.data)
       .catch((error) => {
         throw error?.response?.data;

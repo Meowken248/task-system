@@ -228,8 +228,23 @@ async function selectAndLinkWallet(): Promise<string> {
   try {
     while (Date.now() < deadline) {
       // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
-      const selectedAddress =
+      let selectedAddress =
         messageAddress ?? walletPickerAddress ?? readAddress(getLastSelectedMetanodeWallet()) ?? (await getActiveWalletAddress());
+
+      if (!selectedAddress) {
+        // Fallback: Check if a new wallet was created/imported into Crypto Vault during this session
+        // oxlint-disable-next-line no-await-in-loop
+        const currentWallets = (await getWallets().catch(() => []))
+          .map((wallet) => readAddress(wallet))
+          .filter((address): address is string => Boolean(address))
+          .map(normalizeWalletAddress);
+        const newlyAdded = currentWallets.find((addr) => !availableAddresses.includes(addr));
+        if (newlyAdded) {
+          selectedAddress = newlyAdded;
+        } else if (availableAddresses.length === 0 && currentWallets.length === 1) {
+          selectedAddress = currentWallets[0];
+        }
+      }
       if (selectedAddress) {
         try {
           // oxlint-disable-next-line no-await-in-loop -- the account link must finish before transaction signing.

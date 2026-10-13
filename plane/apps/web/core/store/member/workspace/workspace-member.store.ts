@@ -51,7 +51,7 @@ export interface IWorkspaceMemberStore {
   fetchWorkspaceMemberInvitations: (workspaceSlug: string) => Promise<IWorkspaceMemberInvitation[]>;
   // crud actions
   updateMember: (workspaceSlug: string, userId: string, data: { role: EUserPermissions }) => Promise<void>;
-  removeMemberFromWorkspace: (workspaceSlug: string, userId: string) => Promise<void>;
+  removeMemberFromWorkspace: (workspaceSlug: string, userId: string, adminWallet?: string) => Promise<void>;
   // invite actions
   inviteMembersToWorkspace: (workspaceSlug: string, data: IWorkspaceBulkInviteFormData) => Promise<void>;
   updateMemberInvitation: (
@@ -145,7 +145,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   getFilteredWorkspaceMemberIds = computedFn((workspaceSlug: string) => {
     let members = Object.values(this.workspaceMemberMap?.[workspaceSlug] ?? {});
     //filter out bots and inactive members
-    members = members.filter((m) => !this.memberRoot?.memberMap?.[m.member]?.is_bot);
+    members = members.filter((m) => !this.memberRoot?.memberMap?.[m.member]?.is_bot && m.is_active !== false);
 
     // Use filters store to get filtered member ids
     const memberIds = this.filtersStore.getFilteredMemberIds(
@@ -280,13 +280,16 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
    * @param workspaceSlug
    * @param userId
    */
-  removeMemberFromWorkspace = async (workspaceSlug: string, userId: string) => {
+  removeMemberFromWorkspace = async (workspaceSlug: string, userId: string, adminWallet?: string) => {
     const memberDetails = this.getWorkspaceMemberDetails(userId);
     if (!memberDetails) throw new Error("Member not found");
-    await this.workspaceService.deleteWorkspaceMember(workspaceSlug, memberDetails?.id).then(() => {
+    await this.workspaceService.deleteWorkspaceMember(workspaceSlug, memberDetails?.id, adminWallet).then(async () => {
       runInAction(() => {
-        set(this.workspaceMemberMap, [workspaceSlug, userId, "is_active"], false);
+        if (this.workspaceMemberMap[workspaceSlug]) {
+          delete this.workspaceMemberMap[workspaceSlug][userId];
+        }
       });
+      await this.fetchWorkspaceMemberInvitations(workspaceSlug);
     });
   };
 

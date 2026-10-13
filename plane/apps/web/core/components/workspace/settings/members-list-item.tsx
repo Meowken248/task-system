@@ -64,13 +64,33 @@ export const WorkspaceMembersListItem = observer(function WorkspaceMembersListIt
     if (!workspaceSlug || !memberId) return;
 
     try {
-      await removeMemberFromWorkspace(workspaceSlug.toString(), memberId);
+      setToast({
+        type: TOAST_TYPE.INFO,
+        title: "Xác thực ví MetaNode",
+        message: "Đang kết nối ví MetaNode để xác thực quyền quản trị xóa thành viên on-chain...",
+      });
+
+      let adminWallet: string | undefined;
+      try {
+        const { resolveMetanodeWalletAddress } = await import("@/services/blockchain/metanode-wallet.service");
+        adminWallet = await resolveMetanodeWalletAddress();
+      } catch (wErr) {
+        console.warn("Wallet prompt skipped or cancelled:", wErr);
+      }
+
+      await removeMemberFromWorkspace(workspaceSlug.toString(), memberId, adminWallet);
+
+      setToast({
+        type: TOAST_TYPE.SUCCESS,
+        title: "Thành công",
+        message: "Đã xóa thành viên khỏi không gian làm việc thành công.",
+      });
     } catch (err: unknown) {
-      const error = err as { error?: string };
+      const error = err as { error?: string; message?: string };
       setToast({
         type: TOAST_TYPE.ERROR,
         title: "Error!",
-        message: error?.error || t("something_went_wrong_please_try_again"),
+        message: error?.message || error?.error || t("something_went_wrong_please_try_again"),
       });
     }
   };

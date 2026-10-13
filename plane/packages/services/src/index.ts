@@ -23,4 +23,5 @@ export * from "./dapp-interceptor";
 export * from "./dapp/routes";
 export * from "./dapp/store";
 export * from "./dapp/mail";
+export * from "./dapp/chain";
 export * from "./issue";

@@ -195,7 +195,8 @@ const GET_CID_SELECTOR = "0xfa3e97e7";
 const GET_WORKSPACE_CID_SELECTOR = "0xdf48cfdc";
 const GET_USER_WORKSPACES_SELECTOR = "0xd7d19c4e";
 const GET_WORKSPACE_SELECTOR = "0x1cd7381a";
-const GET_MEMBER_ROLE_SELECTOR = "0x419f02f0";
+const GET_MEMBER_ROLE_SELECTOR = "0xb1eed828";
+const GET_WORKSPACE_MEMBERS_SELECTOR = "0x4f597d85";
 
 export function getRpcUrl(): string {
   return (getEnvVar("VITE_RPC_URL") || "").trim();
@@ -253,6 +254,73 @@ export function abiEncodeGetMemberRole(slug: string, userAddress: string): strin
   const slugLenHex = padHex(slugLen.toString(16), 32);
   const slugDataHex = slugBytes.padEnd(Math.ceil(slugBytes.length / 64) * 64, "0");
   return GET_MEMBER_ROLE_SELECTOR + offsetHex + addressHex + slugLenHex + slugDataHex;
+}
+
+export function abiEncodeGetWorkspaceMembers(slug: string): string {
+  const offsetHex = padHex("20", 32);
+  const slugBytes = utf8ToHex(slug);
+  const slugLen = slugBytes.length / 2;
+  const slugLenHex = padHex(slugLen.toString(16), 32);
+  const slugDataHex = slugBytes.padEnd(Math.ceil(slugBytes.length / 64) * 64, "0");
+  return GET_WORKSPACE_MEMBERS_SELECTOR + offsetHex + slugLenHex + slugDataHex;
+}
+
+export function decodeAbiAddressArray(hexResult: string): string[] {
+  if (!hexResult || hexResult === "0x" || hexResult.length < 130) return [];
+  const data = hexResult.startsWith("0x") ? hexResult.slice(2) : hexResult;
+  try {
+    const arrayOffset = parseInt(data.slice(0, 64), 16) * 2;
+    const count = parseInt(data.slice(arrayOffset, arrayOffset + 64), 16);
+    if (isNaN(count) || count <= 0 || count > 500) return [];
+    const result: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const wordStart = arrayOffset + 64 + i * 64;
+      const word = data.slice(wordStart, wordStart + 64);
+      if (word.length === 64) {
+        const addr = "0x" + word.slice(24, 64).toLowerCase();
+        result.push(addr);
+      }
+    }
+    return result;
+  } catch (err) {
+    console.warn("[DApp DB] decodeAbiAddressArray error:", err);
+    return [];
+  }
+}
+
+export async function fetchWorkspaceMembersOnChain(slug: string): Promise<string[]> {
+  const wsRegistryAddr = getWorkspaceRegistryAddress();
+  if (!wsRegistryAddr || !slug) return [];
+  try {
+    const calldata = abiEncodeGetWorkspaceMembers(slug);
+    const hex = await directRpcRead(wsRegistryAddr, calldata, 6000);
+    const allAddresses = decodeAbiAddressArray(hex);
+    if (!allAddresses || allAddresses.length === 0) return [];
+
+    // Filter by on-chain role (Role.None = 0, Member = 1, Admin = 2, Owner = 3)
+    // In Solidity, removeMember sets role to Role.None (0) but keeps address in _workspaceMemberList
+    const activeAddresses: string[] = [];
+    await Promise.all(
+      allAddresses.map(async (addr) => {
+        try {
+          const roleCalldata = abiEncodeGetMemberRole(slug, addr);
+          const roleHex = await directRpcRead(wsRegistryAddr, roleCalldata, 4000);
+          const role = decodeAbiUint8(roleHex);
+          if (role === 1 || role === 2) {
+            activeAddresses.push(addr);
+          } else {
+            console.log(`[DApp Chain] Address ${addr} has role ${role} (not invited member/admin) on-chain in ${slug}. Excluded.`);
+          }
+        } catch (roleErr) {
+          console.warn(`[DApp Chain] Error checking role for ${addr}:`, roleErr);
+        }
+      })
+    );
+    return activeAddresses;
+  } catch (err) {
+    console.warn(`[DApp DB] fetchWorkspaceMembersOnChain("${slug}") error:`, err);
+    return [];
+  }
 }
 
 export function decodeAbiUint8(hexResult: string): number {
@@ -619,20 +687,15 @@ export async function commitWorkspaceCID(slug: string, newCid: string): Promise<
   }
 }
 
-export async function joinWorkspaceOnChain(slug: string): Promise<boolean> {
+export async function joinWorkspaceOnChain(slug: string, memberWallet?: string): Promise<boolean> {
   const wsRegistryAddr = getWorkspaceRegistryAddress();
   if (!wsRegistryAddr || !slug) return false;
 
   const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
-  const userAddr = currentUserAddress || getStoredWalletAddress();
+  const userAddr = memberWallet || currentUserAddress || getStoredWalletAddress();
 
   if (!bridge || !userAddr) {
     console.log(`[DApp Chain] Chưa kết nối ví. Bỏ qua ghi on-chain joinWorkspace.`);
-    return false;
-  }
-
-  if (await isVaultLocked()) {
-    console.log(`[DApp Chain] Crypto Vault đang khóa. Bỏ qua ghi joinWorkspace on-chain ngầm.`);
     return false;
   }
 
@@ -653,10 +716,61 @@ export async function joinWorkspaceOnChain(slug: string): Promise<boolean> {
       bundleId: "",
       ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
     });
-    console.log(`[DApp Chain] ✅ joinWorkspace thành công qua ví người dùng: ${slug}`);
+    console.log(`[DApp Chain] ✅ joinWorkspace thành công qua ví người dùng: ${slug} (${userAddr})`);
+    return true;
+  } catch (err: any) {
+    const errMsg = String(err?.message || err);
+    if (/already/i.test(errMsg) || /member/i.test(errMsg)) {
+      console.log(`[DApp Chain] Đã là thành viên on-chain: ${slug} (${userAddr})`);
+      return true;
+    }
+    console.warn(`[DApp Chain] joinWorkspace on-chain thất bại:`, err);
+    return false;
+  }
+}
+
+export async function removeWorkspaceMemberOnChain(
+  slug: string,
+  memberAddress: string,
+  adminWallet?: string
+): Promise<boolean> {
+  const wsRegistryAddr = getWorkspaceRegistryAddress();
+  if (!wsRegistryAddr || !slug || !memberAddress) return false;
+
+  const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
+  const userAddr = adminWallet || currentUserAddress || getStoredWalletAddress();
+
+  if (!bridge || !userAddr) {
+    console.log(`[DApp Chain] Chưa kết nối ví. Bỏ qua ghi on-chain removeMember.`);
+    return false;
+  }
+
+  try {
+    console.log(
+      `[DApp Chain] Đang gửi transaction removeMember("${slug}", "${memberAddress}") qua ví Admin (${userAddr})...`
+    );
+    await bridge.request("sendTransaction", {
+      from: userAddr,
+      to: wsRegistryAddr,
+      abiData: [REMOVE_MEMBER_ABI],
+      functionName: "removeMember",
+      feeType: "sc",
+      amount: "0",
+      value: "0",
+      gas: getContractGas(),
+      type: "transaction",
+      inputArray: [
+        { name: "slug", type: "string", value: slug },
+        { name: "member", type: "address", value: memberAddress },
+      ],
+      isReadOnly: false,
+      bundleId: "",
+      ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
+    });
+    console.log(`[DApp Chain] ✅ removeMember thành công qua ví Admin: ${memberAddress} khỏi ${slug}`);
     return true;
   } catch (err) {
-    console.warn(`[DApp Chain] joinWorkspace on-chain thất bại (có thể đã là thành viên):`, err);
+    console.warn(`[DApp Chain] removeMember on-chain thất bại:`, err);
     return false;
   }
 }

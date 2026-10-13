@@ -55,7 +55,15 @@ export function WorkspaceJoinInvitesStep(props: Props) {
     setIsJoiningWorkspaces(true);
 
     try {
-      await workspaceService.joinWorkspaces({ invitations: invitationsRespond });
+      let walletAddress: string | undefined;
+      try {
+        const { resolveMetanodeWalletAddress } = await import("@/services/blockchain/metanode-wallet.service");
+        walletAddress = await resolveMetanodeWalletAddress();
+      } catch (wErr) {
+        console.warn("Wallet prompt skipped in onboarding:", wErr);
+      }
+
+      await workspaceService.joinWorkspaces({ invitations: invitationsRespond, wallet_address: walletAddress });
       await fetchWorkspaces();
       await fetchCurrentUserSettings();
       await handleNextStep();
