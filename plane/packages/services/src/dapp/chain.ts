@@ -288,39 +288,88 @@ export function decodeAbiAddressArray(hexResult: string): string[] {
   }
 }
 
-export async function fetchWorkspaceMembersOnChain(slug: string): Promise<string[]> {
+const membersOnChainCache = new Map<string, { addresses: string[]; timestamp: number }>();
+const membersOnChainInFlight = new Map<string, Promise<string[]>>();
+
+export function invalidateWorkspaceMembersOnChainCache(slug?: string): void {
+  if (slug) {
+    membersOnChainCache.delete(slug);
+    membersOnChainInFlight.delete(slug);
+  } else {
+    membersOnChainCache.clear();
+    membersOnChainInFlight.clear();
+  }
+}
+
+export async function fetchMemberRoleOnChain(slug: string, memberAddress: string): Promise<number> {
+  const wsRegistryAddr = getWorkspaceRegistryAddress();
+  if (!wsRegistryAddr || !slug || !memberAddress) return 0;
+  try {
+    const roleCalldata = abiEncodeGetMemberRole(slug, memberAddress);
+    const roleHex = await directRpcRead(wsRegistryAddr, roleCalldata, 4000);
+    return decodeAbiUint8(roleHex);
+  } catch (err) {
+    console.warn(`[DApp Chain] fetchMemberRoleOnChain("${slug}", "${memberAddress}") error:`, err);
+    return -1;
+  }
+}
+
+export async function fetchWorkspaceMembersOnChain(slug: string, forceRefresh = false): Promise<string[]> {
   const wsRegistryAddr = getWorkspaceRegistryAddress();
   if (!wsRegistryAddr || !slug) return [];
-  try {
-    const calldata = abiEncodeGetWorkspaceMembers(slug);
-    const hex = await directRpcRead(wsRegistryAddr, calldata, 6000);
-    const allAddresses = decodeAbiAddressArray(hex);
-    if (!allAddresses || allAddresses.length === 0) return [];
 
-    // Filter by on-chain role (Role.None = 0, Member = 1, Admin = 2, Owner = 3)
-    // In Solidity, removeMember sets role to Role.None (0) but keeps address in _workspaceMemberList
-    const activeAddresses: string[] = [];
-    await Promise.all(
-      allAddresses.map(async (addr) => {
-        try {
-          const roleCalldata = abiEncodeGetMemberRole(slug, addr);
-          const roleHex = await directRpcRead(wsRegistryAddr, roleCalldata, 4000);
-          const role = decodeAbiUint8(roleHex);
-          if (role === 1 || role === 2) {
-            activeAddresses.push(addr);
-          } else {
-            console.log(`[DApp Chain] Address ${addr} has role ${role} (not invited member/admin) on-chain in ${slug}. Excluded.`);
-          }
-        } catch (roleErr) {
-          console.warn(`[DApp Chain] Error checking role for ${addr}:`, roleErr);
-        }
-      })
-    );
-    return activeAddresses;
-  } catch (err) {
-    console.warn(`[DApp DB] fetchWorkspaceMembersOnChain("${slug}") error:`, err);
-    return [];
+  if (!forceRefresh) {
+    const cached = membersOnChainCache.get(slug);
+    if (cached && Date.now() - cached.timestamp < 10000) {
+      return cached.addresses;
+    }
+    const inFlight = membersOnChainInFlight.get(slug);
+    if (inFlight) {
+      return inFlight;
+    }
   }
+
+  const fetchPromise = (async () => {
+    try {
+      const calldata = abiEncodeGetWorkspaceMembers(slug);
+      const hex = await directRpcRead(wsRegistryAddr, calldata, 6000);
+      const allAddresses = decodeAbiAddressArray(hex);
+      if (!allAddresses || allAddresses.length === 0) {
+        membersOnChainCache.set(slug, { addresses: [], timestamp: Date.now() });
+        return [];
+      }
+
+      // Filter by on-chain role (Role.None = 0, Member = 1, Admin = 2, Owner = 3)
+      // In Solidity, removeMember sets role to Role.None (0) but keeps address in _workspaceMemberList
+      const activeAddresses: string[] = [];
+      await Promise.all(
+        allAddresses.map(async (addr) => {
+          try {
+            const roleCalldata = abiEncodeGetMemberRole(slug, addr);
+            const roleHex = await directRpcRead(wsRegistryAddr, roleCalldata, 4000);
+            const role = decodeAbiUint8(roleHex);
+            if (role === 1 || role === 2) {
+              activeAddresses.push(addr);
+            } else {
+              console.log(`[DApp Chain] Address ${addr} has role ${role} (not invited member/admin) on-chain in ${slug}. Excluded.`);
+            }
+          } catch (roleErr) {
+            console.warn(`[DApp Chain] Error checking role for ${addr}:`, roleErr);
+          }
+        })
+      );
+      membersOnChainCache.set(slug, { addresses: activeAddresses, timestamp: Date.now() });
+      return activeAddresses;
+    } catch (err) {
+      console.warn(`[DApp DB] fetchWorkspaceMembersOnChain("${slug}") error:`, err);
+      return [];
+    } finally {
+      membersOnChainInFlight.delete(slug);
+    }
+  })();
+
+  membersOnChainInFlight.set(slug, fetchPromise);
+  return fetchPromise;
 }
 
 export function decodeAbiUint8(hexResult: string): number {
@@ -699,6 +748,13 @@ export async function joinWorkspaceOnChain(slug: string, memberWallet?: string):
     return false;
   }
 
+  const cleanAddr = userAddr.toLowerCase();
+  const removedWallets = (localDB.removed_members?.[slug] || []).map((x: string) => String(x).toLowerCase().trim());
+  if (removedWallets.includes(cleanAddr)) {
+    console.warn(`[DApp Chain] Ví ${cleanAddr} đã bị xóa khỏi workspace "${slug}". Chặn giao dịch joinWorkspace on-chain.`);
+    return false;
+  }
+
   try {
     console.log(`[DApp Chain] Đang gửi transaction joinWorkspace("${slug}") qua ví người dùng (${userAddr})...`);
     await bridge.request("sendTransaction", {
@@ -717,11 +773,13 @@ export async function joinWorkspaceOnChain(slug: string, memberWallet?: string):
       ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
     });
     console.log(`[DApp Chain] ✅ joinWorkspace thành công qua ví người dùng: ${slug} (${userAddr})`);
+    invalidateWorkspaceMembersOnChainCache(slug);
     return true;
   } catch (err: any) {
     const errMsg = String(err?.message || err);
     if (/already/i.test(errMsg) || /member/i.test(errMsg)) {
       console.log(`[DApp Chain] Đã là thành viên on-chain: ${slug} (${userAddr})`);
+      invalidateWorkspaceMembersOnChainCache(slug);
       return true;
     }
     console.warn(`[DApp Chain] joinWorkspace on-chain thất bại:`, err);
@@ -768,6 +826,7 @@ export async function removeWorkspaceMemberOnChain(
       ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
     });
     console.log(`[DApp Chain] ✅ removeMember thành công qua ví Admin: ${memberAddress} khỏi ${slug}`);
+    invalidateWorkspaceMembersOnChainCache(slug);
     return true;
   } catch (err) {
     console.warn(`[DApp Chain] removeMember on-chain thất bại:`, err);
@@ -1397,6 +1456,9 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
   }
   currentUserAddress = activeWallet;
   if (typeof window !== "undefined") {
+    try {
+      sessionStorage.setItem("plane_active_wallet_address", activeWallet);
+    } catch { }
     localStorage.setItem("plane_active_wallet_address", activeWallet);
   }
 

@@ -237,6 +237,14 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   fetchWorkspaceMembers = async (workspaceSlug: string) =>
     await this.workspaceService.fetchWorkspaceMembers(workspaceSlug).then((response) => {
       runInAction(() => {
+        const activeUserIds = new Set(response.map((m) => m.member.id));
+        if (this.workspaceMemberMap[workspaceSlug]) {
+          Object.keys(this.workspaceMemberMap[workspaceSlug]).forEach((userId) => {
+            if (!activeUserIds.has(userId)) {
+              delete this.workspaceMemberMap[workspaceSlug][userId];
+            }
+          });
+        }
         response.forEach((member) => {
           set(this.memberRoot?.memberMap, member.member.id, { ...member.member, joining_date: member.created_at });
           set(this.workspaceMemberMap, [workspaceSlug, member.member.id], {

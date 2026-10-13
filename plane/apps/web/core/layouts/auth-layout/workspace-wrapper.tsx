@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { observer } from "mobx-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -72,11 +72,31 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
     (allWorkspaces && allWorkspaces.find((workspace) => workspace?.slug === workspaceSlug)) || undefined;
   const currentWorkspaceInfo = workspaceSlug && workspaceInfoBySlug(workspaceSlug.toString());
 
+  // real-time kick out listener when member is removed by admin
+  useEffect(() => {
+    const handleKickedOut = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const detail = customEvent?.detail;
+      if (detail && (!detail.workspaceSlug || detail.workspaceSlug === workspaceSlug)) {
+        setToast({
+          type: TOAST_TYPE.ERROR,
+          title: "Truy cập bị từ chối",
+          message: "Bạn đã bị xóa khỏi không gian làm việc này.",
+        });
+        window.location.href = "/";
+      }
+    };
+    window.addEventListener("plane_member_kicked_out", handleKickedOut);
+    return () => {
+      window.removeEventListener("plane_member_kicked_out", handleKickedOut);
+    };
+  }, [workspaceSlug]);
+
   // fetching user workspace information
   useSWR(
     workspaceSlug ? WORKSPACE_MEMBER_ME_INFORMATION(workspaceSlug.toString()) : null,
     workspaceSlug ? () => fetchUserWorkspaceInfo(workspaceSlug.toString()) : null,
-    { revalidateIfStale: false, revalidateOnFocus: false }
+    { revalidateIfStale: false, revalidateOnFocus: true }
   );
   useSWR(
     workspaceSlug && currentWorkspace ? WORKSPACE_PROJECTS_ROLES_INFORMATION(workspaceSlug.toString()) : null,
@@ -94,7 +114,7 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
   useSWR(
     workspaceSlug && currentWorkspace ? WORKSPACE_MEMBERS(workspaceSlug.toString()) : null,
     workspaceSlug && currentWorkspace ? () => fetchWorkspaceMembers(workspaceSlug.toString()) : null,
-    { revalidateIfStale: false, revalidateOnFocus: false }
+    { revalidateIfStale: false, revalidateOnFocus: true }
   );
   // fetch workspace favorite
   useSWR(

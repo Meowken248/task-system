@@ -87,15 +87,15 @@ export const defaultDB: DAppDatabase = {
   },
 };
 
-// ── Auth state (persisted in localStorage) ───────────────────────────────
+// ── Auth state (persisted in localStorage and sessionStorage) ─────────────────
 export function getLoggedInUserId(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("plane_dapp_auth_user");
+  return sessionStorage.getItem("plane_dapp_auth_user") || localStorage.getItem("plane_dapp_auth_user");
 }
 
 export function getLoggedInEmail(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("plane_dapp_auth_email");
+  return sessionStorage.getItem("plane_dapp_auth_email") || localStorage.getItem("plane_dapp_auth_email");
 }
 
 export function isLoggedIn(): boolean {
@@ -105,9 +105,12 @@ export function isLoggedIn(): boolean {
 export function setLoggedInUser(userId: string | null): void {
   if (typeof window === "undefined") return;
   if (userId) {
+    sessionStorage.setItem("plane_dapp_auth_user", userId);
     localStorage.setItem("plane_dapp_auth_user", userId);
   } else {
+    sessionStorage.removeItem("plane_dapp_auth_user");
     localStorage.removeItem("plane_dapp_auth_user");
+    sessionStorage.removeItem("plane_dapp_auth_email");
     localStorage.removeItem("plane_dapp_auth_email");
   }
 }
@@ -875,6 +878,42 @@ if (dappSyncChannel) {
           const snapshot = JSON.stringify(localDB);
           localStorage.setItem("plane_dapp_local_db", snapshot);
           sessionStorage.setItem("plane_dapp_latest_db", snapshot);
+
+          // Check if current browser tab belongs to the removed member and kick out in real-time
+          if (typeof window !== "undefined") {
+            const activeUid = (getLoggedInUserId() || "").toLowerCase().trim();
+            const activeMail = (getLoggedInEmail() || "").toLowerCase().trim();
+            const activeWallet = (
+              sessionStorage.getItem("plane_active_wallet_address") ||
+              localStorage.getItem("plane_active_wallet_address") ||
+              ""
+            ).toLowerCase().trim();
+
+            const isCurrentRemoved =
+              (activeUid && ridSet.has(activeUid)) ||
+              (activeMail && ridSet.has(activeMail)) ||
+              (activeWallet && ridSet.has(activeWallet));
+
+            if (isCurrentRemoved) {
+              console.warn(`[DApp DB] Current session (${activeMail || activeUid || activeWallet}) was removed from workspace "${ws}". Triggering real-time kick-out.`);
+              window.dispatchEvent(
+                new CustomEvent("plane_member_kicked_out", {
+                  detail: { workspaceSlug: ws, reason: "removed" },
+                })
+              );
+
+              const currentPath = window.location.pathname;
+              if (
+                currentPath.includes(`/${ws}/`) ||
+                currentPath === `/${ws}` ||
+                currentPath.startsWith(`/${ws}`)
+              ) {
+                setTimeout(() => {
+                  window.location.href = "/";
+                }, 300);
+              }
+            }
+          }
         }
       }
     } catch (err) {
