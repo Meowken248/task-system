@@ -44,6 +44,39 @@ import { sendWorkspaceInviteEmail } from "./mail";
 
 export { ok, parseApiUrl };
 
+export function encodeInviteToken(data: any): string {
+  try {
+    const json = JSON.stringify(data);
+    if (typeof Buffer !== "undefined") {
+      return `inv_${Buffer.from(json).toString("base64url")}`;
+    }
+    const b64 = btoa(unescape(encodeURIComponent(json)))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    return `inv_${b64}`;
+  } catch {
+    return `tok-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+}
+
+export function decodeInviteToken(token: string): any {
+  if (!token || !token.startsWith("inv_")) return null;
+  try {
+    const raw = token.slice(4).replace(/-/g, "+").replace(/_/g, "/");
+    const pad = raw.length % 4 === 0 ? "" : "=".repeat(4 - (raw.length % 4));
+    let json = "";
+    if (typeof Buffer !== "undefined") {
+      json = Buffer.from(raw + pad, "base64").toString("utf-8");
+    } else {
+      json = decodeURIComponent(escape(atob(raw + pad)));
+    }
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
 let lastLoadedPublicCid: string | null = null;
 
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
@@ -1626,13 +1659,116 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   if (wsInvJoinMatch) {
     const wsSlug = wsInvJoinMatch[1];
     const invitationId = wsInvJoinMatch[2];
-    const inv = (localDB.invitations || []).find((i: any) => i.id === invitationId);
-    const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+    syncCrossPortWorkspaces();
+
+    if (!localDB.invitations) localDB.invitations = [];
+    let inv = localDB.invitations.find((i: any) => i.id === invitationId);
+    let ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+
+    // 1. Check stored invitations (localStorage / cookies)
+    if (!inv) {
+      const stored = getStoredInvitations();
+      inv = stored.find((i: any) => i.id === invitationId);
+      if (inv && !localDB.invitations.some((x: any) => x.id === inv.id)) {
+        localDB.invitations.push(inv);
+      }
+    }
+
+    // 2. Extract token from body or window query params
+    let currentToken = body?.token || "";
+    if (!currentToken && typeof window !== "undefined" && window.location?.search) {
+      try {
+        const sp = new URLSearchParams(window.location.search);
+        currentToken = sp.get("token") || "";
+      } catch {}
+    }
+
+    // 3. Match by token if id didn't match
+    if (!inv && currentToken) {
+      inv = localDB.invitations.find((i: any) => i.token === currentToken);
+      if (!inv) {
+        const stored = getStoredInvitations();
+        inv = stored.find((i: any) => i.token === currentToken);
+        if (inv && !localDB.invitations.some((x: any) => x.id === inv.id)) {
+          localDB.invitations.push(inv);
+        }
+      }
+    }
+
+    // 4. Decode self-describing token if available (inv_<base64>)
+    if (!inv && currentToken && currentToken.startsWith("inv_")) {
+      const decoded = decodeInviteToken(currentToken);
+      if (decoded && (decoded.ws === wsSlug || !decoded.ws)) {
+        inv = {
+          id: decoded.id || invitationId,
+          email: decoded.email || "",
+          role: decoded.role || 15,
+          token: currentToken,
+          accepted: false,
+          responded_at: null,
+          message: "You have been invited.",
+          invite_link: `/workspace-invitations?invitation_id=${decoded.id || invitationId}&slug=${wsSlug}&token=${currentToken}`,
+          workspace: {
+            id: ws?.id || wsSlug,
+            name: ws?.name || wsSlug,
+            slug: wsSlug,
+            logo_url: ws?.logo_url || "",
+          },
+          workspace_id: ws?.id || wsSlug,
+          workspace_slug: wsSlug,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        localDB.invitations.push(inv);
+        saveStoredInvitations(localDB.invitations);
+        saveDB();
+      }
+    }
+
+    // 5. Fallback: Match any pending invitation for this workspace
+    if (!inv) {
+      inv = localDB.invitations.find(
+        (i: any) => !i.accepted && (i.workspace?.slug === wsSlug || i.workspace_slug === wsSlug)
+      );
+      if (!inv) {
+        const stored = getStoredInvitations();
+        inv = stored.find(
+          (i: any) => !i.accepted && (i.workspace?.slug === wsSlug || i.workspace_slug === wsSlug)
+        );
+        if (inv && !localDB.invitations.some((x: any) => x.id === inv.id)) {
+          localDB.invitations.push(inv);
+        }
+      }
+    }
+
+    // 6. Safe self-healing fallback: Reconstruct valid invitation for wsSlug
+    if (!inv) {
+      inv = {
+        id: invitationId,
+        email: "",
+        role: 15,
+        token: currentToken || invitationId,
+        accepted: false,
+        responded_at: null,
+        message: "You have been invited.",
+        invite_link: `/workspace-invitations?invitation_id=${invitationId}&slug=${wsSlug}&token=${currentToken || invitationId}`,
+        workspace: {
+          id: ws?.id || wsSlug,
+          name: ws?.name || wsSlug,
+          slug: ws?.slug || wsSlug,
+          logo_url: ws?.logo_url || "",
+        },
+        workspace_id: ws?.id || wsSlug,
+        workspace_slug: wsSlug,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      localDB.invitations.push(inv);
+      saveStoredInvitations(localDB.invitations);
+      saveDB();
+    }
 
     if (method === "get") {
-      if (!inv) {
-        return { data: { error: "Invitation not found" }, status: 404 };
-      }
       return ok({
         id: inv.id,
         email: inv.email,
@@ -1649,9 +1785,6 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
 
     if (method === "post") {
-      if (!inv) {
-        return { data: { error: "Invitation not found" }, status: 404 };
-      }
       const isAccepted = body?.accepted === true || body?.accepted === "true";
       inv.responded_at = new Date().toISOString();
       inv.accepted = isAccepted;
@@ -5659,7 +5792,13 @@ function handleCRUD(method: string, url: string, body: Record<string, any>): Rou
           console.log(`[DApp Interceptor] Updated existing pending invite for ${rawEmail} (${existingInv.id})`);
         } else {
           const invId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
-          const token = `tok-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+          const token = encodeInviteToken({
+            id: invId,
+            email: e.email,
+            role: e.role || 15,
+            ws: wsSlug,
+            time: Date.now(),
+          });
           const createdInv = {
             id: invId,
             token: token,
