@@ -75,6 +75,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   routerStore: IRouterStore;
   userStore: IUserStore;
   memberRoot: IMemberRootStore;
+  rootStore: RootStore;
   // services
   workspaceService;
 
@@ -98,6 +99,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
     // initialize filters store
     this.filtersStore = new WorkspaceMemberFiltersStore();
     // root store
+    this.rootStore = _rootStore;
     this.routerStore = _rootStore.router;
     this.userStore = _rootStore.user;
     this.memberRoot = _memberRoot;
@@ -254,6 +256,12 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
             is_active: member.is_active,
           });
         });
+        const targetWs = Object.values(this.rootStore?.workspaceRoot?.workspaces ?? {}).find(
+          (w) => w.slug === workspaceSlug || w.id === workspaceSlug
+        );
+        if (targetWs) {
+          set(targetWs, "total_members", response.length);
+        }
       });
       return response;
     });
@@ -295,6 +303,13 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
       runInAction(() => {
         if (this.workspaceMemberMap[workspaceSlug]) {
           delete this.workspaceMemberMap[workspaceSlug][userId];
+          const remainingCount = Object.keys(this.workspaceMemberMap[workspaceSlug]).length;
+          const targetWs = Object.values(this.rootStore?.workspaceRoot?.workspaces ?? {}).find(
+            (w) => w.slug === workspaceSlug || w.id === workspaceSlug
+          );
+          if (targetWs) {
+            set(targetWs, "total_members", Math.max(remainingCount, 1));
+          }
         }
       });
       await this.fetchWorkspaceMemberInvitations(workspaceSlug);

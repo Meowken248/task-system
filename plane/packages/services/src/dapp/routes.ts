@@ -19,6 +19,7 @@ import {
   removeStoredInvitation,
   dappSyncChannel,
   getEnvVar,
+  getWorkspaceMemberCount,
 } from "./store";
 import {
   uploadToIPFS,
@@ -86,71 +87,7 @@ export function decodeInviteToken(token: string): any {
 let lastLoadedPublicCid: string | null = null;
 const activeExportBlobUrls = new Map<string, string>();
 
-export function getWorkspaceMemberCount(wsSlug: string, wsId?: string): number {
-  const wsKeys = new Set([wsSlug, wsId].filter(Boolean));
-  const ws = (localDB.workspaces || []).find((w: any) => wsKeys.has(w.slug) || wsKeys.has(w.id));
-  const targetSlug = ws?.slug || wsSlug;
-  const targetId = ws?.id || wsId || "";
-  const removedSet = new Set(
-    (localDB.removed_members?.[targetSlug] || [])
-      .concat(targetId ? (localDB.removed_members?.[targetId] || []) : [])
-      .map((a: string) => String(a).toLowerCase().trim())
-  );
-
-  const memberKeys = new Set<string>();
-
-  // 1. Workspace Owner / Creator
-  const ownerId = ws?.created_by || ws?.owner?.id;
-  const ownerEmail = (ws?.owner?.email || "").toLowerCase().trim();
-  if (ownerEmail && !removedSet.has(ownerEmail)) {
-    memberKeys.add(ownerEmail);
-  } else if (ownerId && ownerId !== "user-default" && !removedSet.has(String(ownerId).toLowerCase())) {
-    memberKeys.add(String(ownerId).toLowerCase());
-  } else if (!ownerEmail && !ownerId) {
-    memberKeys.add("owner-default");
-  }
-
-  // 2. Workspace Members from localDB.workspace_members
-  (localDB.workspace_members || []).forEach((m: any) => {
-    const isWs =
-      wsKeys.has(m.workspace) ||
-      wsKeys.has(m.workspace_id) ||
-      (ws && (m.workspace === ws.slug || m.workspace === ws.id || m.workspace_id === ws.slug || m.workspace_id === ws.id));
-    if (!isWs || m.is_active === false) return;
-
-    const mMail = (m.email || "").toLowerCase().trim();
-    const mMem = String(m.member || "").toLowerCase().trim();
-    const mId = String(m.id || "").toLowerCase().trim();
-    const mWallet = (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim();
-
-    if (removedSet.has(mMail) || removedSet.has(mMem) || removedSet.has(mId) || (mWallet && removedSet.has(mWallet))) {
-      return;
-    }
-
-    const key = mMail || mWallet || (mMem !== "user-default" ? mMem : mId);
-    if (key) memberKeys.add(key);
-  });
-
-  // 3. Accepted invitations from localDB.invitations
-  (localDB.invitations || []).forEach((inv: any) => {
-    const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-    const isWs = !invWs || wsKeys.has(invWs) || (ws && (invWs === ws.slug || invWs === ws.id));
-    if (!isWs || !inv.accepted) return;
-
-    const invMail = (inv.email || "").toLowerCase().trim();
-    const invWallet = (inv.wallet_address || "").toLowerCase().trim();
-    const invId = String(inv.id || "").toLowerCase().trim();
-
-    if (removedSet.has(invMail) || (invWallet && removedSet.has(invWallet)) || removedSet.has(invId)) {
-      return;
-    }
-
-    const key = invMail || invWallet || invId;
-    if (key) memberKeys.add(key);
-  });
-
-  return Math.max(memberKeys.size, 1);
-}
+export { getWorkspaceMemberCount };
 
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
@@ -224,8 +161,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const isOwner =
         ws &&
         ((ws.created_by && (ws.created_by === activeId || (activeMail && ws.created_by === activeMail))) ||
-         (ws.owner && (ws.owner.id === activeId || (activeMail && ws.owner.email?.toLowerCase() === activeMail))) ||
-         (activeWallet && (ws.created_by?.toLowerCase() === activeWallet || ws.owner?.id?.toLowerCase() === activeWallet)));
+          (ws.owner && (ws.owner.id === activeId || (activeMail && ws.owner.email?.toLowerCase() === activeMail))) ||
+          (activeWallet && (ws.created_by?.toLowerCase() === activeWallet || ws.owner?.id?.toLowerCase() === activeWallet)));
 
       // If user is currently confirmed as an active workspace member, un-stale removedList!
       const isConfirmedMember = (localDB.workspace_members || []).some(
@@ -233,8 +170,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           (m.workspace === targetWsSlug || m.workspace_id === targetWsSlug || m.workspace === ws?.id || m.workspace_id === ws?.id) &&
           m.is_active !== false &&
           ((activeMail && m.email?.toLowerCase().trim() === activeMail) ||
-           (activeWallet && (m.wallet_address?.toLowerCase() === activeWallet || (typeof m.member === "string" && m.member.toLowerCase() === activeWallet))) ||
-           (activeId && (m.member === activeId || m.id === activeId)))
+            (activeWallet && (m.wallet_address?.toLowerCase() === activeWallet || (typeof m.member === "string" && m.member.toLowerCase() === activeWallet))) ||
+            (activeId && (m.member === activeId || m.id === activeId)))
       );
 
       if (isConfirmedMember) {
@@ -245,7 +182,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           });
           try {
             localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-          } catch {}
+          } catch { }
         }
       } else if (isRemoved && !isOwner) {
         console.warn(`[DApp Routes] Blocked request for removed member (${activeMail || activeId || activeWallet}) on workspace "${targetWsSlug}": ${url}`);
@@ -1241,8 +1178,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
   if (url.includes("/api/instances/configurations")) return ok([]);
 
-  if (url.includes("/api/instances/workspaces") && method === "get")
-    return ok({ results: localDB.workspaces || [], next_cursor: null, prev_cursor: null, total_count: (localDB.workspaces || []).length });
+  if (url.includes("/api/instances/workspaces") && method === "get") {
+    const wsResults = (localDB.workspaces || []).map((w: any) => ({
+      ...w,
+      total_members: getWorkspaceMemberCount(w.slug, w.id),
+    }));
+    return ok({ results: wsResults, next_cursor: null, prev_cursor: null, total_count: wsResults.length });
+  }
 
   // ── Admin Auth & Management Endpoints ────────────────────────────────
   if (url.includes("/api/instances/admins/sign-out")) {
@@ -1385,6 +1327,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       name: body.name || "My Workspace",
       slug: slug,
       organization_size: body.organization_size || "1-10",
+      total_members: 1,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       created_by: activeUser?.id || "admin",
@@ -1712,7 +1655,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
               )))
         );
         const resolvedRole = isOwner ? 20 : (memberRecord?.role || 15);
-        return Object.assign({}, ws, { role: resolvedRole });
+        const total_members = getWorkspaceMemberCount(ws.slug, ws.id);
+        return Object.assign({}, ws, { role: resolvedRole, total_members });
       });
       return ok(enriched);
     }
@@ -1889,7 +1833,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       try {
         const sp = new URLSearchParams(window.location.search);
         currentToken = sp.get("token") || "";
-      } catch {}
+      } catch { }
     }
 
     // 2. Decode token if present
@@ -1958,7 +1902,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         try {
           const parsed = JSON.parse(deletedRaw);
           if (Array.isArray(parsed)) deletedSet = new Set(parsed);
-        } catch {}
+        } catch { }
       }
     }
     if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
@@ -3263,6 +3207,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         }
       }
 
+      if (ws) {
+        ws.total_members = membersList.length;
+        saveDB();
+      }
+
       return ok(membersList);
     }
   }
@@ -3431,7 +3380,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         localDB._email_wallet_map[resolvedMail] = resolvedWallet.toLowerCase();
         try {
           localStorage.setItem("plane_dapp_email_wallet_map", JSON.stringify(localDB._email_wallet_map));
-        } catch {}
+        } catch { }
       }
 
       // Permanently remove any invitations matching this member
@@ -6492,6 +6441,10 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         if (enriched.workspace_id && !enriched.workspace) enriched.workspace = enriched.workspace_id;
         return ok(enriched);
       }
+      if (collection === "workspaces" && item) {
+        const total_members = getWorkspaceMemberCount(item.slug, item.id);
+        return ok({ ...item, total_members });
+      }
       return ok(item);
     }
     let list = localDB[collection] || [];
@@ -6689,6 +6642,13 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
           });
         }
       }
+    }
+
+    if (collection === "workspaces") {
+      list = list.map((ws: any) => ({
+        ...ws,
+        total_members: getWorkspaceMemberCount(ws.slug, ws.id),
+      }));
     }
 
     // Filter sub-resources by issue ID
@@ -6912,7 +6872,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         const itemWsSlug = item.workspace?.slug || item.workspace_slug || item.workspace?.id || item.workspace || wsSlug;
         const removedSet = new Set((localDB.removed_members?.[itemWsSlug] || []).map((x: string) => String(x).toLowerCase().trim()));
         if (removedSet.has(mail) || (wallet && removedSet.has(wallet)) || removedSet.has(String(item.id || "").toLowerCase().trim())) return false;
-        
+
         const isConfirmedMember = item.accepted === true || activeWsMemberMails.has(mail) || (wallet && activeWsMemberWallets.has(wallet));
         if (isConfirmedMember) {
           if (!item.accepted) {
@@ -7249,7 +7209,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
               const parsed = JSON.parse(rawMap);
               if (parsed[rawEmail]) knownWallets.push(String(parsed[rawEmail]).toLowerCase());
             }
-          } catch {}
+          } catch { }
           if (localDB._email_wallet_map?.[rawEmail]) {
             knownWallets.push(String(localDB._email_wallet_map[rawEmail]).toLowerCase());
           }
@@ -7633,6 +7593,9 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       };
       newRecord.created_by = activeUser?.id || "user-1";
     }
+    if (collection === "workspaces") {
+      newRecord.total_members = 1;
+    }
     if (collection === "projects") {
       if (localDB._deleted_project_ids && Array.isArray(localDB._deleted_project_ids)) {
         localDB._deleted_project_ids = localDB._deleted_project_ids.filter(
@@ -7642,7 +7605,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       const match = url.match(/\/api\/workspaces\/([^/]+)\//);
       const wsSlug = match ? match[1] : (localDB.workspaces?.[0]?.slug || "fiai");
       const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-      
+
       const activeCreatorId = activeUser?.id || activeUserId || "user-default";
       const activeCreatorEmail = (activeUser?.email || getLoggedInEmail() || "").toLowerCase().trim();
       const creatorUserObj = activeUser || (localDB.users || []).find((u: any) => u.id === activeCreatorId) || (localDB.users || [])[0];
@@ -8017,6 +7980,13 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
       if (returnedRecord.workspace && !returnedRecord.workspace_id)
         returnedRecord.workspace_id = returnedRecord.workspace;
+
+      if (collection === "workspaces") {
+        returnedRecord = {
+          ...returnedRecord,
+          total_members: getWorkspaceMemberCount(returnedRecord.slug, returnedRecord.id),
+        };
+      }
 
       return ok(returnedRecord);
     }

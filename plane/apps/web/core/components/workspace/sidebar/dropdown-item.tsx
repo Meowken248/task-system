@@ -17,6 +17,7 @@ import type { IWorkspace } from "@plane/types";
 import { cn, getFileURL, getUserRole } from "@plane/utils";
 // plane web imports
 import { SubscriptionPill } from "@/plane-web/components/common/subscription/subscription-pill";
+import { useMember } from "@/hooks/store/use-member";
 
 type TProps = {
   workspace: IWorkspace;
@@ -31,6 +32,16 @@ const SidebarDropdownItem = observer(function SidebarDropdownItem(props: TProps)
   const { workspaceSlug } = useParams();
   // hooks
   const { t } = useTranslation();
+  const memberStore = useMember();
+  const slug = workspace?.slug;
+  const loadedMemberCount =
+    slug && memberStore?.workspace?.getWorkspaceMemberIds
+      ? memberStore.workspace.getWorkspaceMemberIds(slug)?.length
+      : undefined;
+  const memberCount =
+    loadedMemberCount && loadedMemberCount > 0
+      ? loadedMemberCount
+      : (workspace?.total_members && workspace.total_members > 0 ? workspace.total_members : 1);
 
   return (
     <Link
@@ -76,7 +87,7 @@ const SidebarDropdownItem = observer(function SidebarDropdownItem(props: TProps)
               <div className="flex w-fit gap-2 text-13 text-tertiary capitalize">
                 <span>{getUserRole(workspace.role)?.toLowerCase() || "guest"}</span>
                 <div className="m-auto h-1 w-1 rounded-full bg-layer-1/50" />
-                <span className="capitalize">{t("member", { count: workspace.total_members || 0 })}</span>
+                <span className="capitalize">{t("member", { count: memberCount })}</span>
               </div>
             </div>
           </div>

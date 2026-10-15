@@ -108,7 +108,7 @@ export function getLoggedInUserId(): string | null {
     const uid = `user-${email.split("@")[0]}`;
     try {
       localStorage.setItem("plane_dapp_auth_user", uid);
-    } catch {}
+    } catch { }
     return uid;
   }
   const wallet = sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address");
@@ -117,7 +117,7 @@ export function getLoggedInUserId(): string | null {
     const uid = `user-${clean.slice(2, 10)}`;
     try {
       localStorage.setItem("plane_dapp_auth_user", uid);
-    } catch {}
+    } catch { }
     return uid;
   }
   return null;
@@ -156,7 +156,7 @@ export function setLoggedInUser(userId: string | null): void {
     localStorage.removeItem("last_workspace_id");
     try {
       document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
-    } catch {}
+    } catch { }
   }
 }
 
@@ -229,7 +229,7 @@ export function loadInitialDB(): Record<string, any> {
                   });
                 });
               }
-            } catch {}
+            } catch { }
           }
           if (parsed.removed_members && typeof parsed.removed_members === "object") {
             Object.keys(parsed.removed_members).forEach((ws) => {
@@ -469,7 +469,7 @@ export function removeStoredInvitation(id: string, email?: string): void {
       try {
         const parsed = JSON.parse(deletedRaw);
         if (Array.isArray(parsed)) deletedSet = new Set(parsed);
-      } catch {}
+      } catch { }
     }
     if (!localDB._deleted_invitation_ids) localDB._deleted_invitation_ids = [];
     if (id) {
@@ -504,7 +504,7 @@ export function removeStoredInvitation(id: string, email?: string): void {
           });
           localStorage.setItem("plane_dapp_all_invitations", JSON.stringify(filtered));
         }
-      } catch {}
+      } catch { }
     }
 
     // 4. Update sync cookie
@@ -552,7 +552,7 @@ export function getStoredInvitations(): any[] {
       try {
         const parsed = JSON.parse(deletedRaw);
         if (Array.isArray(parsed)) deletedSet = new Set(parsed);
-      } catch {}
+      } catch { }
     }
     if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
       localDB._deleted_invitation_ids.forEach((d: string) => deletedSet.add(d));
@@ -714,7 +714,7 @@ export function saveStoredInvitations(invites: any[]): void {
       try {
         const parsed = JSON.parse(deletedRaw);
         if (Array.isArray(parsed)) deletedSet = new Set(parsed);
-      } catch {}
+      } catch { }
     }
     if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
       localDB._deleted_invitation_ids.forEach((d: string) => deletedSet.add(d));
@@ -1174,7 +1174,7 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
       try {
         const parsed = JSON.parse(deletedInvRaw);
         if (Array.isArray(parsed)) deletedInvSet = new Set(parsed);
-      } catch {}
+      } catch { }
     }
     if (localDB.invitations && Array.isArray(localDB.invitations) && deletedInvSet.size > 0) {
       const origLen = localDB.invitations.length;
@@ -1265,7 +1265,7 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
                 }
               }
             }
-          } catch {}
+          } catch { }
         }
       }
 
@@ -1472,6 +1472,72 @@ export function getInstanceInfo() {
   };
 }
 
+export function getWorkspaceMemberCount(wsSlug: string, wsId?: string): number {
+  const wsKeys = new Set([wsSlug, wsId].filter(Boolean));
+  const ws = (localDB.workspaces || []).find((w: any) => wsKeys.has(w.slug) || wsKeys.has(w.id));
+  const targetSlug = ws?.slug || wsSlug;
+  const targetId = ws?.id || wsId || "";
+  const removedSet = new Set(
+    (localDB.removed_members?.[targetSlug] || [])
+      .concat(targetId ? (localDB.removed_members?.[targetId] || []) : [])
+      .map((a: string) => String(a).toLowerCase().trim())
+  );
+
+  const memberKeys = new Set<string>();
+
+  // 1. Workspace Owner / Creator
+  const ownerId = ws?.created_by || ws?.owner?.id;
+  const ownerEmail = (ws?.owner?.email || "").toLowerCase().trim();
+  if (ownerEmail && !removedSet.has(ownerEmail)) {
+    memberKeys.add(ownerEmail);
+  } else if (ownerId && ownerId !== "user-default" && !removedSet.has(String(ownerId).toLowerCase())) {
+    memberKeys.add(String(ownerId).toLowerCase());
+  } else if (!ownerEmail && !ownerId) {
+    memberKeys.add("owner-default");
+  }
+
+  // 2. Workspace Members from localDB.workspace_members
+  (localDB.workspace_members || []).forEach((m: any) => {
+    const isWs =
+      wsKeys.has(m.workspace) ||
+      wsKeys.has(m.workspace_id) ||
+      (ws && (m.workspace === ws.slug || m.workspace === ws.id || m.workspace_id === ws.slug || m.workspace_id === ws.id));
+    if (!isWs || m.is_active === false) return;
+
+    const mMail = (m.email || "").toLowerCase().trim();
+    const mMem = String(m.member || "").toLowerCase().trim();
+    const mId = String(m.id || "").toLowerCase().trim();
+    const mWallet = (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim();
+
+    if (removedSet.has(mMail) || removedSet.has(mMem) || removedSet.has(mId) || (mWallet && removedSet.has(mWallet))) {
+      return;
+    }
+
+    const key = mMail || mWallet || (mMem !== "user-default" ? mMem : mId);
+    if (key) memberKeys.add(key);
+  });
+
+  // 3. Accepted invitations from localDB.invitations
+  (localDB.invitations || []).forEach((inv: any) => {
+    const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+    const isWs = !invWs || wsKeys.has(invWs) || (ws && (invWs === ws.slug || invWs === ws.id));
+    if (!isWs || !inv.accepted) return;
+
+    const invMail = (inv.email || "").toLowerCase().trim();
+    const invWallet = (inv.wallet_address || "").toLowerCase().trim();
+    const invId = String(inv.id || "").toLowerCase().trim();
+
+    if (removedSet.has(invMail) || (invWallet && removedSet.has(invWallet)) || removedSet.has(invId)) {
+      return;
+    }
+
+    const key = invMail || invWallet || invId;
+    if (key) memberKeys.add(key);
+  });
+
+  return Math.max(memberKeys.size, 1);
+}
+
 export function getUserWorkspaces(userId?: string | null, email?: string | null): any[] {
   const activeId = userId || getLoggedInUserId();
   const activeMail = (email || getLoggedInEmail() || "").toLowerCase().trim();
@@ -1485,49 +1551,54 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
   const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
   const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
 
-  return (localDB.workspaces || []).filter((w: any) => {
-    if (deletedWsSlugs.has(w.slug) || deletedWsIds.has(w.id)) return false;
+  return (localDB.workspaces || [])
+    .filter((w: any) => {
+      if (deletedWsSlugs.has(w.slug) || deletedWsIds.has(w.id)) return false;
 
-    // 1. Is Creator / Owner
-    const isOwner =
-      (activeId && (w.created_by === activeId || w.owner?.id === activeId)) ||
-      (activeMail && w.owner?.email && w.owner.email.toLowerCase().trim() === activeMail);
-    if (isOwner) return true;
+      // 1. Is Creator / Owner
+      const isOwner =
+        (activeId && (w.created_by === activeId || w.owner?.id === activeId)) ||
+        (activeMail && w.owner?.email && w.owner.email.toLowerCase().trim() === activeMail);
+      if (isOwner) return true;
 
-    // Filter out if user was removed from this workspace
-    const wsRemoved = (localDB.removed_members?.[w.slug] || []).concat(localDB.removed_members?.[w.id] || []).map((x: string) => String(x).toLowerCase().trim());
-    if (wsRemoved.length > 0) {
-      const isRemoved =
-        (activeMail && wsRemoved.includes(activeMail)) ||
-        (activeId && wsRemoved.includes(activeId.toLowerCase())) ||
-        (activeWallet && wsRemoved.includes(activeWallet));
-      if (isRemoved) return false;
-    }
-
-    // 2. Is in workspace_members
-    const isMember = (localDB.workspace_members || []).some(
-      (m: any) => {
-        const matchWs = (m.workspace === w.slug || m.workspace === w.id || m.workspace_id === w.slug || m.workspace_id === w.id);
-        if (!matchWs) return false;
-        if (m.is_active === false) return false;
-        if (activeId && (m.member === activeId || m.id === activeId)) return true;
-        if (activeMail && m.email && m.email.toLowerCase().trim() === activeMail) return true;
-        if (activeWallet) {
-          const mWall = (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim();
-          if (mWall && mWall === activeWallet) return true;
-        }
-        return false;
+      // Filter out if user was removed from this workspace
+      const wsRemoved = (localDB.removed_members?.[w.slug] || []).concat(localDB.removed_members?.[w.id] || []).map((x: string) => String(x).toLowerCase().trim());
+      if (wsRemoved.length > 0) {
+        const isRemoved =
+          (activeMail && wsRemoved.includes(activeMail)) ||
+          (activeId && wsRemoved.includes(activeId.toLowerCase())) ||
+          (activeWallet && wsRemoved.includes(activeWallet));
+        if (isRemoved) return false;
       }
-    );
-    if (isMember) return true;
 
-    // 3. Fallback for unowned default workspace (when system has only 1 initial user)
-    if ((!w.created_by || w.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
-      return true;
-    }
+      // 2. Is in workspace_members
+      const isMember = (localDB.workspace_members || []).some(
+        (m: any) => {
+          const matchWs = (m.workspace === w.slug || m.workspace === w.id || m.workspace_id === w.slug || m.workspace_id === w.id);
+          if (!matchWs) return false;
+          if (m.is_active === false) return false;
+          if (activeId && (m.member === activeId || m.id === activeId)) return true;
+          if (activeMail && m.email && m.email.toLowerCase().trim() === activeMail) return true;
+          if (activeWallet) {
+            const mWall = (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim();
+            if (mWall && mWall === activeWallet) return true;
+          }
+          return false;
+        }
+      );
+      if (isMember) return true;
 
-    return false;
-  });
+      // 3. Fallback for unowned default workspace (when system has only 1 initial user)
+      if ((!w.created_by || w.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
+        return true;
+      }
+
+      return false;
+    })
+    .map((w: any) => ({
+      ...w,
+      total_members: getWorkspaceMemberCount(w.slug, w.id),
+    }));
 }
 
 export function getUserProfile() {
@@ -1608,8 +1679,8 @@ export function getUserProfile() {
   const acceptedInv = allInvites.find((inv: any) =>
     inv.accepted &&
     ((userEmail && (inv.email || "").toLowerCase().trim() === userEmail) ||
-     (userId && (inv.member === userId || (inv.email || "").toLowerCase().trim() === String(userId).toLowerCase().trim())) ||
-     (activeWallet && (inv.wallet_address || "").toLowerCase() === activeWallet))
+      (userId && (inv.member === userId || (inv.email || "").toLowerCase().trim() === String(userId).toLowerCase().trim())) ||
+      (activeWallet && (inv.wallet_address || "").toLowerCase() === activeWallet))
   );
 
   const myWorkspaces = getUserWorkspaces(activeUser.id, activeUser.email);
