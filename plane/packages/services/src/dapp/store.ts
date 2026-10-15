@@ -1,5 +1,6 @@
 import type { DAppDatabase, DAppWorkspace } from "./types";
-import { getStoredCredentials, setStoredCredential } from "./auth";
+import { getStoredCredentials, setStoredCredential, createUserObject } from "./auth";
+import { saveSnapshotToIDB } from "./indexed-db";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -90,7 +91,26 @@ export const defaultDB: DAppDatabase = {
 // ── Auth state (persisted in localStorage and sessionStorage) ─────────────────
 export function getLoggedInUserId(): string | null {
   if (typeof window === "undefined") return null;
-  return sessionStorage.getItem("plane_dapp_auth_user") || localStorage.getItem("plane_dapp_auth_user");
+  const stored = sessionStorage.getItem("plane_dapp_auth_user") || localStorage.getItem("plane_dapp_auth_user");
+  if (stored) return stored;
+  const email = getLoggedInEmail();
+  if (email) {
+    const uid = `user-${email.split("@")[0]}`;
+    try {
+      localStorage.setItem("plane_dapp_auth_user", uid);
+    } catch {}
+    return uid;
+  }
+  const wallet = sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address");
+  if (wallet) {
+    const clean = wallet.trim().toLowerCase();
+    const uid = `user-${clean.slice(2, 10)}`;
+    try {
+      localStorage.setItem("plane_dapp_auth_user", uid);
+    } catch {}
+    return uid;
+  }
+  return null;
 }
 
 export function getLoggedInEmail(): string | null {
@@ -99,7 +119,13 @@ export function getLoggedInEmail(): string | null {
 }
 
 export function isLoggedIn(): boolean {
-  return !!getLoggedInUserId();
+  if (getLoggedInUserId()) return true;
+  if (getLoggedInEmail()) return true;
+  if (typeof window !== "undefined") {
+    const activeWallet = sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address");
+    if (activeWallet) return true;
+  }
+  return false;
 }
 
 export function setLoggedInUser(userId: string | null): void {
@@ -383,7 +409,7 @@ export function removeStoredInvitation(id: string, email?: string): void {
         return true;
       });
     }
-    // 2. Track deleted ID & email in localStorage so it won't be resurrected
+    // 2. Track deleted ID & email in localStorage and localDB so it won't be resurrected
     let deletedSet = new Set<string>();
     const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
     if (deletedRaw) {
@@ -392,12 +418,22 @@ export function removeStoredInvitation(id: string, email?: string): void {
         if (Array.isArray(parsed)) deletedSet = new Set(parsed);
       } catch {}
     }
-    if (id) deletedSet.add(id);
+    if (!localDB._deleted_invitation_ids) localDB._deleted_invitation_ids = [];
+    if (id) {
+      deletedSet.add(id);
+      if (!localDB._deleted_invitation_ids.includes(id)) {
+        localDB._deleted_invitation_ids.push(id);
+      }
+    }
     if (cleanMail) {
-      deletedSet.add(cleanMail);
       (localDB.workspaces || []).forEach((w: any) => {
         const s = w.slug || w.id;
-        if (s) deletedSet.add(`inv-${s}-${cleanMail}`);
+        if (s) {
+          deletedSet.add(`inv-${s}-${cleanMail}`);
+          if (!localDB._deleted_invitation_ids.includes(`inv-${s}-${cleanMail}`)) {
+            localDB._deleted_invitation_ids.push(`inv-${s}-${cleanMail}`);
+          }
+        }
       });
     }
     localStorage.setItem("plane_dapp_deleted_invitations", JSON.stringify(Array.from(deletedSet)));
@@ -465,6 +501,9 @@ export function getStoredInvitations(): any[] {
         if (Array.isArray(parsed)) deletedSet = new Set(parsed);
       } catch {}
     }
+    if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
+      localDB._deleted_invitation_ids.forEach((d: string) => deletedSet.add(d));
+    }
 
     // Active member emails to auto-resolve accepted status
     const activeMemberEmails = new Set(
@@ -495,11 +534,11 @@ export function getStoredInvitations(): any[] {
     };
 
     const addInv = (inv: any) => {
-      if (!inv || !inv.id || deletedSet.has(inv.id)) return;
+      if (!inv || !inv.id || deletedSet.has(inv.id) || (inv.token && deletedSet.has(inv.token))) return;
       const invMail = (inv.email || "").toLowerCase().trim();
-      if (invMail && deletedSet.has(invMail)) return;
+      const hasSignedToken = Boolean(inv.token && String(inv.token).startsWith("inv_"));
       const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-      if (invWs && localDB.removed_members?.[invWs]) {
+      if (invWs && localDB.removed_members?.[invWs] && !hasSignedToken) {
         const isRemoved = localDB.removed_members[invWs].some(
           (r: string) => r.toLowerCase().trim() === invMail || r.toLowerCase().trim() === inv.id
         );
@@ -596,9 +635,11 @@ export function getStoredInvitations(): any[] {
     }
 
     const filteredList = list.filter((inv: any) => {
+      if (deletedSet.has(inv.id) || (inv.token && deletedSet.has(inv.token))) return false;
       const invMail = (inv.email || "").toLowerCase().trim();
+      const hasSignedToken = Boolean(inv.token && String(inv.token).startsWith("inv_"));
       const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-      if (invWs && localDB.removed_members?.[invWs]) {
+      if (invWs && localDB.removed_members?.[invWs] && !hasSignedToken) {
         const isRemoved = localDB.removed_members[invWs].some((r: string) => r.toLowerCase().trim() === invMail);
         if (isRemoved) return false;
       }
@@ -621,6 +662,9 @@ export function saveStoredInvitations(invites: any[]): void {
         const parsed = JSON.parse(deletedRaw);
         if (Array.isArray(parsed)) deletedSet = new Set(parsed);
       } catch {}
+    }
+    if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
+      localDB._deleted_invitation_ids.forEach((d: string) => deletedSet.add(d));
     }
 
     // Active member emails to auto-resolve accepted status
@@ -740,6 +784,12 @@ export function saveDB() {
     if (localDB.removed_members) {
       localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
     }
+  } catch (err) {
+    console.warn("[DApp Store] localStorage.setItem failed (possibly quota exceeded):", err);
+  }
+  try {
+    const curCid = (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") : null);
+    void saveSnapshotToIDB(localDB, curCid || undefined);
   } catch { }
   syncWorkspacesToCookie();
   try {
@@ -889,10 +939,19 @@ if (dappSyncChannel) {
               ""
             ).toLowerCase().trim();
 
+            const curUser = (localDB.users || []).find((u: any) =>
+              (activeUid && String(u.id).toLowerCase().trim() === activeUid) ||
+              (activeMail && (u.email || "").toLowerCase().trim() === activeMail)
+            );
+            const curUserEth = (curUser?.metanode_wallet_address || curUser?.wallet_address || "").toLowerCase().trim();
+            const curUserMail = (curUser?.email || "").toLowerCase().trim();
+
             const isCurrentRemoved =
               (activeUid && ridSet.has(activeUid)) ||
               (activeMail && ridSet.has(activeMail)) ||
-              (activeWallet && ridSet.has(activeWallet));
+              (curUserMail && ridSet.has(curUserMail)) ||
+              (activeWallet && ridSet.has(activeWallet)) ||
+              (curUserEth && ridSet.has(curUserEth));
 
             if (isCurrentRemoved) {
               console.warn(`[DApp DB] Current session (${activeMail || activeUid || activeWallet}) was removed from workspace "${ws}". Triggering real-time kick-out.`);
@@ -1316,8 +1375,13 @@ export function getInstanceInfo() {
 
 export function getUserWorkspaces(userId?: string | null, email?: string | null): any[] {
   const activeId = userId || getLoggedInUserId();
-  const activeMail = (email || (typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null) || "").toLowerCase().trim();
-  if (!activeId && !activeMail) return [];
+  const activeMail = (email || getLoggedInEmail() || "").toLowerCase().trim();
+  const activeWallet = (
+    typeof window !== "undefined"
+      ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))
+      : null
+  )?.toLowerCase().trim();
+  if (!activeId && !activeMail && !activeWallet) return [];
 
   const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
   const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
@@ -1331,10 +1395,18 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
 
     // 2. Is in workspace_members
     const isMember = (localDB.workspace_members || []).some(
-      (m: any) =>
-        (m.workspace === w.slug || m.workspace === w.id || m.workspace_id === w.slug || m.workspace_id === w.id) &&
-        (m.member === activeId || m.id === activeId || (activeMail && m.email?.toLowerCase().trim() === activeMail)) &&
-        m.is_active !== false
+      (m: any) => {
+        const matchWs = (m.workspace === w.slug || m.workspace === w.id || m.workspace_id === w.slug || m.workspace_id === w.id);
+        if (!matchWs) return false;
+        if (m.is_active === false) return false;
+        if (activeId && (m.member === activeId || m.id === activeId)) return true;
+        if (activeMail && m.email && m.email.toLowerCase().trim() === activeMail) return true;
+        if (activeWallet) {
+          const mWall = (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim();
+          if (mWall && mWall === activeWallet) return true;
+        }
+        return false;
+      }
     );
     if (isMember) return true;
 
@@ -1349,19 +1421,38 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
 
 export function getUserProfile() {
   const activeUserId = getLoggedInUserId();
-  const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
-  const activeUser = (localDB.users || []).find((u: any) =>
+  const loggedInEmail = getLoggedInEmail();
+  const activeWallet = typeof window !== "undefined"
+    ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))?.toLowerCase().trim()
+    : null;
+
+  let activeUser = (localDB.users || []).find((u: any) =>
     (activeUserId && u.id === activeUserId) ||
-    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
+    (loggedInEmail && u.email?.toLowerCase().trim() === loggedInEmail.toLowerCase().trim()) ||
+    (activeWallet && (u.metanode_wallet_address?.toLowerCase() === activeWallet || u.id?.toLowerCase() === activeWallet))
   ) || null;
 
   const localSavedTheme = typeof window !== "undefined" ? (localStorage.getItem("theme") || localStorage.getItem("plane_user_theme")) : null;
+
+  if (!activeUser) {
+    if (loggedInEmail || activeWallet) {
+      const email = loggedInEmail || (activeWallet ? `${activeWallet}@fiai.network` : "user@plane.local");
+      const namePart = email.split("@")[0];
+      const newUser = createUserObject(activeUserId || activeWallet || `user-${namePart}`, email);
+      if (activeWallet) (newUser as any).metanode_wallet_address = activeWallet;
+      if (!localDB.users) localDB.users = [];
+      localDB.users.push(newUser);
+      saveDB();
+      activeUser = newUser;
+    }
+  }
 
   if (!activeUser) {
     const fallbackTheme = (localSavedTheme && localSavedTheme !== "system") ? localSavedTheme : "dark";
     return {
       id: "anonymous",
       user: "anonymous",
+      email: loggedInEmail || "",
       role: "admin",
       last_workspace_id: null,
       last_workspace_slug: null,
@@ -1405,8 +1496,11 @@ export function getUserProfile() {
     ...(localDB.invitations || []),
     ...getStoredInvitations(),
   ];
+  const myWsKeys = new Set(myWorkspaces.map((w: any) => w.slug || w.id));
   const hasPendingInvitations = allInvites.some((inv: any) => {
     if (inv.accepted) return false;
+    const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+    if (invWs && myWsKeys.has(invWs)) return false;
     const invEmail = (inv.email || "").toLowerCase().trim();
     return (
       (userEmail && invEmail === userEmail) ||

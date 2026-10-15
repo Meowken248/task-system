@@ -7,6 +7,7 @@ import {
   getContractGas,
   getDefaultWorkspaceSlug,
   getLoggedInUserId,
+  getLoggedInEmail,
   syncWorkspacesToCookie,
   registerSaveHook,
   syncCrossPortWorkspaces,
@@ -15,6 +16,12 @@ import {
   saveStoredInvitations,
 } from "./store";
 import { setStoredCredential } from "./auth";
+import {
+  saveSnapshotToIDB,
+  loadSnapshotFromIDB,
+  saveCidToIDB,
+  getCidFromIDB,
+} from "./indexed-db";
 
 /**
  * Generic on-chain sync (fire-and-forget, never blocks UI)
@@ -591,14 +598,9 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
     localStorage.getItem("plane_dapp_ipfs_cid_local") ||
     localStorage.getItem("plane_dapp_ipfs_cid_last_valid");
 
-  if (!force && !isDAppDBInitialized && !hasRealContent) {
-    console.log("[DApp DB] Bỏ qua IPFS upload — cơ sở dữ liệu chưa hoàn tất nạp từ IPFS/chain.");
-    return null;
-  }
-
-  if (existingCID && !existingCID.startsWith("bafkrei") && !hasRealContent) {
-    console.warn("[DApp DB] Chặn upload IPFS rỗng: Tránh ghi đè mất dữ liệu cũ trên IPFS:", existingCID);
-    return existingCID;
+  if (!force && !hasRealContent) {
+    console.warn("[DApp DB] Chặn upload IPFS rỗng: Cơ sở dữ liệu chưa có dự án hoặc công việc hợp lệ. Tránh ghi đè làm mất dữ liệu trên IPFS/Chain.");
+    return existingCID || null;
   }
 
   const serialized = JSON.stringify(dbToSave);
@@ -655,6 +657,8 @@ export async function uploadToIPFS(force = false): Promise<string | null> {
     localStorage.setItem("plane_dapp_ipfs_cid_local", cid);
     localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cid);
     syncWorkspacesToCookie(cid);
+    void saveCidToIDB(cid);
+    void saveSnapshotToIDB(dbToSave, cid);
     console.log(`[DApp DB] ✅ Auto-save IPFS thành công: ${cid}`);
 
     const shouldAutoCommitOnChain = getEnvVar("VITE_AUTO_COMMIT_ONCHAIN") === "true";
@@ -870,6 +874,15 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
     }
   } catch { }
 
+  // Check if IndexedDB already has this CID's snapshot (offline / instant cache)
+  try {
+    const idbSnapshot = await loadSnapshotFromIDB();
+    if (idbSnapshot?.cid === cleanCid && idbSnapshot.data) {
+      console.log(`[DApp DB] Tìm thấy CID ${cleanCid} trực tiếp trong IndexedDB.`);
+      return idbSnapshot.data;
+    }
+  } catch { }
+
   const gateways = getConfiguredIpfsGateways(cleanCid);
 
   for (const gw of gateways) {
@@ -954,6 +967,34 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     ...(localDB._deleted_issue_ids || []),
     ...(ipfsDB._deleted_issue_ids || []),
   ]);
+  const mergedDeletedInvitations = new Set<string>([
+    ...(localDB._deleted_invitation_ids || []),
+    ...(ipfsDB._deleted_invitation_ids || []),
+  ]);
+
+  const mergedRemovedMembers: Record<string, string[]> = {};
+  const allRemovedSources: any[] = [localDB.removed_members, ipfsDB.removed_members];
+  if (typeof window !== "undefined") {
+    try {
+      const raw = localStorage.getItem("plane_dapp_removed_members");
+      if (raw) allRemovedSources.push(JSON.parse(raw));
+    } catch {}
+  }
+  for (const src of allRemovedSources) {
+    if (src && typeof src === "object") {
+      for (const [ws, list] of Object.entries(src)) {
+        if (!mergedRemovedMembers[ws]) mergedRemovedMembers[ws] = [];
+        if (Array.isArray(list)) {
+          for (const item of list) {
+            const clean = String(item).toLowerCase().trim();
+            if (clean && !mergedRemovedMembers[ws].includes(clean)) {
+              mergedRemovedMembers[ws].push(clean);
+            }
+          }
+        }
+      }
+    }
+  }
 
   for (const key in localDB) delete localDB[key];
   Object.assign(localDB, ipfsDB);
@@ -962,6 +1003,13 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   localDB._deleted_workspace_slugs = Array.from(mergedDeletedWorkspaceSlugs);
   localDB._deleted_project_ids = Array.from(mergedDeletedProjects);
   localDB._deleted_issue_ids = Array.from(mergedDeletedIssues);
+  localDB._deleted_invitation_ids = Array.from(mergedDeletedInvitations);
+  localDB.removed_members = mergedRemovedMembers;
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem("plane_dapp_removed_members", JSON.stringify(mergedRemovedMembers));
+    } catch {}
+  }
 
   if (!localDB.users) localDB.users = [];
   for (const u of currentUsers) {
@@ -1135,6 +1183,15 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
 
   if (!localDB.workspace_members) localDB.workspace_members = [];
   for (const wm of currentWorkspaceMembers) {
+    const wsKey = wm.workspace || wm.workspace_id;
+    const rSet = new Set((mergedRemovedMembers[wsKey] || []).map((x: string) => x.toLowerCase().trim()));
+    const wmMail = (wm.email || "").toLowerCase().trim();
+    const wmMem = String(wm.member || "").toLowerCase().trim();
+    const wmId = String(wm.id || "").toLowerCase().trim();
+    const wmWall = (wm.wallet_address || "").toLowerCase().trim();
+    if (rSet.has(wmMail) || rSet.has(wmMem) || rSet.has(wmId) || rSet.has(wmWall)) {
+      continue; // NEVER resurrect a removed member!
+    }
     const existingIdx = localDB.workspace_members.findIndex(
       (m: any) =>
         (m.workspace === wm.workspace || m.workspace_id === wm.workspace_id) &&
@@ -1146,6 +1203,17 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       localDB.workspace_members[existingIdx] = { ...localDB.workspace_members[existingIdx], ...wm };
     }
   }
+
+  // Enforce removal filter across all workspace_members
+  localDB.workspace_members = (localDB.workspace_members || []).filter((m: any) => {
+    const wsKey = m.workspace || m.workspace_id;
+    const rSet = new Set((mergedRemovedMembers[wsKey] || []).map((x: string) => x.toLowerCase().trim()));
+    const mMail = (m.email || "").toLowerCase().trim();
+    const mMem = String(m.member || "").toLowerCase().trim();
+    const mId = String(m.id || "").toLowerCase().trim();
+    const mWall = (m.wallet_address || "").toLowerCase().trim();
+    return !rSet.has(mMail) && !rSet.has(mMem) && !rSet.has(mId) && !rSet.has(mWall);
+  });
 
   if (!localDB.project_members) localDB.project_members = [];
   for (const pm of currentProjectMembers) {
@@ -1164,20 +1232,25 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     (pm: any) => !mergedDeletedProjects.has(pm.project) && !mergedDeletedProjects.has(pm.project_id)
   );
 
-  let deletedInvSet = new Set<string>();
+  let deletedInvSet = new Set<string>(mergedDeletedInvitations);
   if (typeof window !== "undefined") {
     const deletedInvRaw = localStorage.getItem("plane_dapp_deleted_invitations");
     if (deletedInvRaw) {
       try {
         const parsed = JSON.parse(deletedInvRaw);
-        if (Array.isArray(parsed)) deletedInvSet = new Set(parsed);
+        if (Array.isArray(parsed)) parsed.forEach((d) => deletedInvSet.add(d));
       } catch {}
     }
   }
 
   if (!localDB.invitations) localDB.invitations = [];
   for (const inv of currentInvitations) {
-    if (deletedInvSet.has(inv.id)) continue;
+    if (deletedInvSet.has(inv.id) || (inv.email && deletedInvSet.has((inv.email).toLowerCase().trim()))) continue;
+    const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+    const rSet = new Set((mergedRemovedMembers[invWs] || []).map((x: string) => x.toLowerCase().trim()));
+    if (rSet.has(String(inv.id).toLowerCase().trim()) || (inv.email && rSet.has((inv.email).toLowerCase().trim()))) {
+      continue;
+    }
     const existingIdx = localDB.invitations.findIndex((i: any) => i.id === inv.id);
     if (existingIdx === -1) {
       localDB.invitations.push(inv);
@@ -1185,7 +1258,13 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       if (inv.accepted) localDB.invitations[existingIdx].accepted = true;
     }
   }
-  localDB.invitations = localDB.invitations.filter((i: any) => !deletedInvSet.has(i.id));
+  localDB.invitations = localDB.invitations.filter((i: any) => {
+    if (deletedInvSet.has(i.id) || (i.email && deletedInvSet.has((i.email).toLowerCase().trim()))) return false;
+    const invWs = i.workspace?.slug || i.workspace_slug || i.workspace?.id || i.workspace;
+    const rSet = new Set((mergedRemovedMembers[invWs] || []).map((x: string) => x.toLowerCase().trim()));
+    if (rSet.has(String(i.id).toLowerCase().trim()) || (i.email && rSet.has((i.email).toLowerCase().trim()))) return false;
+    return true;
+  });
   saveStoredInvitations(localDB.invitations);
 
   if (!localDB.notifications) localDB.notifications = [];
@@ -1331,8 +1410,38 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     const snapshot = JSON.stringify(localDB);
     localStorage.setItem("plane_dapp_local_db", snapshot);
     sessionStorage.setItem("plane_dapp_latest_db", snapshot);
+  } catch (err) {
+    console.warn("[DApp DB] Không thể lưu cache local:", err);
+  }
+  try {
+    void saveSnapshotToIDB(localDB, lastUploadedCID || undefined);
   } catch { }
   syncWorkspacesToCookie();
+  if (typeof window !== "undefined") {
+    const activeUid = (getLoggedInUserId?.() || localStorage.getItem("plane_dapp_auth_user") || "").toLowerCase().trim();
+    const activeMail = (getLoggedInEmail?.() || localStorage.getItem("plane_dapp_auth_email") || "").toLowerCase().trim();
+    const activeWallet = (getStoredWalletAddress() || "").toLowerCase().trim();
+
+    if (localDB.removed_members && typeof localDB.removed_members === "object") {
+      for (const [ws, rList] of Object.entries(localDB.removed_members)) {
+        const ridSet = new Set((rList as string[]).map((x: string) => String(x).toLowerCase().trim()));
+        const isRemoved =
+          (activeUid && ridSet.has(activeUid)) ||
+          (activeMail && ridSet.has(activeMail)) ||
+          (activeWallet && ridSet.has(activeWallet));
+        if (isRemoved) {
+          console.warn(`[DApp DB] Current session (${activeMail || activeUid || activeWallet}) was removed from workspace "${ws}". Triggering real-time kick-out.`);
+          window.dispatchEvent(
+            new CustomEvent("plane_member_kicked_out", {
+              detail: { workspaceSlug: ws, reason: "removed" },
+            })
+          );
+        }
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent("plane_dapp_db_reloaded", { detail: { cid: lastUploadedCID } }));
+  }
 }
 
 export function resolveDBConflict(choice: "USE_CHAIN" | "USE_LOCAL", cid: string, ipfsDB: any): void {
@@ -1360,6 +1469,8 @@ export async function restoreFromIPFS(cid: string): Promise<boolean> {
       localStorage.setItem("plane_dapp_ipfs_cid_local", cleanCid);
       localStorage.setItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`, cleanCid);
       lastUploadedCID = cleanCid;
+      void saveCidToIDB(cleanCid);
+      window.dispatchEvent(new CustomEvent("plane_dapp_db_reloaded", { detail: { cid: cleanCid } }));
     }
     console.log(`[DApp DB] Khôi phục thành công từ IPFS CID: ${cleanCid}`);
     return true;
@@ -1399,6 +1510,10 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
       }
     }
 
+    if (!candidateCid) {
+      candidateCid = (await getCidFromIDB().catch(() => null)) || "";
+    }
+
     if (!candidateCid && wsRegistryAddr) {
       try {
         const wsInfoCalldata = abiEncodeGetWorkspace(defaultSlug);
@@ -1419,23 +1534,42 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
         lastUploadedCID = candidateCid;
         localStorage.setItem("plane_dapp_ipfs_cid_local", candidateCid);
         localStorage.setItem("plane_dapp_ipfs_cid_last_valid", candidateCid);
+        void saveCidToIDB(candidateCid);
+        void saveSnapshotToIDB(ipfsDB, candidateCid);
         isDAppDBInitialized = true;
-        return { status: "OK" };
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("plane_dapp_db_reloaded", { detail: { cid: candidateCid } }));
+        }
+        return { status: "OK", cid: candidateCid };
       }
     }
 
+    let hadCachedDB = false;
     try {
       const cached = localStorage.getItem("plane_dapp_local_db") || sessionStorage.getItem("plane_dapp_latest_db");
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed && typeof parsed === "object") {
           applyOffchainDB(parsed);
+          hadCachedDB = true;
           console.log("[DApp DB] Nạp DB từ local cache snapshot thành công.");
         }
       }
     } catch { }
 
-    if (!lastUploadedCID || lastUploadedCID.startsWith("bafkrei")) {
+    if (!hadCachedDB && !checkHasRealContent()) {
+      try {
+        const idbBackup = await loadSnapshotFromIDB();
+        if (idbBackup?.data) {
+          applyOffchainDB(idbBackup.data);
+          hadCachedDB = true;
+          if (idbBackup.cid) lastUploadedCID = idbBackup.cid;
+          console.log("[DApp DB] Phục hồi cơ sở dữ liệu từ IndexedDB thành công.");
+        }
+      } catch { }
+    }
+
+    if ((!lastUploadedCID || lastUploadedCID.startsWith("bafkrei")) && checkHasRealContent()) {
       scheduleIPFSUpload();
     }
 
@@ -1489,8 +1623,10 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
         const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
         const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
         const urlSlug = urlParams?.get("slug") || "";
+        const pathnameSlug = typeof window !== "undefined" ? window.location.pathname.split("/").filter(Boolean)[0] : "";
+        const cleanPathSlug = (pathnameSlug && !["workspace-invitations", "profile", "create-workspace", "onboarding", "invitations"].includes(pathnameSlug)) ? pathnameSlug : "";
         const savedLastSlug = (typeof localStorage !== "undefined" ? localStorage.getItem("last_workspace_slug") : "") || "";
-        const slugsToCheck = Array.from(new Set([...userWsSlugs, defaultSlug, urlSlug, savedLastSlug])).filter(
+        const slugsToCheck = Array.from(new Set([...userWsSlugs, defaultSlug, urlSlug, cleanPathSlug, savedLastSlug])).filter(
           (s) => Boolean(s) && !deletedWsSlugs.has(s) && !deletedWsIds.has(s)
         );
 
@@ -1537,37 +1673,83 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
     const onChainCid = onChainWorkspaceCid || onChainUserCid;
     baseCID = onChainUserCid || "";
 
+    const idbCid = await getCidFromIDB().catch(() => null);
+
     const cachedIpfsCid =
       cookieCid ||
       localStorage.getItem("plane_dapp_ipfs_cid_local") ||
       localStorage.getItem("plane_dapp_ipfs_cid_last_valid") ||
-      localStorage.getItem(`plane_dapp_ipfs_cid_${currentUserAddress}`);
-    const targetCID = cachedIpfsCid || onChainCid;
+      localStorage.getItem(`plane_dapp_ipfs_cid_${currentUserAddress}`) ||
+      idbCid ||
+      "";
+
+    const isLocalDirty = typeof window !== "undefined" && Boolean((window as any).__isDAppDirty);
+
+    // ON-CHAIN FIRST PRIORITY:
+    // If local changes are not dirty and onChainCid exists, prioritize onChainCid!
+    let targetCID = "";
+    if (onChainCid && !onChainCid.startsWith("bafkrei") && !isLocalDirty) {
+      targetCID = onChainCid;
+    } else if (cachedIpfsCid) {
+      targetCID = cachedIpfsCid;
+    } else {
+      targetCID = onChainCid || "";
+    }
+
+    let loadedDB: any = null;
+    let loadedCID: string = "";
 
     if (targetCID && targetCID !== "") {
       const ipfsDB = await fetchFromIPFS(targetCID);
       if (ipfsDB) {
-        applyOffchainDB(ipfsDB);
-        lastUploadedCID = targetCID;
-        if (typeof window !== "undefined") {
-          localStorage.setItem("plane_dapp_ipfs_cid_local", targetCID);
-          localStorage.setItem("plane_dapp_ipfs_cid_last_valid", targetCID);
-        }
-        syncWorkspacesToCookie(targetCID);
-        isDAppDBInitialized = true;
-        return { status: "OK" };
+        loadedDB = ipfsDB;
+        loadedCID = targetCID;
       }
     }
 
-    if (onChainCid && onChainCid !== targetCID) {
-      const ipfsDB = await fetchFromIPFS(onChainCid);
-      if (ipfsDB) {
-        applyOffchainDB(ipfsDB);
-        lastUploadedCID = onChainCid;
-        syncWorkspacesToCookie(onChainCid);
-        isDAppDBInitialized = true;
-        return { status: "OK" };
+    // Fallback: If primary targetCID failed, try alternate candidate
+    if (!loadedDB) {
+      const fallbackCID = (targetCID === onChainCid ? cachedIpfsCid : onChainCid);
+      if (fallbackCID && fallbackCID !== targetCID) {
+        console.log(`[DApp DB] Thử tải dữ liệu từ fallback CID: ${fallbackCID}`);
+        const fallbackDB = await fetchFromIPFS(fallbackCID);
+        if (fallbackDB) {
+          loadedDB = fallbackDB;
+          loadedCID = fallbackCID;
+        }
       }
+    }
+
+    // Fallback: If network / IPFS unavailable, check IndexedDB if localDB is empty
+    if (!loadedDB && !checkHasRealContent()) {
+      try {
+        const idbBackup = await loadSnapshotFromIDB();
+        if (idbBackup?.data) {
+          console.log("[DApp DB] Phục hồi cơ sở dữ liệu từ IndexedDB do IPFS/local rỗng.");
+          loadedDB = idbBackup.data;
+          loadedCID = idbBackup.cid || targetCID || "";
+        }
+      } catch { }
+    }
+
+    if (loadedDB) {
+      applyOffchainDB(loadedDB);
+      if (loadedCID) {
+        lastUploadedCID = loadedCID;
+        if (typeof window !== "undefined") {
+          localStorage.setItem("plane_dapp_ipfs_cid_local", loadedCID);
+          localStorage.setItem("plane_dapp_ipfs_cid_last_valid", loadedCID);
+          localStorage.setItem(`plane_dapp_ipfs_cid_${currentUserAddress}`, loadedCID);
+        }
+        syncWorkspacesToCookie(loadedCID);
+        void saveCidToIDB(loadedCID);
+        void saveSnapshotToIDB(loadedDB, loadedCID);
+      }
+      isDAppDBInitialized = true;
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("plane_dapp_db_reloaded", { detail: { cid: loadedCID } }));
+      }
+      return { status: "OK", cid: loadedCID };
     }
 
     isDAppDBInitialized = true;
@@ -1581,9 +1763,15 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
 
 export async function initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: any }> {
   const timeoutMs = 20000;
-  const timeoutTask = new Promise<never>((_, reject) => {
+  const timeoutTask = new Promise<{ status: string; cid?: string; ipfsDB?: any }>((resolve, reject) => {
     setTimeout(() => {
-      reject(new Error(`Quá thời gian kết nối (${timeoutMs / 1000} giây). Lỗi mạng, SSL, hoặc Bridge không phản hồi.`));
+      if (checkHasRealContent()) {
+        console.warn(`[DApp DB] Quá thời gian kết nối (${timeoutMs / 1000}s) khi đồng bộ online, tự động dùng dữ liệu offline cục bộ.`);
+        isDAppDBInitialized = true;
+        resolve({ status: "OK" });
+      } else {
+        reject(new Error(`Quá thời gian kết nối (${timeoutMs / 1000} giây). Lỗi mạng, SSL, hoặc Bridge không phản hồi.`));
+      }
     }, timeoutMs);
   });
 
@@ -1703,8 +1891,8 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
             const roleCalldata = abiEncodeGetMemberRole(targetSlug, currentUserAddress as string);
             const roleRaw = await directRpcRead(wsRegistryAddr, roleCalldata, 3000).catch(() => "0x");
             const memberRole = decodeAbiUint8(roleRaw);
-            // Role.Admin = 2, Role.Owner = 3 in PlaneWorkspaceRegistry.sol
-            canUpdateWorkspace = memberRole >= 2;
+            // Role.Member = 1, Role.Admin = 2, Role.Owner = 3 in PlaneWorkspaceRegistry.sol
+            canUpdateWorkspace = memberRole >= 1;
           }
         }
       } catch {
@@ -1737,7 +1925,7 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
             });
         } else {
           console.info(
-            `[DApp Sync] Bỏ qua updateWorkspaceCID("${targetSlug}") vì ví ${currentUserAddress} không phải Owner/Admin của workspace trên contract.`
+            `[DApp Sync] Bỏ qua updateWorkspaceCID("${targetSlug}") vì ví ${currentUserAddress} không phải Member/Admin/Owner của workspace trên contract.`
           );
         }
       } else {

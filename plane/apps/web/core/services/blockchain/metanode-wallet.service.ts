@@ -16,6 +16,8 @@ let systemCorePromise: Promise<ConnectWallet> | null = null;
 let connectWalletPopup: Window | null = null;
 let currentPlaneUserId: string | null = null;
 let linkedWalletAddress: string | null = null;
+export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+let activeResolvePromise: Promise<string> | null = null;
 const userService = new UserService();
 
 function walletStorageKey(userId: string): string {
@@ -40,7 +42,11 @@ export function configureMetanodeWalletUser(userId?: string, walletAddress?: str
     linkedWalletAddress = null;
     return;
   }
-  const localAddress = window.localStorage.getItem(walletStorageKey(currentPlaneUserId))?.trim() || "";
+  const localAddress =
+    window.localStorage.getItem(walletStorageKey(currentPlaneUserId))?.trim() ||
+    window.sessionStorage.getItem("plane_active_wallet_address")?.trim() ||
+    window.localStorage.getItem("plane_active_wallet_address")?.trim() ||
+    "";
   const serverAddress = walletAddress?.trim() || "";
   // Prefer the browser's locally linked wallet over a shared IPFS snapshot address
   linkedWalletAddress = isWalletAddress(localAddress)
@@ -137,16 +143,26 @@ async function getActiveWalletAddress(): Promise<string | null> {
   return readAddress(await sdk.request<unknown>("getActiveWallet", {}).catch(() => null));
 }
 
-async function dismissMetanodeWalletPicker(address: string): Promise<void> {
-  const target = normalizeWalletAddress(address);
-  const wallet = (await getWallets().catch(() => [])).find(
-    (candidate) => readAddress(candidate)?.toLowerCase() === target
-  );
+async function dismissMetanodeWalletPicker(address?: string): Promise<void> {
+  if (address) {
+    const target = normalizeWalletAddress(address);
+    const wallet = (await getWallets().catch(() => [])).find(
+      (candidate) => readAddress(candidate)?.toLowerCase() === target
+    );
 
-  if (wallet) {
-    void import("@metanodejs/system-core")
-      .then(({ closeSelectPaymentWallet }) => closeSelectPaymentWallet(wallet as Wallet))
-      .catch((error) => console.warn("MetaNode wallet picker could not be closed through system-core:", error));
+    if (wallet) {
+      void import("@metanodejs/system-core")
+        .then(({ closeSelectPaymentWallet }) => closeSelectPaymentWallet(wallet as Wallet))
+        .catch((error) => console.warn("MetaNode wallet picker could not be closed through system-core:", error));
+    }
+  }
+
+  if (typeof document !== "undefined") {
+    document.querySelectorAll(".fiai-modal-overlay").forEach((el) => {
+      try {
+        el.remove();
+      } catch {}
+    });
   }
 
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -158,10 +174,15 @@ async function dismissMetanodeWalletPicker(address: string): Promise<void> {
 
 async function persistLinkedWallet(address: string): Promise<void> {
   const userId = getEffectivePlaneUserId();
-  if (!userId) throw new Error("Hãy đăng nhập Plane trước khi kết nối ví MetaNode.");
   const normalizedAddress = normalizeWalletAddress(address);
   linkedWalletAddress = normalizedAddress;
-  window.localStorage.setItem(walletStorageKey(userId), normalizedAddress);
+  if (typeof window !== "undefined") {
+    window.sessionStorage.setItem("plane_active_wallet_address", normalizedAddress);
+    window.localStorage.setItem("plane_active_wallet_address", normalizedAddress);
+    if (userId) {
+      window.localStorage.setItem(walletStorageKey(userId), normalizedAddress);
+    }
+  }
   try {
     await userService.updateUser({ metanode_wallet_address: normalizedAddress });
   } catch (error) {
@@ -323,7 +344,29 @@ export async function openMetanodeWallet(): Promise<unknown> {
   return preloadMetanodeWallet()?.then((connectWallet) => connectWallet("light")) ?? Promise.resolve();
 }
 
-export async function resolveMetanodeWalletAddress(): Promise<string> {
+export type ResolveWalletOptions = {
+  silent?: boolean;
+};
+
+export async function resolveMetanodeWalletAddress(options?: ResolveWalletOptions): Promise<string> {
+  const silent = Boolean(options?.silent);
+  if (activeResolvePromise) {
+    const result = await activeResolvePromise.catch(() => null);
+    if (result && isWalletAddress(result) && result !== ZERO_ADDRESS) {
+      return result;
+    }
+    if (silent) {
+      return result || ZERO_ADDRESS;
+    }
+  }
+
+  activeResolvePromise = doResolveMetanodeWalletAddress(silent).finally(() => {
+    activeResolvePromise = null;
+  });
+  return activeResolvePromise;
+}
+
+async function doResolveMetanodeWalletAddress(silent: boolean): Promise<string> {
   if (typeof window === "undefined") throw new Error("MetaNode wallet is only available in the browser.");
 
   if (!isMetanodeWalletRuntimeSupported()) {
@@ -338,6 +381,17 @@ export async function resolveMetanodeWalletAddress(): Promise<string> {
   const candidates: string[] = [];
   if (linkedWalletAddress && isWalletAddress(linkedWalletAddress)) {
     candidates.push(normalizeWalletAddress(linkedWalletAddress));
+  }
+
+  // Active wallet stored from invite join or session
+  if (typeof window !== "undefined") {
+    const activeStoredWallet = (
+      window.sessionStorage.getItem("plane_active_wallet_address") ||
+      window.localStorage.getItem("plane_active_wallet_address")
+    )?.trim();
+    if (activeStoredWallet && isWalletAddress(activeStoredWallet)) {
+      candidates.push(normalizeWalletAddress(activeStoredWallet));
+    }
   }
 
   const userId = getEffectivePlaneUserId();
@@ -358,22 +412,75 @@ export async function resolveMetanodeWalletAddress(): Promise<string> {
     }
   }
 
-  for (const candidate of [...new Set(candidates)]) {
-    // Verify that the candidate wallet actually exists in this browser's Crypto Vault
-    // eslint-disable-next-line no-await-in-loop
-    if (await hasWallet(candidate)) {
-      linkedWalletAddress = candidate;
-      // eslint-disable-next-line no-await-in-loop
-      await activateMetanodeWallet(candidate).catch(() => false);
-      return candidate;
+  // Also check active wallet from Crypto Vault
+  const activeAddress = await getActiveWalletAddress().catch(() => null);
+  if (activeAddress && isWalletAddress(activeAddress)) {
+    candidates.unshift(normalizeWalletAddress(activeAddress));
+  }
+  const lastSelected = readAddress(getLastSelectedMetanodeWallet());
+  if (lastSelected && isWalletAddress(lastSelected)) {
+    candidates.unshift(normalizeWalletAddress(lastSelected));
+  }
+
+  const rawWallets = await getWallets().catch(() => []);
+  const availableAddresses = [
+    ...new Set(
+      rawWallets
+        .map((wallet) => readAddress(wallet))
+        .filter((address): address is string => Boolean(address))
+        .map(normalizeWalletAddress)
+    ),
+  ];
+
+  const uniqueCandidates = [...new Set(candidates)];
+
+  // Case 1: If Crypto Vault has wallets, check if any candidate matches
+  if (availableAddresses.length > 0) {
+    for (const candidate of uniqueCandidates) {
+      if (availableAddresses.includes(candidate)) {
+        linkedWalletAddress = candidate;
+        if (userId) {
+          window.localStorage.setItem(walletStorageKey(userId), candidate);
+        }
+        await activateMetanodeWallet(candidate).catch(() => false);
+        return candidate;
+      }
+    }
+
+    // Candidates did not match, but wallets exist in Crypto Vault
+    if (silent) {
+      // Auto-use the first available wallet in Crypto Vault for read operations
+      const autoWallet = availableAddresses[0];
+      linkedWalletAddress = autoWallet;
+      if (userId) {
+        window.localStorage.setItem(walletStorageKey(userId), autoWallet);
+      }
+      await activateMetanodeWallet(autoWallet).catch(() => false);
+      return autoWallet;
+    }
+
+    if (availableAddresses.length === 1) {
+      const singleWallet = availableAddresses[0];
+      await persistLinkedWallet(singleWallet);
+      await activateMetanodeWallet(singleWallet).catch(() => false);
+      return singleWallet;
+    }
+  } else {
+    // Case 2: Crypto Vault returned 0 wallets or failed to respond
+    // If we have a candidate from this user's localStorage, do NOT wipe it!
+    if (uniqueCandidates.length > 0) {
+      const fallback = uniqueCandidates[0];
+      linkedWalletAddress = fallback;
+      return fallback;
+    }
+    if (silent) {
+      return ZERO_ADDRESS;
     }
   }
 
-  // If the stored/linked wallet does not exist in Crypto Vault (e.g., loaded from
-  // another user's IPFS snapshot), clear the stale link and select an actual wallet.
-  linkedWalletAddress = null;
-  if (userId) {
-    window.localStorage.removeItem(walletStorageKey(userId));
+  // If silent mode, never show interactive prompt
+  if (silent) {
+    return availableAddresses[0] || ZERO_ADDRESS;
   }
 
   return selectAndLinkWallet();

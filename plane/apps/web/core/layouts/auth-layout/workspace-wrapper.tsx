@@ -8,7 +8,7 @@ import { useEffect, type ReactNode } from "react";
 import { observer } from "mobx-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import useSWR from "swr";
+import useSWR, { mutate } from "swr";
 // ui
 import { LogOut } from "lucide-react";
 import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
@@ -57,7 +57,7 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
   const {
     workspace: { fetchWorkspaceMembers },
   } = useMember();
-  const { workspaces, fetchSidebarNavigationPreferences, fetchProjectNavigationPreferences } = useWorkspace();
+  const { workspaces, fetchWorkspaces, fetchSidebarNavigationPreferences, fetchProjectNavigationPreferences } = useWorkspace();
   const { isMobile } = usePlatformOS();
   const { loader, workspaceInfoBySlug, fetchUserWorkspaceInfo, fetchUserProjectPermissions, allowPermissions } =
     useUserPermissions();
@@ -91,6 +91,36 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
       window.removeEventListener("plane_member_kicked_out", handleKickedOut);
     };
   }, [workspaceSlug]);
+
+  // Reactive DB reload listener: triggers SWR revalidation and MobX store update when background sync finishes
+  useEffect(() => {
+    const handleDbReloaded = () => {
+      console.log("[WorkspaceWrapper] Nhận tín hiệu plane_dapp_db_reloaded. Đang đồng bộ lại dữ liệu UI...");
+      fetchWorkspaces();
+      if (workspaceSlug) {
+        const slug = workspaceSlug.toString();
+        fetchWorkspaceMembers(slug);
+        fetchPartialProjects(slug);
+        fetchUserWorkspaceInfo(slug);
+        fetchWorkspaceStates(slug);
+        // Mutate all SWR keys associated with current workspace and general user info
+        mutate(
+          (key) =>
+            typeof key === "string" &&
+            (key.includes(slug) ||
+              key.startsWith("WORKSPACE_") ||
+              key.startsWith("PROJECT_") ||
+              key === "USER_INFORMATION"),
+          undefined,
+          { revalidate: true }
+        );
+      }
+    };
+    window.addEventListener("plane_dapp_db_reloaded", handleDbReloaded);
+    return () => {
+      window.removeEventListener("plane_dapp_db_reloaded", handleDbReloaded);
+    };
+  }, [workspaceSlug, fetchWorkspaces, fetchWorkspaceMembers, fetchPartialProjects, fetchUserWorkspaceInfo, fetchWorkspaceStates]);
 
   // fetching user workspace information
   useSWR(

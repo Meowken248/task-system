@@ -152,10 +152,11 @@ export function useOffchainData(key: string) {
       const cachedCID = window.localStorage.getItem(`offchain_cid_${key}`);
       if (localCache && cachedCID) setData(JSON.parse(localCache));
 
-      const userAddress = await resolveMetanodeWalletAddress().catch(() => null);
-      if (!userAddress) {
+      const userAddress = await resolveMetanodeWalletAddress({ silent: true }).catch(() => null);
+      if (!userAddress || userAddress === "0x0000000000000000000000000000000000000000") {
         if (localCache) return;
-        throw new Error("Vui lòng kết nối ví để tải dữ liệu.");
+        setData(null);
+        return;
       }
 
       const contractCID = await readCIDFromContract(userAddress);

@@ -16,8 +16,8 @@ export const SPACE_BASE_URL = process.env.VITE_SPACE_BASE_URL || "";
 export const SPACE_BASE_PATH = process.env.VITE_SPACE_BASE_PATH || "";
 export const getSpaceAppUrl = (): string => {
   let base = (SPACE_BASE_URL || "").trim();
-  if (!base && typeof window !== "undefined") {
-    base = window.location.origin;
+  if (!base && typeof globalThis !== "undefined" && (globalThis as any).window) {
+    base = (globalThis as any).window.location.origin;
   }
   const cleanBase = base.replace(/\/+$/, "");
   const cleanPath = (SPACE_BASE_PATH || "").trim().replace(/^\/+|\/+$/g, "");

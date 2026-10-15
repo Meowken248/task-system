@@ -576,12 +576,15 @@ async function readContract(functionName: string, values: Record<string, InputVa
   const contractAddress = readEnv("VITE_CONTRACT_ADDRESS");
   if (!isWalletAddress(contractAddress)) throw new Error("VITE_CONTRACT_ADDRESS is invalid.");
   await initFiaiSDK();
-  const from = await resolveMetanodeWalletAddress();
+  const from = await resolveMetanodeWalletAddress({ silent: true }).catch(
+    () => "0x0000000000000000000000000000000000000000"
+  );
+  const effectiveFrom = isWalletAddress(from) ? from : "0x0000000000000000000000000000000000000000";
   const { MtnContract } = await import("@metanodejs/mtn-contract");
-  const contract = new MtnContract({ from, to: contractAddress });
+  const contract = new MtnContract({ from: effectiveFrom, to: contractAddress });
   return withTimeout(
     contract.sendTransaction({
-      from,
+      from: effectiveFrom,
       to: contractAddress,
       abiData: [abi],
       functionName,
@@ -988,8 +991,20 @@ function findKpiValues(value: unknown): number[] | null {
 }
 
 export async function getWalletKPI(walletAddress?: string): Promise<{ wallet: string; kpi: OnChainKPI }> {
-  const wallet = walletAddress?.trim() || (await resolveMetanodeWalletAddress());
-  if (!isWalletAddress(wallet)) throw new Error("Địa chỉ ví nhân viên không hợp lệ.");
+  let wallet = walletAddress?.trim();
+  if (!wallet) {
+    try {
+      wallet = await resolveMetanodeWalletAddress({ silent: true });
+    } catch {
+      wallet = "0x0000000000000000000000000000000000000000";
+    }
+  }
+  if (!isWalletAddress(wallet) || wallet === "0x0000000000000000000000000000000000000000") {
+    return {
+      wallet: wallet || "0x0000000000000000000000000000000000000000",
+      kpi: { total: 0, todo: 0, completed: 0, inProgress: 0, cancelled: 0, onSchedule: 0, delayed: 0, overdue: 0, progressSum: 0, averageProgress: 0 },
+    };
+  }
   const values = findKpiValues(await readContract("getKPI", { assignee: wallet }));
   if (!values) throw new Error("Could not parse KPI returned by the contract.");
   const [total, todo, completed, inProgress, cancelled, onSchedule, delayed, overdue, progressSum, averageProgress] =
