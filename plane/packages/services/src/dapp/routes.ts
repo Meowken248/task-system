@@ -84,6 +84,7 @@ export function decodeInviteToken(token: string): any {
 }
 
 let lastLoadedPublicCid: string | null = null;
+const activeExportBlobUrls = new Map<string, string>();
 
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
@@ -138,13 +139,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const activeMail = (loggedInEmail || activeUser?.email || "").toLowerCase().trim();
       const activeId = String(activeUserId || activeUser?.id || "").toLowerCase().trim();
       const activeWallet = (
-        currentUserAddress ||
-        getStoredWalletAddress() ||
+        (activeUser as any)?.metanode_wallet_address ||
+        (activeUser as any)?.wallet_address ||
         (typeof window !== "undefined"
           ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))
           : null) ||
-        (activeUser as any)?.metanode_wallet_address ||
-        (activeUser as any)?.wallet_address ||
+        currentUserAddress ||
+        getStoredWalletAddress() ||
         ""
       ).toLowerCase().trim();
 
@@ -1741,15 +1742,18 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             }
 
             // Un-stale from removed_members
-            if (wsSlug && localDB.removed_members?.[wsSlug]) {
-              localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((r: string) => {
-                const cleanR = r.toLowerCase().trim();
-                return cleanR !== activeMail && cleanR !== memberWallet && cleanR !== activeId;
-              });
-              try {
-                localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-              } catch { }
+            const targetWsKeys = Array.from(new Set([wsSlug, ws?.slug, ws?.id].filter(Boolean)));
+            for (const k of targetWsKeys) {
+              if (localDB.removed_members?.[k]) {
+                localDB.removed_members[k] = localDB.removed_members[k].filter((r: string) => {
+                  const cleanR = r.toLowerCase().trim();
+                  return cleanR !== activeMail && cleanR !== memberWallet && cleanR !== activeId;
+                });
+              }
             }
+            try {
+              localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+            } catch { }
 
             if (activeUser) {
               activeUser.last_workspace_id = ws?.id || wsSlug;
@@ -2281,20 +2285,27 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const isConfirmedMember = Boolean(memberRecord && memberRecord.is_active !== false);
 
     // Check if user was removed from this workspace
-    let removedList = (localDB.removed_members?.[wsSlug] || []).map((r: string) => String(r).toLowerCase().trim());
+    const targetWsKeys = Array.from(new Set([wsSlug, ws.id, ws.slug].filter(Boolean)));
+    let removedList = Array.from(new Set(
+      targetWsKeys.flatMap((k: string) => (localDB.removed_members?.[k] || []).map((r: string) => String(r).toLowerCase().trim()))
+    ));
 
     if (isConfirmedMember) {
       // User is confirmed as an active workspace member -> clean up any stale identifiers from removed_members!
-      if (localDB.removed_members?.[wsSlug]) {
-        localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((x: string) => {
-          const clean = String(x).toLowerCase().trim();
-          return clean !== activeMail && clean !== activeWallet && clean !== activeId && clean !== currentUserAddress?.toLowerCase();
-        });
-        removedList = localDB.removed_members[wsSlug].map((r: string) => String(r).toLowerCase().trim());
-        try {
-          localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-        } catch { }
+      for (const k of targetWsKeys) {
+        if (localDB.removed_members?.[k]) {
+          localDB.removed_members[k] = localDB.removed_members[k].filter((x: string) => {
+            const clean = String(x).toLowerCase().trim();
+            return clean !== activeMail && clean !== activeWallet && clean !== activeId && clean !== currentUserAddress?.toLowerCase();
+          });
+        }
       }
+      removedList = Array.from(new Set(
+        targetWsKeys.flatMap((k: string) => (localDB.removed_members?.[k] || []).map((r: string) => String(r).toLowerCase().trim()))
+      ));
+      try {
+        localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+      } catch { }
     } else {
       const isRemoved =
         (activeMail && removedList.includes(activeMail)) ||
@@ -2348,16 +2359,25 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           }
         } else if (onChainRole === 0 && memberRecord?.verified_on_chain) {
           // Only if this member was PREVIOUSLY confirmed on-chain and has now been removed on-chain by admin
+          const cleanWall = memberWallet.toLowerCase();
+          const hasActiveInv = (localDB.invitations || []).some((inv: any) => {
+            const invWs = inv.workspace?.slug || inv.workspace?.id || inv.workspace || inv.workspace_slug;
+            const matchWs = invWs === wsSlug || invWs === ws.id || invWs === ws.slug;
+            const matchMail = activeMail && (inv.email || "").toLowerCase().trim() === activeMail;
+            const matchWall = cleanWall && (inv.wallet_address || "").toLowerCase().trim() === cleanWall;
+            return matchWs && (matchMail || matchWall) && !inv.accepted;
+          });
           const isRecent = memberRecord.created_at && (Date.now() - new Date(memberRecord.created_at).getTime() < 180000);
-          if (!isRecent) {
+          if (!isRecent && !hasActiveInv) {
             if (!localDB.removed_members) localDB.removed_members = {};
-            if (!localDB.removed_members[wsSlug]) localDB.removed_members[wsSlug] = [];
-            const cleanWall = memberWallet.toLowerCase();
-            if (!localDB.removed_members[wsSlug].includes(cleanWall)) {
-              localDB.removed_members[wsSlug].push(cleanWall);
-            }
-            if (activeMail && !localDB.removed_members[wsSlug].includes(activeMail)) {
-              localDB.removed_members[wsSlug].push(activeMail);
+            for (const k of targetWsKeys) {
+              if (!localDB.removed_members[k]) localDB.removed_members[k] = [];
+              if (!localDB.removed_members[k].includes(cleanWall)) {
+                localDB.removed_members[k].push(cleanWall);
+              }
+              if (activeMail && !localDB.removed_members[k].includes(activeMail)) {
+                localDB.removed_members[k].push(activeMail);
+              }
             }
             try {
               localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
@@ -2471,56 +2491,303 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     ]);
   }
 
-  if (url.includes("/workspace-integrations")) {
-    return ok(localDB.workspace_integrations || []);
+  // ── Workspace Integrations ───────────────────────────────────────────
+  const wsIntegrationsMatch = url.match(/\/api\/workspaces\/([^/]+)\/workspace-integrations\/?(?:\?.*)?$/);
+  if (wsIntegrationsMatch || url.includes("/workspace-integrations")) {
+    const wsSlug = wsIntegrationsMatch ? wsIntegrationsMatch[1] : (url.match(/\/api\/workspaces\/([^/]+)\//)?.[1] || "");
+    if (method === "delete") {
+      const delMatch = url.match(/\/workspace-integrations\/([^/]+)/);
+      const intId = delMatch ? delMatch[1] : "";
+      if (localDB.workspace_integrations) {
+        localDB.workspace_integrations = localDB.workspace_integrations.filter((wi: any) => wi.id !== intId);
+        saveDB();
+      }
+      return ok({ message: "Workspace integration removed successfully" });
+    }
+    const integrations = (localDB.workspace_integrations || []).filter(
+      (wi: any) => !wsSlug || wi.workspace === wsSlug
+    );
+    return ok(integrations);
   }
 
+  // ── Workspace Importers ──────────────────────────────────────────────
   if (url.includes("/importers")) {
     return ok([]);
   }
 
+  // ── Workspace Export Issues (GET, POST) ──────────────────────────────
   if (url.includes("/export-issues")) {
+    const wsSlugMatch = url.match(/\/api\/workspaces\/([^/]+)\/export-issues/);
+    const wsSlug = wsSlugMatch ? wsSlugMatch[1] : "";
+    const ws = (localDB.workspaces || []).find((w: any) => !wsSlug || w.slug === wsSlug || w.id === wsSlug);
+
     const userDetail = {
       id: activeUser?.id || "user-default",
-      display_name: activeUser?.display_name || activeUser?.first_name || "User",
+      display_name: activeUser?.display_name || activeUser?.first_name || activeUser?.email || "User",
       email: activeUser?.email || "",
       avatar_url: activeUser?.avatar_url || activeUser?.avatar || "",
     };
+
+    if (method === "get") {
+      let exportList: any[] = [];
+      if (Array.isArray(localDB.exports)) {
+        exportList = localDB.exports.filter((exp: any) => !wsSlug || exp.workspace === wsSlug || exp.workspace_id === wsSlug);
+      } else if (localDB.exports && typeof localDB.exports === "object") {
+        exportList = localDB.exports[wsSlug] || [];
+      }
+
+      // Ensure every completed export has an active, valid blob or data URL
+      if (typeof window !== "undefined") {
+        for (const item of exportList) {
+          if (item.status === "completed" && item.raw_data) {
+            if (activeExportBlobUrls.has(item.id)) {
+              item.url = activeExportBlobUrls.get(item.id)!;
+            } else {
+              try {
+                const mime = item.provider === "json"
+                  ? "application/json;charset=utf-8;"
+                  : "text/csv;charset=utf-8;";
+                const blob = new Blob([item.raw_data], { type: mime });
+                const blobUrl = URL.createObjectURL(blob);
+                activeExportBlobUrls.set(item.id, blobUrl);
+                item.url = blobUrl;
+              } catch {
+                if (!item.url && item.raw_data) {
+                  const mime = item.provider === "json" ? "application/json" : "text/csv";
+                  item.url = `data:${mime};charset=utf-8,${encodeURIComponent(item.raw_data)}`;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      return ok({
+        count: exportList.length,
+        extra_stats: null,
+        next_cursor: "",
+        next_page_results: false,
+        prev_cursor: "",
+        prev_page_results: false,
+        results: exportList.map((exp: any) => ({
+          ...exp,
+          project: Array.isArray(exp?.project) ? exp.project : [],
+          initiated_by_detail: exp?.initiated_by_detail || userDetail,
+        })),
+        total_pages: 1,
+        total_results: exportList.length,
+      });
+    }
+
     if (method === "post") {
-      const newExport = {
-        id: "exp-" + Date.now(),
-        provider: body?.provider || "csv",
-        status: "completed",
+      const selectedProjects: string[] = Array.isArray(body?.project) ? body.project : [];
+      const provider: string = String(body?.provider || "csv").toLowerCase();
+
+      // Find projects in this workspace
+      const wsProjects = (localDB.projects || []).filter(
+        (p: any) =>
+          !wsSlug ||
+          p.workspace === wsSlug ||
+          p.workspace === ws?.id ||
+          p.workspace_id === wsSlug ||
+          p.workspace_id === ws?.id
+      );
+      const wsProjIds = new Set(wsProjects.map((p: any) => p.id));
+      const targetProjIds = selectedProjects.length > 0 ? new Set(selectedProjects) : wsProjIds;
+
+      // Filter non-deleted, non-draft issues
+      const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
+      const issuesToExport = (localDB.issues || []).filter((i: any) => {
+        const pId = i.project || i.project_id;
+        return targetProjIds.has(pId) && !deletedIssueSet.has(i.id) && !i.is_draft;
+      });
+
+      let fileContent = "";
+      let mimeType = "text/csv;charset=utf-8;";
+
+      if (provider === "json") {
+        mimeType = "application/json;charset=utf-8;";
+        const jsonList = issuesToExport.map((issue: any) => {
+          const proj = wsProjects.find((p: any) => p.id === (issue.project || issue.project_id));
+          const stateObj = (localDB.states || []).find((s: any) => s.id === (issue.state_id || issue.state));
+          const assigneeIds = Array.isArray(issue.assignees) ? issue.assignees : (issue.assignee_ids || []);
+          const assignees = assigneeIds.map((aId: string) => {
+            const u = (localDB.users || []).find((usr: any) => usr.id === aId || usr.email === aId);
+            return {
+              id: aId,
+              name: u?.display_name || u?.first_name || u?.email || aId,
+              email: u?.email || "",
+            };
+          });
+          const labelIds = Array.isArray(issue.labels) ? issue.labels : (issue.label_ids || []);
+          const labels = labelIds.map((lId: string) => {
+            const l = (localDB.labels || []).find((lbl: any) => lbl.id === lId || lbl.name === lId);
+            return {
+              id: lId,
+              name: l?.name || lId,
+              color: l?.color || "#3f3f46",
+            };
+          });
+
+          return {
+            id: issue.id,
+            sequence_id: issue.sequence_id ? `${proj?.identifier || "TASK"}-${issue.sequence_id}` : issue.id,
+            project: {
+              id: proj?.id,
+              name: proj?.name,
+              identifier: proj?.identifier,
+            },
+            name: issue.name,
+            description: (issue.description_html || issue.description_stripped || issue.description || "")
+              .replace(/<[^>]*>?/gm, " ")
+              .trim(),
+            state: stateObj
+              ? { id: stateObj.id, name: stateObj.name, group: stateObj.group, color: stateObj.color }
+              : issue.state,
+            priority: (issue.priority || "none").toLowerCase(),
+            assignees,
+            labels,
+            start_date: issue.start_date || null,
+            target_date: issue.target_date || null,
+            completed_at: issue.completed_at || null,
+            created_at: issue.created_at || issue.created_on || new Date().toISOString(),
+            updated_at: issue.updated_at || issue.updated_on || new Date().toISOString(),
+          };
+        });
+        fileContent = JSON.stringify(jsonList, null, 2);
+      } else {
+        // CSV & Excel RFC 4180 with UTF-8 BOM
+        mimeType = "text/csv;charset=utf-8;";
+        const escapeCsv = (val: any): string => {
+          if (val === null || val === undefined) return '""';
+          const str = String(val).replace(/"/g, '""');
+          return `"${str}"`;
+        };
+
+        const headers = [
+          "ID",
+          "Project Key",
+          "Project Name",
+          "Sequence ID",
+          "Title",
+          "Description",
+          "State",
+          "State Group",
+          "Priority",
+          "Assignees",
+          "Labels",
+          "Start Date",
+          "Target Date",
+          "Completed At",
+          "Created At",
+          "Updated At",
+        ];
+
+        const rows = issuesToExport.map((issue: any) => {
+          const proj = wsProjects.find((p: any) => p.id === (issue.project || issue.project_id));
+          const projKey = proj?.identifier || "";
+          const projName = proj?.name || "";
+          const seqId = issue.sequence_id ? `${projKey}-${issue.sequence_id}` : (issue.id || "");
+          const title = issue.name || "";
+          const desc = (issue.description_html || issue.description_stripped || issue.description || "")
+            .replace(/<[^>]*>?/gm, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const stateObj = (localDB.states || []).find((s: any) => s.id === (issue.state_id || issue.state));
+          const stateName = stateObj?.name || issue.state_detail?.name || issue.state || "";
+          const stateGroup = stateObj?.group || issue.state_detail?.group || "";
+          const priority = (issue.priority || "none").toUpperCase();
+
+          const assigneeIds = Array.isArray(issue.assignees) ? issue.assignees : (issue.assignee_ids || []);
+          const assigneeNames = assigneeIds
+            .map((aId: string) => {
+              const u = (localDB.users || []).find((usr: any) => usr.id === aId || usr.email === aId);
+              return u?.display_name || u?.first_name || u?.email || aId;
+            })
+            .join(", ");
+
+          const labelIds = Array.isArray(issue.labels) ? issue.labels : (issue.label_ids || []);
+          const labelNames = labelIds
+            .map((lId: string) => {
+              const l = (localDB.labels || []).find((lbl: any) => lbl.id === lId || lbl.name === lId);
+              return l?.name || lId;
+            })
+            .join(", ");
+
+          return [
+            escapeCsv(issue.id),
+            escapeCsv(projKey),
+            escapeCsv(projName),
+            escapeCsv(seqId),
+            escapeCsv(title),
+            escapeCsv(desc),
+            escapeCsv(stateName),
+            escapeCsv(stateGroup),
+            escapeCsv(priority),
+            escapeCsv(assigneeNames),
+            escapeCsv(labelNames),
+            escapeCsv(issue.start_date || ""),
+            escapeCsv(issue.target_date || ""),
+            escapeCsv(issue.completed_at || ""),
+            escapeCsv(issue.created_at || issue.created_on || ""),
+            escapeCsv(issue.updated_at || issue.updated_on || ""),
+          ].join(",");
+        });
+
+        fileContent = "\uFEFF" + headers.join(",") + "\r\n" + rows.join("\r\n");
+      }
+
+      const exportId = `export-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      let downloadUrl = "";
+      if (typeof window !== "undefined") {
+        try {
+          const blob = new Blob([fileContent], { type: mimeType });
+          downloadUrl = URL.createObjectURL(blob);
+          activeExportBlobUrls.set(exportId, downloadUrl);
+        } catch { }
+      }
+      if (!downloadUrl) {
+        try {
+          const b64 = typeof btoa !== "undefined" ? btoa(unescape(encodeURIComponent(fileContent))) : "";
+          downloadUrl = `data:${mimeType};base64,${b64}`;
+        } catch {
+          downloadUrl = `data:${mimeType},${encodeURIComponent(fileContent)}`;
+        }
+      }
+
+      const newExportRecord: any = {
+        id: exportId,
+        workspace: wsSlug || ws?.slug || ws?.id || "",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        url: "",
-        token: "",
+        project: selectedProjects,
+        provider: provider,
+        status: "completed",
+        url: downloadUrl,
+        raw_data: fileContent,
+        token: exportId,
         created_by: userDetail.id,
         updated_by: userDetail.id,
-        project: Array.isArray(body?.project) ? body.project : [],
-        initiated_by_detail: userDetail,
+        initiated_by_detail: {
+          id: userDetail.id,
+          avatar_url: userDetail.avatar_url || "",
+          display_name: userDetail.display_name,
+          email: userDetail.email,
+        },
       };
-      if (!localDB.exports) localDB.exports = [];
-      localDB.exports.unshift(newExport);
+
+      if (!localDB.exports) localDB.exports = {};
+      if (Array.isArray(localDB.exports)) {
+        localDB.exports.unshift(newExportRecord);
+      } else {
+        if (!localDB.exports[wsSlug]) localDB.exports[wsSlug] = [];
+        localDB.exports[wsSlug].unshift(newExportRecord);
+      }
       saveDB();
-      return ok(newExport);
+
+      return ok(newExportRecord);
     }
-    const exports = (localDB.exports || []).map((exp: any) => ({
-      ...exp,
-      project: Array.isArray(exp?.project) ? exp.project : [],
-      initiated_by_detail: exp?.initiated_by_detail || userDetail,
-    }));
-    return ok({
-      count: exports.length,
-      extra_stats: null,
-      next_cursor: "",
-      next_page_results: false,
-      prev_cursor: "",
-      prev_page_results: false,
-      results: exports,
-      total_pages: 1,
-      total_results: exports.length,
-    });
   }
 
   if (url.match(/\/api\/workspaces\/[^/]+\/members\/?(?:\?.*)?$/)) {

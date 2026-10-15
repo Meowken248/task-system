@@ -76,6 +76,15 @@ export const defaultDB: DAppDatabase = {
   issue_relations: [],
   issue_links: [],
   issue_reactions: [],
+  exports: {},
+  workspace_integrations: [],
+  workspace_members: [],
+  project_members: [],
+  invitations: [],
+  notifications: [],
+  removed_members: {},
+  _deleted_invitation_ids: [],
+  _email_wallet_map: {},
   instance: {
     id: "instance-main",
     instance_id: "instance-main",
@@ -230,6 +239,7 @@ export function loadInitialDB(): Record<string, any> {
                 if (!invWs || invWs === ws) {
                   if (inv.email) unbannedSet.add(inv.email.toLowerCase().trim());
                   if (inv.wallet_address) unbannedSet.add(inv.wallet_address.toLowerCase().trim());
+                  if (inv.id) unbannedSet.add(String(inv.id).toLowerCase().trim());
                 }
               });
               (parsed.workspace_members || []).forEach((m: any) => {
@@ -237,7 +247,9 @@ export function loadInitialDB(): Record<string, any> {
                 if ((!mWs || mWs === ws) && m.is_active !== false) {
                   if (m.email) unbannedSet.add(m.email.toLowerCase().trim());
                   if (m.wallet_address) unbannedSet.add(m.wallet_address.toLowerCase().trim());
-                  if (typeof m.member === "string" && m.member.startsWith("0x")) unbannedSet.add(m.member.toLowerCase().trim());
+                  if (typeof m.member === "string") unbannedSet.add(m.member.toLowerCase().trim());
+                  if (typeof m.member === "object" && m.member?.id) unbannedSet.add(String(m.member.id).toLowerCase().trim());
+                  if (m.id) unbannedSet.add(String(m.id).toLowerCase().trim());
                 }
               });
 
@@ -384,14 +396,21 @@ localDB.issues = localDB.issues.filter(
     !initDeletedSet.has(i.project_id) &&
     !initDeletedIssueSet.has(i.id)
 );
+if (!localDB.workspace_members) localDB.workspace_members = [];
 if (!localDB.project_members) localDB.project_members = [];
 if (!localDB.labels) localDB.labels = [];
 if (!localDB.issue_comments) localDB.issue_comments = [];
 if (!localDB.attachments) localDB.attachments = [];
 if (!localDB.invitations) localDB.invitations = [];
+if (!localDB.notifications) localDB.notifications = [];
+if (!localDB.removed_members) localDB.removed_members = {};
 if (!localDB.issue_relations) localDB.issue_relations = [];
 if (!localDB.issue_links) localDB.issue_links = [];
 if (!localDB.issue_reactions) localDB.issue_reactions = [];
+if (!localDB.exports) localDB.exports = {};
+if (!localDB.workspace_integrations) localDB.workspace_integrations = [];
+if (!localDB._deleted_invitation_ids) localDB._deleted_invitation_ids = [];
+if (!localDB._email_wallet_map) localDB._email_wallet_map = {};
 if (!localDB.instance) localDB.instance = { ...defaultDB.instance };
 localDB.instance.is_setup_done = true;
 
@@ -883,8 +902,15 @@ if (dappSyncChannel) {
             const wsRemoved = (localDB.removed_members?.[mWs] || []).map((x: string) => String(x).toLowerCase().trim());
             const isRemoved = wsRemoved.some((r: string) => r === mMail || r === mMem || r === mId || r === mWall);
             if (isRemoved) {
-              if (m.is_active !== false && m.verified_on_chain) {
-                // Member was re-added/confirmed on-chain -> un-stale from removed_members
+              const hasActiveInv = (localDB.invitations || []).some((inv: any) => {
+                const iWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+                return (!iWs || iWs === mWs) && (
+                  (mMail && (inv.email || "").toLowerCase().trim() === mMail) ||
+                  (mWall && (inv.wallet_address || "").toLowerCase().trim() === mWall)
+                );
+              });
+              if ((m.is_active !== false && m.verified_on_chain) || hasActiveInv || m.is_active !== false) {
+                // Member was re-added or has active invite -> un-stale from removed_members
                 if (localDB.removed_members?.[mWs]) {
                   localDB.removed_members[mWs] = localDB.removed_members[mWs].filter((r: string) => {
                     const cleanR = r.toLowerCase().trim();
@@ -898,14 +924,23 @@ if (dappSyncChannel) {
             }
 
             const existingIdx = localDB.workspace_members.findIndex(
-              (x: any) => (mMail && (x.email || "").toLowerCase().trim() === mMail) || (m.member && x.member === m.member)
+              (x: any) =>
+                (mMail && (x.email || "").toLowerCase().trim() === mMail) ||
+                (m.member && x.member === m.member) ||
+                (mWall && x.wallet_address?.toLowerCase() === mWall)
             );
             if (existingIdx === -1) {
               localDB.workspace_members.push(m);
               updated = true;
-            } else if (localDB.workspace_members[existingIdx].role !== m.role) {
-              localDB.workspace_members[existingIdx].role = m.role;
-              updated = true;
+            } else {
+              if (localDB.workspace_members[existingIdx].role !== m.role) {
+                localDB.workspace_members[existingIdx].role = m.role;
+                updated = true;
+              }
+              if (m.wallet_address && !localDB.workspace_members[existingIdx].wallet_address) {
+                localDB.workspace_members[existingIdx].wallet_address = m.wallet_address;
+                updated = true;
+              }
             }
           }
         }
@@ -1453,8 +1488,20 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
     if (deletedWsSlugs.has(w.slug) || deletedWsIds.has(w.id)) return false;
 
     // 1. Is Creator / Owner
-    if (activeId && (w.created_by === activeId || w.owner?.id === activeId)) return true;
-    if (activeMail && w.owner?.email && w.owner.email.toLowerCase().trim() === activeMail) return true;
+    const isOwner =
+      (activeId && (w.created_by === activeId || w.owner?.id === activeId)) ||
+      (activeMail && w.owner?.email && w.owner.email.toLowerCase().trim() === activeMail);
+    if (isOwner) return true;
+
+    // Filter out if user was removed from this workspace
+    const wsRemoved = (localDB.removed_members?.[w.slug] || []).concat(localDB.removed_members?.[w.id] || []).map((x: string) => String(x).toLowerCase().trim());
+    if (wsRemoved.length > 0) {
+      const isRemoved =
+        (activeMail && wsRemoved.includes(activeMail)) ||
+        (activeId && wsRemoved.includes(activeId.toLowerCase())) ||
+        (activeWallet && wsRemoved.includes(activeWallet));
+      if (isRemoved) return false;
+    }
 
     // 2. Is in workspace_members
     const isMember = (localDB.workspace_members || []).some(

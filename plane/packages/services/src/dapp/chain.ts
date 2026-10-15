@@ -757,14 +757,18 @@ export async function joinWorkspaceOnChain(slug: string, memberWallet?: string):
     currentUserAddress = memberWallet;
   }
   // If the user is actively joining on-chain, un-stale their address from removed_members!
-  if (localDB.removed_members?.[slug]) {
-    localDB.removed_members[slug] = localDB.removed_members[slug].filter(
-      (x: string) => String(x).toLowerCase().trim() !== cleanAddr
-    );
-    try {
-      localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-    } catch { }
+  const ws = (localDB.workspaces || []).find((w: any) => w.slug === slug || w.id === slug);
+  const targetKeys = Array.from(new Set([slug, ws?.slug, ws?.id].filter(Boolean)));
+  for (const k of targetKeys) {
+    if (localDB.removed_members?.[k]) {
+      localDB.removed_members[k] = localDB.removed_members[k].filter(
+        (x: string) => String(x).toLowerCase().trim() !== cleanAddr
+      );
+    }
   }
+  try {
+    localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+  } catch { }
 
   try {
     console.log(`[DApp Chain] Đang gửi transaction joinWorkspace("${slug}") qua ví người dùng (${userAddr})...`);
@@ -1013,14 +1017,17 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       if (!invWs || invWs === ws) {
         if (inv.email) unbannedSet.add(inv.email.toLowerCase().trim());
         if (inv.wallet_address) unbannedSet.add(inv.wallet_address.toLowerCase().trim());
+        if (inv.id) unbannedSet.add(String(inv.id).toLowerCase().trim());
       }
     });
     allActiveMembers.forEach((m: any) => {
       const mWs = m.workspace || m.workspace_id;
-      if ((!mWs || mWs === ws) && m.is_active !== false && m.verified_on_chain) {
+      if ((!mWs || mWs === ws) && m.is_active !== false) {
         if (m.email) unbannedSet.add(m.email.toLowerCase().trim());
         if (m.wallet_address) unbannedSet.add(m.wallet_address.toLowerCase().trim());
-        if (typeof m.member === "string" && m.member.startsWith("0x")) unbannedSet.add(m.member.toLowerCase().trim());
+        if (typeof m.member === "string") unbannedSet.add(m.member.toLowerCase().trim());
+        if (typeof m.member === "object" && m.member?.id) unbannedSet.add(String(m.member.id).toLowerCase().trim());
+        if (m.id) unbannedSet.add(String(m.id).toLowerCase().trim());
       }
     });
     if (unbannedSet.size > 0) {
