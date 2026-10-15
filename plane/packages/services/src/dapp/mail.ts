@@ -216,6 +216,7 @@ export async function sendWorkspaceInviteEmail(options: ISendWorkspaceInviteEmai
             <td style="padding: 24px 16px 0 16px; text-align: center;">
               <p style="margin: 0 0 6px 0; font-size: 12px; color: #52525b; line-height: 1.5;">
                 Email này được gửi tự động từ <strong>Plane</strong>. Nếu bạn không mong muốn tham gia, hãy bỏ qua email này.
+                Lưu ý: Nếu chưa đăng nhập/đăng ký, hệ thống sẽ chuyển đến trang tương ứng. Vui lòng hoàn tất và nhấn lại link mời tham gia.
               </p>
               <p style="margin: 0; font-size: 11px; color: #3f3f46;">
                 © Plane • Open-source project management tool

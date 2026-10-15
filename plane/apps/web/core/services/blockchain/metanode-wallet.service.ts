@@ -215,22 +215,41 @@ async function selectAndLinkWallet(): Promise<string> {
   let walletPickerError: unknown;
   let walletPickerAddress: string | null = null;
   let messageAddress: string | null = null;
+  let isPickerClosed = false;
+
   const onMessage = (event: MessageEvent) => {
-    if (event.data && typeof event.data === "object" && event.data.type === "wallet-selected") {
-      const addr = readAddress(event.data.data);
-      if (addr) messageAddress = addr;
+    if (event.data && typeof event.data === "object") {
+      if (event.data.type === "wallet-selected") {
+        const addr = readAddress(event.data.data);
+        if (addr) messageAddress = addr;
+      } else if (event.data.type === "close-wallet-modal") {
+        isPickerClosed = true;
+      }
     }
   };
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      isPickerClosed = true;
+    }
+  };
+
   if (typeof window !== "undefined") {
     window.addEventListener("message", onMessage);
+    window.addEventListener("keydown", onKeyDown);
   }
 
   void openMetanodeWallet()
     .then((result) => {
       walletPickerAddress = readAddress(result);
+      if (!walletPickerAddress) {
+        // Picker resolved without selecting a wallet (e.g. user closed modal or cancelled)
+        isPickerClosed = true;
+      }
     })
     .catch((error) => {
       walletPickerError = error;
+      isPickerClosed = true;
       console.error("MetaNode wallet picker failed:", error);
     });
 
@@ -240,8 +259,11 @@ async function selectAndLinkWallet(): Promise<string> {
   try {
     while (Date.now() < deadline) {
       // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
-      let selectedAddress =
-        messageAddress ?? walletPickerAddress ?? readAddress(getLastSelectedMetanodeWallet());
+      let selectedAddress: string | null = messageAddress ?? walletPickerAddress;
+
+      if (isPickerClosed && !selectedAddress) {
+        throw new Error("Người dùng đã hủy chọn ví MetaNode.");
+      }
 
       if (!selectedAddress) {
         // Fallback: Check if a new wallet was created/imported into Crypto Vault during this session
@@ -276,6 +298,7 @@ async function selectAndLinkWallet(): Promise<string> {
   } finally {
     if (typeof window !== "undefined") {
       window.removeEventListener("message", onMessage);
+      window.removeEventListener("keydown", onKeyDown);
     }
   }
   if (walletPickerError instanceof Error) throw walletPickerError;
@@ -337,11 +360,13 @@ export async function openMetanodeWallet(): Promise<unknown> {
 
 export type ResolveWalletOptions = {
   silent?: boolean;
+  forceSelect?: boolean;
 };
 
 export async function resolveMetanodeWalletAddress(options?: ResolveWalletOptions): Promise<string> {
   const silent = Boolean(options?.silent);
-  if (activeResolvePromise) {
+  const forceSelect = Boolean(options?.forceSelect);
+  if (!forceSelect && activeResolvePromise) {
     const result = await activeResolvePromise.catch(() => null);
     if (result && isWalletAddress(result) && result !== ZERO_ADDRESS) {
       return result;
@@ -351,13 +376,13 @@ export async function resolveMetanodeWalletAddress(options?: ResolveWalletOption
     }
   }
 
-  activeResolvePromise = doResolveMetanodeWalletAddress(silent).finally(() => {
+  activeResolvePromise = doResolveMetanodeWalletAddress(silent, forceSelect).finally(() => {
     activeResolvePromise = null;
   });
   return activeResolvePromise;
 }
 
-async function doResolveMetanodeWalletAddress(silent: boolean): Promise<string> {
+async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = false): Promise<string> {
   if (typeof window === "undefined") throw new Error("MetaNode wallet is only available in the browser.");
 
   if (!isMetanodeWalletRuntimeSupported()) {
@@ -419,15 +444,17 @@ async function doResolveMetanodeWalletAddress(silent: boolean): Promise<string> 
 
   // Case 1: If Crypto Vault has wallets
   if (availableAddresses.length > 0) {
-    // If a session wallet was already explicitly linked, use it
-    for (const candidate of uniqueSessionCandidates) {
-      if (availableAddresses.includes(candidate)) {
-        linkedWalletAddress = candidate;
-        if (userId) {
-          window.localStorage.setItem(walletStorageKey(userId), candidate);
+    // If not forcing selection and a session wallet was already explicitly linked, use it
+    if (!forceSelect) {
+      for (const candidate of uniqueSessionCandidates) {
+        if (availableAddresses.includes(candidate)) {
+          linkedWalletAddress = candidate;
+          if (userId) {
+            window.localStorage.setItem(walletStorageKey(userId), candidate);
+          }
+          await activateMetanodeWallet(candidate).catch(() => false);
+          return candidate;
         }
-        await activateMetanodeWallet(candidate).catch(() => false);
-        return candidate;
       }
     }
 
@@ -440,14 +467,14 @@ async function doResolveMetanodeWalletAddress(silent: boolean): Promise<string> 
     }
 
     // Multiple wallets in vault:
-    if (silent) {
+    if (silent && !forceSelect) {
       // In silent mode (background read), fallback to active vault wallet or first available
       const fallback = fallbackCandidates.find((c) => availableAddresses.includes(c)) || availableAddresses[0];
       linkedWalletAddress = fallback;
       return fallback;
     }
 
-    // In interactive mode with multiple wallets: prompt user to pick!
+    // In interactive mode with multiple wallets (or forceSelect): prompt user to pick!
     return selectAndLinkWallet();
   } else {
     // Case 2: Crypto Vault returned 0 wallets or failed to respond

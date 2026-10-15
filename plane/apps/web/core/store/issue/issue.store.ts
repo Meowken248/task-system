@@ -11,7 +11,7 @@ import { computedFn } from "mobx-utils";
 import type { TIssue } from "@plane/types";
 // helpers
 import { getCurrentDateTimeInISO } from "@plane/utils";
-import { rootStore } from "@/lib/store-context";
+import type { RootStore } from "@/plane-web/store/root.store";
 // services
 import { IssueService } from "@/services/issue";
 
@@ -37,8 +37,10 @@ export class IssueStore implements IIssueStore {
   issuesIdentifierMap: { [issue_identifier: string]: string } = {};
   // service
   issueService;
+  rootStore?: RootStore;
 
-  constructor() {
+  constructor(rootStore?: RootStore) {
+    this.rootStore = rootStore;
     makeObservable(this, {
       // observable
       issuesMap: observable,
@@ -69,7 +71,7 @@ export class IssueStore implements IIssueStore {
           (issue as any).updated_at = (issue as any).updated_on || issue.created_at || new Date().toISOString();
         }
         // add issue identifier to the issuesIdentifierMap
-        const projectIdentifier = rootStore.projectRoot.project.getProjectIdentifierById(issue?.project_id);
+        const projectIdentifier = this.rootStore?.projectRoot?.project?.getProjectIdentifierById(issue?.project_id);
         const workItemSequenceId = issue?.sequence_id;
         const issueIdentifier = `${projectIdentifier}-${workItemSequenceId}`;
         set(this.issuesIdentifierMap, issueIdentifier, issue.id);

@@ -57,12 +57,18 @@ function WorkspaceInvitationPage() {
     return targetSlug ? `${basePath}/${targetSlug}` : `${basePath}/`;
   };
 
+  const isEmailMismatch = Boolean(
+    currentUser?.email &&
+    invitationDetail?.email &&
+    currentUser.email.toLowerCase().trim() !== invitationDetail.email.toLowerCase().trim()
+  );
+
   useEffect(() => {
-    if (invitationDetail?.accepted && !isAccepting && !isJoining && currentUser?.id) {
+    if (invitationDetail?.accepted && !isAccepting && !isJoining && currentUser?.id && !isEmailMismatch) {
       const targetSlug = invitationDetail?.workspace?.slug || slug;
       window.location.replace(getDestinationUrl(targetSlug));
     }
-  }, [invitationDetail?.accepted, isAccepting, isJoining, invitationDetail?.workspace?.slug, slug, currentUser?.id]);
+  }, [invitationDetail?.accepted, isAccepting, isJoining, invitationDetail?.workspace?.slug, slug, currentUser?.id, isEmailMismatch]);
 
   const handleAccept = async () => {
     if (!invitationDetail || isAccepting || isJoining) return;
@@ -75,7 +81,7 @@ function WorkspaceInvitationPage() {
       });
 
       // 1. Resolve & prompt user's MetaNode wallet (same modal as task creation)
-      const walletAddress = await resolveMetanodeWalletAddress();
+      const walletAddress = await resolveMetanodeWalletAddress({ forceSelect: true });
 
       // 2. Submit join with confirmed wallet address
       await workspaceService.joinWorkspace(invitationDetail.workspace.slug, invitationDetail.id, {
@@ -126,6 +132,30 @@ function WorkspaceInvitationPage() {
   return (
     <AuthenticationWrapper pageType={EPageTypes.PUBLIC}>
       <div className="flex h-full w-full flex-col items-center justify-center px-3">
+        {isEmailMismatch && !isAccepting && !isJoining && (
+          <div className="mb-6 w-full max-w-md rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-center">
+            <p className="text-13 text-primary">
+              Lời mời này được gửi đến <strong>{invitationDetail?.email}</strong>.
+              <br />
+              Bạn hiện đang đăng nhập bằng tài khoản <strong>{currentUser?.email}</strong>.
+            </p>
+            <button
+              type="button"
+              className="mt-3 inline-flex items-center rounded bg-amber-600 px-3 py-1.5 text-12 font-medium text-white hover:bg-amber-700"
+              onClick={() => {
+                sessionStorage.clear();
+                localStorage.removeItem("plane_dapp_auth_user");
+                localStorage.removeItem("plane_dapp_auth_email");
+                localStorage.removeItem("plane_active_wallet_address");
+                localStorage.removeItem("last_workspace_slug");
+                document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+                window.location.reload();
+              }}
+            >
+              Đăng xuất để tham gia bằng tài khoản chính xác
+            </button>
+          </div>
+        )}
         {isAccepting || isJoining ? (
           <div className="flex flex-col items-center justify-center space-y-4 py-8 text-center max-w-md">
             <LogoSpinner />

@@ -79,7 +79,7 @@ function UserInvitationsPage() {
 
     let walletAddress: string | undefined;
     try {
-      walletAddress = await resolveMetanodeWalletAddress();
+      walletAddress = await resolveMetanodeWalletAddress({ forceSelect: true });
     } catch (wErr) {
       console.warn("Wallet prompt skipped or failed in bulk invitations:", wErr);
     }

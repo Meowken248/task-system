@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { observer } from "mobx-react";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
@@ -56,6 +56,20 @@ export const WorkspaceMembersList = observer(function WorkspaceMembersList(props
         }
       : null
   );
+
+  useEffect(() => {
+    if (!workspaceSlug) return;
+    const handleSync = async () => {
+      try {
+        await fetchWorkspaceMemberInvitations(workspaceSlug.toString());
+        await fetchWorkspaceMembers(workspaceSlug.toString());
+      } catch { }
+    };
+    window.addEventListener("plane_dapp_members_synced", handleSync);
+    return () => {
+      window.removeEventListener("plane_dapp_members_synced", handleSync);
+    };
+  }, [workspaceSlug, fetchWorkspaceMemberInvitations, fetchWorkspaceMembers]);
 
   if (!workspaceMemberIds && !workspaceMemberInvitationIds) return <MembersSettingsLoader />;
 

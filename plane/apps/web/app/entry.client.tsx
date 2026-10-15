@@ -65,6 +65,13 @@ if (typeof document !== "undefined") {
     if (action.includes("/auth/sign-out")) {
       localStorage.removeItem("plane_dapp_auth_user");
       localStorage.removeItem("plane_dapp_auth_email");
+      sessionStorage.removeItem("plane_dapp_auth_user");
+      sessionStorage.removeItem("plane_dapp_auth_email");
+      localStorage.removeItem("plane_active_wallet_address");
+      sessionStorage.removeItem("plane_active_wallet_address");
+      localStorage.removeItem("last_workspace_slug");
+      sessionStorage.removeItem("last_workspace_slug");
+      document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
       window.location.href = resolveAppPath("/");
       return;
     }
@@ -136,9 +143,46 @@ if (typeof document !== "undefined") {
         localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
       } catch { }
 
-      localStorage.setItem("plane_dapp_auth_user", user?.id || `user-${Date.now().toString(36)}`);
+      const authUserId = user?.id || `user-${Date.now().toString(36)}`;
+      localStorage.setItem("plane_dapp_auth_user", authUserId);
       localStorage.setItem("plane_dapp_auth_email", email);
-      window.location.href = resolveAppPath(nextPath);
+      sessionStorage.setItem("plane_dapp_auth_user", authUserId);
+      sessionStorage.setItem("plane_dapp_auth_email", email);
+      // Clean up previous user's active wallet from session so new user doesn't inherit it
+      localStorage.removeItem("plane_active_wallet_address");
+      sessionStorage.removeItem("plane_active_wallet_address");
+
+      // Auto-resolve target workspace from user, membership, or invitations
+      const memberEntry = (localDB.workspace_members || []).find((m: any) =>
+        (m.email && m.email.toLowerCase().trim() === email) ||
+        (m.member && (m.member === authUserId || m.member === user?.id))
+      );
+      const invEntry = (localDB.invitations || []).find((i: any) =>
+        (i.email && i.email.toLowerCase().trim() === email)
+      );
+      const targetWsSlug = user?.last_workspace_slug || memberEntry?.workspace || memberEntry?.workspace_id || invEntry?.workspace?.slug || invEntry?.workspace_slug || invEntry?.workspace;
+
+      if (targetWsSlug) {
+        if (user) {
+          user.last_workspace_slug = targetWsSlug;
+          user.is_onboarded = true;
+        }
+        localStorage.setItem("last_workspace_slug", targetWsSlug);
+        sessionStorage.setItem("last_workspace_slug", targetWsSlug);
+        document.cookie = `last_workspace_slug=${targetWsSlug}; path=/; max-age=31536000; SameSite=Lax`;
+        try {
+          localStorage.setItem("plane_dapp_local_db", JSON.stringify(localDB));
+        } catch { }
+      } else {
+        localStorage.removeItem("last_workspace_slug");
+        sessionStorage.removeItem("last_workspace_slug");
+        document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+      }
+
+      const destinationPath = (!nextPath || nextPath === "/" || nextPath === "/plane" || nextPath.includes("onboarding")) && targetWsSlug
+        ? `/${targetWsSlug}`
+        : nextPath;
+      window.location.href = resolveAppPath(destinationPath);
       return;
     }
 
@@ -149,7 +193,7 @@ if (typeof document !== "undefined") {
 
       let existingUser = localDB.users.find((u: any) => (u?.email || "").toLowerCase() === email);
       const storedHash = creds[email] || existingUser?.password_hash;
-      if (storedHash || existingUser) {
+      if (storedHash) {
         alert("Email này đã được đăng ký. Vui lòng đăng nhập.");
         form.dispatchEvent(new Event("error", { bubbles: true }));
         const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
@@ -171,25 +215,79 @@ if (typeof document !== "undefined") {
         localStorage.setItem("plane_dapp_credentials", JSON.stringify(creds));
       } catch { }
 
-      const newUser = {
-        id: `user-${Date.now().toString(36)}`,
-        email,
-        password_hash: passwordHash,
-        first_name: firstNameInput?.value || email.split("@")[0],
-        last_name: lastNameInput?.value || "",
-        display_name: `${firstNameInput?.value || email.split("@")[0]} ${lastNameInput?.value || ""}`.trim(),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      localDB.users.push(newUser);
+      let userRecord = existingUser;
+      if (!userRecord) {
+        userRecord = {
+          id: `user-${Date.now().toString(36)}`,
+          email,
+          password_hash: passwordHash,
+          first_name: firstNameInput?.value || email.split("@")[0],
+          last_name: lastNameInput?.value || "",
+          display_name: `${firstNameInput?.value || email.split("@")[0]} ${lastNameInput?.value || ""}`.trim(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        localDB.users.push(userRecord);
+      } else {
+        userRecord.password_hash = passwordHash;
+        if (firstNameInput?.value) userRecord.first_name = firstNameInput.value;
+        if (lastNameInput?.value) userRecord.last_name = lastNameInput.value;
+        userRecord.display_name = `${userRecord.first_name || email.split("@")[0]} ${userRecord.last_name || ""}`.trim();
+        userRecord.updated_at = new Date().toISOString();
+      }
+
+      // Check if this user belongs to any workspace or has invitations
+      const memberEntry = (localDB.workspace_members || []).find((m: any) =>
+        (m.email && m.email.toLowerCase().trim() === email) ||
+        (m.member && m.member === userRecord.id)
+      );
+      const invEntry = (localDB.invitations || []).find((i: any) =>
+        (i.email && i.email.toLowerCase().trim() === email)
+      );
+
+      const targetWsSlug = memberEntry?.workspace || memberEntry?.workspace_id || invEntry?.workspace?.slug || invEntry?.workspace_slug || invEntry?.workspace;
+
+      if (memberEntry || invEntry) {
+        userRecord.is_onboarded = true;
+        userRecord.is_tour_completed = true;
+        userRecord.onboarding_step = {
+          profile_complete: true,
+          workspace_join: true,
+          workspace_create: true,
+          workspace_invite: true,
+        };
+        if (memberEntry && memberEntry.member !== userRecord.id) {
+          memberEntry.member = userRecord.id;
+          memberEntry.email = email;
+        }
+      }
+
+      if (targetWsSlug) {
+        userRecord.last_workspace_slug = targetWsSlug;
+        localStorage.setItem("last_workspace_slug", targetWsSlug);
+        sessionStorage.setItem("last_workspace_slug", targetWsSlug);
+        document.cookie = `last_workspace_slug=${targetWsSlug}; path=/; max-age=31536000; SameSite=Lax`;
+      } else {
+        localStorage.removeItem("last_workspace_slug");
+        sessionStorage.removeItem("last_workspace_slug");
+        document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+      }
 
       try {
         localStorage.setItem("plane_dapp_local_db", JSON.stringify(localDB));
       } catch { }
 
-      localStorage.setItem("plane_dapp_auth_user", newUser.id);
-      localStorage.setItem("plane_dapp_auth_email", newUser.email);
-      window.location.href = resolveAppPath(nextPath);
+      localStorage.setItem("plane_dapp_auth_user", userRecord.id);
+      localStorage.setItem("plane_dapp_auth_email", userRecord.email);
+      sessionStorage.setItem("plane_dapp_auth_user", userRecord.id);
+      sessionStorage.setItem("plane_dapp_auth_email", userRecord.email);
+      localStorage.removeItem("plane_active_wallet_address");
+      sessionStorage.removeItem("plane_active_wallet_address");
+
+      const destinationPath = (!nextPath || nextPath === "/" || nextPath === "/plane" || nextPath.includes("onboarding")) && targetWsSlug
+        ? `/${targetWsSlug}`
+        : nextPath;
+      window.location.href = resolveAppPath(destinationPath);
       return;
     }
   };

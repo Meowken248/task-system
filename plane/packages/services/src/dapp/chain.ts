@@ -753,6 +753,9 @@ export async function joinWorkspaceOnChain(slug: string, memberWallet?: string):
   }
 
   const cleanAddr = userAddr.toLowerCase();
+  if (memberWallet) {
+    currentUserAddress = memberWallet;
+  }
   // If the user is actively joining on-chain, un-stale their address from removed_members!
   if (localDB.removed_members?.[slug]) {
     localDB.removed_members[slug] = localDB.removed_members[slug].filter(
@@ -997,6 +1000,31 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
           }
         }
       }
+    }
+  }
+
+  // Prune any re-invited or currently active confirmed members from mergedRemovedMembers!
+  const allActiveInvitations = (localDB.invitations || []).concat(ipfsDB.invitations || []);
+  const allActiveMembers = (currentWorkspaceMembers || []).concat(ipfsDB.workspace_members || []);
+  for (const [ws, rList] of Object.entries(mergedRemovedMembers)) {
+    const unbannedSet = new Set<string>();
+    allActiveInvitations.forEach((inv: any) => {
+      const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+      if (!invWs || invWs === ws) {
+        if (inv.email) unbannedSet.add(inv.email.toLowerCase().trim());
+        if (inv.wallet_address) unbannedSet.add(inv.wallet_address.toLowerCase().trim());
+      }
+    });
+    allActiveMembers.forEach((m: any) => {
+      const mWs = m.workspace || m.workspace_id;
+      if ((!mWs || mWs === ws) && m.is_active !== false && m.verified_on_chain) {
+        if (m.email) unbannedSet.add(m.email.toLowerCase().trim());
+        if (m.wallet_address) unbannedSet.add(m.wallet_address.toLowerCase().trim());
+        if (typeof m.member === "string" && m.member.startsWith("0x")) unbannedSet.add(m.member.toLowerCase().trim());
+      }
+    });
+    if (unbannedSet.size > 0) {
+      mergedRemovedMembers[ws] = rList.filter((item) => !unbannedSet.has(item.toLowerCase().trim()));
     }
   }
 
@@ -1933,29 +1961,40 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
           );
         }
       } else {
-        await bridge
-          .request("sendTransaction", {
-            from: currentUserAddress as string,
-            to: wsRegistryAddr,
-            abiData: [CREATE_WORKSPACE_ABI],
-            functionName: "createWorkspace",
-            feeType: "sc",
-            amount: "0",
-            value: "0",
-            gas: contractGas,
-            type: "transaction",
-            inputArray: [
-              { name: "slug", type: "string", value: targetSlug },
-              { name: "name", type: "string", value: targetName },
-              { name: "initialCid", type: "string", value: cid },
-            ],
-            isReadOnly: false,
-            bundleId: "",
-            ...(blsPrivateKey ? { blsPrivateKey } : {}),
-          })
-          .catch((createErr: any) => {
-            console.warn("[DApp Sync] createWorkspace failed:", createErr);
-          });
+        const isOwnerOfWs = targetWs && (
+          (targetWs.created_by && targetWs.created_by.toLowerCase() === (currentUserAddress as string).toLowerCase()) ||
+          (targetWs.owner?.id && targetWs.owner.id.toLowerCase() === (currentUserAddress as string).toLowerCase()) ||
+          (targetWs.owner?.email && currentUserAddress && targetWs.owner.email.toLowerCase().includes((currentUserAddress as string).toLowerCase()))
+        );
+        if (isOwnerOfWs) {
+          await bridge
+            .request("sendTransaction", {
+              from: currentUserAddress as string,
+              to: wsRegistryAddr,
+              abiData: [CREATE_WORKSPACE_ABI],
+              functionName: "createWorkspace",
+              feeType: "sc",
+              amount: "0",
+              value: "0",
+              gas: contractGas,
+              type: "transaction",
+              inputArray: [
+                { name: "slug", type: "string", value: targetSlug },
+                { name: "name", type: "string", value: targetName },
+                { name: "initialCid", type: "string", value: cid },
+              ],
+              isReadOnly: false,
+              bundleId: "",
+              ...(blsPrivateKey ? { blsPrivateKey } : {}),
+            })
+            .catch((createErr: any) => {
+              console.warn("[DApp Sync] createWorkspace failed:", createErr);
+            });
+        } else {
+          console.info(
+            `[DApp Sync] Không tìm thấy workspace "${targetSlug}" on-chain và ví ${currentUserAddress} không phải Owner. Bỏ qua createWorkspace.`
+          );
+        }
       }
     } catch (wsErr) {
       console.warn("[DApp Sync] Workspace registry error:", wsErr);
