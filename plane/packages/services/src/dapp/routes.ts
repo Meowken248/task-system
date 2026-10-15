@@ -2056,6 +2056,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
 
       const isAccepted = body?.accepted === true || body?.accepted === "true";
+      let memberRecord: any = null;
       inv.responded_at = new Date().toISOString();
       if (isAccepted) {
         const memberWallet = (body?.wallet_address || "").trim().toLowerCase();
@@ -2115,7 +2116,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
               (targetEmail && (m.email || "").toLowerCase().trim() === targetEmail) ||
               (memberWallet && (m.wallet_address?.toLowerCase() === memberWallet || m.member?.toLowerCase() === memberWallet)))
         );
-        const memberRecord = {
+        memberRecord = {
           id: existingIdx >= 0 ? localDB.workspace_members[existingIdx].id : `ws-member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           workspace: ws?.id || wsSlug,
           workspace_id: ws?.id || wsSlug,
@@ -2230,6 +2231,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       saveDB();
       syncCrossPortWorkspaces();
       syncDAppRecord("invitations", inv.id, inv);
+      if (isAccepted && memberRecord) {
+        syncDAppRecord("workspace_members", memberRecord.id, memberRecord);
+      }
       void uploadToIPFS(true);
       return ok({ message: isAccepted ? "Workspace joined successfully" : "Invitation rejected" });
     }
@@ -2570,12 +2574,44 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const shouldSyncOnChain = getEnvVar("VITE_ONCHAIN_MEMBERSHIP_SYNC") !== "false";
       if (shouldSyncOnChain && wsSlug) {
         try {
-          const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug);
+          const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug, true);
           if (onChainMembers && onChainMembers.length > 0) {
             if (!localDB.workspace_members) localDB.workspace_members = [];
             const ownerEth = extractEthAddress(ws?.owner?.id || ws?.created_by || ws?.owner?.email) || "";
 
-            // Cleanup any locally cached members that were marked as removed
+            // Proactively un-stale all identifiers of users with on-chain presence, active/accepted invitations, or active workspace_members
+            if (localDB.removed_members?.[wsSlug] && Array.isArray(localDB.removed_members[wsSlug])) {
+              const preserveSet = new Set<string>();
+              for (const memberAddr of onChainMembers) {
+                if (memberAddr) preserveSet.add(memberAddr.toLowerCase().trim());
+              }
+              (localDB.invitations || []).forEach((inv: any) => {
+                const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+                if (!invWs || invWs === wsSlug || invWs === ws?.id) {
+                  if (inv.email) preserveSet.add(inv.email.toLowerCase().trim());
+                  if (inv.wallet_address) preserveSet.add(inv.wallet_address.toLowerCase().trim());
+                  if (inv.id) preserveSet.add(String(inv.id).toLowerCase().trim());
+                }
+              });
+              (localDB.workspace_members || []).forEach((m: any) => {
+                const mWs = m.workspace || m.workspace_id;
+                if ((!mWs || mWs === wsSlug || mWs === ws?.id) && m.is_active !== false) {
+                  if (m.email) preserveSet.add(m.email.toLowerCase().trim());
+                  if (m.wallet_address) preserveSet.add(m.wallet_address.toLowerCase().trim());
+                  if (typeof m.member === "string" && m.member.startsWith("0x")) preserveSet.add(m.member.toLowerCase().trim());
+                }
+              });
+              if (preserveSet.size > 0) {
+                localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter(
+                  (x: string) => !preserveSet.has(String(x).toLowerCase().trim())
+                );
+                try {
+                  localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+                } catch { }
+              }
+            }
+
+            // Cleanup any locally cached members that were truly marked as removed
             if (localDB.removed_members?.[wsSlug] && Array.isArray(localDB.workspace_members)) {
               const removedSet = new Set(localDB.removed_members[wsSlug].map((a: string) => String(a).toLowerCase().trim()));
               localDB.workspace_members = localDB.workspace_members.filter((m: any) => {
@@ -2656,6 +2692,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
                 matchedInv.wallet_address = cleanAddr;
                 matchedInv.responded_at = matchedInv.responded_at || new Date().toISOString();
                 matchedInv.updated_at = new Date().toISOString();
+                if (localDB.removed_members?.[wsSlug]) {
+                  const toUnban = new Set([cleanAddr, matchedInv.email?.toLowerCase().trim(), String(matchedInv.id || "").toLowerCase().trim()].filter(Boolean));
+                  localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((x: string) => !toUnban.has(String(x).toLowerCase().trim()));
+                  try {
+                    localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+                  } catch { }
+                }
               }
 
               if (existingIdx === -1) {
@@ -2791,6 +2834,83 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         });
         if (memberObj.id && memberObj.id !== "user-default") addedMemberKeys.add(memberObj.id);
         if (memberObj.email) addedMemberKeys.add(memberObj.email.toLowerCase().trim());
+      });
+
+      // 3.5. Also include any Accepted Invitations that might not yet be in workspaceMembers
+      (localDB.invitations || []).forEach((inv: any) => {
+        const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+        const isTarget = !invWs || invWs === wsSlug || invWs === ws?.id;
+        if (!isTarget || !inv.accepted) return;
+
+        const invMail = (inv.email || "").toLowerCase().trim();
+        const invWallet = (inv.wallet_address || "").toLowerCase().trim();
+        if ((invMail && addedMemberKeys.has(invMail)) || (invWallet && addedMemberKeys.has(invWallet)) || (inv.id && addedMemberKeys.has(inv.id))) {
+          return;
+        }
+
+        const user = (localDB.users || []).find(
+          (u: any) =>
+            (invMail && (u.email || "").toLowerCase().trim() === invMail) ||
+            (invWallet && (
+              (u.metanode_wallet_address && u.metanode_wallet_address.toLowerCase() === invWallet) ||
+              (typeof u.id === "string" && u.id.toLowerCase() === invWallet)
+            ))
+        );
+        const isEth = Boolean(invWallet && invWallet.startsWith("0x"));
+        const resolvedEmail = user?.email || inv.email || (isEth ? `${invWallet}@fiai.network` : "");
+        const shortAddr = isEth ? `${invWallet.slice(0, 6)}...${invWallet.slice(-4)}` : "Member";
+        const namePart = resolvedEmail.includes("@") ? resolvedEmail.split("@")[0] : shortAddr;
+        const memberObj = user || {
+          id: user?.id || (invWallet ? invWallet : inv.id) || `member-${namePart}`,
+          email: resolvedEmail,
+          first_name: inv.first_name || namePart,
+          last_name: inv.last_name || "",
+          display_name: inv.display_name || inv.first_name || namePart,
+          avatar_url: "",
+          is_active: true,
+        };
+
+        membersList.push({
+          id: `ws-member-${inv.id || memberObj.id}`,
+          member: memberObj,
+          role: inv.role || 15,
+          workspace: ws?.id || wsSlug,
+          is_active: true,
+          created_at: inv.responded_at || inv.created_at || new Date().toISOString(),
+        });
+        if (memberObj.id && memberObj.id !== "user-default") addedMemberKeys.add(memberObj.id);
+        if (memberObj.email) addedMemberKeys.add(memberObj.email.toLowerCase().trim());
+        if (invWallet) addedMemberKeys.add(invWallet);
+
+        // Ensure localDB.workspace_members has this record so future queries have it
+        if (!localDB.workspace_members) localDB.workspace_members = [];
+        const existingIdx = localDB.workspace_members.findIndex(
+          (m: any) =>
+            (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id) &&
+            ((invMail && m.email && m.email.toLowerCase().trim() === invMail) ||
+              (invWallet && (m.wallet_address?.toLowerCase() === invWallet || m.member?.toLowerCase() === invWallet)))
+        );
+        if (existingIdx === -1) {
+          localDB.workspace_members.push({
+            id: `ws-member-${inv.id || Date.now()}`,
+            workspace: ws?.id || wsSlug,
+            workspace_id: ws?.id || wsSlug,
+            member: user?.id || (invWallet ? invWallet : inv.id),
+            email: resolvedEmail,
+            wallet_address: invWallet || undefined,
+            role: inv.role || 15,
+            is_active: true,
+            verified_on_chain: Boolean(invWallet),
+            created_at: inv.responded_at || inv.created_at || new Date().toISOString(),
+          });
+        }
+        if (localDB.removed_members?.[wsSlug]) {
+          const toUnban = new Set([invWallet, invMail, String(inv.id || "").toLowerCase().trim()].filter(Boolean));
+          localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((x: string) => !toUnban.has(String(x).toLowerCase().trim()));
+          try {
+            localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+          } catch { }
+        }
       });
 
       // 4. Fallback for single-user initial installation
@@ -6277,11 +6397,35 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       const shouldSyncOnChain = getEnvVar("VITE_ONCHAIN_MEMBERSHIP_SYNC") !== "false";
       if (shouldSyncOnChain && wsSlug) {
         try {
-          const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug);
+          const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug, true);
           if (onChainMembers && onChainMembers.length > 0) {
             syncedOnChainWallets = onChainMembers;
             if (!localDB.workspace_members) localDB.workspace_members = [];
             const ownerEth = extractEthAddress(ws?.owner?.id || ws?.created_by || ws?.owner?.email) || "";
+
+            // Proactively un-stale all identifiers of users with on-chain presence, active/accepted invitations, or active workspace_members
+            if (localDB.removed_members?.[wsSlug] && Array.isArray(localDB.removed_members[wsSlug])) {
+              const preserveSet = new Set<string>();
+              for (const memberAddr of onChainMembers) {
+                if (memberAddr) preserveSet.add(memberAddr.toLowerCase().trim());
+              }
+              (localDB.invitations || []).forEach((inv: any) => {
+                const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+                if (!invWs || invWs === wsSlug || invWs === ws?.id) {
+                  if (inv.email) preserveSet.add(inv.email.toLowerCase().trim());
+                  if (inv.wallet_address) preserveSet.add(inv.wallet_address.toLowerCase().trim());
+                  if (inv.id) preserveSet.add(String(inv.id).toLowerCase().trim());
+                }
+              });
+              if (preserveSet.size > 0) {
+                localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter(
+                  (x: string) => !preserveSet.has(String(x).toLowerCase().trim())
+                );
+                try {
+                  localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+                } catch { }
+              }
+            }
 
             for (const memberAddr of onChainMembers) {
               const cleanAddr = memberAddr.toLowerCase();
@@ -6352,6 +6496,13 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
                 matchedInv.wallet_address = cleanAddr;
                 matchedInv.responded_at = matchedInv.responded_at || new Date().toISOString();
                 matchedInv.updated_at = new Date().toISOString();
+                if (localDB.removed_members?.[wsSlug]) {
+                  const toUnban = new Set([cleanAddr, matchedInv.email?.toLowerCase().trim(), String(matchedInv.id || "").toLowerCase().trim()].filter(Boolean));
+                  localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((x: string) => !toUnban.has(String(x).toLowerCase().trim()));
+                  try {
+                    localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+                  } catch { }
+                }
               }
 
               if (existingIdx === -1) {

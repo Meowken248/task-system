@@ -1076,6 +1076,7 @@ export function syncWorkspacesToCookie(cid?: string | null) {
         workspace_id: m.workspace_id || m.workspace,
         member: m.member,
         email: (m.email || "").toLowerCase().trim(),
+        wallet_address: m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : undefined),
         role: m.role || 15,
         is_active: m.is_active !== false,
         created_at: m.created_at || new Date().toISOString(),
@@ -1216,9 +1217,15 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
                   localDB.workspace_members.push(sm);
                   hasChanges = true;
                   console.log(`[DApp DB] Auto-synced workspace member from cookie: ${sMail || sMem}`);
-                } else if (localDB.workspace_members[existingIdx].role !== sm.role) {
-                  localDB.workspace_members[existingIdx].role = sm.role;
-                  hasChanges = true;
+                } else {
+                  if (localDB.workspace_members[existingIdx].role !== sm.role) {
+                    localDB.workspace_members[existingIdx].role = sm.role;
+                    hasChanges = true;
+                  }
+                  if (sm.wallet_address && !localDB.workspace_members[existingIdx].wallet_address) {
+                    localDB.workspace_members[existingIdx].wallet_address = sm.wallet_address;
+                    hasChanges = true;
+                  }
                 }
               }
             }
