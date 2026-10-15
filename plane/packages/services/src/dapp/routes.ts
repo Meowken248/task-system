@@ -1624,7 +1624,136 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       });
     }
 
-    if (url.includes("/project-roles")) return ok({}); // return empty object for project roles
+    if (url.includes("/project-roles")) {
+      const wsSlugMatch = url.match(/\/workspaces\/([^/]+)\/project-roles/);
+      const targetSlug = wsSlugMatch ? wsSlugMatch[1] : null;
+      const ws = targetSlug ? (localDB.workspaces || []).find((w: any) => w.slug === targetSlug || w.id === targetSlug) : null;
+      const wsKeys = new Set([targetSlug, ws?.id, ws?.slug].filter(Boolean));
+
+      const activeId = activeUser?.id || activeUserId;
+      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+      const activeWallet = (
+        sessionStorage.getItem("plane_active_wallet_address") ||
+        localStorage.getItem("plane_active_wallet_address") ||
+        currentUserAddress ||
+        ""
+      ).toLowerCase().trim();
+
+      const wsMember = (localDB.workspace_members || []).find(
+        (wm: any) =>
+          (wsKeys.has(wm.workspace) || wsKeys.has(wm.workspace_id)) &&
+          (wm.member === activeId || (activeMail && (wm.email || "").toLowerCase().trim() === activeMail))
+      );
+      const isWsAdmin =
+        Boolean(
+          ws &&
+          (
+            (activeId && activeId !== "user-default" && (ws.created_by === activeId || ws.owner?.id === activeId)) ||
+            (activeMail && (
+              (ws.owner?.email && ws.owner.email.toLowerCase().trim() === activeMail) ||
+              (ws.created_by && ws.created_by.toLowerCase().trim() === activeMail)
+            )) ||
+            (activeWallet && (
+              (ws.created_by && ws.created_by.toLowerCase() === activeWallet) ||
+              (ws.owner?.id && ws.owner.id.toLowerCase() === activeWallet)
+            ))
+          )
+        ) ||
+        (activeMail === "anh2482006@gmail.com") ||
+        Boolean(wsMember && Number(wsMember.role) >= 20);
+
+      const rolesMap: Record<string, number> = {};
+      const wsProjects = (localDB.projects || []).filter((p: any) => {
+        const pWs = p.workspace || p.workspace_id || p.workspace_detail?.id || p.workspace_detail?.slug;
+        return wsKeys.has(pWs);
+      });
+
+      wsProjects.forEach((p: any) => {
+        const isProjCreator = Boolean(
+          (activeId && activeId !== "user-default" && (p.created_by === activeId || p.owner === activeId || p.owner?.id === activeId)) ||
+          (activeMail && (
+            (p.created_by && p.created_by.toLowerCase().trim() === activeMail) ||
+            (p.owner?.email && p.owner.email.toLowerCase().trim() === activeMail) ||
+            (activeMail === "anh2482006@gmail.com" && (!p.created_by || p.created_by === "user-default"))
+          )) ||
+          (activeWallet && (
+            (p.created_by && p.created_by.toLowerCase() === activeWallet) ||
+            (p.owner === activeWallet)
+          ))
+        );
+
+        if (isWsAdmin || isProjCreator) {
+          rolesMap[p.id] = 20;
+          return;
+        }
+
+        const pm = (localDB.project_members || []).find((pMember: any) => {
+          const pId = pMember.project || pMember.project_id;
+          if (pId !== p.id) return false;
+          const pMail = (pMember.email || "").toLowerCase().trim();
+          const pMem = String(pMember.member || "").toLowerCase().trim();
+          const pWall = (pMember.wallet_address || "").toLowerCase().trim();
+          if (activeMail && (pMail === activeMail || pMem === activeMail)) return true;
+          if (activeId && activeId !== "user-default" && pMem === activeId.toLowerCase().trim()) return true;
+          if (activeWallet && (pWall === activeWallet || pMem === activeWallet)) return true;
+          return false;
+        });
+
+        if (pm && pm.role) {
+          rolesMap[p.id] = Number(pm.role);
+        }
+      });
+
+      return ok(rolesMap);
+    }
+
+    const userProjInvMatch = url.match(/\/api\/users\/me\/workspaces\/([^/]+)\/projects\/invitations\/?(?:\?.*)?$/);
+    if (userProjInvMatch) {
+      if (method === "post") {
+        if (!localDB.project_members) localDB.project_members = [];
+        const projectIds: string[] = Array.isArray(body?.project_ids) ? body.project_ids : [];
+        const activeId = activeUser?.id || activeUserId || "user-default";
+        const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+        const activeWallet = (
+          sessionStorage.getItem("plane_active_wallet_address") ||
+          localStorage.getItem("plane_active_wallet_address") ||
+          currentUserAddress ||
+          ""
+        ).toLowerCase().trim();
+        const userObj = (localDB.users || []).find((u: any) => u.id === activeId || (activeMail && u.email?.toLowerCase() === activeMail));
+
+        projectIds.forEach((projId: string) => {
+          const targetProj = (localDB.projects || []).find(
+            (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+          );
+          const targetProjId = targetProj?.id || projId;
+          const exists = localDB.project_members.some(
+            (pm: any) =>
+              (pm.project === targetProjId || pm.project_id === targetProjId) &&
+              (
+                (activeId && activeId !== "user-default" && (pm.member === activeId || pm.id === activeId || pm.member?.id === activeId)) ||
+                (activeMail && ((pm.email || "").toLowerCase().trim() === activeMail || String(pm.member || "").toLowerCase().trim() === activeMail || (pm.member?.email || "").toLowerCase().trim() === activeMail)) ||
+                (activeWallet && ((pm.wallet_address || "").toLowerCase().trim() === activeWallet || String(pm.member || "").toLowerCase().trim() === activeWallet || (pm.member?.wallet_address || "").toLowerCase().trim() === activeWallet))
+              )
+          );
+          if (!exists) {
+            localDB.project_members.push({
+              id: `pm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              project: targetProjId,
+              project_id: targetProjId,
+              member: userObj || activeId,
+              email: activeMail || undefined,
+              wallet_address: activeWallet || undefined,
+              role: 15,
+              created_at: new Date().toISOString(),
+            });
+          }
+        });
+        saveDB();
+        return ok({ message: "Joined projects successfully" });
+      }
+      return ok({});
+    }
 
     if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles") && !url.includes("/invitations")) {
       syncCrossPortWorkspaces();
@@ -3622,6 +3751,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     const currentUserId = activeUser?.id || activeUserId;
     const currentUserEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+    const activeWallet = (
+      sessionStorage.getItem("plane_active_wallet_address") ||
+      localStorage.getItem("plane_active_wallet_address") ||
+      currentUserAddress ||
+      ""
+    ).toLowerCase().trim();
 
     // Check if user is Workspace Admin/Owner
     const wsMember = (localDB.workspace_members || []).find(
@@ -3630,7 +3765,20 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         (wm.member === currentUserId || (currentUserEmail && (wm.email || "").toLowerCase().trim() === currentUserEmail))
     );
     const isWsAdmin =
-      Boolean(ws && (ws.created_by === currentUserId || ws.owner?.id === currentUserId || (currentUserEmail && ws.owner?.email?.toLowerCase().trim() === currentUserEmail))) ||
+      Boolean(
+        ws &&
+        (
+          (currentUserId && currentUserId !== "user-default" && (ws.created_by === currentUserId || ws.owner?.id === currentUserId)) ||
+          (currentUserEmail && (
+            (ws.owner?.email && ws.owner.email.toLowerCase().trim() === currentUserEmail) ||
+            (ws.created_by && ws.created_by.toLowerCase().trim() === currentUserEmail)
+          )) ||
+          (activeWallet && (
+            (ws.created_by && ws.created_by.toLowerCase() === activeWallet) ||
+            (ws.owner?.id && ws.owner.id.toLowerCase() === activeWallet)
+          ))
+        )
+      ) ||
       (currentUserEmail === "anh2482006@gmail.com") ||
       Boolean(wsMember && Number(wsMember.role) >= 20);
 
@@ -3640,20 +3788,55 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         if (deletedSet.has(p.id) || deletedSet.has(p.identifier)) return false;
         if (validWsKeys.size > 0) {
           const pWs = p.workspace || p.workspace_id || p.workspace_detail?.id || p.workspace_detail?.slug;
-          if (pWs) return validWsKeys.has(pWs);
-          return ws?.slug === getDefaultWorkspaceSlug();
+          if (pWs && !validWsKeys.has(pWs)) return false;
+          if (!pWs && ws?.slug !== getDefaultWorkspaceSlug()) return false;
         }
+
+        // Secret / Private project check: network === 0 (EProjectNetwork.PRIVATE)
+        if (p.network === 0) {
+          const pm = (localDB.project_members || []).find((pMember: any) => {
+            const pId = pMember.project || pMember.project_id;
+            if (pId !== p.id) return false;
+            const pMail = (pMember.email || "").toLowerCase().trim();
+            const pMem = String(pMember.member || "").toLowerCase().trim();
+            const pWall = (pMember.wallet_address || "").toLowerCase().trim();
+            if (currentUserEmail && (pMail === currentUserEmail || pMem === currentUserEmail)) return true;
+            if (currentUserId && currentUserId !== "user-default" && pMem === currentUserId.toLowerCase().trim()) return true;
+            if (activeWallet && (pWall === activeWallet || pMem === activeWallet)) return true;
+            return false;
+          });
+
+          const isProjCreator = Boolean(
+            (currentUserId && currentUserId !== "user-default" && (p.created_by === currentUserId || p.owner === currentUserId || p.owner?.id === currentUserId)) ||
+            (currentUserEmail && (
+              (p.created_by && p.created_by.toLowerCase().trim() === currentUserEmail) ||
+              (p.owner?.email && p.owner.email.toLowerCase().trim() === currentUserEmail) ||
+              (currentUserEmail === "anh2482006@gmail.com" && (!p.created_by || p.created_by === "user-default"))
+            )) ||
+            (activeWallet && (
+              (p.created_by && p.created_by.toLowerCase() === activeWallet) ||
+              (p.owner === activeWallet)
+            ))
+          );
+
+          if (!isWsAdmin && !isProjCreator && !pm) {
+            return false;
+          }
+        }
+
         return true;
       })
       .map((p: any, index: number) => {
         const pm = (localDB.project_members || []).find((pMember: any) => {
           const pId = pMember.project || pMember.project_id;
+          if (pId !== p.id) return false;
           const pMail = (pMember.email || "").toLowerCase().trim();
-          const pMem = String(pMember.member || "");
-          return (pId === p.id) && (
-            (currentUserEmail && pMail === currentUserEmail) ||
-            (currentUserId && currentUserId !== "user-default" && pMem === currentUserId)
-          );
+          const pMem = String(pMember.member || "").toLowerCase().trim();
+          const pWall = (pMember.wallet_address || "").toLowerCase().trim();
+          if (currentUserEmail && (pMail === currentUserEmail || pMem === currentUserEmail)) return true;
+          if (currentUserId && currentUserId !== "user-default" && pMem === currentUserId.toLowerCase().trim()) return true;
+          if (activeWallet && (pWall === activeWallet || pMem === activeWallet)) return true;
+          return false;
         });
 
         const isProjCreator = Boolean(
@@ -3662,16 +3845,20 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             (p.created_by && p.created_by.toLowerCase().trim() === currentUserEmail) ||
             (p.owner?.email && p.owner.email.toLowerCase().trim() === currentUserEmail) ||
             (currentUserEmail === "anh2482006@gmail.com" && (!p.created_by || p.created_by === "user-default"))
+          )) ||
+          (activeWallet && (
+            (p.created_by && p.created_by.toLowerCase() === activeWallet) ||
+            (p.owner === activeWallet)
           ))
         );
 
-        let resolvedRole: number = 20;
-        if (pm && pm.role) {
-          resolvedRole = pm.role;
-        } else if (isProjCreator || isWsAdmin) {
+        let resolvedRole: number | null = null;
+        if (isProjCreator || isWsAdmin) {
           resolvedRole = 20;
-        } else if (p.member_role) {
-          resolvedRole = p.member_role;
+        } else if (pm && pm.role) {
+          resolvedRole = Number(pm.role);
+        } else {
+          resolvedRole = null;
         }
 
         // Calculate next_work_item_sequence from actual issues
@@ -3713,24 +3900,74 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
           const currentUserId = activeUser?.id || activeUserId;
           const currentUserEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+          const activeWallet = (
+            sessionStorage.getItem("plane_active_wallet_address") ||
+            localStorage.getItem("plane_active_wallet_address") ||
+            currentUserAddress ||
+            ""
+          ).toLowerCase().trim();
+
+          const wsMember = (localDB.workspace_members || []).find(
+            (wm: any) =>
+              (wm.workspace === ws?.id || wm.workspace === ws?.slug || wm.workspace === wsSlug) &&
+              (wm.member === currentUserId || (currentUserEmail && (wm.email || "").toLowerCase().trim() === currentUserEmail))
+          );
+          const isWsAdmin =
+            Boolean(
+              ws &&
+              (
+                (currentUserId && currentUserId !== "user-default" && (ws.created_by === currentUserId || ws.owner?.id === currentUserId)) ||
+                (currentUserEmail && (
+                  (ws.owner?.email && ws.owner.email.toLowerCase().trim() === currentUserEmail) ||
+                  (ws.created_by && ws.created_by.toLowerCase().trim() === currentUserEmail)
+                )) ||
+                (activeWallet && (
+                  (ws.created_by && ws.created_by.toLowerCase() === activeWallet) ||
+                  (ws.owner?.id && ws.owner.id.toLowerCase() === activeWallet)
+                ))
+              )
+            ) ||
+            (currentUserEmail === "anh2482006@gmail.com") ||
+            Boolean(wsMember && Number(wsMember.role) >= 20);
+
           const pm = (localDB.project_members || []).find((pMember: any) => {
             const pId = pMember.project || pMember.project_id;
+            if (pId !== p.id) return false;
             const pMail = (pMember.email || "").toLowerCase().trim();
-            const pMem = String(pMember.member || "");
-            return (pId === p.id) && (
-              (currentUserEmail && pMail === currentUserEmail) ||
-              (currentUserId && currentUserId !== "user-default" && pMem === currentUserId)
-            );
+            const pMem = String(pMember.member || "").toLowerCase().trim();
+            const pWall = (pMember.wallet_address || "").toLowerCase().trim();
+            if (currentUserEmail && (pMail === currentUserEmail || pMem === currentUserEmail)) return true;
+            if (currentUserId && currentUserId !== "user-default" && pMem === currentUserId.toLowerCase().trim()) return true;
+            if (activeWallet && (pWall === activeWallet || pMem === activeWallet)) return true;
+            return false;
           });
+
           const isProjCreator = Boolean(
             (currentUserId && currentUserId !== "user-default" && (p.created_by === currentUserId || p.owner === currentUserId || p.owner?.id === currentUserId)) ||
             (currentUserEmail && (
               (p.created_by && p.created_by.toLowerCase().trim() === currentUserEmail) ||
               (p.owner?.email && p.owner.email.toLowerCase().trim() === currentUserEmail) ||
               (currentUserEmail === "anh2482006@gmail.com" && (!p.created_by || p.created_by === "user-default"))
+            )) ||
+            (activeWallet && (
+              (p.created_by && p.created_by.toLowerCase() === activeWallet) ||
+              (p.owner === activeWallet)
             ))
           );
-          const resolvedRole = (pm && pm.role) ? pm.role : (isProjCreator ? 20 : (p.member_role || 20));
+
+          if (p.network === 0 && !isWsAdmin && !isProjCreator && !pm) {
+            return { data: { error: "You do not have access to this project" }, status: 403 };
+          }
+
+          let resolvedRole: number | null = null;
+          if (isProjCreator || isWsAdmin) {
+            resolvedRole = 20;
+          } else if (pm && pm.role) {
+            resolvedRole = Number(pm.role);
+          } else {
+            resolvedRole = null;
+          }
+
           return ok(Object.assign({}, p, {
             workspace: canonicalWsId || p.workspace,
             workspace_detail: ws || p.workspace_detail,
@@ -3837,41 +4074,152 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const targetProjId = targetProj.id || projectId;
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
     const activeId = activeUser?.id || activeUserId || "user-default";
-    const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase();
+    const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+    const activeWallet = (
+      sessionStorage.getItem("plane_active_wallet_address") ||
+      localStorage.getItem("plane_active_wallet_address") ||
+      currentUserAddress ||
+      ""
+    ).toLowerCase().trim();
 
     // Check project membership:
     const pmRecord = (localDB.project_members || []).find(
       (pm: any) =>
         (pm.project === targetProjId || pm.project_id === targetProjId) &&
-        (pm.member === activeId ||
-          pm.id === activeId ||
-          (activeMail && pm.email?.toLowerCase() === activeMail))
+        (
+          (activeId && activeId !== "user-default" && (pm.member === activeId || pm.id === activeId || pm.member?.id === activeId)) ||
+          (activeMail && ((pm.email || "").toLowerCase().trim() === activeMail || String(pm.member || "").toLowerCase().trim() === activeMail || (pm.member?.email || "").toLowerCase().trim() === activeMail)) ||
+          (activeWallet && ((pm.wallet_address || "").toLowerCase().trim() === activeWallet || String(pm.member || "").toLowerCase().trim() === activeWallet || (pm.member?.wallet_address || "").toLowerCase().trim() === activeWallet))
+        )
     );
     if (pmRecord) {
       return ok({
         id: pmRecord.id || `proj-member-${activeId}`,
         member: activeId,
-        role: pmRecord.role || 15,
+        role: Number(pmRecord.role) || 15,
       });
     }
 
-    const defaultWsSlug = getDefaultWorkspaceSlug();
-    const isProjCreator = targetProj.created_by === activeId;
+    const wsMember = (localDB.workspace_members || []).find(
+      (wm: any) =>
+        (wm.workspace === ws?.id || wm.workspace === ws?.slug || wm.workspace === wsSlug) &&
+        (wm.member === activeId || (activeMail && (wm.email || "").toLowerCase().trim() === activeMail))
+    );
     const isWsAdmin =
-      ws?.created_by === activeId ||
-      ws?.owner?.id === activeId ||
-      (activeMail && ws?.owner?.email?.toLowerCase() === activeMail) ||
-      ws?.slug === defaultWsSlug;
+      Boolean(
+        ws &&
+        (
+          (activeId && activeId !== "user-default" && (ws.created_by === activeId || ws.owner?.id === activeId)) ||
+          (activeMail && (
+            (ws.owner?.email && ws.owner.email.toLowerCase().trim() === activeMail) ||
+            (ws.created_by && ws.created_by.toLowerCase().trim() === activeMail)
+          )) ||
+          (activeWallet && (
+            (ws.created_by && ws.created_by.toLowerCase() === activeWallet) ||
+            (ws.owner?.id && ws.owner.id.toLowerCase() === activeWallet)
+          ))
+        )
+      ) ||
+      (activeMail === "anh2482006@gmail.com") ||
+      Boolean(wsMember && Number(wsMember.role) >= 20);
 
-    if (targetProj.network === 0 && !isProjCreator && !isWsAdmin) {
-      return { data: { error: "You are not a member of this project" }, status: 403 };
+    const isProjCreator = Boolean(
+      (activeId && activeId !== "user-default" && (targetProj.created_by === activeId || targetProj.owner === activeId || targetProj.owner?.id === activeId)) ||
+      (activeMail && (
+        (targetProj.created_by && targetProj.created_by.toLowerCase().trim() === activeMail) ||
+        (targetProj.owner?.email && targetProj.owner.email.toLowerCase().trim() === activeMail) ||
+        (activeMail === "anh2482006@gmail.com" && (!targetProj.created_by || targetProj.created_by === "user-default"))
+      )) ||
+      (activeWallet && (
+        (targetProj.created_by && targetProj.created_by.toLowerCase() === activeWallet) ||
+        (targetProj.owner === activeWallet)
+      ))
+    );
+
+    if (isWsAdmin || isProjCreator) {
+      return ok({
+        id: `proj-member-${activeId}`,
+        member: activeId,
+        role: 20,
+      });
     }
 
-    return ok({
-      id: "mock-proj-member-me",
-      member: activeId,
-      role: isWsAdmin || isProjCreator ? 20 : 15,
-    });
+    // User is neither creator, wsAdmin, nor project member
+    return { data: { error: "You are not a member of this project" }, status: 403 };
+  }
+
+  // ── Project Member Detail & Leave ──────────────────────────────────────
+  const projMemberActionMatch = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/members\/([^/]+)\/?(?:\?.*)?$/);
+  if (projMemberActionMatch) {
+    const wsSlug = projMemberActionMatch[1];
+    const projectId = projMemberActionMatch[2];
+    const targetMemberId = projMemberActionMatch[3];
+    const targetProj = (localDB.projects || []).find(
+      (p: any) => p.id === projectId || (p.identifier && p.identifier.toLowerCase() === projectId.toLowerCase())
+    );
+    const targetProjId = targetProj?.id || projectId;
+
+    if (method === "post" && targetMemberId === "leave") {
+      const activeId = activeUser?.id || activeUserId || "user-default";
+      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+      const activeWallet = (
+        sessionStorage.getItem("plane_active_wallet_address") ||
+        localStorage.getItem("plane_active_wallet_address") ||
+        currentUserAddress ||
+        ""
+      ).toLowerCase().trim();
+
+      if (localDB.project_members) {
+        localDB.project_members = localDB.project_members.filter((pm: any) => {
+          const isThisProj = pm.project === targetProjId || pm.project_id === targetProjId;
+          if (!isThisProj) return true;
+          const matchUser =
+            (activeId && activeId !== "user-default" && (pm.member === activeId || pm.id === activeId || pm.member?.id === activeId)) ||
+            (activeMail && ((pm.email || "").toLowerCase().trim() === activeMail || String(pm.member || "").toLowerCase().trim() === activeMail || (pm.member?.email || "").toLowerCase().trim() === activeMail)) ||
+            (activeWallet && ((pm.wallet_address || "").toLowerCase().trim() === activeWallet || String(pm.member || "").toLowerCase().trim() === activeWallet || (pm.member?.wallet_address || "").toLowerCase().trim() === activeWallet));
+          return !matchUser;
+        });
+        saveDB();
+      }
+      return ok({ message: "Left project successfully" });
+    }
+
+    if (method === "delete") {
+      if (localDB.project_members) {
+        localDB.project_members = localDB.project_members.filter((pm: any) => {
+          const isThisProj = pm.project === targetProjId || pm.project_id === targetProjId;
+          if (!isThisProj) return true;
+          return !(pm.id === targetMemberId || pm.member === targetMemberId || pm.member?.id === targetMemberId);
+        });
+        saveDB();
+      }
+      return { data: null, status: 204 };
+    }
+
+    if (method === "patch") {
+      if (!localDB.project_members) localDB.project_members = [];
+      const pm = localDB.project_members.find((p: any) => {
+        const isThisProj = p.project === targetProjId || p.project_id === targetProjId;
+        if (!isThisProj) return false;
+        return p.id === targetMemberId || p.member === targetMemberId || p.member?.id === targetMemberId;
+      });
+      if (pm) {
+        if (body?.role !== undefined) pm.role = Number(body.role);
+        saveDB();
+        return ok(pm);
+      }
+      return { data: { error: "Member not found in project" }, status: 404 };
+    }
+
+    if (method === "get") {
+      const pm = (localDB.project_members || []).find((p: any) => {
+        const isThisProj = p.project === targetProjId || p.project_id === targetProjId;
+        if (!isThisProj) return false;
+        return p.id === targetMemberId || p.member === targetMemberId || p.member?.id === targetMemberId;
+      });
+      if (pm) return ok(pm);
+      return { data: { error: "Member not found in project" }, status: 404 };
+    }
   }
 
   const projMembersMatch = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/members\/?(?:\?.*)?$/);
@@ -3890,7 +4238,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
       // 1. Workspace owner or project creator
       const projCreatorId = targetProj?.created_by || ws?.created_by || ws?.owner?.id;
-      const projCreatorEmail = (ws?.owner?.email || "").toLowerCase();
+      const projCreatorEmail = (targetProj?.owner?.email || ws?.owner?.email || "").toLowerCase().trim();
       const projCreatorUser = (localDB.users || []).find(
         (u: any) => (projCreatorId && u.id === projCreatorId) || (projCreatorEmail && u.email?.toLowerCase() === projCreatorEmail)
       ) || ws?.owner || {
@@ -3928,62 +4276,29 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           (pm: any) => pm.project === targetProjId || pm.project_id === targetProjId
         );
         pms.forEach((pm: any) => {
-          const memberKey = String(pm.member || pm.id);
-          const memberMail = (pm.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase();
+          const memberKey = String(pm.member?.id || pm.member || pm.id);
+          const memberMail = (pm.email || pm.member?.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase().trim();
           if (!addedMemberKeys.has(memberKey) && (!memberMail || !addedMemberKeys.has(memberMail))) {
             const user = (localDB.users || []).find(
               (u: any) => u.id === memberKey || (memberMail && u.email?.toLowerCase() === memberMail)
             );
-            projMembersList.push({
-              id: pm.id || `proj-member-${memberKey}`,
-              member: user || {
-                id: memberKey,
-                email: pm.email || memberKey,
-                first_name: pm.first_name || "Member",
-                last_name: pm.last_name || "",
-                display_name: pm.display_name || "Member",
-                avatar_url: "",
-                is_active: true,
-              },
-              role: pm.role || 15,
-              project: targetProjId,
-              workspace: ws?.id || wsSlug,
-            });
-            addedMemberKeys.add(memberKey);
-            if (memberMail) addedMemberKeys.add(memberMail);
-          }
-        });
-      }
-
-      // 3. Workspace members available to this project (if public/internal project)
-      if (targetProj?.network !== 0) {
-        const wsMembers = (localDB.workspace_members || []).filter(
-          (m: any) =>
-            (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id) &&
-            m.is_active !== false
-        );
-
-        wsMembers.forEach((wm: any) => {
-          const memberKey = String(wm.member || wm.email || wm.id || "");
-          const memberMail = (wm.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase();
-          if (!addedMemberKeys.has(memberKey) && (!memberMail || !addedMemberKeys.has(memberMail))) {
-            const user = (localDB.users || []).find(
-              (u: any) => u.id === wm.member || (memberMail && u.email?.toLowerCase() === memberMail) || u.username === wm.member
+            const wsMem = (localDB.workspace_members || []).find(
+              (wm: any) => wm.member === memberKey || (memberMail && wm.email?.toLowerCase() === memberMail)
             );
             const isEth = memberKey.startsWith("0x");
             const shortAddr = isEth ? `${memberKey.slice(0, 6)}...${memberKey.slice(-4)}` : "Member";
             projMembersList.push({
-              id: `proj-member-${wm.id}`,
-              member: user || {
-                id: wm.member || wm.id,
-                email: wm.email || (isEth ? `${memberKey}@fiai.network` : memberKey),
-                first_name: wm.first_name || shortAddr,
-                last_name: wm.last_name || "",
-                display_name: wm.display_name || shortAddr,
-                avatar_url: "",
+              id: pm.id || `proj-member-${memberKey}`,
+              member: user || (typeof pm.member === "object" && pm.member?.id ? pm.member : {
+                id: memberKey,
+                email: pm.email || wsMem?.email || (isEth ? `${memberKey}@fiai.network` : memberKey),
+                first_name: pm.first_name || wsMem?.first_name || shortAddr,
+                last_name: pm.last_name || wsMem?.last_name || "",
+                display_name: pm.display_name || wsMem?.display_name || shortAddr,
+                avatar_url: pm.avatar_url || wsMem?.avatar_url || "",
                 is_active: true,
-              },
-              role: wm.role || 15,
+              }),
+              role: Number(pm.role) || 15,
               project: targetProjId,
               workspace: ws?.id || wsSlug,
             });
@@ -3993,6 +4308,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         });
       }
 
+      // Note: Workspace members who are not added to this project are NOT dumped into projMembersList
       return ok(projMembersList);
     }
 
@@ -4002,16 +4318,39 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const createdList: any[] = [];
       membersToAdd.forEach((m: any) => {
         const memberId = m.member_id || m.member || m.id;
-        const pmRecord = {
-          id: `pm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          project: targetProjId,
-          project_id: targetProjId,
-          member: memberId,
-          role: m.role || 15,
-          created_at: new Date().toISOString(),
-        };
-        localDB.project_members.push(pmRecord);
-        createdList.push(pmRecord);
+        if (!memberId) return;
+
+        let existing = localDB.project_members.find(
+          (pm: any) =>
+            (pm.project === targetProjId || pm.project_id === targetProjId) &&
+            (pm.member === memberId || pm.id === memberId || pm.member?.id === memberId)
+        );
+
+        if (existing) {
+          existing.role = Number(m.role) || existing.role || 15;
+          createdList.push(existing);
+        } else {
+          const user = (localDB.users || []).find((u: any) => u.id === memberId || u.email === memberId);
+          const wsMem = (localDB.workspace_members || []).find((wm: any) => wm.member === memberId || wm.email === memberId);
+          const pmRecord = {
+            id: `pm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            project: targetProjId,
+            project_id: targetProjId,
+            member: user || wsMem || {
+              id: memberId,
+              email: memberId,
+              first_name: "Member",
+              last_name: "",
+              display_name: "Member",
+              avatar_url: "",
+              is_active: true,
+            },
+            role: Number(m.role) || 15,
+            created_at: new Date().toISOString(),
+          };
+          localDB.project_members.push(pmRecord);
+          createdList.push(pmRecord);
+        }
       });
       saveDB();
       return ok(createdList);
@@ -5888,7 +6227,18 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     const projId = projMatch ? projMatch[1] : id;
     const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
     const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
-    const key = projId ? `${wsSlug}_${projId}` : wsSlug;
+    const cycleMatch = url.match(/\/cycles\/([^/]+)\//);
+    const moduleMatch = url.match(/\/modules\/([^/]+)\//);
+    const viewMatch = url.match(/\/views\/([^/]+)\//);
+
+    let key = projId ? `${wsSlug}_${projId}` : wsSlug;
+    if (cycleMatch) {
+      key = `${wsSlug}_${projId}_cycle_${cycleMatch[1]}`;
+    } else if (moduleMatch) {
+      key = `${wsSlug}_${projId}_module_${moduleMatch[1]}`;
+    } else if (viewMatch) {
+      key = `${wsSlug}_${projId}_view_${viewMatch[1]}`;
+    }
 
     if (!localDB.user_properties) localDB.user_properties = {};
 
@@ -6567,6 +6917,56 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         const matchingProjIds = new Set(
           [projId, targetProj?.id, targetProj?.identifier].filter(Boolean)
         );
+
+        if (targetProj?.network === 0) {
+          const currentUserId = getLoggedInUserId();
+          const currentUserEmail = (getLoggedInEmail() || "").toLowerCase().trim();
+          const activeWallet = (
+            sessionStorage.getItem("plane_active_wallet_address") ||
+            localStorage.getItem("plane_active_wallet_address") ||
+            currentUserAddress ||
+            ""
+          ).toLowerCase().trim();
+
+          const isProjCreator = Boolean(
+            (currentUserId && currentUserId !== "user-default" && (targetProj.created_by === currentUserId || targetProj.owner === currentUserId || targetProj.owner?.id === currentUserId)) ||
+            (currentUserEmail && (
+              (targetProj.created_by && targetProj.created_by.toLowerCase().trim() === currentUserEmail) ||
+              (targetProj.owner?.email && targetProj.owner.email.toLowerCase().trim() === currentUserEmail) ||
+              (currentUserEmail === "anh2482006@gmail.com" && (!targetProj.created_by || targetProj.created_by === "user-default"))
+            )) ||
+            (activeWallet && (
+              (targetProj.created_by && targetProj.created_by.toLowerCase() === activeWallet) ||
+              (targetProj.owner === activeWallet)
+            ))
+          );
+
+          const pm = (localDB.project_members || []).find((pMember: any) => {
+            const pId = pMember.project || pMember.project_id;
+            if (pId !== targetProj.id) return false;
+            const pMail = (pMember.email || "").toLowerCase().trim();
+            const pMem = String(pMember.member || "").toLowerCase().trim();
+            const pWall = (pMember.wallet_address || "").toLowerCase().trim();
+            if (currentUserEmail && (pMail === currentUserEmail || pMem === currentUserEmail)) return true;
+            if (currentUserId && currentUserId !== "user-default" && pMem === currentUserId.toLowerCase().trim()) return true;
+            if (activeWallet && (pWall === activeWallet || pMem === activeWallet)) return true;
+            return false;
+          });
+
+          const wsMember = (localDB.workspace_members || []).find(
+            (wm: any) =>
+              (wm.workspace === targetProj.workspace || wm.workspace_id === targetProj.workspace) &&
+              (wm.member === currentUserId || (currentUserEmail && (wm.email || "").toLowerCase().trim() === currentUserEmail))
+          );
+          const isWsAdmin =
+            (currentUserEmail === "anh2482006@gmail.com") ||
+            Boolean(wsMember && Number(wsMember.role) >= 20);
+
+          if (!isWsAdmin && !isProjCreator && !pm) {
+            return { data: { error: "You do not have access to this project" }, status: 403 };
+          }
+        }
+
         if (
           ["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules", "views", "pages", "blockchain-transactions"].includes(collection)
         ) {
@@ -6622,23 +7022,58 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
               );
             });
 
+            const wsMember = (localDB.workspace_members || []).find(
+              (wm: any) =>
+                (wm.workspace === ws?.id || wm.workspace === ws?.slug || wm.workspace === wsSlug) &&
+                (wm.member === resolvedUserId || (resolvedEmail && (wm.email || "").toLowerCase().trim() === resolvedEmail))
+            );
+            const isWsAdmin =
+              Boolean(
+                ws &&
+                (
+                  (resolvedUserId && resolvedUserId !== "user-default" && (ws.created_by === resolvedUserId || ws.owner?.id === resolvedUserId)) ||
+                  (resolvedEmail && (
+                    (ws.owner?.email && ws.owner.email.toLowerCase().trim() === resolvedEmail) ||
+                    (ws.created_by && ws.created_by.toLowerCase().trim() === resolvedEmail)
+                  ))
+                )
+              ) ||
+              (resolvedEmail === "anh2482006@gmail.com") ||
+              Boolean(wsMember && Number(wsMember.role) >= 20);
+
+            const activeWallet = (
+              sessionStorage.getItem("plane_active_wallet_address") ||
+              localStorage.getItem("plane_active_wallet_address") ||
+              currentUserAddress ||
+              ""
+            ).toLowerCase().trim();
+
             const isProjCreator = Boolean(
-              (resolvedUserId && resolvedUserId !== "user-default" && (proj.created_by === resolvedUserId || proj.owner === resolvedUserId)) ||
+              (resolvedUserId && resolvedUserId !== "user-default" && (proj.created_by === resolvedUserId || proj.owner === resolvedUserId || proj.owner?.id === resolvedUserId)) ||
               (resolvedEmail && (
                 (proj.created_by && proj.created_by.toLowerCase().trim() === resolvedEmail) ||
                 (proj.owner?.email && proj.owner.email.toLowerCase().trim() === resolvedEmail) ||
                 (resolvedEmail === "anh2482006@gmail.com" && (!proj.created_by || proj.created_by === "user-default"))
+              )) ||
+              (activeWallet && (
+                (proj.created_by && proj.created_by.toLowerCase() === activeWallet) ||
+                (proj.owner === activeWallet || proj.owner?.id?.toLowerCase() === activeWallet)
               ))
             );
 
-            if (pm && pm.role) {
-              proj.member_role = pm.role;
-            } else if (isProjCreator) {
+            if (isProjCreator || isWsAdmin) {
               proj.member_role = 20;
+            } else if (pm && pm.role) {
+              proj.member_role = pm.role;
             } else {
               proj.member_role = null;
             }
             return proj;
+          }).filter((p: any) => {
+            if (p.network === 0 && !p.member_role) {
+              return false;
+            }
+            return true;
           });
         }
       }
