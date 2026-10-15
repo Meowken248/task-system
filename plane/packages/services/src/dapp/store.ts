@@ -1548,9 +1548,13 @@ export function getUserProfile() {
 export function getUserSettings() {
   const activeUserId = getLoggedInUserId();
   const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
+  const activeWallet = typeof window !== "undefined"
+    ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))?.toLowerCase().trim()
+    : null;
   const activeUser = (localDB.users || []).find((u: any) =>
     (activeUserId && u.id === activeUserId) ||
-    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase())
+    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase()) ||
+    (activeWallet && (u.metanode_wallet_address?.toLowerCase() === activeWallet || u.id?.toLowerCase() === activeWallet))
   ) || null;
 
   const localSlug = typeof window !== "undefined" ? localStorage.getItem("last_workspace_slug") : null;

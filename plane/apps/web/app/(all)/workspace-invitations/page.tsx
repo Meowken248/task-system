@@ -96,7 +96,7 @@ function WorkspaceInvitationPage() {
       // Hard navigation reload ensures MobX stores and SWR rehydrate fresh session credentials cleanly
       setTimeout(() => {
         window.location.replace(targetUrl);
-      }, 500);
+      }, 800);
     } catch (err: any) {
       console.error("[Workspace Invitations] Error accepting invitation:", err);
       setIsJoining(false);

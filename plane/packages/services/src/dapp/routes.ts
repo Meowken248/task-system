@@ -144,9 +144,30 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const isOwner =
         ws &&
         ((ws.created_by && (ws.created_by === activeId || (activeMail && ws.created_by === activeMail))) ||
-         (ws.owner && (ws.owner.id === activeId || (activeMail && ws.owner.email?.toLowerCase() === activeMail))));
+         (ws.owner && (ws.owner.id === activeId || (activeMail && ws.owner.email?.toLowerCase() === activeMail))) ||
+         (activeWallet && (ws.created_by?.toLowerCase() === activeWallet || ws.owner?.id?.toLowerCase() === activeWallet)));
 
-      if (isRemoved && !isOwner) {
+      // If user is currently confirmed as an active workspace member, un-stale removedList!
+      const isConfirmedMember = (localDB.workspace_members || []).some(
+        (m: any) =>
+          (m.workspace === targetWsSlug || m.workspace_id === targetWsSlug || m.workspace === ws?.id || m.workspace_id === ws?.id) &&
+          m.is_active !== false &&
+          ((activeMail && m.email?.toLowerCase().trim() === activeMail) ||
+           (activeWallet && (m.wallet_address?.toLowerCase() === activeWallet || (typeof m.member === "string" && m.member.toLowerCase() === activeWallet))) ||
+           (activeId && (m.member === activeId || m.id === activeId)))
+      );
+
+      if (isConfirmedMember) {
+        if (localDB.removed_members?.[targetWsSlug]) {
+          localDB.removed_members[targetWsSlug] = localDB.removed_members[targetWsSlug].filter((x: string) => {
+            const clean = String(x).toLowerCase().trim();
+            return clean !== activeMail && clean !== activeWallet && clean !== activeId;
+          });
+          try {
+            localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+          } catch {}
+        }
+      } else if (isRemoved && !isOwner) {
         console.warn(`[DApp Routes] Blocked request for removed member (${activeMail || activeId || activeWallet}) on workspace "${targetWsSlug}": ${url}`);
         return { data: { error: "You have been removed from this workspace" }, status: 403 };
       }
@@ -2119,23 +2140,22 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           document.cookie = `last_workspace_slug=${ws?.slug || wsSlug}; path=/; max-age=31536000; SameSite=Lax`;
         }
 
-        // Trigger on-chain joinWorkspace with race timeout so fast signers are recorded immediately while gasless wallets aren't blocked
+        // Trigger on-chain joinWorkspace and wait for transaction confirmation on Sequoia chain
         if (wsSlug && memberWallet) {
           try {
-            await Promise.race([
-              joinWorkspaceOnChain(wsSlug, memberWallet).then((joined) => {
-                if (joined) {
-                  const mRec = (localDB.workspace_members || []).find(
-                    (m: any) =>
-                      (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id) &&
-                      (m.member === resolvedMemberId || m.wallet_address?.toLowerCase() === memberWallet)
-                  );
-                  if (mRec) mRec.verified_on_chain = true;
-                  console.log(`[DApp Routes] ✅ On-chain joinWorkspace hoàn thành cho ${memberWallet} trên ${wsSlug}`);
-                }
-              }),
-              new Promise((resolve) => setTimeout(resolve, 3500)),
-            ]);
+            console.log(`[DApp Routes] ⏳ Đang thực hiện joinWorkspaceOnChain cho ${memberWallet} trên ${wsSlug}...`);
+            const joined = await joinWorkspaceOnChain(wsSlug, memberWallet);
+            if (joined) {
+              const mRec = (localDB.workspace_members || []).find(
+                (m: any) =>
+                  (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id) &&
+                  (m.member === resolvedMemberId || m.wallet_address?.toLowerCase() === memberWallet)
+              );
+              if (mRec) mRec.verified_on_chain = true;
+              console.log(`[DApp Routes] ✅ On-chain joinWorkspace hoàn thành cho ${memberWallet} trên ${wsSlug}`);
+            } else {
+              console.warn(`[DApp Routes] ⚠️ joinWorkspaceOnChain không trả về true cho ${memberWallet}`);
+            }
           } catch (chainErr) {
             console.warn(`[DApp Routes] ⚠️ Lỗi on-chain joinWorkspace cho ${memberWallet}:`, chainErr);
           }
@@ -2165,15 +2185,6 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     const activeId = activeUser?.id || activeUserId || "user-default";
     const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
-
-    // Check if user is owner / creator of workspace
-    const isOwner =
-      ws.created_by === activeId ||
-      ws.owner?.id === activeId ||
-      (activeMail && ws.owner?.email?.toLowerCase().trim() === activeMail);
-
-    // Check if user was removed from this workspace
-    const removedList = (localDB.removed_members?.[wsSlug] || []).map((r: string) => String(r).toLowerCase().trim());
     const activeWallet = (
       currentUserAddress ||
       getStoredWalletAddress() ||
@@ -2185,28 +2196,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       ""
     ).toLowerCase().trim();
 
-    const isRemoved =
-      (activeMail && removedList.includes(activeMail)) ||
-      (activeId && removedList.includes(activeId.toLowerCase())) ||
-      (activeWallet && removedList.includes(activeWallet));
+    // Check if user is owner / creator of workspace
+    const isOwner =
+      ws.created_by === activeId ||
+      ws.owner?.id === activeId ||
+      (activeMail && ws.owner?.email?.toLowerCase().trim() === activeMail) ||
+      (activeWallet && (ws.created_by?.toLowerCase() === activeWallet || ws.owner?.id?.toLowerCase() === activeWallet));
 
-    if (isRemoved && !isOwner) {
-      if (localDB.workspace_members) {
-        localDB.workspace_members = localDB.workspace_members.filter((m: any) => {
-          const isWs = (m.workspace === wsSlug || m.workspace === ws.id || m.workspace_id === wsSlug || m.workspace_id === ws.id);
-          if (!isWs) return true;
-          const mMail = (m.email || "").toLowerCase().trim();
-          const mMem = String(m.member || "").toLowerCase().trim();
-          const mId = String(m.id || "").toLowerCase().trim();
-          const mWall = (m.wallet_address || "").toLowerCase().trim();
-          return !removedList.includes(mMail) && !removedList.includes(mMem) && !removedList.includes(mId) && !removedList.includes(mWall);
-        });
-        saveDB();
-      }
-      return { data: { error: "You have been removed from this workspace" }, status: 403 };
-    }
-
-    // Check if user is in localDB.workspace_members
+    // Check if user is in localDB.workspace_members first
     const memberRecord = (localDB.workspace_members || []).find(
       (m: any) =>
         (m.workspace === wsSlug || m.workspace === ws.id || m.workspace_id === wsSlug || m.workspace_id === ws.id) &&
@@ -2216,6 +2213,46 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           (currentUserAddress && (m.member?.toLowerCase() === currentUserAddress.toLowerCase() || m.wallet_address?.toLowerCase() === currentUserAddress.toLowerCase())) ||
           (activeWallet && (m.wallet_address?.toLowerCase() === activeWallet || (typeof m.member === "string" && m.member.toLowerCase() === activeWallet))))
     );
+
+    const isConfirmedMember = Boolean(memberRecord && memberRecord.is_active !== false);
+
+    // Check if user was removed from this workspace
+    let removedList = (localDB.removed_members?.[wsSlug] || []).map((r: string) => String(r).toLowerCase().trim());
+
+    if (isConfirmedMember) {
+      // User is confirmed as an active workspace member -> clean up any stale identifiers from removed_members!
+      if (localDB.removed_members?.[wsSlug]) {
+        localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((x: string) => {
+          const clean = String(x).toLowerCase().trim();
+          return clean !== activeMail && clean !== activeWallet && clean !== activeId && clean !== currentUserAddress?.toLowerCase();
+        });
+        removedList = localDB.removed_members[wsSlug].map((r: string) => String(r).toLowerCase().trim());
+        try {
+          localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+        } catch { }
+      }
+    } else {
+      const isRemoved =
+        (activeMail && removedList.includes(activeMail)) ||
+        (activeId && removedList.includes(activeId.toLowerCase())) ||
+        (activeWallet && removedList.includes(activeWallet));
+
+      if (isRemoved && !isOwner) {
+        if (localDB.workspace_members) {
+          localDB.workspace_members = localDB.workspace_members.filter((m: any) => {
+            const isWs = (m.workspace === wsSlug || m.workspace === ws.id || m.workspace_id === wsSlug || m.workspace_id === ws.id);
+            if (!isWs) return true;
+            const mMail = (m.email || "").toLowerCase().trim();
+            const mMem = String(m.member || "").toLowerCase().trim();
+            const mId = String(m.id || "").toLowerCase().trim();
+            const mWall = (m.wallet_address || "").toLowerCase().trim();
+            return !removedList.includes(mMail) && !removedList.includes(mMem) && !removedList.includes(mId) && !removedList.includes(mWall);
+          });
+          saveDB();
+        }
+        return { data: { error: "You have been removed from this workspace" }, status: 403 };
+      }
+    }
 
     // Verify on-chain role for non-owner member
     const shouldSyncOnChain = getEnvVar("VITE_ONCHAIN_MEMBERSHIP_SYNC") !== "false";
@@ -2263,7 +2300,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
     }
 
-    if (memberRecord && !isOwner) {
+    if (memberRecord && !isOwner && !isConfirmedMember) {
       const recMail = (memberRecord.email || "").toLowerCase().trim();
       const recMem = String(memberRecord.member || "").toLowerCase().trim();
       const recId = String(memberRecord.id || "").toLowerCase().trim();
@@ -2808,6 +2845,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       identifiersToAdd.forEach((ident) => {
         if (!rmList.includes(ident)) rmList.push(ident);
       });
+
+      if (!localDB._email_wallet_map) localDB._email_wallet_map = {};
+      if (resolvedMail && resolvedWallet) {
+        localDB._email_wallet_map[resolvedMail] = resolvedWallet.toLowerCase();
+        try {
+          localStorage.setItem("plane_dapp_email_wallet_map", JSON.stringify(localDB._email_wallet_map));
+        } catch {}
+      }
 
       // Permanently remove any invitations matching this member
       if (localDB.invitations && Array.isArray(localDB.invitations)) {
@@ -6574,10 +6619,23 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         if (localDB.removed_members?.[wsSlug]) {
           const knownWallets = (localDB.workspace_members || [])
             .concat(localDB.users || [])
+            .concat(localDB.invitations || [])
+            .concat(getStoredInvitations() || [])
             .filter((m: any) => (m.email || "").toLowerCase().trim() === rawEmail)
             .map((m: any) => extractEthAddress(m.wallet_address || m.member || m.metanode_wallet_address))
             .filter(Boolean)
             .map((a: string) => a.toLowerCase());
+
+          try {
+            const rawMap = localStorage.getItem("plane_dapp_email_wallet_map");
+            if (rawMap) {
+              const parsed = JSON.parse(rawMap);
+              if (parsed[rawEmail]) knownWallets.push(String(parsed[rawEmail]).toLowerCase());
+            }
+          } catch {}
+          if (localDB._email_wallet_map?.[rawEmail]) {
+            knownWallets.push(String(localDB._email_wallet_map[rawEmail]).toLowerCase());
+          }
 
           localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((r: string) => {
             const cleanR = r.toLowerCase().trim();

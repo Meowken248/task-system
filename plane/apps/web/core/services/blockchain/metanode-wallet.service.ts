@@ -195,15 +195,6 @@ async function selectAndLinkWallet(): Promise<string> {
   if (!userId) throw new Error("Hãy đăng nhập Plane trước khi kết nối ví MetaNode.");
   clearLastSelectedMetanodeWallet();
 
-  // Crypto Vault may already contain an active wallet or a single wallet while
-  // system-core keeps the `connectWallet` promise pending forever.
-  const activeAddress = await getActiveWalletAddress();
-  if (activeAddress && (await hasWallet(activeAddress))) {
-    await persistLinkedWallet(activeAddress);
-    await activateMetanodeWallet(activeAddress).catch(() => false);
-    return normalizeWalletAddress(activeAddress);
-  }
-
   const availableAddresses = [
     ...new Set(
       (await getWallets().catch(() => []))
@@ -250,7 +241,7 @@ async function selectAndLinkWallet(): Promise<string> {
     while (Date.now() < deadline) {
       // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
       let selectedAddress =
-        messageAddress ?? walletPickerAddress ?? readAddress(getLastSelectedMetanodeWallet()) ?? (await getActiveWalletAddress());
+        messageAddress ?? walletPickerAddress ?? readAddress(getLastSelectedMetanodeWallet());
 
       if (!selectedAddress) {
         // Fallback: Check if a new wallet was created/imported into Crypto Vault during this session
@@ -378,9 +369,10 @@ async function doResolveMetanodeWalletAddress(silent: boolean): Promise<string> 
 
   await initFiaiSDK();
 
-  const candidates: string[] = [];
+  // 1. Explicit session candidates (deliberately chosen by the current user for Plane)
+  const sessionCandidates: string[] = [];
   if (linkedWalletAddress && isWalletAddress(linkedWalletAddress)) {
-    candidates.push(normalizeWalletAddress(linkedWalletAddress));
+    sessionCandidates.push(normalizeWalletAddress(linkedWalletAddress));
   }
 
   // Active wallet stored from invite join or session
@@ -390,36 +382,27 @@ async function doResolveMetanodeWalletAddress(silent: boolean): Promise<string> 
       window.localStorage.getItem("plane_active_wallet_address")
     )?.trim();
     if (activeStoredWallet && isWalletAddress(activeStoredWallet)) {
-      candidates.push(normalizeWalletAddress(activeStoredWallet));
+      sessionCandidates.push(normalizeWalletAddress(activeStoredWallet));
     }
   }
 
   const userId = getEffectivePlaneUserId();
-  if (userId) {
+  if (userId && userId !== "user-default") {
     const localAddr = window.localStorage.getItem(walletStorageKey(userId))?.trim() || "";
     if (isWalletAddress(localAddr)) {
-      candidates.push(normalizeWalletAddress(localAddr));
+      sessionCandidates.push(normalizeWalletAddress(localAddr));
     }
   }
 
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key && key.startsWith("plane:metanode-wallet:")) {
-      const addr = localStorage.getItem(key)?.trim() || "";
-      if (isWalletAddress(addr)) {
-        candidates.push(normalizeWalletAddress(addr));
-      }
-    }
-  }
-
-  // Also check active wallet from Crypto Vault
+  // 2. Fallback candidates (extension's active wallet or last selected - only used in silent mode or single-wallet vault)
+  const fallbackCandidates: string[] = [];
   const activeAddress = await getActiveWalletAddress().catch(() => null);
   if (activeAddress && isWalletAddress(activeAddress)) {
-    candidates.unshift(normalizeWalletAddress(activeAddress));
+    fallbackCandidates.push(normalizeWalletAddress(activeAddress));
   }
   const lastSelected = readAddress(getLastSelectedMetanodeWallet());
   if (lastSelected && isWalletAddress(lastSelected)) {
-    candidates.unshift(normalizeWalletAddress(lastSelected));
+    fallbackCandidates.push(normalizeWalletAddress(lastSelected));
   }
 
   const rawWallets = await getWallets().catch(() => []);
@@ -432,11 +415,12 @@ async function doResolveMetanodeWalletAddress(silent: boolean): Promise<string> 
     ),
   ];
 
-  const uniqueCandidates = [...new Set(candidates)];
+  const uniqueSessionCandidates = [...new Set(sessionCandidates)];
 
-  // Case 1: If Crypto Vault has wallets, check if any candidate matches
+  // Case 1: If Crypto Vault has wallets
   if (availableAddresses.length > 0) {
-    for (const candidate of uniqueCandidates) {
+    // If a session wallet was already explicitly linked, use it
+    for (const candidate of uniqueSessionCandidates) {
       if (availableAddresses.includes(candidate)) {
         linkedWalletAddress = candidate;
         if (userId) {
@@ -447,43 +431,36 @@ async function doResolveMetanodeWalletAddress(silent: boolean): Promise<string> 
       }
     }
 
-    // Candidates did not match, but wallets exist in Crypto Vault
-    if (silent) {
-      // Auto-use the first available wallet in Crypto Vault for read operations
-      const autoWallet = availableAddresses[0];
-      linkedWalletAddress = autoWallet;
-      if (userId) {
-        window.localStorage.setItem(walletStorageKey(userId), autoWallet);
-      }
-      await activateMetanodeWallet(autoWallet).catch(() => false);
-      return autoWallet;
-    }
-
+    // Single wallet in vault -> no need to prompt, auto-link
     if (availableAddresses.length === 1) {
       const singleWallet = availableAddresses[0];
       await persistLinkedWallet(singleWallet);
       await activateMetanodeWallet(singleWallet).catch(() => false);
       return singleWallet;
     }
+
+    // Multiple wallets in vault:
+    if (silent) {
+      // In silent mode (background read), fallback to active vault wallet or first available
+      const fallback = fallbackCandidates.find((c) => availableAddresses.includes(c)) || availableAddresses[0];
+      linkedWalletAddress = fallback;
+      return fallback;
+    }
+
+    // In interactive mode with multiple wallets: prompt user to pick!
+    return selectAndLinkWallet();
   } else {
     // Case 2: Crypto Vault returned 0 wallets or failed to respond
-    // If we have a candidate from this user's localStorage, do NOT wipe it!
-    if (uniqueCandidates.length > 0) {
-      const fallback = uniqueCandidates[0];
+    if (uniqueSessionCandidates.length > 0) {
+      const fallback = uniqueSessionCandidates[0];
       linkedWalletAddress = fallback;
       return fallback;
     }
     if (silent) {
       return ZERO_ADDRESS;
     }
+    return selectAndLinkWallet();
   }
-
-  // If silent mode, never show interactive prompt
-  if (silent) {
-    return availableAddresses[0] || ZERO_ADDRESS;
-  }
-
-  return selectAndLinkWallet();
 }
 
 async function hasWallet(address: string): Promise<boolean> {

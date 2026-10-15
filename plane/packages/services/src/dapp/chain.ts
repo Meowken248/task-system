@@ -753,10 +753,14 @@ export async function joinWorkspaceOnChain(slug: string, memberWallet?: string):
   }
 
   const cleanAddr = userAddr.toLowerCase();
-  const removedWallets = (localDB.removed_members?.[slug] || []).map((x: string) => String(x).toLowerCase().trim());
-  if (removedWallets.includes(cleanAddr)) {
-    console.warn(`[DApp Chain] Ví ${cleanAddr} đã bị xóa khỏi workspace "${slug}". Chặn giao dịch joinWorkspace on-chain.`);
-    return false;
+  // If the user is actively joining on-chain, un-stale their address from removed_members!
+  if (localDB.removed_members?.[slug]) {
+    localDB.removed_members[slug] = localDB.removed_members[slug].filter(
+      (x: string) => String(x).toLowerCase().trim() !== cleanAddr
+    );
+    try {
+      localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+    } catch { }
   }
 
   try {
