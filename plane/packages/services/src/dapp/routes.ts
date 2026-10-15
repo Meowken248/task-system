@@ -86,6 +86,72 @@ export function decodeInviteToken(token: string): any {
 let lastLoadedPublicCid: string | null = null;
 const activeExportBlobUrls = new Map<string, string>();
 
+export function getWorkspaceMemberCount(wsSlug: string, wsId?: string): number {
+  const wsKeys = new Set([wsSlug, wsId].filter(Boolean));
+  const ws = (localDB.workspaces || []).find((w: any) => wsKeys.has(w.slug) || wsKeys.has(w.id));
+  const targetSlug = ws?.slug || wsSlug;
+  const targetId = ws?.id || wsId || "";
+  const removedSet = new Set(
+    (localDB.removed_members?.[targetSlug] || [])
+      .concat(targetId ? (localDB.removed_members?.[targetId] || []) : [])
+      .map((a: string) => String(a).toLowerCase().trim())
+  );
+
+  const memberKeys = new Set<string>();
+
+  // 1. Workspace Owner / Creator
+  const ownerId = ws?.created_by || ws?.owner?.id;
+  const ownerEmail = (ws?.owner?.email || "").toLowerCase().trim();
+  if (ownerEmail && !removedSet.has(ownerEmail)) {
+    memberKeys.add(ownerEmail);
+  } else if (ownerId && ownerId !== "user-default" && !removedSet.has(String(ownerId).toLowerCase())) {
+    memberKeys.add(String(ownerId).toLowerCase());
+  } else if (!ownerEmail && !ownerId) {
+    memberKeys.add("owner-default");
+  }
+
+  // 2. Workspace Members from localDB.workspace_members
+  (localDB.workspace_members || []).forEach((m: any) => {
+    const isWs =
+      wsKeys.has(m.workspace) ||
+      wsKeys.has(m.workspace_id) ||
+      (ws && (m.workspace === ws.slug || m.workspace === ws.id || m.workspace_id === ws.slug || m.workspace_id === ws.id));
+    if (!isWs || m.is_active === false) return;
+
+    const mMail = (m.email || "").toLowerCase().trim();
+    const mMem = String(m.member || "").toLowerCase().trim();
+    const mId = String(m.id || "").toLowerCase().trim();
+    const mWallet = (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim();
+
+    if (removedSet.has(mMail) || removedSet.has(mMem) || removedSet.has(mId) || (mWallet && removedSet.has(mWallet))) {
+      return;
+    }
+
+    const key = mMail || mWallet || (mMem !== "user-default" ? mMem : mId);
+    if (key) memberKeys.add(key);
+  });
+
+  // 3. Accepted invitations from localDB.invitations
+  (localDB.invitations || []).forEach((inv: any) => {
+    const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+    const isWs = !invWs || wsKeys.has(invWs) || (ws && (invWs === ws.slug || invWs === ws.id));
+    if (!isWs || !inv.accepted) return;
+
+    const invMail = (inv.email || "").toLowerCase().trim();
+    const invWallet = (inv.wallet_address || "").toLowerCase().trim();
+    const invId = String(inv.id || "").toLowerCase().trim();
+
+    if (removedSet.has(invMail) || (invWallet && removedSet.has(invWallet)) || removedSet.has(invId)) {
+      return;
+    }
+
+    const key = invMail || invWallet || invId;
+    if (key) memberKeys.add(key);
+  });
+
+  return Math.max(memberKeys.size, 1);
+}
+
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   syncCrossPortWorkspaces();

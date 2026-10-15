@@ -160,6 +160,21 @@ if (typeof document !== "undefined") {
       const invEntry = (localDB.invitations || []).find((i: any) =>
         (i.email && i.email.toLowerCase().trim() === email)
       );
+
+      // Restore this user's existing wallet if already linked in user profile, membership, or storage
+      const existingUserWallet =
+        user?.metanode_wallet_address ||
+        memberEntry?.wallet_address ||
+        invEntry?.wallet_address ||
+        localStorage.getItem(`plane:metanode-wallet:${authUserId}`) ||
+        "";
+      if (/^0x[a-fA-F0-9]{40}$/i.test(existingUserWallet.trim())) {
+        const norm = existingUserWallet.trim().toLowerCase();
+        localStorage.setItem("plane_active_wallet_address", norm);
+        sessionStorage.setItem("plane_active_wallet_address", norm);
+        localStorage.setItem(`plane:metanode-wallet:${authUserId}`, norm);
+      }
+
       const targetWsSlug = user?.last_workspace_slug || memberEntry?.workspace || memberEntry?.workspace_id || invEntry?.workspace?.slug || invEntry?.workspace_slug || invEntry?.workspace;
 
       if (targetWsSlug) {
@@ -283,6 +298,19 @@ if (typeof document !== "undefined") {
       sessionStorage.setItem("plane_dapp_auth_email", userRecord.email);
       localStorage.removeItem("plane_active_wallet_address");
       sessionStorage.removeItem("plane_active_wallet_address");
+
+      const existingUserWallet =
+        userRecord?.metanode_wallet_address ||
+        memberEntry?.wallet_address ||
+        invEntry?.wallet_address ||
+        localStorage.getItem(`plane:metanode-wallet:${userRecord.id}`) ||
+        "";
+      if (/^0x[a-fA-F0-9]{40}$/i.test(existingUserWallet.trim())) {
+        const norm = existingUserWallet.trim().toLowerCase();
+        localStorage.setItem("plane_active_wallet_address", norm);
+        sessionStorage.setItem("plane_active_wallet_address", norm);
+        localStorage.setItem(`plane:metanode-wallet:${userRecord.id}`, norm);
+      }
 
       const destinationPath = (!nextPath || nextPath === "/" || nextPath === "/plane" || nextPath.includes("onboarding")) && targetWsSlug
         ? `/${targetWsSlug}`

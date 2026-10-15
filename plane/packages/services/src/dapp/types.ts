@@ -39,6 +39,7 @@ export interface DAppWorkspace {
   name: string;
   slug: string;
   organization_size: string;
+  total_members?: number;
   created_at: string;
   updated_at: string;
   created_by: string;

@@ -182,6 +182,41 @@ async function persistLinkedWallet(address: string): Promise<void> {
     if (userId) {
       window.localStorage.setItem(walletStorageKey(userId), normalizedAddress);
     }
+    try {
+      const rawDb = window.localStorage.getItem("plane_dapp_local_db");
+      if (rawDb) {
+        const localDB = JSON.parse(rawDb);
+        let updated = false;
+        const loggedEmail = (
+          window.sessionStorage.getItem("plane_dapp_auth_email") ||
+          window.localStorage.getItem("plane_dapp_auth_email")
+        )?.trim().toLowerCase();
+
+        if (Array.isArray(localDB.users)) {
+          const user = localDB.users.find((u: any) =>
+            (userId && u.id === userId) || (loggedEmail && u.email?.toLowerCase() === loggedEmail)
+          );
+          if (user && user.metanode_wallet_address !== normalizedAddress) {
+            user.metanode_wallet_address = normalizedAddress;
+            updated = true;
+          }
+        }
+        if (Array.isArray(localDB.workspace_members)) {
+          const member = localDB.workspace_members.find((m: any) =>
+            (loggedEmail && m.email?.toLowerCase() === loggedEmail) || (userId && m.member === userId)
+          );
+          if (member && member.wallet_address !== normalizedAddress) {
+            member.wallet_address = normalizedAddress;
+            updated = true;
+          }
+        }
+        if (updated) {
+          window.localStorage.setItem("plane_dapp_local_db", JSON.stringify(localDB));
+        }
+      }
+    } catch (e) {
+      console.warn("Could not sync wallet to localDB:", e);
+    }
   }
   try {
     await userService.updateUser({ metanode_wallet_address: normalizedAddress });
@@ -240,11 +275,17 @@ async function selectAndLinkWallet(): Promise<string> {
   }
 
   void openMetanodeWallet()
-    .then((result) => {
+    .then(async (result) => {
       walletPickerAddress = readAddress(result);
       if (!walletPickerAddress) {
-        // Picker resolved without selecting a wallet (e.g. user closed modal or cancelled)
-        isPickerClosed = true;
+        if ((result as any)?.success === true) {
+          const activeAddr = await getActiveWalletAddress().catch(() => null);
+          if (activeAddr && isWalletAddress(activeAddr)) {
+            walletPickerAddress = normalizeWalletAddress(activeAddr);
+          }
+        } else if ((result as any)?.success === false) {
+          isPickerClosed = true;
+        }
       }
     })
     .catch((error) => {
@@ -261,8 +302,29 @@ async function selectAndLinkWallet(): Promise<string> {
       // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
       let selectedAddress: string | null = messageAddress ?? walletPickerAddress;
 
+      if (!selectedAddress) {
+        // oxlint-disable-next-line no-await-in-loop
+        const vaultActive = await getActiveWalletAddress().catch(() => null);
+        if (vaultActive && isWalletAddress(vaultActive)) {
+          selectedAddress = normalizeWalletAddress(vaultActive);
+        }
+      }
+
       if (isPickerClosed && !selectedAddress) {
-        throw new Error("Người dùng đã hủy chọn ví MetaNode.");
+        // Give 200ms grace period in case messageAddress or active wallet is in flight
+        // oxlint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => window.setTimeout(resolve, 200));
+        selectedAddress = messageAddress ?? walletPickerAddress;
+        if (!selectedAddress) {
+          // oxlint-disable-next-line no-await-in-loop
+          const vaultActive = await getActiveWalletAddress().catch(() => null);
+          if (vaultActive && isWalletAddress(vaultActive)) {
+            selectedAddress = normalizeWalletAddress(vaultActive);
+          }
+        }
+        if (!selectedAddress) {
+          throw new Error("Người dùng đã hủy chọn ví MetaNode.");
+        }
       }
 
       if (!selectedAddress) {
@@ -419,6 +481,37 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
     }
   }
 
+  // Look up in localDB if present
+  if (typeof window !== "undefined") {
+    try {
+      const rawDb = window.localStorage.getItem("plane_dapp_local_db");
+      if (rawDb) {
+        const localDB = JSON.parse(rawDb);
+        const loggedEmail = (
+          window.sessionStorage.getItem("plane_dapp_auth_email") ||
+          window.localStorage.getItem("plane_dapp_auth_email")
+        )?.trim().toLowerCase();
+
+        if (Array.isArray(localDB.users)) {
+          const userRec = localDB.users.find((u: any) =>
+            (userId && u.id === userId) || (loggedEmail && u.email?.toLowerCase() === loggedEmail)
+          );
+          if (userRec?.metanode_wallet_address && isWalletAddress(userRec.metanode_wallet_address)) {
+            sessionCandidates.push(normalizeWalletAddress(userRec.metanode_wallet_address));
+          }
+        }
+        if (Array.isArray(localDB.workspace_members)) {
+          const memberRec = localDB.workspace_members.find((m: any) =>
+            (loggedEmail && m.email?.toLowerCase() === loggedEmail) || (userId && m.member === userId)
+          );
+          if (memberRec?.wallet_address && isWalletAddress(memberRec.wallet_address)) {
+            sessionCandidates.push(normalizeWalletAddress(memberRec.wallet_address));
+          }
+        }
+      }
+    } catch {}
+  }
+
   // 2. Fallback candidates (extension's active wallet or last selected - only used in silent mode or single-wallet vault)
   const fallbackCandidates: string[] = [];
   const activeAddress = await getActiveWalletAddress().catch(() => null);
@@ -455,6 +548,14 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
           await activateMetanodeWallet(candidate).catch(() => false);
           return candidate;
         }
+      }
+
+      // If Crypto Vault already has an active wallet that was selected (e.g. from connect-wallet iframe or another tab)
+      const activeFallback = fallbackCandidates.find((c) => availableAddresses.includes(c));
+      if (activeFallback) {
+        await persistLinkedWallet(activeFallback);
+        await activateMetanodeWallet(activeFallback).catch(() => false);
+        return activeFallback;
       }
     }
 

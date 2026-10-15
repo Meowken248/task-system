@@ -43,6 +43,7 @@ export const DEFAULT_WORKSPACE: DAppWorkspace = {
   name: defaultWsName,
   slug: defaultWsSlug,
   organization_size: "5-10",
+  total_members: 1,
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
   created_by: "user-default",
