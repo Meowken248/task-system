@@ -1851,13 +1851,21 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
     const sysCore = (await import("@metanodejs/system-core")) as any;
     const { getWallets, setWalletActiveDApp } = sysCore;
     const wallets = await getWallets().catch(() => []);
-    const walletObj = wallets.find((w: any) => {
+    const norm = (a?: string) => (a || "").toLowerCase().replace(/^0x/, "");
+    let walletObj = wallets.find((w: any) => {
       const addr = w.address || w.Address || "";
-      return addr.toLowerCase() === currentUserAddress?.toLowerCase();
+      return norm(addr) === norm(currentUserAddress);
     });
+    if (!walletObj && wallets.length === 1) {
+      walletObj = wallets[0];
+      currentUserAddress = walletObj.address || walletObj.Address || currentUserAddress;
+    }
     if (walletObj) {
       await setWalletActiveDApp(walletObj);
-      await bridge.request("setActiveWalletDapp", { ...walletObj, domain: window.location.hostname }).catch(() => null);
+      await bridge.request("setActiveWalletDapp", {
+        address: walletObj.address || walletObj.Address || currentUserAddress,
+        domain: window.location.hostname,
+      }).catch(() => null);
     }
   } catch { }
 

@@ -2,7 +2,10 @@ import { useState } from "react";
 import { syncDAppDBToChain } from "@plane/services";
 
 import { resetFiaiSDK } from "../../services/blockchain/fiai-sdk.service";
-import { resolveMetanodeWalletAddress, promptForMetanodeWalletImport } from "../../services/blockchain/metanode-wallet.service";
+import {
+  resolveMetanodeWalletAddress,
+  clearLinkedMetanodeWallet,
+} from "../../services/blockchain/metanode-wallet.service";
 
 const SIGN_NONCE_ERROR_RE = /invalid sign|invalid nonce|nonce too low|nonce has already been used|nonce conflict/i;
 
@@ -13,7 +16,7 @@ export function SyncToChainButton() {
     setIsSyncing(true);
     try {
       // 1. Lấy địa chỉ ví đã liên kết
-      const walletAddress = await resolveMetanodeWalletAddress();
+      let walletAddress = await resolveMetanodeWalletAddress();
 
       // 2. Gửi transaction trực tiếp (chỉ hỏi mật khẩu ký 1 lần duy nhất)
       try {
@@ -28,24 +31,27 @@ export function SyncToChainButton() {
           const refreshedWallet = await resolveMetanodeWalletAddress();
           await syncDAppDBToChain(refreshedWallet);
         } else if (/wallet not found|no frame found/i.test(errMsg)) {
-          // Fallback: nếu SDK chưa nhận diện được ví, mới gọi promptForMetanodeWalletImport
-          const imported = await promptForMetanodeWalletImport(walletAddress);
-          if (imported) {
-            const refreshedWallet = await resolveMetanodeWalletAddress();
-            await syncDAppDBToChain(refreshedWallet);
-          } else {
-            throw sendErr;
-          }
+          // Fallback: ví đã lưu không tồn tại trong Vault (đã bị xóa/chưa import)
+          // Xóa cache cũ và yêu cầu người dùng chọn/nhập ví hợp lệ
+          console.warn("[Sync] Phát hiện ví không tồn tại trong Vault, xóa cache và yêu cầu chọn lại ví...", walletAddress);
+          clearLinkedMetanodeWallet();
+          const refreshedWallet = await resolveMetanodeWalletAddress({ forceSelect: true });
+          await syncDAppDBToChain(refreshedWallet);
         } else {
           throw sendErr;
         }
       }
+      setIsSyncing(false);
       alert("Đồng bộ dữ liệu lên Blockchain thành công!");
     } catch (err: any) {
+      setIsSyncing(false);
       if (err.message && err.message.includes("LỖI XUNG ĐỘT")) {
         // Bỏ window.location.reload() tự động để user kịp đọc thông báo và backup
         alert(err.message + "\n\nHãy sao lưu thủ công phần việc đang làm trước khi F5!");
-      } else if (err.message && err.message.includes("Đã hết thời gian chọn ví")) {
+      } else if (
+        err.message &&
+        (err.message.includes("Đã hết thời gian chọn ví") || err.message.includes("Người dùng đã hủy"))
+      ) {
         // User ignored/cancelled wallet picker
       } else {
         alert("Đồng bộ thất bại: " + err.message);

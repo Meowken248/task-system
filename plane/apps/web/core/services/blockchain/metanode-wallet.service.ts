@@ -60,6 +60,19 @@ export function getLinkedMetanodeWalletAddress(): string | null {
   return linkedWalletAddress;
 }
 
+export function clearLinkedMetanodeWallet(): void {
+  linkedWalletAddress = null;
+  clearLastSelectedMetanodeWallet();
+  if (typeof window !== "undefined") {
+    window.sessionStorage.removeItem("plane_active_wallet_address");
+    window.localStorage.removeItem("plane_active_wallet_address");
+    const userId = getEffectivePlaneUserId();
+    if (userId) {
+      window.localStorage.removeItem(walletStorageKey(userId));
+    }
+  }
+}
+
 export function isMetanodeWalletRuntimeSupported(): boolean {
   if (typeof window === "undefined") return false;
   if (window.isSecureContext) return true;
@@ -126,10 +139,24 @@ function readWallets(value: unknown): unknown[] {
   return [];
 }
 
-async function getWallets(): Promise<unknown[]> {
+async function getWallets(retries = 2): Promise<unknown[]> {
   const sdk = (await initFiaiSDK()) ?? getFiaiSDK();
   if (!sdk) throw new Error("FiaiSDK is not available.");
-  return readWallets(await sdk.request<unknown>("getAllWallets", {}));
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await sdk.request<unknown>("getAllWallets", {});
+      const wallets = readWallets(res);
+      if (wallets.length > 0 || i === retries) return wallets;
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    } catch (err) {
+      if (i < retries) {
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+        continue;
+      }
+      throw err;
+    }
+  }
+  return [];
 }
 
 async function getActiveWalletAddress(): Promise<string | null> {
@@ -255,7 +282,7 @@ async function selectAndLinkWallet(): Promise<string> {
   const onMessage = (event: MessageEvent) => {
     if (event.data && typeof event.data === "object") {
       if (event.data.type === "wallet-selected") {
-        const addr = readAddress(event.data.data);
+        const addr = readAddress(event.data.data ?? event.data.wallet ?? event.data);
         if (addr) messageAddress = addr;
       } else if (event.data.type === "close-wallet-modal") {
         isPickerClosed = true;
@@ -297,12 +324,14 @@ async function selectAndLinkWallet(): Promise<string> {
   const deadline = Date.now() + 120_000;
   // Give the wallet picker time to render before accepting its active wallet.
   await new Promise((resolve) => window.setTimeout(resolve, 750));
+  let pollCount = 0;
   try {
     while (Date.now() < deadline) {
       // oxlint-disable-next-line no-await-in-loop -- the wallet selection is intentionally polled.
       let selectedAddress: string | null = messageAddress ?? walletPickerAddress;
 
-      if (!selectedAddress) {
+      pollCount++;
+      if (!selectedAddress && pollCount % 4 === 0) {
         // oxlint-disable-next-line no-await-in-loop
         const vaultActive = await getActiveWalletAddress().catch(() => null);
         if (vaultActive && isWalletAddress(vaultActive)) {
@@ -579,11 +608,6 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
     return selectAndLinkWallet();
   } else {
     // Case 2: Crypto Vault returned 0 wallets or failed to respond
-    if (uniqueSessionCandidates.length > 0) {
-      const fallback = uniqueSessionCandidates[0];
-      linkedWalletAddress = fallback;
-      return fallback;
-    }
     if (silent) {
       return ZERO_ADDRESS;
     }
