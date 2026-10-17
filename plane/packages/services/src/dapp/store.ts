@@ -183,6 +183,9 @@ export function loadInitialDB(): Record<string, any> {
                 !deletedSet.has(i.project_id) &&
                 !deletedIssueSet.has(i.id)
             );
+            parsed.issues.forEach((i: any) => {
+              if (!Array.isArray(i.module_ids)) i.module_ids = [];
+            });
           }
           (parsed.projects || []).forEach((p: any) => {
             if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };
@@ -308,6 +311,9 @@ export function loadInitialDB(): Record<string, any> {
                 !deletedSet.has(i.project_id) &&
                 !deletedIssueSet.has(i.id)
             );
+            parsed.issues.forEach((i: any) => {
+              if (!Array.isArray(i.module_ids)) i.module_ids = [];
+            });
           }
           (parsed.projects || []).forEach((p: any) => {
             if (!p.logo_props) p.logo_props = { in_use: "icon", icon: { name: "folder", color: "#3f3f46" } };

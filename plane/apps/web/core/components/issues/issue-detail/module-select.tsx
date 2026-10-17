@@ -41,15 +41,16 @@ export const IssueModuleSelect = observer(function IssueModuleSelect(props: TIss
   const disableSelect = disabled || isUpdating;
 
   const handleIssueModuleChange = async (moduleIds: string[]) => {
-    if (!issue || !issue.module_ids) return;
+    if (!issue) return;
 
     setIsUpdating(true);
-    const updatedModuleIds = xor(issue.module_ids, moduleIds);
+    const currentModuleIds = Array.isArray(issue.module_ids) ? issue.module_ids : [];
+    const updatedModuleIds = xor(currentModuleIds, moduleIds);
     const modulesToAdd: string[] = [];
     const modulesToRemove: string[] = [];
 
     for (const moduleId of updatedModuleIds) {
-      if (issue.module_ids.includes(moduleId)) {
+      if (currentModuleIds.includes(moduleId)) {
         modulesToRemove.push(moduleId);
       } else {
         modulesToAdd.push(moduleId);

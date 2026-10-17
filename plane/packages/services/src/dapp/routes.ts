@@ -5702,9 +5702,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     if (method.toLowerCase() === "post") {
       const issue = (localDB.issues || []).find((i: any) => i.id === issueId);
       if (issue) {
-        if (Array.isArray(body?.modules)) {
-          issue.module_ids = body.modules;
-        }
+        const currentModules = Array.isArray(issue.module_ids) ? issue.module_ids : [];
+        const toAdd = Array.isArray(body?.modules) ? body.modules : [];
+        const toRemove = new Set(Array.isArray(body?.removed_modules) ? body.removed_modules : []);
+        issue.module_ids = Array.from(new Set([...currentModules, ...toAdd])).filter(
+          (mId: string) => !toRemove.has(mId)
+        );
         saveDB();
       }
       return ok({ ...body });
@@ -7128,6 +7131,8 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
           assignee_ids: item.assignee_ids || item.assignees || [],
           labels: item.labels || item.label_ids || [],
           label_ids: item.label_ids || item.labels || [],
+          module_ids: Array.isArray(item.module_ids) ? item.module_ids : (Array.isArray(item.modules) ? item.modules : []),
+          modules: Array.isArray(item.modules) ? item.modules : (Array.isArray(item.module_ids) ? item.module_ids : []),
           state_detail: stateDetail,
           project_detail: projectDetail,
         });
@@ -8591,6 +8596,9 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       }
       if (newRecord.cycle_id === "" || newRecord.cycle_id === "null" || newRecord.cycle_id === "undefined") {
         newRecord.cycle_id = null;
+      }
+      if (!Array.isArray(newRecord.module_ids)) {
+        newRecord.module_ids = [];
       }
     }
 

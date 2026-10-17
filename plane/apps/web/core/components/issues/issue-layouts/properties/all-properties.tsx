@@ -125,13 +125,14 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
   const handleModule = useCallback(
     (moduleIds: string[] | null) => {
-      if (!issue || !issue.module_ids || !moduleIds) return;
+      if (!issue || !moduleIds) return;
 
-      const updatedModuleIds = xor(issue.module_ids, moduleIds);
+      const currentModuleIds = Array.isArray(issue.module_ids) ? issue.module_ids : [];
+      const updatedModuleIds = xor(currentModuleIds, moduleIds);
       const modulesToAdd: string[] = [];
       const modulesToRemove: string[] = [];
       for (const moduleId of updatedModuleIds)
-        if (issue.module_ids.includes(moduleId)) modulesToRemove.push(moduleId);
+        if (currentModuleIds.includes(moduleId)) modulesToRemove.push(moduleId);
         else modulesToAdd.push(moduleId);
       if (modulesToAdd.length > 0) issueOperations.addModulesToIssue(modulesToAdd);
       if (modulesToRemove.length > 0) issueOperations.removeModulesFromIssue(modulesToRemove);
