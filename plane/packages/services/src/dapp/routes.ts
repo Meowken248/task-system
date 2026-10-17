@@ -1701,7 +1701,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
         if (pm && pm.role) {
           rolesMap[p.id] = Number(pm.role);
+          return;
         }
+
+        // In DApp local/decentralized mode: default to workspace role if member, or 20 (Admin) so user is never locked out
+        rolesMap[p.id] = wsMember?.role ? Number(wsMember.role) : 20;
       });
 
       return ok(rolesMap);
@@ -5585,10 +5589,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
     if (action === "duplicate" && method.toLowerCase() === "post") {
       if (page) {
+        const targetProjId = page.project_id || page.project;
         const newPage = {
           ...page,
           id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
           name: `${page.name} (Copy)`,
+          project: targetProjId,
+          project_id: targetProjId,
+          project_ids: Array.isArray(page.project_ids) && page.project_ids.length > 0 ? [...page.project_ids] : (targetProjId ? [targetProjId] : []),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         };
@@ -5602,6 +5610,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       if (page && body?.new_project_id) {
         page.project = body.new_project_id;
         page.project_id = body.new_project_id;
+        page.project_ids = [body.new_project_id];
         saveDB();
         return ok(page);
       }
@@ -5654,11 +5663,17 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (method.toLowerCase() === "get") {
       if (targetInboxIssueId) {
-        const item = localDB.inbox_issues.find((i: any) => i.id === targetInboxIssueId);
+        const item = localDB.inbox_issues.find(
+          (i: any) => i.id === targetInboxIssueId || i.issue_id === targetInboxIssueId || i.issue?.id === targetInboxIssueId
+        );
         if (!item) return { data: null, status: 404 };
-        return ok(item);
+        const matchedIssue = (localDB.issues || []).find((iss: any) => iss.id === (item.issue_id || item.issue?.id));
+        return ok({
+          ...item,
+          issue: matchedIssue || item.issue || {},
+        });
       }
-      const list = localDB.inbox_issues
+      let list = localDB.inbox_issues
         .filter((i: any) => i.project_id === projectId || i.project === projectId)
         .map((item: any) => {
           const matchedIssue = (localDB.issues || []).find((iss: any) => iss.id === (item.issue_id || item.issue?.id));
@@ -5667,6 +5682,16 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             issue: matchedIssue || item.issue || {},
           };
         });
+
+      // Filter by query status (e.g. status=-2 for Open, status=1,-1,2 for Closed, status=0 for Snoozed)
+      const urlParts = url.split("?");
+      const queryParams = new URLSearchParams(urlParts[1] || "");
+      const statusParam = queryParams.get("status");
+      if (statusParam) {
+        const statuses = statusParam.split(",").map((s) => Number(s.trim()));
+        list = list.filter((item: any) => statuses.includes(Number(item.status)));
+      }
+
       return ok({
         results: list,
         total_count: list.length,
@@ -5727,29 +5752,37 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
 
     if (method.toLowerCase() === "patch" && targetInboxIssueId) {
-      const idx = localDB.inbox_issues.findIndex((i: any) => i.id === targetInboxIssueId);
+      const idx = localDB.inbox_issues.findIndex(
+        (i: any) => i.id === targetInboxIssueId || i.issue_id === targetInboxIssueId || i.issue?.id === targetInboxIssueId
+      );
       if (idx > -1) {
         localDB.inbox_issues[idx] = {
           ...localDB.inbox_issues[idx],
           ...body,
           updated_at: new Date().toISOString(),
         };
+        const underlyingId = localDB.inbox_issues[idx].issue_id || localDB.inbox_issues[idx].issue?.id;
+        const issue = (localDB.issues || []).find((iss: any) => iss.id === underlyingId);
         if (body?.status === 1) {
-          const underlyingId = localDB.inbox_issues[idx].issue_id;
-          const issue = (localDB.issues || []).find((iss: any) => iss.id === underlyingId);
           if (issue && body?.issue?.state_id) {
             issue.state_id = body.issue.state_id;
             issue.state = body.issue.state_id;
           }
         }
         saveDB();
-        return ok(localDB.inbox_issues[idx]);
+        const matchedIssue = (localDB.issues || []).find((iss: any) => iss.id === underlyingId);
+        return ok({
+          ...localDB.inbox_issues[idx],
+          issue: matchedIssue || localDB.inbox_issues[idx].issue || {},
+        });
       }
       return { data: null, status: 404 };
     }
 
     if (method.toLowerCase() === "delete" && targetInboxIssueId) {
-      localDB.inbox_issues = localDB.inbox_issues.filter((i: any) => i.id !== targetInboxIssueId);
+      localDB.inbox_issues = localDB.inbox_issues.filter(
+        (i: any) => i.id !== targetInboxIssueId && i.issue_id !== targetInboxIssueId && i.issue?.id !== targetInboxIssueId
+      );
       saveDB();
       return ok({ message: "Inbox issue deleted" });
     }
@@ -6048,6 +6081,81 @@ function handleWorkspaceGlobalSearch(url: string, wsSlug: string): RouteResult {
       page: pageResults,
     },
   });
+}
+
+// ── Project Entity Enrichment Helper ─────────────────────────────────────────
+function enrichProjectEntity(collection: string, item: any, defaultProjId?: string, defaultWsId?: string) {
+  if (!item) return item;
+  const enriched = { ...item };
+  const pId = enriched.project_id || enriched.project || defaultProjId;
+  const wId = enriched.workspace_id || enriched.workspace || defaultWsId;
+  if (pId) {
+    enriched.project = pId;
+    enriched.project_id = pId;
+  }
+  if (wId) {
+    enriched.workspace = wId;
+    enriched.workspace_id = wId;
+  }
+
+  if (collection === "pages") {
+    enriched.project_ids = Array.isArray(enriched.project_ids) && enriched.project_ids.length > 0
+      ? enriched.project_ids
+      : (pId ? [pId] : []);
+    enriched.access = enriched.access ?? 0;
+    enriched.color = enriched.color || "#3f3f46";
+    enriched.description_html = enriched.description_html || "<p></p>";
+  } else if (collection === "cycles") {
+    let computedStatus = enriched.status;
+    if (enriched.start_date && enriched.end_date) {
+      const now = new Date();
+      const s = new Date(enriched.start_date);
+      const e = new Date(enriched.end_date);
+      if (now < s) computedStatus = "upcoming";
+      else if (now > e) computedStatus = "completed";
+      else computedStatus = "current";
+    } else if (!computedStatus) {
+      computedStatus = "draft";
+    }
+    enriched.status = computedStatus;
+    enriched.total_issues = enriched.total_issues ?? 0;
+    enriched.completed_issues = enriched.completed_issues ?? 0;
+    enriched.started_issues = enriched.started_issues ?? 0;
+    enriched.unstarted_issues = enriched.unstarted_issues ?? 0;
+    enriched.backlog_issues = enriched.backlog_issues ?? 0;
+    enriched.cancelled_issues = enriched.cancelled_issues ?? 0;
+    enriched.sort_order = enriched.sort_order ?? 10000;
+    if (!enriched.progress_snapshot) {
+      enriched.progress_snapshot = {
+        total_issues: enriched.total_issues,
+        completed_issues: enriched.completed_issues,
+        started_issues: enriched.started_issues,
+        unstarted_issues: enriched.unstarted_issues,
+        backlog_issues: enriched.backlog_issues,
+        cancelled_issues: enriched.cancelled_issues,
+      };
+    }
+  } else if (collection === "modules") {
+    enriched.status = enriched.status || "planned";
+    enriched.total_issues = enriched.total_issues ?? 0;
+    enriched.completed_issues = enriched.completed_issues ?? 0;
+    enriched.started_issues = enriched.started_issues ?? 0;
+    enriched.unstarted_issues = enriched.unstarted_issues ?? 0;
+    enriched.backlog_issues = enriched.backlog_issues ?? 0;
+    enriched.cancelled_issues = enriched.cancelled_issues ?? 0;
+    enriched.backlog_estimate_points = enriched.backlog_estimate_points ?? 0;
+    enriched.started_estimate_points = enriched.started_estimate_points ?? 0;
+    enriched.unstarted_estimate_points = enriched.unstarted_estimate_points ?? 0;
+    enriched.cancelled_estimate_points = enriched.cancelled_estimate_points ?? 0;
+    enriched.sort_order = enriched.sort_order ?? 10000;
+    enriched.member_ids = Array.isArray(enriched.member_ids) ? enriched.member_ids : [];
+    enriched.lead_id = enriched.lead_id || null;
+  } else if (collection === "views") {
+    enriched.query_data = enriched.query_data || {};
+    enriched.query = enriched.query || {};
+    enriched.access = enriched.access ?? 0;
+  }
+  return enriched;
 }
 
 // ── Generic CRUD handler ─────────────────────────────────────────────────
@@ -6784,12 +6892,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         return ok(proj);
       }
       if (item && ["cycles", "modules", "views", "pages"].includes(collection)) {
-        const enriched = { ...item };
-        if (enriched.project && !enriched.project_id) enriched.project_id = enriched.project;
-        if (enriched.project_id && !enriched.project) enriched.project = enriched.project_id;
-        if (enriched.workspace && !enriched.workspace_id) enriched.workspace_id = enriched.workspace;
-        if (enriched.workspace_id && !enriched.workspace) enriched.workspace = enriched.workspace_id;
-        return ok(enriched);
+        return ok(enrichProjectEntity(collection, item));
       }
       if (collection === "workspaces" && item) {
         const total_members = getWorkspaceMemberCount(item.slug, item.id);
@@ -6953,16 +7056,24 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
             return false;
           });
 
+          const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+          const currentWsSlug = wsMatch ? wsMatch[1] : (targetProj.workspace || targetProj.workspace_id);
+          const ws = (localDB.workspaces || []).find((w: any) => w.slug === currentWsSlug || w.id === currentWsSlug);
+          const validWsKeys = new Set([currentWsSlug, ws?.id, ws?.slug, targetProj.workspace, targetProj.workspace_id].filter(Boolean));
           const wsMember = (localDB.workspace_members || []).find(
             (wm: any) =>
-              (wm.workspace === targetProj.workspace || wm.workspace_id === targetProj.workspace) &&
-              (wm.member === currentUserId || (currentUserEmail && (wm.email || "").toLowerCase().trim() === currentUserEmail))
+              (validWsKeys.has(wm.workspace) || validWsKeys.has(wm.workspace_id)) &&
+              (
+                (currentUserId && (wm.member === currentUserId || wm.id === currentUserId)) ||
+                (currentUserEmail && (wm.email || "").toLowerCase().trim() === currentUserEmail) ||
+                (activeWallet && ((wm.wallet_address || "").toLowerCase().trim() === activeWallet || String(wm.member || "").toLowerCase().trim() === activeWallet))
+              )
           );
           const isWsAdmin =
             (currentUserEmail === "anh2482006@gmail.com") ||
             Boolean(wsMember && Number(wsMember.role) >= 20);
 
-          if (!isWsAdmin && !isProjCreator && !pm) {
+          if (!isWsAdmin && !isProjCreator && !pm && !wsMember) {
             return { data: { error: "You do not have access to this project" }, status: 403 };
           }
         }
@@ -6972,6 +7083,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         ) {
           list = list.filter((item: any) => {
             if (matchingProjIds.has(item.project) || matchingProjIds.has(item.project_id)) return true;
+            if (collection === "pages" && Array.isArray(item.project_ids) && item.project_ids.some((pid: string) => matchingProjIds.has(pid))) return true;
             if (collection === "blockchain-transactions" && item.issue_id) {
               const matchedIss = (localDB.issues || []).find((i: any) => i.id === item.issue_id);
               if (matchedIss && (matchingProjIds.has(matchedIss.project) || matchingProjIds.has(matchedIss.project_id))) {
@@ -7594,6 +7706,20 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       });
     }
 
+    if (["cycles", "modules", "views", "pages"].includes(collection)) {
+      const match = url.match(/\/projects\/([^/]+)\//);
+      const projId = match ? match[1] : undefined;
+      const targetProj = projId
+        ? (localDB.projects || []).find((p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase()))
+        : null;
+      const canonicalProjId = targetProj?.id || projId;
+      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+      const wsSlug = wsMatch ? wsMatch[1] : undefined;
+      const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
+      const canonicalWsId = ws?.id || wsSlug;
+      list = list.map((item: any) => enrichProjectEntity(collection, item, canonicalProjId, canonicalWsId));
+    }
+
     if (isPaginated) {
       return ok({
         results: list,
@@ -7841,7 +7967,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       return ok({ message: "Invitations sent successfully" });
     }
 
-    const newRecord: any = {
+    let newRecord: any = {
       id: body.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -8244,39 +8370,35 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     }
 
     if (["cycles", "modules", "views", "pages"].includes(collection)) {
+      let canonicalProjId = "";
       const match = url.match(/\/projects\/([^/]+)\//);
       if (match) {
         const projId = match[1];
         const project = (localDB.projects || []).find(
           (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
         );
-        const canonicalProjId = project?.id || projId;
+        canonicalProjId = project?.id || projId;
         newRecord.project = canonicalProjId;
         newRecord.project_id = canonicalProjId;
         if (project) {
           newRecord.project_detail = project;
         }
       }
+      let canonicalWsId = "";
       const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
       if (wsMatch) {
         const wsSlug = wsMatch[1];
         const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-        newRecord.workspace = ws?.id || wsSlug;
-        newRecord.workspace_id = ws?.id || wsSlug;
+        canonicalWsId = ws?.id || wsSlug;
+        newRecord.workspace = canonicalWsId;
+        newRecord.workspace_id = canonicalWsId;
         if (ws) {
           newRecord.workspace_detail = ws;
         }
       }
       newRecord.owned_by = newRecord.owned_by || activeUserId || "user-1";
       newRecord.created_by = newRecord.created_by || activeUserId || "user-1";
-      if (collection === "views") {
-        newRecord.query_data = newRecord.query_data || {};
-      }
-      if (collection === "pages") {
-        newRecord.access = newRecord.access ?? 0;
-        newRecord.color = newRecord.color || "#3f3f46";
-        newRecord.description_html = newRecord.description_html || "<p></p>";
-      }
+      newRecord = enrichProjectEntity(collection, newRecord, canonicalProjId, canonicalWsId);
     }
 
     if (collection === "projects" && newRecord.sort_order === undefined) {
@@ -8415,6 +8537,11 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       if (returnedRecord.project && !returnedRecord.project_id) returnedRecord.project_id = returnedRecord.project;
       if (returnedRecord.workspace && !returnedRecord.workspace_id)
         returnedRecord.workspace_id = returnedRecord.workspace;
+
+      if (["cycles", "modules", "views", "pages"].includes(collection)) {
+        returnedRecord = enrichProjectEntity(collection, returnedRecord);
+        localDB[collection][idx] = { ...localDB[collection][idx], ...returnedRecord };
+      }
 
       if (collection === "workspaces") {
         returnedRecord = {
