@@ -1085,31 +1085,30 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     }
   }
 
-  // Prune any re-invited or currently active confirmed members from mergedRemovedMembers!
-  const allActiveInvitations = (localDB.invitations || []).concat(ipfsDB.invitations || []);
-  const allActiveMembers = (currentWorkspaceMembers || []).concat(ipfsDB.workspace_members || []);
-  for (const [ws, rList] of Object.entries(mergedRemovedMembers)) {
-    const unbannedSet = new Set<string>();
-    allActiveInvitations.forEach((inv: any) => {
-      const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-      if (!invWs || invWs === ws) {
-        if (inv.email) unbannedSet.add(inv.email.toLowerCase().trim());
-        if (inv.wallet_address) unbannedSet.add(inv.wallet_address.toLowerCase().trim());
-        if (inv.id) unbannedSet.add(String(inv.id).toLowerCase().trim());
+  // Cross-map workspace slug <-> id so removed_members works regardless of key used (slug vs UUID)
+  const wsSlugToId: Record<string, string> = {};
+  const wsIdToSlug: Record<string, string> = {};
+  const allKnownWorkspaces = (currentWorkspaces || []).concat(ipfsDB.workspaces || []).concat(localDB.workspaces || []);
+  for (const w of allKnownWorkspaces) {
+    if (w?.id && w?.slug) {
+      const s = String(w.slug).toLowerCase().trim();
+      const id = String(w.id).toLowerCase().trim();
+      wsSlugToId[s] = id;
+      wsIdToSlug[id] = s;
+    }
+  }
+
+  // Synchronize removed identifiers across all keys for the same workspace
+  for (const [ws, list] of Object.entries({ ...mergedRemovedMembers })) {
+    const wsLower = ws.toLowerCase().trim();
+    const mapped = wsSlugToId[wsLower] || wsIdToSlug[wsLower];
+    if (mapped) {
+      if (!mergedRemovedMembers[mapped]) mergedRemovedMembers[mapped] = [];
+      for (const item of list) {
+        if (!mergedRemovedMembers[mapped].includes(item)) {
+          mergedRemovedMembers[mapped].push(item);
+        }
       }
-    });
-    allActiveMembers.forEach((m: any) => {
-      const mWs = m.workspace || m.workspace_id;
-      if ((!mWs || mWs === ws) && m.is_active !== false) {
-        if (m.email) unbannedSet.add(m.email.toLowerCase().trim());
-        if (m.wallet_address) unbannedSet.add(m.wallet_address.toLowerCase().trim());
-        if (typeof m.member === "string") unbannedSet.add(m.member.toLowerCase().trim());
-        if (typeof m.member === "object" && m.member?.id) unbannedSet.add(String(m.member.id).toLowerCase().trim());
-        if (m.id) unbannedSet.add(String(m.id).toLowerCase().trim());
-      }
-    });
-    if (unbannedSet.size > 0) {
-      mergedRemovedMembers[ws] = rList.filter((item) => !unbannedSet.has(item.toLowerCase().trim()));
     }
   }
 
@@ -1300,8 +1299,14 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
 
   if (!localDB.workspace_members) localDB.workspace_members = [];
   for (const wm of currentWorkspaceMembers) {
-    const wsKey = wm.workspace || wm.workspace_id;
-    const rSet = new Set((mergedRemovedMembers[wsKey] || []).map((x: string) => x.toLowerCase().trim()));
+    const wsKey = String(wm.workspace || wm.workspace_id || "").toLowerCase().trim();
+    const mapped1 = wsSlugToId[wsKey] || "";
+    const mapped2 = wsIdToSlug[wsKey] || "";
+    const rSet = new Set([
+      ...(mergedRemovedMembers[wsKey] || []),
+      ...(mapped1 ? mergedRemovedMembers[mapped1] || [] : []),
+      ...(mapped2 ? mergedRemovedMembers[mapped2] || [] : []),
+    ].map((x: string) => String(x).toLowerCase().trim()));
     const wmMail = (wm.email || "").toLowerCase().trim();
     const wmMem = String(wm.member || "").toLowerCase().trim();
     const wmId = String(wm.id || "").toLowerCase().trim();
@@ -1323,8 +1328,14 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
 
   // Enforce removal filter across all workspace_members
   localDB.workspace_members = (localDB.workspace_members || []).filter((m: any) => {
-    const wsKey = m.workspace || m.workspace_id;
-    const rSet = new Set((mergedRemovedMembers[wsKey] || []).map((x: string) => x.toLowerCase().trim()));
+    const wsKey = String(m.workspace || m.workspace_id || "").toLowerCase().trim();
+    const mapped1 = wsSlugToId[wsKey] || "";
+    const mapped2 = wsIdToSlug[wsKey] || "";
+    const rSet = new Set([
+      ...(mergedRemovedMembers[wsKey] || []),
+      ...(mapped1 ? mergedRemovedMembers[mapped1] || [] : []),
+      ...(mapped2 ? mergedRemovedMembers[mapped2] || [] : []),
+    ].map((x: string) => String(x).toLowerCase().trim()));
     const mMail = (m.email || "").toLowerCase().trim();
     const mMem = String(m.member || "").toLowerCase().trim();
     const mId = String(m.id || "").toLowerCase().trim();
@@ -1363,9 +1374,18 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   if (!localDB.invitations) localDB.invitations = [];
   for (const inv of currentInvitations) {
     if (deletedInvSet.has(inv.id) || (inv.email && deletedInvSet.has((inv.email).toLowerCase().trim()))) continue;
-    const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-    const rSet = new Set((mergedRemovedMembers[invWs] || []).map((x: string) => x.toLowerCase().trim()));
-    if (rSet.has(String(inv.id).toLowerCase().trim()) || (inv.email && rSet.has((inv.email).toLowerCase().trim()))) {
+    const invWs = String(inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "").toLowerCase().trim();
+    const mapped1 = wsSlugToId[invWs] || "";
+    const mapped2 = wsIdToSlug[invWs] || "";
+    const rSet = new Set([
+      ...(mergedRemovedMembers[invWs] || []),
+      ...(mapped1 ? mergedRemovedMembers[mapped1] || [] : []),
+      ...(mapped2 ? mergedRemovedMembers[mapped2] || [] : []),
+    ].map((x: string) => String(x).toLowerCase().trim()));
+    const invMail = (inv.email || "").toLowerCase().trim();
+    const invWall = (inv.wallet_address || "").toLowerCase().trim();
+    const invId = String(inv.id || "").toLowerCase().trim();
+    if (rSet.has(invId) || (invMail && rSet.has(invMail)) || (invWall && rSet.has(invWall))) {
       continue;
     }
     const existingIdx = localDB.invitations.findIndex((i: any) => i.id === inv.id);
@@ -1377,9 +1397,18 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   }
   localDB.invitations = localDB.invitations.filter((i: any) => {
     if (deletedInvSet.has(i.id) || (i.email && deletedInvSet.has((i.email).toLowerCase().trim()))) return false;
-    const invWs = i.workspace?.slug || i.workspace_slug || i.workspace?.id || i.workspace;
-    const rSet = new Set((mergedRemovedMembers[invWs] || []).map((x: string) => x.toLowerCase().trim()));
-    if (rSet.has(String(i.id).toLowerCase().trim()) || (i.email && rSet.has((i.email).toLowerCase().trim()))) return false;
+    const invWs = String(i.workspace?.slug || i.workspace_slug || i.workspace?.id || i.workspace || "").toLowerCase().trim();
+    const mapped1 = wsSlugToId[invWs] || "";
+    const mapped2 = wsIdToSlug[invWs] || "";
+    const rSet = new Set([
+      ...(mergedRemovedMembers[invWs] || []),
+      ...(mapped1 ? mergedRemovedMembers[mapped1] || [] : []),
+      ...(mapped2 ? mergedRemovedMembers[mapped2] || [] : []),
+    ].map((x: string) => String(x).toLowerCase().trim()));
+    const invMail = (i.email || "").toLowerCase().trim();
+    const invWall = (i.wallet_address || "").toLowerCase().trim();
+    const invId = String(i.id || "").toLowerCase().trim();
+    if (rSet.has(invId) || (invMail && rSet.has(invMail)) || (invWall && rSet.has(invWall))) return false;
     return true;
   });
   saveStoredInvitations(localDB.invitations);

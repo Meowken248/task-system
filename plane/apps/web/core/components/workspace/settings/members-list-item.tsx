@@ -76,12 +76,6 @@ export const WorkspaceMembersListItem = observer(function WorkspaceMembersListIt
         adminWallet = await resolveMetanodeWalletAddress();
       } catch (wErr) {
         console.warn("Wallet prompt skipped or cancelled:", wErr);
-        setToast({
-          type: TOAST_TYPE.WARNING,
-          title: "Đã hủy thao tác",
-          message: "Thao tác xóa thành viên đã bị hủy vì chưa xác thực ví quản trị.",
-        });
-        return;
       }
 
       await removeMemberFromWorkspace(workspaceSlug.toString(), memberId, adminWallet);
