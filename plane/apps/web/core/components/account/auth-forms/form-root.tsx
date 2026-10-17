@@ -115,6 +115,7 @@ export const AuthFormRoot = observer(function AuthFormRoot(props: TAuthFormRoot)
         handleEmailClear={handleEmailClear}
         generateEmailUniqueCode={generateEmailUniqueCode}
         nextPath={nextPath || undefined}
+        handleAuthStep={(step: EAuthSteps) => setAuthStep(step)}
       />
     );
   }

@@ -99,8 +99,157 @@ if (typeof document !== "undefined") {
     if (!localDB || typeof localDB !== "object") localDB = {};
     if (!Array.isArray(localDB.users)) localDB.users = [];
 
-    // ── Sign In ──────────────────────────────────────────────────────────
-    if (action.includes("/auth/sign-in") || action.includes("/auth/magic-sign-in")) {
+    // ── Magic Code Sign In / Sign Up (OTP) ──────────────────────────────
+    if (action.includes("/auth/magic-sign-in") || action.includes("/auth/magic-sign-up")) {
+      const codeInput = form.querySelector('input[name="code"]') as HTMLInputElement | null;
+      const code = (codeInput?.value || "").trim();
+
+      if (!code) {
+        alert("Vui lòng nhập mã xác nhận 6 chữ số.");
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
+      // Đọc mã OTP từ cache
+      let otpMap: Record<string, { code: string; expiresAt: number; attempts: number }> = {};
+      try {
+        const rawOtp = localStorage.getItem("plane_dapp_otp_cache");
+        if (rawOtp) otpMap = JSON.parse(rawOtp);
+      } catch { }
+
+      const record = otpMap[email];
+      if (!record || !record.code) {
+        alert("Mã xác nhận không tồn tại hoặc đã hết hạn. Vui lòng bấm gửi lại mã mới.");
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
+      if (Date.now() > record.expiresAt) {
+        delete otpMap[email];
+        try { localStorage.setItem("plane_dapp_otp_cache", JSON.stringify(otpMap)); } catch { }
+        alert("Mã xác nhận đã hết hạn (quá 10 phút). Vui lòng bấm gửi lại mã mới.");
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
+      if (record.code !== code) {
+        record.attempts = (record.attempts || 0) + 1;
+        if (record.attempts >= 5) {
+          delete otpMap[email];
+          try { localStorage.setItem("plane_dapp_otp_cache", JSON.stringify(otpMap)); } catch { }
+          alert("Bạn đã nhập sai mã quá 5 lần. Mã này đã bị hủy, vui lòng lấy mã mới.");
+        } else {
+          try { localStorage.setItem("plane_dapp_otp_cache", JSON.stringify(otpMap)); } catch { }
+          alert(`Mã xác nhận không chính xác. Bạn còn ${5 - record.attempts} lần thử!`);
+        }
+        form.dispatchEvent(new Event("error", { bubbles: true }));
+        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
+      // Xác thực thành công -> Hủy mã
+      delete otpMap[email];
+      try { localStorage.setItem("plane_dapp_otp_cache", JSON.stringify(otpMap)); } catch { }
+
+      let user = localDB.users.find((u: any) => (u?.email || "").toLowerCase() === email);
+      if (!user) {
+        const isFirstUser = !localDB.users || localDB.users.length === 0;
+        const newUserId = `user-${Date.now().toString(36)}`;
+        user = {
+          id: newUserId,
+          email,
+          first_name: email.split("@")[0],
+          last_name: "",
+          display_name: email.split("@")[0],
+          is_active: true,
+          is_email_verified: true,
+          is_password_autoset: false,
+          is_tour_completed: true,
+          is_onboarded: isFirstUser,
+          onboarding_step: {
+            profile_complete: true,
+            workspace_join: isFirstUser,
+            workspace_create: isFirstUser,
+            workspace_invite: true,
+          },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        localDB.users.push(user);
+        try { localStorage.setItem("plane_dapp_local_db", JSON.stringify(localDB)); } catch { }
+      }
+
+      const authUserId = user.id;
+      localStorage.setItem("plane_dapp_auth_user", authUserId);
+      localStorage.setItem("plane_dapp_auth_email", email);
+      sessionStorage.setItem("plane_dapp_auth_user", authUserId);
+      sessionStorage.setItem("plane_dapp_auth_email", email);
+      localStorage.removeItem("plane_active_wallet_address");
+      sessionStorage.removeItem("plane_active_wallet_address");
+
+      // Auto-resolve target workspace
+      const memberEntry = (localDB.workspace_members || []).find((m: any) =>
+        (m.email && m.email.toLowerCase().trim() === email) ||
+        (m.member && (m.member === authUserId || m.member === user?.id))
+      );
+      const invEntry = (localDB.invitations || []).find((i: any) =>
+        (i.email && i.email.toLowerCase().trim() === email)
+      );
+
+      const existingUserWallet =
+        user?.metanode_wallet_address ||
+        memberEntry?.wallet_address ||
+        invEntry?.wallet_address ||
+        localStorage.getItem(`plane:metanode-wallet:${authUserId}`) ||
+        "";
+      if (/^0x[a-fA-F0-9]{40}$/i.test(existingUserWallet.trim())) {
+        const norm = existingUserWallet.trim().toLowerCase();
+        localStorage.setItem("plane_active_wallet_address", norm);
+        sessionStorage.setItem("plane_active_wallet_address", norm);
+        localStorage.setItem(`plane:metanode-wallet:${authUserId}`, norm);
+      }
+
+      const targetWsSlug = user?.last_workspace_slug || memberEntry?.workspace || memberEntry?.workspace_id || invEntry?.workspace?.slug || invEntry?.workspace_slug || invEntry?.workspace;
+      const hasPendingInvite = Boolean(invEntry && !invEntry.accepted && (!memberEntry || memberEntry.is_active === false));
+
+      if (targetWsSlug) {
+        user.last_workspace_slug = targetWsSlug;
+        if (!hasPendingInvite) {
+          user.is_onboarded = true;
+        }
+        localStorage.setItem("last_workspace_slug", targetWsSlug);
+        sessionStorage.setItem("last_workspace_slug", targetWsSlug);
+        document.cookie = `last_workspace_slug=${targetWsSlug}; path=/; max-age=31536000; SameSite=Lax`;
+        try {
+          localStorage.setItem("plane_dapp_local_db", JSON.stringify(localDB));
+        } catch { }
+      } else {
+        localStorage.removeItem("last_workspace_slug");
+        sessionStorage.removeItem("last_workspace_slug");
+        document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+      }
+
+      let destinationPath: string | null | undefined = nextPath;
+      if (nextPath && nextPath.includes("workspace-invitations")) {
+        destinationPath = nextPath;
+      } else if (hasPendingInvite && targetWsSlug) {
+        destinationPath = invEntry.invite_link || `/workspace-invitations?invitation_id=${invEntry.id}&slug=${targetWsSlug}&token=${invEntry.token || invEntry.id}`;
+      } else if ((!nextPath || nextPath === "/" || nextPath === "/plane" || nextPath.includes("onboarding")) && targetWsSlug) {
+        destinationPath = `/${targetWsSlug}`;
+      }
+      window.location.href = resolveAppPath(destinationPath);
+      return;
+    }
+
+    // ── Sign In (Password) ────────────────────────────────────────────────
+    if (action.includes("/auth/sign-in")) {
       let user = localDB.users.find((u: any) => (u?.email || "").toLowerCase() === email);
       const storedHash = creds[email] || user?.password_hash;
 
@@ -209,8 +358,8 @@ if (typeof document !== "undefined") {
       return;
     }
 
-    // ── Sign Up ──────────────────────────────────────────────────────────
-    if (action.includes("/auth/sign-up") || action.includes("/auth/magic-sign-up")) {
+    // ── Sign Up (Password) ───────────────────────────────────────────────
+    if (action.includes("/auth/sign-up") && !action.includes("/auth/magic-sign-up")) {
       const firstNameInput = form.querySelector('input[name="first_name"]') as HTMLInputElement | null;
       const lastNameInput = form.querySelector('input[name="last_name"]') as HTMLInputElement | null;
 

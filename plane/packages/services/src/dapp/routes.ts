@@ -1,5 +1,5 @@
 import type { RouteResult } from "./types";
-import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject } from "./auth";
+import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, generateAndStoreOtp, verifyOtpCode, clearOtpCode } from "./auth";
 import {
   localDB,
   saveDB,
@@ -48,7 +48,7 @@ import {
   fetchMemberRoleOnChain,
   invalidateWorkspaceMembersOnChainCache,
 } from "./chain";
-import { sendWorkspaceInviteEmail } from "./mail";
+import { sendWorkspaceInviteEmail, sendOtpEmail } from "./mail";
 
 export { ok, parseApiUrl };
 
@@ -1018,10 +1018,93 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         }
       } catch { }
     }
-    return ok({ existing, is_password_autoset: false, status: "CREDENTIAL" });
+
+    // Hybrid Auth: Nếu tài khoản đã có password -> cho phép nhập password trước (kèm nút OTP)
+    // Nếu chưa có password (user mới / invitee) -> chuyển sang nhận mã OTP gửi về Email
+    const hasPassword = Boolean(
+      creds[email] ||
+      (localDB.users || []).find((u: any) => (u.email || "").toLowerCase() === email)?.password_hash
+    );
+    const status = hasPassword ? "CREDENTIAL" : "MAGIC_CODE";
+
+    return ok({ existing, is_password_autoset: false, status });
   }
 
-  if (url.includes("/auth/sign-in") || url.includes("/auth/magic-sign-in")) {
+  // ── Magic Code Generation (Brevo Email OTP) ──────────────────────────
+  if (url.includes("/auth/magic-generate")) {
+    const email = (body?.email || "").trim().toLowerCase();
+    if (!email) {
+      return { data: { error: "Vui lòng cung cấp địa chỉ email hợp lệ." }, status: 400 };
+    }
+
+    const otpCode = generateAndStoreOtp(email);
+    console.log(`[DApp Auth OTP] 🔑 Mã xác nhận đăng nhập cho ${email}: ${otpCode}`);
+
+    // Gửi email qua Brevo (chạy nền, bắt lỗi an toàn)
+    void sendOtpEmail(email, otpCode).catch((err) => {
+      console.warn(`[DApp Auth OTP] ⚠️ Gửi email Brevo gặp sự cố:`, err?.message || err);
+    });
+
+    return ok({ message: "Mã xác nhận 6 chữ số đã được gửi tới email của bạn." });
+  }
+
+  // ── Magic Code Sign In / Sign Up ────────────────────────────────────
+  if (url.includes("/auth/magic-sign-in") || url.includes("/auth/magic-sign-up")) {
+    const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
+    const code = (body?.code || "").trim();
+
+    if (!email) {
+      return { data: { error: "Email không hợp lệ." }, status: 400 };
+    }
+    if (!code) {
+      return { data: { error: "Vui lòng nhập mã xác nhận." }, status: 400 };
+    }
+
+    const verifyResult = verifyOtpCode(email, code);
+    if (!verifyResult.valid) {
+      return { data: { error: verifyResult.error || "Mã xác nhận không chính xác hoặc đã hết hạn." }, status: 400 };
+    }
+
+    // Xác thực thành công -> hủy mã OTP
+    clearOtpCode(email);
+
+    let user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email);
+    if (!user) {
+      const isFirstUser = !localDB.users || localDB.users.length === 0;
+      user = createUserObject(`user-${Date.now()}`, email, undefined, undefined, undefined, isFirstUser);
+      if (!localDB.users) localDB.users = [];
+      localDB.users.push(user);
+      saveDB();
+    }
+
+    // Validate user's workspace access
+    const myWorkspaces = getUserWorkspaces(user.id, user.email);
+    const validCurrentWs = myWorkspaces.find((w: any) => w.slug === user.last_workspace_slug || w.id === user.last_workspace_id);
+    if (!validCurrentWs) {
+      user.last_workspace_slug = myWorkspaces[0]?.slug || null;
+      user.last_workspace_id = myWorkspaces[0]?.id || null;
+      user.is_onboarded = myWorkspaces.length > 0;
+      saveDB();
+    }
+
+    setLoggedInUser(user.id);
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("plane_dapp_auth_email", user.email);
+      localStorage.setItem("plane_dapp_auth_email", user.email);
+      if (user.last_workspace_slug) {
+        localStorage.setItem("last_workspace_slug", user.last_workspace_slug);
+        document.cookie = `last_workspace_slug=${user.last_workspace_slug}; path=/; max-age=31536000; SameSite=Lax`;
+      } else {
+        localStorage.removeItem("last_workspace_slug");
+        localStorage.removeItem("last_workspace_id");
+        document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
+      }
+    }
+    return ok({ ...user, access_token: "dapp-token", refresh_token: "dapp-refresh" });
+  }
+
+  // ── Password-based Sign In ──────────────────────────────────────────
+  if (url.includes("/auth/sign-in")) {
     const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
     const password = body?.password || "";
     const creds = getStoredCredentials();
@@ -2558,7 +2641,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const recMail = (memberRecord.email || "").toLowerCase().trim();
       const recMem = String(memberRecord.member || "").toLowerCase().trim();
       const recId = String(memberRecord.id || "").toLowerCase().trim();
-      if (removedList.includes(recMail) || removedList.includes(recMem) || removedList.includes(recId)) {
+      if (removedSet.has(recMail) || removedSet.has(recMem) || removedSet.has(recId)) {
         return { data: { error: "You have been removed from this workspace" }, status: 403 };
       }
     }
