@@ -770,23 +770,51 @@ export async function joinWorkspaceOnChain(slug: string, memberWallet?: string):
     localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
   } catch { }
 
+  const baseTxParams: any = {
+    from: userAddr,
+    to: wsRegistryAddr,
+    abiData: [JOIN_WORKSPACE_ABI],
+    functionName: "joinWorkspace",
+    feeType: "sc",
+    amount: "0",
+    value: "0",
+    gas: getContractGas(),
+    type: "transaction",
+    inputArray: [{ name: "slug", type: "string", value: slug }],
+    isReadOnly: false,
+    bundleId: "",
+  };
+
+  const blsKey = getBlsPrivateKey();
+  let firstErr: any = null;
+
+  // Try 1: with blsPrivateKey if configured
+  if (blsKey) {
+    try {
+      console.log(`[DApp Chain] Đang gửi transaction joinWorkspace("${slug}") qua ví (${userAddr}) kèm blsPrivateKey...`);
+      await bridge.request("sendTransaction", {
+        ...baseTxParams,
+        blsPrivateKey: blsKey,
+      });
+      console.log(`[DApp Chain] ✅ joinWorkspace thành công qua ví người dùng: ${slug} (${userAddr})`);
+      invalidateWorkspaceMembersOnChainCache(slug);
+      return true;
+    } catch (err: any) {
+      firstErr = err;
+      const errMsg = String(err?.message || err);
+      if (/already/i.test(errMsg) || /member/i.test(errMsg)) {
+        console.log(`[DApp Chain] Đã là thành viên on-chain: ${slug} (${userAddr})`);
+        invalidateWorkspaceMembersOnChainCache(slug);
+        return true;
+      }
+      console.warn(`[DApp Chain] joinWorkspace với blsPrivateKey thất bại, thử lại dùng khóa riêng của ví:`, err);
+    }
+  }
+
+  // Try 2: directly with wallet's own private key from vault (no blsPrivateKey override)
   try {
-    console.log(`[DApp Chain] Đang gửi transaction joinWorkspace("${slug}") qua ví người dùng (${userAddr})...`);
-    await bridge.request("sendTransaction", {
-      from: userAddr,
-      to: wsRegistryAddr,
-      abiData: [JOIN_WORKSPACE_ABI],
-      functionName: "joinWorkspace",
-      feeType: "sc",
-      amount: "0",
-      value: "0",
-      gas: getContractGas(),
-      type: "transaction",
-      inputArray: [{ name: "slug", type: "string", value: slug }],
-      isReadOnly: false,
-      bundleId: "",
-      ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
-    });
+    console.log(`[DApp Chain] Đang gửi transaction joinWorkspace("${slug}") qua ví (${userAddr}) dùng khóa riêng của ví...`);
+    await bridge.request("sendTransaction", baseTxParams);
     console.log(`[DApp Chain] ✅ joinWorkspace thành công qua ví người dùng: ${slug} (${userAddr})`);
     invalidateWorkspaceMembersOnChainCache(slug);
     return true;
@@ -797,7 +825,7 @@ export async function joinWorkspaceOnChain(slug: string, memberWallet?: string):
       invalidateWorkspaceMembersOnChainCache(slug);
       return true;
     }
-    console.warn(`[DApp Chain] joinWorkspace on-chain thất bại:`, err);
+    console.warn(`[DApp Chain] joinWorkspace on-chain thất bại:`, err || firstErr);
     return false;
   }
 }
@@ -818,33 +846,83 @@ export async function removeWorkspaceMemberOnChain(
     return false;
   }
 
+  // Pre-check: if member is already Role.None (0) on-chain, treat as success
+  try {
+    const roleCalldata = abiEncodeGetMemberRole(slug, memberAddress);
+    const roleHex = await directRpcRead(wsRegistryAddr, roleCalldata, 3000);
+    const currentRole = decodeAbiUint8(roleHex);
+    if (currentRole === 0) {
+      console.log(`[DApp Chain] Thành viên ${memberAddress} đã có role = 0 (Role.None) trên contract của ${slug}.`);
+      invalidateWorkspaceMembersOnChainCache(slug);
+      return true;
+    }
+  } catch {
+    // continue to attempt transaction
+  }
+
+  const baseTxParams: any = {
+    from: userAddr,
+    to: wsRegistryAddr,
+    abiData: [REMOVE_MEMBER_ABI],
+    functionName: "removeMember",
+    feeType: "sc",
+    amount: "0",
+    value: "0",
+    gas: getContractGas(),
+    type: "transaction",
+    inputArray: [
+      { name: "slug", type: "string", value: slug },
+      { name: "member", type: "address", value: memberAddress },
+    ],
+    isReadOnly: false,
+    bundleId: "",
+  };
+
+  const blsKey = getBlsPrivateKey();
+  let firstErr: any = null;
+
+  // Try 1: with blsPrivateKey if configured
+  if (blsKey) {
+    try {
+      console.log(
+        `[DApp Chain] Đang gửi transaction removeMember("${slug}", "${memberAddress}") qua ví Admin (${userAddr}) kèm blsPrivateKey...`
+      );
+      await bridge.request("sendTransaction", {
+        ...baseTxParams,
+        blsPrivateKey: blsKey,
+      });
+      console.log(`[DApp Chain] ✅ removeMember thành công qua ví Admin: ${memberAddress} khỏi ${slug}`);
+      invalidateWorkspaceMembersOnChainCache(slug);
+      return true;
+    } catch (err: any) {
+      firstErr = err;
+      const errMsg = String(err?.message || err);
+      if (/not\s*member/i.test(errMsg) || /already/i.test(errMsg) || /none/i.test(errMsg)) {
+        console.log(`[DApp Chain] Đã không còn là thành viên on-chain: ${slug} (${memberAddress})`);
+        invalidateWorkspaceMembersOnChainCache(slug);
+        return true;
+      }
+      console.warn(`[DApp Chain] removeMember với blsPrivateKey thất bại, thử lại dùng khóa riêng của ví Admin:`, err);
+    }
+  }
+
+  // Try 2: directly with wallet's own private key from vault (no blsPrivateKey override)
   try {
     console.log(
-      `[DApp Chain] Đang gửi transaction removeMember("${slug}", "${memberAddress}") qua ví Admin (${userAddr})...`
+      `[DApp Chain] Đang gửi transaction removeMember("${slug}", "${memberAddress}") qua ví Admin (${userAddr}) dùng khóa riêng của ví...`
     );
-    await bridge.request("sendTransaction", {
-      from: userAddr,
-      to: wsRegistryAddr,
-      abiData: [REMOVE_MEMBER_ABI],
-      functionName: "removeMember",
-      feeType: "sc",
-      amount: "0",
-      value: "0",
-      gas: getContractGas(),
-      type: "transaction",
-      inputArray: [
-        { name: "slug", type: "string", value: slug },
-        { name: "member", type: "address", value: memberAddress },
-      ],
-      isReadOnly: false,
-      bundleId: "",
-      ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
-    });
+    await bridge.request("sendTransaction", baseTxParams);
     console.log(`[DApp Chain] ✅ removeMember thành công qua ví Admin: ${memberAddress} khỏi ${slug}`);
     invalidateWorkspaceMembersOnChainCache(slug);
     return true;
-  } catch (err) {
-    console.warn(`[DApp Chain] removeMember on-chain thất bại:`, err);
+  } catch (err: any) {
+    const errMsg = String(err?.message || err);
+    if (/not\s*member/i.test(errMsg) || /already/i.test(errMsg) || /none/i.test(errMsg)) {
+      console.log(`[DApp Chain] Đã không còn là thành viên on-chain: ${slug} (${memberAddress})`);
+      invalidateWorkspaceMembersOnChainCache(slug);
+      return true;
+    }
+    console.warn(`[DApp Chain] removeMember on-chain thất bại:`, err || firstErr);
     return false;
   }
 }

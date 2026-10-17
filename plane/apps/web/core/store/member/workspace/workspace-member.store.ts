@@ -298,11 +298,17 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
    */
   removeMemberFromWorkspace = async (workspaceSlug: string, userId: string, adminWallet?: string) => {
     const memberDetails = this.getWorkspaceMemberDetails(userId);
-    if (!memberDetails) throw new Error("Member not found");
-    await this.workspaceService.deleteWorkspaceMember(workspaceSlug, memberDetails?.id, adminWallet).then(async () => {
+    const targetMemberId = memberDetails?.id || userId;
+    await this.workspaceService.deleteWorkspaceMember(workspaceSlug, targetMemberId, adminWallet).then(async () => {
       runInAction(() => {
         if (this.workspaceMemberMap[workspaceSlug]) {
           delete this.workspaceMemberMap[workspaceSlug][userId];
+          if (memberDetails?.member?.id) {
+            delete this.workspaceMemberMap[workspaceSlug][memberDetails.member.id];
+          }
+          if (memberDetails?.id) {
+            delete this.workspaceMemberMap[workspaceSlug][memberDetails.id];
+          }
           const remainingCount = Object.keys(this.workspaceMemberMap[workspaceSlug]).length;
           const targetWs = Object.values(this.rootStore?.workspaceRoot?.workspaces ?? {}).find(
             (w) => w.slug === workspaceSlug || w.id === workspaceSlug
@@ -312,6 +318,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
           }
         }
       });
+      await this.fetchWorkspaceMembers(workspaceSlug);
       await this.fetchWorkspaceMemberInvitations(workspaceSlug);
     });
   };

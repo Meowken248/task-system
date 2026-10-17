@@ -176,11 +176,14 @@ if (typeof document !== "undefined") {
       }
 
       const targetWsSlug = user?.last_workspace_slug || memberEntry?.workspace || memberEntry?.workspace_id || invEntry?.workspace?.slug || invEntry?.workspace_slug || invEntry?.workspace;
+      const hasPendingInvite = Boolean(invEntry && !invEntry.accepted && (!memberEntry || memberEntry.is_active === false));
 
       if (targetWsSlug) {
         if (user) {
           user.last_workspace_slug = targetWsSlug;
-          user.is_onboarded = true;
+          if (!hasPendingInvite) {
+            user.is_onboarded = true;
+          }
         }
         localStorage.setItem("last_workspace_slug", targetWsSlug);
         sessionStorage.setItem("last_workspace_slug", targetWsSlug);
@@ -194,9 +197,14 @@ if (typeof document !== "undefined") {
         document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
       }
 
-      const destinationPath = (!nextPath || nextPath === "/" || nextPath === "/plane" || nextPath.includes("onboarding")) && targetWsSlug
-        ? `/${targetWsSlug}`
-        : nextPath;
+      let destinationPath: string | null | undefined = nextPath;
+      if (nextPath && nextPath.includes("workspace-invitations")) {
+        destinationPath = nextPath;
+      } else if (hasPendingInvite && targetWsSlug) {
+        destinationPath = invEntry.invite_link || `/workspace-invitations?invitation_id=${invEntry.id}&slug=${targetWsSlug}&token=${invEntry.token || invEntry.id}`;
+      } else if ((!nextPath || nextPath === "/" || nextPath === "/plane" || nextPath.includes("onboarding")) && targetWsSlug) {
+        destinationPath = `/${targetWsSlug}`;
+      }
       window.location.href = resolveAppPath(destinationPath);
       return;
     }
@@ -262,7 +270,9 @@ if (typeof document !== "undefined") {
 
       const targetWsSlug = memberEntry?.workspace || memberEntry?.workspace_id || invEntry?.workspace?.slug || invEntry?.workspace_slug || invEntry?.workspace;
 
-      if (memberEntry || invEntry) {
+      const hasPendingInvite = Boolean(invEntry && !invEntry.accepted && (!memberEntry || memberEntry.is_active === false));
+
+      if (memberEntry && memberEntry.is_active !== false) {
         userRecord.is_onboarded = true;
         userRecord.is_tour_completed = true;
         userRecord.onboarding_step = {
@@ -271,10 +281,18 @@ if (typeof document !== "undefined") {
           workspace_create: true,
           workspace_invite: true,
         };
-        if (memberEntry && memberEntry.member !== userRecord.id) {
+        if (memberEntry.member !== userRecord.id) {
           memberEntry.member = userRecord.id;
           memberEntry.email = email;
         }
+      } else if (hasPendingInvite) {
+        userRecord.is_onboarded = false;
+        userRecord.onboarding_step = {
+          profile_complete: true,
+          workspace_join: false,
+          workspace_create: false,
+          workspace_invite: false,
+        };
       }
 
       if (targetWsSlug) {
@@ -312,9 +330,14 @@ if (typeof document !== "undefined") {
         localStorage.setItem(`plane:metanode-wallet:${userRecord.id}`, norm);
       }
 
-      const destinationPath = (!nextPath || nextPath === "/" || nextPath === "/plane" || nextPath.includes("onboarding")) && targetWsSlug
-        ? `/${targetWsSlug}`
-        : nextPath;
+      let destinationPath: string | null | undefined = nextPath;
+      if (nextPath && nextPath.includes("workspace-invitations")) {
+        destinationPath = nextPath;
+      } else if (hasPendingInvite && targetWsSlug) {
+        destinationPath = invEntry.invite_link || `/workspace-invitations?invitation_id=${invEntry.id}&slug=${targetWsSlug}&token=${invEntry.token || invEntry.id}`;
+      } else if ((!nextPath || nextPath === "/" || nextPath === "/plane" || nextPath.includes("onboarding")) && targetWsSlug) {
+        destinationPath = `/${targetWsSlug}`;
+      }
       window.location.href = resolveAppPath(destinationPath);
       return;
     }

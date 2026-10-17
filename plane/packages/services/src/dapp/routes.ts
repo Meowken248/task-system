@@ -2363,9 +2363,21 @@ export async function handleRoute(method: string, url: string, body: Record<stri
               console.log(`[DApp Routes] ✅ On-chain joinWorkspace hoàn thành cho ${memberWallet} trên ${wsSlug}`);
             } else {
               console.warn(`[DApp Routes] ⚠️ joinWorkspaceOnChain không trả về true cho ${memberWallet}`);
+              return {
+                data: {
+                  error: `Không thể ghi nhận thành viên lên Blockchain Sequoia cho ví ${memberWallet}. Vui lòng kiểm tra ví và thử lại.`,
+                },
+                status: 400,
+              };
             }
-          } catch (chainErr) {
+          } catch (chainErr: any) {
             console.warn(`[DApp Routes] ⚠️ Lỗi on-chain joinWorkspace cho ${memberWallet}:`, chainErr);
+            return {
+              data: {
+                error: `Lỗi kết nối on-chain: ${chainErr?.message || String(chainErr)}`,
+              },
+              status: 400,
+            };
           }
         }
       } else {
@@ -2987,28 +2999,20 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug, true);
           if (onChainMembers && onChainMembers.length > 0) {
             if (!localDB.workspace_members) localDB.workspace_members = [];
-            const ownerEth = extractEthAddress(ws?.owner?.id || ws?.created_by || ws?.owner?.email) || "";
+            const ownerEth = getWorkspaceOwnerEth(ws, wsSlug);
 
-            // Proactively un-stale all identifiers of users with on-chain presence, active/accepted invitations, or active workspace_members
+            // Proactively un-stale all identifiers of users with active unaccepted invitations
             if (localDB.removed_members?.[wsSlug] && Array.isArray(localDB.removed_members[wsSlug])) {
               const preserveSet = new Set<string>();
-              for (const memberAddr of onChainMembers) {
-                if (memberAddr) preserveSet.add(memberAddr.toLowerCase().trim());
-              }
               (localDB.invitations || []).forEach((inv: any) => {
                 const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
                 if (!invWs || invWs === wsSlug || invWs === ws?.id) {
-                  if (inv.email) preserveSet.add(inv.email.toLowerCase().trim());
-                  if (inv.wallet_address) preserveSet.add(inv.wallet_address.toLowerCase().trim());
-                  if (inv.id) preserveSet.add(String(inv.id).toLowerCase().trim());
-                }
-              });
-              (localDB.workspace_members || []).forEach((m: any) => {
-                const mWs = m.workspace || m.workspace_id;
-                if ((!mWs || mWs === wsSlug || mWs === ws?.id) && m.is_active !== false) {
-                  if (m.email) preserveSet.add(m.email.toLowerCase().trim());
-                  if (m.wallet_address) preserveSet.add(m.wallet_address.toLowerCase().trim());
-                  if (typeof m.member === "string" && m.member.startsWith("0x")) preserveSet.add(m.member.toLowerCase().trim());
+                  // Only re-preserve if an explicit new invitation was issued
+                  if (!inv.accepted) {
+                    if (inv.email) preserveSet.add(inv.email.toLowerCase().trim());
+                    if (inv.wallet_address) preserveSet.add(inv.wallet_address.toLowerCase().trim());
+                    if (inv.id) preserveSet.add(String(inv.id).toLowerCase().trim());
+                  }
                 }
               });
               if (preserveSet.size > 0) {
@@ -3035,14 +3039,23 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
             for (const memberAddr of onChainMembers) {
               const cleanAddr = memberAddr.toLowerCase();
+              const currentAddr = (currentUserAddress || getStoredWalletAddress() || "").toLowerCase();
+              const isAdminUser = Boolean(
+                loggedInEmail === "anh2482006@gmail.com" ||
+                activeUser?.email === "anh2482006@gmail.com" ||
+                activeUser?.id === "admin" ||
+                ws?.owner?.id === activeUserId
+              );
               if (ownerEth && cleanAddr === ownerEth.toLowerCase()) continue;
+              if (isAdminUser && currentAddr && cleanAddr === currentAddr) continue;
 
-              // Check if member was previously removed: un-stale them since on-chain role is confirmed (Role 1 or 2)
-              if (localDB.removed_members?.[wsSlug]?.includes(cleanAddr)) {
-                localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((x: string) => x !== cleanAddr);
-                try {
-                  localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-                } catch { }
+              // Do NOT process member if explicitly marked as removed by Admin
+              const isExplicitlyRemoved = (localDB.removed_members?.[wsSlug] || []).some(
+                (r: string) => r.toLowerCase().trim() === cleanAddr
+              );
+              if (isExplicitlyRemoved) {
+                console.log(`[DApp Routes] Bỏ qua ví đã bị Admin xóa (removed_members): ${cleanAddr}`);
+                continue;
               }
 
               const existingIdx = localDB.workspace_members.findIndex(
@@ -3093,7 +3106,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
                     !removedSet.has(String(inv.id || "").toLowerCase().trim())
                 );
                 if (unacceptedInvs.length > 0) {
-                  matchedInv = unacceptedInvs.find((i: any) => !i.wallet_address || i.wallet_address.toLowerCase() === cleanAddr) || unacceptedInvs[0];
+                  matchedInv = unacceptedInvs.find((i: any) => i.wallet_address && i.wallet_address.toLowerCase() === cleanAddr) ||
+                               unacceptedInvs.find((i: any) => !i.wallet_address) ||
+                               unacceptedInvs[0];
                 }
               }
 
@@ -3416,6 +3431,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       if (!adminWallet) {
         adminWallet = currentUserAddress || getStoredWalletAddress() || undefined;
       }
+      const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+      if (!adminWallet) {
+        adminWallet = getWorkspaceOwnerEth(ws, wsSlug) || undefined;
+      }
 
       const target = (localDB.workspace_members || []).find(
         (m: any) =>
@@ -3458,22 +3477,25 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         ""
       );
 
-      // Execute on-chain removal first if member has on-chain wallet and admin wallet is provided
-      if (resolvedWallet && adminWallet) {
-        try {
-          const removed = await removeWorkspaceMemberOnChain(wsSlug, resolvedWallet, adminWallet);
-          if (!removed) {
+      // Execute on-chain removal first if member has on-chain wallet
+      if (resolvedWallet) {
+        const actingAdminWallet = adminWallet || getWorkspaceOwnerEth(ws, wsSlug) || currentUserAddress || getStoredWalletAddress();
+        if (actingAdminWallet) {
+          try {
+            const removed = await removeWorkspaceMemberOnChain(wsSlug, resolvedWallet, actingAdminWallet);
+            if (!removed) {
+              return {
+                data: { error: `Giao dịch xóa thành viên trên blockchain cho ví ${resolvedWallet} bị hủy hoặc thất bại.` },
+                status: 400,
+              };
+            }
+          } catch (chainErr: any) {
+            console.warn("[DApp Routes] removeWorkspaceMemberOnChain error:", chainErr);
             return {
-              data: { error: "Giao dịch xóa thành viên trên blockchain bị hủy hoặc thất bại." },
+              data: { error: chainErr?.message || "Lỗi giao dịch blockchain khi xóa thành viên." },
               status: 400,
             };
           }
-        } catch (chainErr: any) {
-          console.warn("[DApp Routes] removeWorkspaceMemberOnChain error:", chainErr);
-          return {
-            data: { error: chainErr?.message || "Lỗi giao dịch blockchain khi xóa thành viên." },
-            status: 400,
-          };
         }
       }
 
@@ -6083,6 +6105,65 @@ function handleWorkspaceGlobalSearch(url: string, wsSlug: string): RouteResult {
   });
 }
 
+// ── Helper to resolve workspace owner's ETH address reliably ───────────────
+function getWorkspaceOwnerEth(ws: any, wsSlug: string): string {
+  if (!ws && !wsSlug) return "";
+  // 1. Direct eth address in ws.owner if string
+  if (typeof ws?.owner === "string") {
+    const direct = extractEthAddress(ws.owner);
+    if (direct) return direct.toLowerCase();
+  }
+  // 2. ws.owner_wallet, ws.created_by_wallet, ws.created_by
+  const directFields = [ws?.owner_wallet, ws?.created_by_wallet, ws?.created_by];
+  for (const f of directFields) {
+    const w = extractEthAddress(f);
+    if (w) return w.toLowerCase();
+  }
+  // 3. ws.owner object
+  if (ws?.owner && typeof ws.owner === "object") {
+    const wObj = extractEthAddress(ws.owner.wallet_address) ||
+                 extractEthAddress(ws.owner.metanode_wallet_address) ||
+                 extractEthAddress(ws.owner.id);
+    if (wObj) return wObj.toLowerCase();
+  }
+  // 4. Look up in localDB.workspace_members for member with role >= 20 (Owner / Admin)
+  const ownerMember = (localDB.workspace_members || []).find((m: any) => {
+    const isThisWs = !m.workspace || m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id;
+    return isThisWs && Number(m.role) >= 20 && (
+      (m.wallet_address && /^0x[a-f0-9]{40}$/i.test(m.wallet_address)) ||
+      (typeof m.member === "string" && /^0x[a-f0-9]{40}$/i.test(m.member))
+    );
+  });
+  if (ownerMember) {
+    const wMem = extractEthAddress(ownerMember.wallet_address) || extractEthAddress(ownerMember.member);
+    if (wMem) return wMem.toLowerCase();
+  }
+  // 5. Look up in localDB.users for owner user
+  const ownerUser = (localDB.users || []).find((u: any) => {
+    const matchId = u.id && (u.id === ws?.owner?.id || u.id === ws?.created_by || u.id === "admin");
+    const matchEmail = u.email && (u.email === ws?.owner?.email || u.email === "admin@plane.local" || u.email === "anh2482006@gmail.com");
+    return (matchId || matchEmail) && (u.metanode_wallet_address || u.wallet_address);
+  });
+  if (ownerUser) {
+    const wUser = extractEthAddress(ownerUser.metanode_wallet_address || ownerUser.wallet_address);
+    if (wUser) return wUser.toLowerCase();
+  }
+  // 6. Active logged-in user if admin/owner
+  const currentAddr = (currentUserAddress || getStoredWalletAddress() || "").toLowerCase();
+  const currentEmail = (getLoggedInEmail() || "").toLowerCase().trim();
+  const currentUid = getLoggedInUserId() || "";
+  const isAdminUser = Boolean(
+    currentEmail === "anh2482006@gmail.com" ||
+    currentEmail === "admin@plane.local" ||
+    currentUid === "admin" ||
+    (ws?.owner?.id && ws.owner.id === currentUid)
+  );
+  if (isAdminUser && currentAddr) {
+    return currentAddr;
+  }
+  return "";
+}
+
 // ── Project Entity Enrichment Helper ─────────────────────────────────────────
 function enrichProjectEntity(collection: string, item: any, defaultProjId?: string, defaultWsId?: string) {
   if (!item) return item;
@@ -7241,20 +7322,19 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
           if (onChainMembers && onChainMembers.length > 0) {
             syncedOnChainWallets = onChainMembers;
             if (!localDB.workspace_members) localDB.workspace_members = [];
-            const ownerEth = extractEthAddress(ws?.owner?.id || ws?.created_by || ws?.owner?.email) || "";
+            const ownerEth = getWorkspaceOwnerEth(ws, wsSlug);
 
-            // Proactively un-stale all identifiers of users with on-chain presence, active/accepted invitations, or active workspace_members
+            // Proactively un-stale all identifiers of users with active unaccepted invitations
             if (localDB.removed_members?.[wsSlug] && Array.isArray(localDB.removed_members[wsSlug])) {
               const preserveSet = new Set<string>();
-              for (const memberAddr of onChainMembers) {
-                if (memberAddr) preserveSet.add(memberAddr.toLowerCase().trim());
-              }
               (localDB.invitations || []).forEach((inv: any) => {
                 const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
                 if (!invWs || invWs === wsSlug || invWs === ws?.id) {
-                  if (inv.email) preserveSet.add(inv.email.toLowerCase().trim());
-                  if (inv.wallet_address) preserveSet.add(inv.wallet_address.toLowerCase().trim());
-                  if (inv.id) preserveSet.add(String(inv.id).toLowerCase().trim());
+                  if (!inv.accepted) {
+                    if (inv.email) preserveSet.add(inv.email.toLowerCase().trim());
+                    if (inv.wallet_address) preserveSet.add(inv.wallet_address.toLowerCase().trim());
+                    if (inv.id) preserveSet.add(String(inv.id).toLowerCase().trim());
+                  }
                 }
               });
               if (preserveSet.size > 0) {
@@ -7269,14 +7349,25 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
 
             for (const memberAddr of onChainMembers) {
               const cleanAddr = memberAddr.toLowerCase();
+              const currentAddr = (currentUserAddress || getStoredWalletAddress() || "").toLowerCase();
+              const currentEmail = (getLoggedInEmail() || "").toLowerCase().trim();
+              const currentUid = getLoggedInUserId() || "";
+              const isAdminUser = Boolean(
+                currentEmail === "anh2482006@gmail.com" ||
+                currentEmail === "admin@plane.local" ||
+                currentUid === "admin" ||
+                (ws?.owner?.id && ws.owner.id === currentUid)
+              );
               if (ownerEth && cleanAddr === ownerEth.toLowerCase()) continue;
+              if (isAdminUser && currentAddr && cleanAddr === currentAddr) continue;
 
-              // Check if member was previously removed: un-stale them since on-chain role is confirmed (Role 1 or 2)
-              if (localDB.removed_members?.[wsSlug]?.includes(cleanAddr)) {
-                localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((x: string) => x !== cleanAddr);
-                try {
-                  localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-                } catch { }
+              // Do NOT process member if explicitly marked as removed by Admin
+              const isExplicitlyRemoved = (localDB.removed_members?.[wsSlug] || []).some(
+                (r: string) => r.toLowerCase().trim() === cleanAddr
+              );
+              if (isExplicitlyRemoved) {
+                console.log(`[DApp Routes] Bỏ qua ví đã bị Admin xóa (removed_members): ${cleanAddr}`);
+                continue;
               }
 
               const existingIdx = localDB.workspace_members.findIndex(
@@ -7327,7 +7418,9 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
                     !removedSet.has(String(inv.id || "").toLowerCase().trim())
                 );
                 if (unacceptedInvs.length > 0) {
-                  matchedInv = unacceptedInvs.find((i: any) => !i.wallet_address || i.wallet_address.toLowerCase() === cleanAddr) || unacceptedInvs[0];
+                  matchedInv = unacceptedInvs.find((i: any) => i.wallet_address && i.wallet_address.toLowerCase() === cleanAddr) ||
+                               unacceptedInvs.find((i: any) => !i.wallet_address) ||
+                               unacceptedInvs[0];
                 }
               }
 
