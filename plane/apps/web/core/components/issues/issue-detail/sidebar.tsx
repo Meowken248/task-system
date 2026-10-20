@@ -24,7 +24,7 @@ import {
   EstimatePropertyIcon,
   ParentPropertyIcon,
 } from "@plane/propel/icons";
-import { cn, getDate, renderFormattedPayloadDate, shouldHighlightIssueDueDate } from "@plane/utils";
+import { cn, getDate, renderFormattedPayloadDate, getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@plane/utils";
 // components
 import { DateDropdown } from "@/components/dropdowns/date";
 import { EstimateDropdown } from "@/components/dropdowns/estimate";
@@ -288,10 +288,13 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                   buttonVariant="transparent-with-text"
                   className="group w-full grow"
                   buttonContainerClassName="w-full text-left h-7.5"
-                  buttonClassName={cn("text-body-xs-regular", {
-                    "text-placeholder": !issue.target_date,
-                    "text-danger-primary": shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group),
-                  })}
+                  buttonClassName={cn(
+                    "text-body-xs-regular",
+                    {
+                      "text-placeholder": !issue.target_date,
+                    },
+                    getIssueDueDateHighlightClass(issue.target_date, stateDetails?.group)
+                  )}
                   hideIcon
                   clearIconClassName="h-3 w-3 hidden group-hover:inline text-primary"
                 />

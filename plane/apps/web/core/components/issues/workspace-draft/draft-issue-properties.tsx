@@ -11,7 +11,7 @@ import { useParams } from "next/navigation";
 import { DueDatePropertyIcon, StartDatePropertyIcon } from "@plane/propel/icons";
 // types
 import type { TIssuePriorities, TWorkspaceDraftIssue } from "@plane/types";
-import { getDate, renderFormattedPayloadDate, shouldHighlightIssueDueDate } from "@plane/utils";
+import { getDate, renderFormattedPayloadDate, getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@plane/utils";
 // components
 import { CycleDropdown } from "@/components/dropdowns/cycle";
 import { DateDropdown } from "@/components/dropdowns/date";
@@ -207,9 +207,7 @@ export const DraftIssueProperties = observer(function DraftIssueProperties(props
           placeholder="Due date"
           icon={<DueDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
           buttonVariant={issue.target_date ? "border-with-text" : "border-without-text"}
-          buttonClassName={
-            shouldHighlightIssueDueDate(issue?.target_date || null, stateDetails?.group) ? "text-danger-primary" : ""
-          }
+          buttonClassName={getIssueDueDateHighlightClass(issue?.target_date || null, stateDetails?.group)}
           clearIconClassName="!text-primary"
           optionsClassName="z-10"
           renderByDefault={isMobile}

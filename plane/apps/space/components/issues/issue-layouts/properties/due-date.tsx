@@ -10,7 +10,7 @@ import { Tooltip } from "@plane/propel/tooltip";
 import { cn } from "@plane/utils";
 // helpers
 import { renderFormattedDate } from "@/helpers/date-time.helper";
-import { shouldHighlightIssueDueDate } from "@/helpers/issue.helper";
+import { getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@/helpers/issue.helper";
 // hooks
 import { useStates } from "@/hooks/store/use-state";
 
@@ -32,10 +32,13 @@ export const IssueBlockDate = observer(function IssueBlockDate(props: Props) {
   return (
     <Tooltip tooltipHeading="Due Date" tooltipContent={formattedDate}>
       <div
-        className={cn("flex h-full items-center gap-1 rounded-sm px-2.5 py-1 text-11 text-primary", {
-          "text-danger-primary": shouldHighLight && due_date && shouldHighlightIssueDueDate(due_date, state?.group),
-          "border-[0.5px] border-strong": shouldShowBorder,
-        })}
+        className={cn(
+          "flex h-full items-center gap-1 rounded-sm px-2.5 py-1 text-11 text-primary",
+          shouldHighLight && due_date ? getIssueDueDateHighlightClass(due_date, state?.group) : "",
+          {
+            "border-[0.5px] border-strong": shouldShowBorder,
+          }
+        )}
       >
         <DueDatePropertyIcon className="size-3 flex-shrink-0" />
         {formattedDate ? formattedDate : "No Date"}

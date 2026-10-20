@@ -22,6 +22,7 @@ import {
   getDate,
   renderFormattedPayloadDate,
   generateWorkItemLink,
+  getIssueDueDateHighlightClass,
   shouldHighlightIssueDueDate,
 } from "@plane/utils";
 // components
@@ -278,9 +279,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
             isClearable
             mergeDates
             buttonVariant={issue.start_date || issue.target_date ? "border-with-text" : "border-without-text"}
-            buttonClassName={
-              shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group) ? "text-danger-primary" : ""
-            }
+            buttonClassName={getIssueDueDateHighlightClass(issue.target_date || issue.start_date, stateDetails?.group)}
             clearIconClassName="text-primary!"
             disabled={isReadOnly}
             renderByDefault={isMobile}
@@ -328,9 +327,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
             placeholder={t("common.order_by.due_date")}
             icon={<DueDatePropertyIcon className="h-3 w-3 shrink-0" />}
             buttonVariant={issue.target_date ? "border-with-text" : "border-without-text"}
-            buttonClassName={
-              shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group) ? "text-danger-primary" : ""
-            }
+            buttonClassName={getIssueDueDateHighlightClass(issue.target_date, stateDetails?.group)}
             clearIconClassName="text-primary!"
             optionsClassName="z-10"
             disabled={isReadOnly}

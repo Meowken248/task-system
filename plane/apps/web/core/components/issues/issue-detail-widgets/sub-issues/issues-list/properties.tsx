@@ -11,7 +11,7 @@ import { observer } from "mobx-react";
 import { useTranslation } from "@plane/i18n";
 import { StartDatePropertyIcon, DueDatePropertyIcon } from "@plane/propel/icons";
 import type { IIssueDisplayProperties, TIssue } from "@plane/types";
-import { getDate, renderFormattedPayloadDate, shouldHighlightIssueDueDate } from "@plane/utils";
+import { getDate, renderFormattedPayloadDate, getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@plane/utils";
 // components
 import { DateDropdown } from "@/components/dropdowns/date";
 import { DateRangeDropdown } from "@/components/dropdowns/date-range";
@@ -73,6 +73,10 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
 
   //derived values
   const stateDetails = useMemo(() => getStateById(issue.state_id), [getStateById, issue.state_id]);
+  const highlightClass = useMemo(
+    () => getIssueDueDateHighlightClass(issue.target_date || issue.start_date, stateDetails?.group),
+    [issue.target_date, issue.start_date, stateDetails?.group]
+  );
   const shouldHighlight = useMemo(
     () => shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group),
     [issue.target_date, stateDetails?.group]
@@ -159,7 +163,7 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
             isClearable
             mergeDates
             buttonVariant={issue.start_date || issue.target_date ? "border-with-text" : "border-without-text"}
-            buttonClassName={shouldHighlight ? "text-danger-primary" : ""}
+            buttonClassName={highlightClass}
             disabled={!canEdit}
             showTooltip
             customTooltipHeading="Date Range"
@@ -204,7 +208,7 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
             placeholder={t("common.order_by.due_date")}
             icon={<DueDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
             buttonVariant={issue.target_date ? "border-with-text" : "border-without-text"}
-            buttonClassName={shouldHighlight ? "text-danger-primary" : ""}
+            buttonClassName={highlightClass}
             clearIconClassName="text-primary"
             optionsClassName="z-30"
             disabled={!canEdit}
