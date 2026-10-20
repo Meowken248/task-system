@@ -365,9 +365,9 @@ export const AuthPasswordForm = observer(function AuthPasswordForm(props: Props)
                 {isSubmitting ? (
                   <Spinner height="20px" width="20px" />
                 ) : isSMTPConfigured ? (
-                  t("common.continue")
+                  <span>{t("common.continue")}</span>
                 ) : (
-                  t("common.go_to_workspace")
+                  <span>{t("common.go_to_workspace")}</span>
                 )}
               </Button>
               {isSMTPConfigured && (
@@ -379,13 +379,13 @@ export const AuthPasswordForm = observer(function AuthPasswordForm(props: Props)
                   className="w-full"
                   size="xl"
                 >
-                  {t("auth.common.sign_in_with_unique_code")}
+                  <span>{t("auth.common.sign_in_with_unique_code")}</span>
                 </Button>
               )}
             </>
           ) : (
             <Button type="submit" variant="primary" className="w-full" size="xl" disabled={isButtonDisabled}>
-              {isSubmitting ? <Spinner height="20px" width="20px" /> : "Create account"}
+              {isSubmitting ? <Spinner height="20px" width="20px" /> : <span>Create account</span>}
             </Button>
           )}
         </div>

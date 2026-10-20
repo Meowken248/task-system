@@ -317,9 +317,11 @@ export abstract class BaseProjectMemberStore implements IBaseProjectMemberStore 
     await this.projectMemberService.bulkAddMembersToProject(workspaceSlug, projectId, data).then((response) => {
       runInAction(() => {
         response.forEach((member) => {
-          set(this.projectMemberMap, [projectId, member.member], {
+          const memberId = typeof member.member === "object" ? (member.member as any).id : member.member;
+          set(this.projectMemberMap, [projectId, memberId], {
             ...member,
-            role: this.getUserProjectRole(member.member, projectId) ?? member.role,
+            member: memberId,
+            role: this.getUserProjectRole(memberId, projectId) ?? member.role,
             original_role: member.role,
           });
         });

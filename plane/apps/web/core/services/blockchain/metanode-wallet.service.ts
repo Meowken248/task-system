@@ -238,11 +238,8 @@ async function selectAndLinkWallet(): Promise<string> {
         .map(normalizeWalletAddress)
     ),
   ];
-  if (availableAddresses.length === 1) {
-    await persistLinkedWallet(availableAddresses[0]);
-    await activateMetanodeWallet(availableAddresses[0]).catch(() => false);
-    return availableAddresses[0];
-  }
+  // When selectAndLinkWallet is invoked, always open the picker so the user
+  // can explicitly select, switch, or create/import a new wallet right in the UI modal.
 
   // system-core may keep this promise pending after a wallet has been selected.
   // Start the picker without blocking, then observe the active wallet through
@@ -559,8 +556,8 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
       }
     }
 
-    // Single wallet in vault -> no need to prompt, auto-link
-    if (availableAddresses.length === 1) {
+    // Single wallet in vault -> no need to prompt ONLY if not forcing user selection
+    if (availableAddresses.length === 1 && !forceSelect) {
       const singleWallet = availableAddresses[0];
       await persistLinkedWallet(singleWallet);
       await activateMetanodeWallet(singleWallet).catch(() => false);

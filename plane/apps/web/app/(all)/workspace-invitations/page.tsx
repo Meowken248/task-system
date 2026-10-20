@@ -109,7 +109,7 @@ function WorkspaceInvitationPage() {
       setToast({
         type: TOAST_TYPE.ERROR,
         title: "Không thể tham gia không gian làm việc",
-        message: err?.error || err?.message || "Lỗi khi kết nối ví MetaNode hoặc gia nhập không gian làm việc.",
+        message: err?.error || err?.response?.data?.error || err?.message || "Lỗi khi kết nối ví MetaNode hoặc gia nhập không gian làm việc.",
       });
     } finally {
       setIsAccepting(false);

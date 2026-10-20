@@ -101,7 +101,7 @@ export const AuthEmailForm = observer(function AuthEmailForm(props: TAuthEmailFo
         )}
       </div>
       <Button type="submit" variant="primary" className="w-full" size="xl" disabled={isButtonDisabled}>
-        {isSubmitting ? <Spinner height="20px" width="20px" /> : t("common.continue")}
+        {isSubmitting ? <Spinner height="20px" width="20px" /> : <span>{t("common.continue")}</span>}
       </Button>
     </form>
   );

@@ -165,11 +165,11 @@ export function AuthUniqueCodeForm(props: TAuthUniqueCodeForm) {
       <div className="space-y-2.5">
         <Button type="submit" variant="primary" className="w-full" size="xl" disabled={isButtonDisabled}>
           {isRequestingNewCode ? (
-            t("auth.common.unique_code.sending_code")
+            <span>{t("auth.common.unique_code.sending_code")}</span>
           ) : isSubmitting ? (
             <Spinner height="20px" width="20px" />
           ) : (
-            t("common.continue")
+            <span>{t("common.continue")}</span>
           )}
         </Button>
         {handleAuthStep && (

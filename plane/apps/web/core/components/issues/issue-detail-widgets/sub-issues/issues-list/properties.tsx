@@ -81,7 +81,7 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
     () => shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group),
     [issue.target_date, stateDetails?.group]
   );
-  // date range is enabled only when both dates are available and both dates are enabled
+  // date range is enable d only when both dates are available and both dates are enabled
   const isDateRangeEnabled: boolean = Boolean(
     issue.start_date && issue.target_date && displayProperties?.start_date && displayProperties?.due_date
   );

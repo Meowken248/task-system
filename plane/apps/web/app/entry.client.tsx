@@ -8,6 +8,34 @@ import { startTransition, StrictMode } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { HydratedRouter } from "react-router/dom";
 
+// ── DOM Guard: Prevent crash from browser translation (Google Translate) / extensions ──
+if (typeof window !== "undefined" && typeof Node === "function" && Node.prototype) {
+  const originalRemoveChild = Node.prototype.removeChild;
+  Node.prototype.removeChild = function <T extends Node>(child: T): T {
+    if (child.parentNode !== this) {
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn("[Safe DOM] Prevented removeChild crash on translated/external node.");
+      }
+      return (child.parentNode ? child.parentNode.removeChild(child) : child) as T;
+    }
+    return originalRemoveChild.call(this, child) as T;
+  };
+
+  const originalInsertBefore = Node.prototype.insertBefore;
+  Node.prototype.insertBefore = function <T extends Node>(newNode: T, referenceNode: Node | null): T {
+    if (referenceNode && referenceNode.parentNode !== this) {
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn("[Safe DOM] Prevented insertBefore crash on translated/external node.");
+      }
+      if (referenceNode.parentNode) {
+        return referenceNode.parentNode.insertBefore(newNode, referenceNode);
+      }
+      return newNode;
+    }
+    return originalInsertBefore.call(this, newNode, referenceNode) as T;
+  };
+}
+
 // ── DApp Mode: Intercept native form POSTs to /auth/* ──────────────────
 async function hashPassword(password: string): Promise<string> {
   if (typeof crypto !== "undefined" && crypto.subtle) {

@@ -1210,6 +1210,9 @@ export function syncWorkspacesToCookie(cid?: string | null) {
       if (acceptedIds.length > 0) {
         document.cookie = `plane_dapp_sync_accepted_invitations=${encodeURIComponent(JSON.stringify(acceptedIds))}; path=/; max-age=31536000; SameSite=Lax`;
       }
+      if (localDB._email_wallet_map && Object.keys(localDB._email_wallet_map).length > 0) {
+        document.cookie = `plane_dapp_sync_email_wallet_map=${encodeURIComponent(JSON.stringify(localDB._email_wallet_map))}; path=/; max-age=31536000; SameSite=Lax`;
+      }
     }
 
     const isSpaceViewer = typeof window !== "undefined" && (
@@ -1356,7 +1359,7 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
         }
       }
 
-      // Auto-resolve invitations for active workspace members (including typo/alias invites)
+      // Auto-resolve invitations for active workspace members (including prefix/alias matches)
       if (localDB.workspace_members && localDB.invitations) {
         const activeMails = new Set(
           localDB.workspace_members
@@ -1364,14 +1367,63 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
             .map((m: any) => (m.email || "").toLowerCase().trim())
             .filter(Boolean)
         );
+        const activeWallets = new Set(
+          localDB.workspace_members
+            .filter((m: any) => m.is_active !== false)
+            .map((m: any) => (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim())
+            .filter(Boolean)
+        );
         for (const inv of localDB.invitations) {
           const invMail = (inv.email || "").toLowerCase().trim();
-          if (invMail && (activeMails.has(invMail) || (activeMails.has("meowken248@gmail.com") && invMail.startsWith("meowken248")))) {
+          const invWallet = (inv.wallet_address || "").toLowerCase().trim();
+          const mappedWallet = (localDB._email_wallet_map?.[invMail] || "").toLowerCase().trim();
+          let isMember = (invMail && activeMails.has(invMail)) ||
+                         (invWallet && activeWallets.has(invWallet)) ||
+                         (mappedWallet && activeWallets.has(mappedWallet));
+          if (!isMember && invMail) {
+            for (const actMail of Array.from(activeMails)) {
+              const actPrefix = String(actMail).split("@")[0];
+              const invPrefix = invMail.split("@")[0];
+              if ((actPrefix.length >= 6 && invPrefix.startsWith(actPrefix)) || (invPrefix.length >= 6 && actPrefix.startsWith(invPrefix))) {
+                isMember = true;
+                break;
+              }
+            }
+          }
+          if (isMember) {
             if (!inv.accepted) {
               inv.accepted = true;
               hasChanges = true;
             }
           }
+        }
+      }
+
+      const mapCookie = cookies.find((row) => row.trim().startsWith("plane_dapp_sync_email_wallet_map="));
+      if (mapCookie) {
+        const rawMVal = mapCookie.trim().substring(mapCookie.trim().indexOf("=") + 1);
+        const mVal = decodeURIComponent(rawMVal || "");
+        if (mVal) {
+          try {
+            const syncedMap = JSON.parse(mVal);
+            if (syncedMap && typeof syncedMap === "object") {
+              if (!localDB._email_wallet_map) localDB._email_wallet_map = {};
+              let mapChanged = false;
+              for (const [em, w] of Object.entries(syncedMap)) {
+                if (em && w && !localDB._email_wallet_map[em]) {
+                  localDB._email_wallet_map[em] = String(w);
+                  mapChanged = true;
+                }
+              }
+              if (mapChanged) {
+                hasChanges = true;
+                try {
+                  const existingLocal = JSON.parse(localStorage.getItem("plane_dapp_email_wallet_map") || "{}");
+                  localStorage.setItem("plane_dapp_email_wallet_map", JSON.stringify({ ...existingLocal, ...localDB._email_wallet_map }));
+                } catch { }
+              }
+            }
+          } catch { }
         }
       }
 

@@ -61,11 +61,12 @@ export function Layout({ children }: { children: ReactNode }) {
   const isSessionRecorderEnabled = parseInt(process.env.VITE_ENABLE_SESSION_RECORDER || "0");
 
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning translate="no" className="notranslate">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="theme-color" content="#fff" />
+        <meta name="google" content="notranslate" />
         {/* Meta info for PWA */}
         <meta name="application-name" content="Plane" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -76,7 +77,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <Meta />
         <Links />
       </head>
-      <body suppressHydrationWarning>
+      <body suppressHydrationWarning className="notranslate" translate="no">
         <div id="context-menu-portal" />
         <div id="editor-portal" />
         <ThemeProvider themes={["light", "dark", "light-contrast", "dark-contrast", "custom"]} defaultTheme="system">
