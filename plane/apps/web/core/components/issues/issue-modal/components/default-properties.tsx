@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { observer } from "mobx-react";
 import type { Control } from "react-hook-form";
-import { Controller } from "react-hook-form";
+import { Controller, useFormContext } from "react-hook-form";
 import { ETabIndices, EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
 import { ParentPropertyIcon } from "@plane/propel/icons";
@@ -64,6 +64,7 @@ export const IssueDefaultProperties = observer(function IssueDefaultProperties(p
   } = props;
   // states
   const [parentIssueListModalOpen, setParentIssueListModalOpen] = useState(false);
+  const { setValue } = useFormContext<TIssue>();
   // store hooks
   const { t } = useTranslation();
   const { areEstimateEnabledByProjectId } = useProjectEstimates();
@@ -151,12 +152,18 @@ export const IssueDefaultProperties = observer(function IssueDefaultProperties(p
             <DateDropdown
               value={value}
               onChange={(date) => {
-                onChange(date ? renderFormattedPayloadDate(date) : null);
+                const formattedDate = date ? renderFormattedPayloadDate(date) : null;
+                onChange(formattedDate);
+                if (date && targetDate) {
+                  const currentTarget = getDate(targetDate);
+                  if (currentTarget && currentTarget < date) {
+                    setValue("target_date", formattedDate, { shouldDirty: true });
+                  }
+                }
                 handleFormChange();
               }}
               buttonVariant="border-with-text"
               minDate={today}
-              maxDate={maxDate ?? undefined}
               placeholder={t("start_date")}
               tabIndex={getIndex("start_date")}
             />
@@ -175,7 +182,7 @@ export const IssueDefaultProperties = observer(function IssueDefaultProperties(p
                 handleFormChange();
               }}
               buttonVariant="border-with-text"
-              minDate={minDate ?? undefined}
+              minDate={minDate ?? today}
               placeholder={t("due_date")}
               tabIndex={getIndex("target_date")}
             />

@@ -51,9 +51,15 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
 
   const handleStartDate = (date: Date | null) => {
     if (issue.project_id) {
-      updateSubIssue(workspaceSlug, issue.project_id, parentIssueId, issueId, {
-        start_date: date ? renderFormattedPayloadDate(date) : null,
-      });
+      const newStartDateStr = date ? renderFormattedPayloadDate(date) : null;
+      const payload: Partial<TIssue> = { start_date: newStartDateStr };
+      if (date && issue.target_date) {
+        const currentTargetDate = getDate(issue.target_date);
+        if (currentTargetDate && currentTargetDate < date) {
+          payload.target_date = newStartDateStr;
+        }
+      }
+      updateSubIssue(workspaceSlug, issue.project_id, parentIssueId, issueId, payload);
     }
   };
 
@@ -77,6 +83,9 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
   );
 
   if (!displayProperties) return <></>;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   const maxDate = getDate(issue.target_date);
   const minDate = getDate(issue.start_date);
@@ -170,7 +179,7 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
           <DateDropdown
             value={issue.start_date ?? null}
             onChange={handleStartDate}
-            maxDate={maxDate}
+            minDate={today}
             placeholder={t("common.order_by.start_date")}
             icon={<StartDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
             buttonVariant={issue.start_date ? "border-with-text" : "border-without-text"}
@@ -191,7 +200,7 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
           <DateDropdown
             value={issue?.target_date ?? null}
             onChange={handleTargetDate}
-            minDate={minDate}
+            minDate={minDate ?? today}
             placeholder={t("common.order_by.due_date")}
             icon={<DueDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
             buttonVariant={issue.target_date ? "border-with-text" : "border-without-text"}

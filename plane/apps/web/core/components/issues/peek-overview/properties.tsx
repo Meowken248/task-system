@@ -76,6 +76,9 @@ export const PeekOverviewProperties = observer(function PeekOverviewProperties(p
   const stateDetails = getStateById(issue.state_id);
   const isAdmin = allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.PROJECT, workspaceSlug, projectId);
 
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
   const minDate = getDate(issue.start_date);
   minDate?.setDate(minDate.getDate());
 
@@ -150,14 +153,20 @@ export const PeekOverviewProperties = observer(function PeekOverviewProperties(p
         <SidebarPropertyListItem icon={StartDatePropertyIcon} label={t("common.order_by.start_date")}>
           <DateDropdown
             value={issue.start_date}
-            onChange={(val) =>
-              issueOperations.update(workspaceSlug, projectId, issueId, {
-                start_date: val ? renderFormattedPayloadDate(val) : null,
-              })
-            }
+            onChange={(val) => {
+              const newStartDateStr = val ? renderFormattedPayloadDate(val) : null;
+              const payload: Partial<TIssue> = { start_date: newStartDateStr };
+              if (val && issue.target_date) {
+                const currentTargetDate = getDate(issue.target_date);
+                if (currentTargetDate && currentTargetDate < val) {
+                  payload.target_date = newStartDateStr;
+                }
+              }
+              issueOperations.update(workspaceSlug, projectId, issueId, payload);
+            }}
             placeholder={t("issue.add.start_date")}
             buttonVariant="transparent-with-text"
-            maxDate={maxDate ?? undefined}
+            minDate={today}
             disabled={disabled || !isAdmin}
             className="group w-full grow"
             buttonContainerClassName="w-full text-left h-7.5"
@@ -178,7 +187,7 @@ export const PeekOverviewProperties = observer(function PeekOverviewProperties(p
               }
               placeholder={t("issue.add.due_date")}
               buttonVariant="transparent-with-text"
-              minDate={minDate ?? undefined}
+              minDate={minDate ?? today}
               disabled={disabled || !isAdmin}
               className="group w-full grow"
               buttonContainerClassName="w-full text-left h-7.5"

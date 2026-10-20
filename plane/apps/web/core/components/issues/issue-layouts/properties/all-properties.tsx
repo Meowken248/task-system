@@ -150,8 +150,17 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
   );
 
   const handleStartDate = async (date: Date | null) => {
-    if (updateIssue)
-      await updateIssue(issue.project_id, issue.id, { start_date: date ? renderFormattedPayloadDate(date) : null });
+    if (updateIssue) {
+      const newStartDateStr = date ? renderFormattedPayloadDate(date) : null;
+      const payload: Partial<TIssue> = { start_date: newStartDateStr };
+      if (date && issue.target_date) {
+        const currentTargetDate = getDate(issue.target_date);
+        if (currentTargetDate && currentTargetDate < date) {
+          payload.target_date = newStartDateStr;
+        }
+      }
+      await updateIssue(issue.project_id, issue.id, payload);
+    }
   };
 
   const handleTargetDate = async (date: Date | null) => {
@@ -202,6 +211,9 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
   );
 
   const defaultLabelOptions = issue?.label_ids?.map((id) => labelMap[id]) || [];
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   const minDate = getDate(issue.start_date);
   const maxDate = getDate(issue.target_date);
@@ -289,7 +301,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
           <DateDropdown
             value={issue.start_date ?? null}
             onChange={handleStartDate}
-            maxDate={maxDate}
+            minDate={today}
             placeholder={t("common.order_by.start_date")}
             icon={<StartDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
             buttonVariant={issue.start_date ? "border-with-text" : "border-without-text"}
@@ -312,7 +324,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
           <DateDropdown
             value={issue?.target_date ?? null}
             onChange={handleTargetDate}
-            minDate={minDate}
+            minDate={minDate ?? today}
             placeholder={t("common.order_by.due_date")}
             icon={<DueDatePropertyIcon className="h-3 w-3 shrink-0" />}
             buttonVariant={issue.target_date ? "border-with-text" : "border-without-text"}

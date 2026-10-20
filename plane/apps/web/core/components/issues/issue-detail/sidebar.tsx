@@ -249,13 +249,20 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
               <DateDropdown
                 placeholder={t("issue.add.start_date")}
                 value={issue.start_date}
-                onChange={(val) =>
-                  issueOperations.update(workspaceSlug, projectId, issueId, {
-                    start_date: val ? renderFormattedPayloadDate(val) : null,
-                  })
-                }
+                onChange={(val) => {
+                  const newStartDateStr = val ? renderFormattedPayloadDate(val) : null;
+                  const payload: Partial<TIssue> = {
+                    start_date: newStartDateStr,
+                  };
+                  if (val && issue.target_date) {
+                    const currentTargetDate = getDate(issue.target_date);
+                    if (currentTargetDate && currentTargetDate < val) {
+                      payload.target_date = newStartDateStr;
+                    }
+                  }
+                  issueOperations.update(workspaceSlug, projectId, issueId, payload);
+                }}
                 minDate={today}
-                maxDate={maxDate ?? undefined}
                 disabled={!isEditable || !isAdmin}
                 buttonVariant="transparent-with-text"
                 className="group w-full grow"
@@ -276,7 +283,7 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                       target_date: val ? renderFormattedPayloadDate(val) : null,
                     })
                   }
-                  minDate={minDate ?? undefined}
+                  minDate={minDate ?? today}
                   disabled={!isEditable || !isAdmin}
                   buttonVariant="transparent-with-text"
                   className="group w-full grow"
