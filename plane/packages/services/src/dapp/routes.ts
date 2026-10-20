@@ -3181,10 +3181,33 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             for (const cleanAddr of uniqueOnChainMembers) {
               if (ownerEth && cleanAddr === ownerEth.toLowerCase()) continue;
 
-              // Do NOT process member if explicitly marked as removed by Admin
+              // Check unaccepted invitations
+              const unacceptedInvs = (localDB.invitations || []).filter(
+                (inv: any) =>
+                  (inv.workspace?.slug === wsSlug || inv.workspace_slug === wsSlug || inv.workspace === wsSlug || inv.workspace === ws?.id) &&
+                  !inv.accepted
+              );
+
+              // If cleanAddr was in removedSet, but there is an unaccepted invitation waiting to be fulfilled, un-stale it!
               if (removedSet.has(cleanAddr)) {
-                console.log(`[DApp Routes] Bỏ qua ví đã bị Admin xóa (removed_members): ${cleanAddr}`);
-                continue;
+                if (unacceptedInvs.length > 0) {
+                  console.log(`[DApp Routes] Un-stale ví ${cleanAddr} khỏi removed_members vì có ${unacceptedInvs.length} lời mời pending.`);
+                  removedSet.delete(cleanAddr);
+                  const targetKeys = Array.from(new Set([wsSlug, ws?.slug, ws?.id].filter(Boolean)));
+                  for (const k of targetKeys) {
+                    if (localDB.removed_members?.[k]) {
+                      localDB.removed_members[k] = localDB.removed_members[k].filter(
+                        (x: string) => String(x).toLowerCase().trim() !== cleanAddr
+                      );
+                    }
+                  }
+                  try {
+                    localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
+                  } catch { }
+                } else {
+                  console.log(`[DApp Routes] Bỏ qua ví đã bị Admin xóa (removed_members): ${cleanAddr}`);
+                  continue;
+                }
               }
 
               const existingIdx = localDB.workspace_members.findIndex(
@@ -3437,23 +3460,26 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
         const user = (localDB.users || []).find(
           (u: any) =>
-            u.id === memberKey ||
             (memberMail && (u.email || "").toLowerCase().trim() === memberMail) ||
-            u.username === memberKey ||
-            (wm.wallet_address && (
-              (u.metanode_wallet_address && u.metanode_wallet_address.toLowerCase() === wm.wallet_address.toLowerCase()) ||
-              (typeof u.id === "string" && u.id.toLowerCase() === wm.wallet_address.toLowerCase())
+            (!memberMail && (
+              u.id === memberKey ||
+              u.username === memberKey ||
+              (wm.wallet_address && (
+                (u.metanode_wallet_address && u.metanode_wallet_address.toLowerCase() === wm.wallet_address.toLowerCase()) ||
+                (typeof u.id === "string" && u.id.toLowerCase() === wm.wallet_address.toLowerCase())
+              ))
             ))
         );
         const matchingInv = (localDB.invitations || []).find((inv: any) =>
           (memberMail && (inv.email || "").toLowerCase().trim() === memberMail) ||
-          (wm.wallet_address && inv.wallet_address?.toLowerCase() === wm.wallet_address.toLowerCase())
+          (!memberMail && wm.wallet_address && inv.wallet_address?.toLowerCase() === wm.wallet_address.toLowerCase())
         );
         const isEth = memberKey.startsWith("0x");
-        const resolvedEmail = user?.email || wm.email || matchingInv?.email || (isEth ? `${memberKey}@fiai.network` : memberKey);
+        const resolvedEmail = memberMail || (user && (!memberMail || (user.email || "").toLowerCase().trim() === memberMail) ? user.email : null) || wm.email || matchingInv?.email || (isEth ? `${memberKey}@fiai.network` : memberKey);
         const shortAddr = isEth ? `${memberKey.slice(0, 6)}...${memberKey.slice(-4)}` : "Member";
         const namePart = resolvedEmail.includes("@") ? resolvedEmail.split("@")[0] : shortAddr;
-        const memberObj = user || {
+        const isUserMatch = Boolean(user && (!memberMail || (user.email || "").toLowerCase().trim() === memberMail));
+        const memberObj = isUserMatch ? user : {
           id: memberKey || wm.id || `member-${namePart}`,
           email: resolvedEmail,
           first_name: wm.first_name || namePart,
@@ -3500,16 +3526,17 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         const user = (localDB.users || []).find(
           (u: any) =>
             (invMail && (u.email || "").toLowerCase().trim() === invMail) ||
-            (invWallet && (
+            (!invMail && invWallet && (
               (u.metanode_wallet_address && u.metanode_wallet_address.toLowerCase() === invWallet) ||
               (typeof u.id === "string" && u.id.toLowerCase() === invWallet)
             ))
         );
         const isEth = Boolean(invWallet && invWallet.startsWith("0x"));
-        const resolvedEmail = user?.email || inv.email || (isEth ? `${invWallet}@fiai.network` : "");
+        const resolvedEmail = invMail || (user && (!invMail || (user.email || "").toLowerCase().trim() === invMail) ? user.email : null) || (isEth ? `${invWallet}@fiai.network` : "");
         const shortAddr = isEth ? `${invWallet.slice(0, 6)}...${invWallet.slice(-4)}` : "Member";
         const namePart = resolvedEmail.includes("@") ? resolvedEmail.split("@")[0] : shortAddr;
-        const memberObj = user || {
+        const isUserMatch = Boolean(user && (!invMail || (user.email || "").toLowerCase().trim() === invMail));
+        const memberObj = isUserMatch ? user : {
           id: user?.id || (invWallet ? invWallet : inv.id) || `member-${namePart}`,
           email: resolvedEmail,
           first_name: inv.first_name || namePart,
