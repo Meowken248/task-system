@@ -733,6 +733,27 @@ export async function commitWorkspaceCID(slug: string, newCid: string): Promise<
       ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
     });
     console.log(`[DApp Chain] ✅ updateWorkspaceCID thành công qua ví người dùng!`);
+
+    // Đồng bộ dọn dẹp on-chain cho các thành viên trong removed_members nếu role on-chain vẫn > 0
+    if (localDB.removed_members?.[slug] && Array.isArray(localDB.removed_members[slug])) {
+      void (async () => {
+        for (const rawIdent of localDB.removed_members[slug]) {
+          const targetEth = extractEthAddress(rawIdent);
+          if (targetEth && targetEth.toLowerCase() !== userAddr.toLowerCase()) {
+            try {
+              const role = await fetchMemberRoleOnChain(slug, targetEth);
+              if (role > 0) {
+                console.log(`[DApp Chain] Tự động đồng bộ xóa on-chain cho thành viên tồn đọng: ${targetEth}`);
+                await removeWorkspaceMemberOnChain(slug, targetEth, userAddr);
+              }
+            } catch (syncErr) {
+              console.warn(`[DApp Chain] Không thể đồng bộ xóa on-chain cho ${targetEth}:`, syncErr);
+            }
+          }
+        }
+      })();
+    }
+
     return true;
   } catch (bridgeErr) {
     console.warn(`[DApp Chain] Giao dịch updateWorkspaceCID qua ví người dùng không thành công:`, bridgeErr);
@@ -977,7 +998,7 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
   for (const gw of gateways) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
       const res = await fetch(gw, {
         signal: controller.signal,
         headers: { Accept: "application/json" },
@@ -1640,7 +1661,37 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
   const urlCid = urlParams?.get("cid");
 
   if (!activeWallet) {
-    console.log(`[DApp DB] Chưa có ví. Tìm kiếm CID từ local cache, cookie hoặc on-chain...`);
+    console.log(`[DApp DB] Khởi tạo DB (Ưu tiên cache cục bộ + Stale-While-Revalidate on-chain)...`);
+
+    // 1. Instant Cache Hydration: If localStorage or sessionStorage has DB, load immediately (0ms)
+    let hadCachedDB = false;
+    try {
+      const cached = localStorage.getItem("plane_dapp_local_db") || sessionStorage.getItem("plane_dapp_latest_db");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed === "object" && (parsed.workspaces?.length > 0 || parsed.users?.length > 0)) {
+          applyOffchainDB(parsed);
+          hadCachedDB = true;
+          isDAppDBInitialized = true;
+          console.log("[DApp DB] Nạp DB tức thì từ cache cục bộ thành công (0ms).");
+        }
+      }
+    } catch { }
+
+    if (!hadCachedDB) {
+      try {
+        const idbBackup = await loadSnapshotFromIDB();
+        if (idbBackup?.data && (idbBackup.data.workspaces?.length > 0 || idbBackup.data.users?.length > 0)) {
+          applyOffchainDB(idbBackup.data);
+          hadCachedDB = true;
+          isDAppDBInitialized = true;
+          if (idbBackup.cid) lastUploadedCID = idbBackup.cid;
+          console.log("[DApp DB] Nạp DB tức thì từ IndexedDB thành công.");
+        }
+      } catch { }
+    }
+
+    // 2. Discover authoritative CID from query, local storage, cookie, or on-chain
     let candidateCid =
       urlCid ||
       localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) ||
@@ -1672,8 +1723,12 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
       } catch { }
     }
 
-    if (candidateCid) {
-      console.log(`[DApp DB] Khởi tạo DB từ CID: ${candidateCid}`);
+    // 3. If candidateCid is found and we need to fetch or revalidate
+    const curCid = localStorage.getItem("plane_dapp_ipfs_cid_local") || lastUploadedCID;
+    const shouldFetch = candidateCid && (!hadCachedDB || candidateCid !== curCid);
+
+    if (shouldFetch) {
+      console.log(`[DApp DB] Đang tải cập nhật DB từ IPFS CID: ${candidateCid}...`);
       const ipfsDB = await fetchFromIPFS(candidateCid);
       if (ipfsDB) {
         applyOffchainDB(ipfsDB);
@@ -1690,33 +1745,9 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
       }
     }
 
-    let hadCachedDB = false;
-    try {
-      const cached = localStorage.getItem("plane_dapp_local_db") || sessionStorage.getItem("plane_dapp_latest_db");
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed && typeof parsed === "object") {
-          applyOffchainDB(parsed);
-          hadCachedDB = true;
-          console.log("[DApp DB] Nạp DB từ local cache snapshot thành công.");
-        }
-      }
-    } catch { }
-
-    if (!hadCachedDB && !checkHasRealContent()) {
-      try {
-        const idbBackup = await loadSnapshotFromIDB();
-        if (idbBackup?.data) {
-          applyOffchainDB(idbBackup.data);
-          hadCachedDB = true;
-          if (idbBackup.cid) lastUploadedCID = idbBackup.cid;
-          console.log("[DApp DB] Phục hồi cơ sở dữ liệu từ IndexedDB thành công.");
-        }
-      } catch { }
-    }
-
-    if ((!lastUploadedCID || lastUploadedCID.startsWith("bafkrei")) && checkHasRealContent()) {
-      scheduleIPFSUpload();
+    if (hadCachedDB) {
+      isDAppDBInitialized = true;
+      return { status: "OK", cid: curCid || candidateCid || undefined };
     }
 
     isDAppDBInitialized = true;
@@ -1908,7 +1939,7 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
 }
 
 export async function initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: any }> {
-  const timeoutMs = 20000;
+  const timeoutMs = 30000;
   const timeoutTask = new Promise<{ status: string; cid?: string; ipfsDB?: any }>((resolve, reject) => {
     setTimeout(() => {
       if (checkHasRealContent()) {

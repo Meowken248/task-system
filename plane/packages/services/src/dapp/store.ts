@@ -101,22 +101,25 @@ export const defaultDB: DAppDatabase = {
 // ── Auth state (persisted in localStorage and sessionStorage) ─────────────────
 export function getLoggedInUserId(): string | null {
   if (typeof window === "undefined") return null;
-  const stored = sessionStorage.getItem("plane_dapp_auth_user") || localStorage.getItem("plane_dapp_auth_user");
-  if (stored) return stored;
   const email = getLoggedInEmail();
   if (email) {
-    const uid = `user-${email.split("@")[0]}`;
-    try {
-      localStorage.setItem("plane_dapp_auth_user", uid);
-    } catch { }
-    return uid;
+    const cleanMail = email.toLowerCase().trim();
+    const matchedUser = (localDB.users || []).find((u: any) => (u.email || "").toLowerCase().trim() === cleanMail);
+    if (matchedUser?.id) return matchedUser.id;
+    const sessUser = sessionStorage.getItem("plane_dapp_auth_user");
+    if (sessUser) return sessUser;
+    return `user-${cleanMail.split("@")[0]}`;
   }
+  const sessStored = sessionStorage.getItem("plane_dapp_auth_user");
+  if (sessStored) return sessStored;
+  const localStored = localStorage.getItem("plane_dapp_auth_user");
+  if (localStored) return localStored;
   const wallet = sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address");
   if (wallet) {
     const clean = wallet.trim().toLowerCase();
     const uid = `user-${clean.slice(2, 10)}`;
     try {
-      localStorage.setItem("plane_dapp_auth_user", uid);
+      sessionStorage.setItem("plane_dapp_auth_user", uid);
     } catch { }
     return uid;
   }
@@ -899,13 +902,35 @@ export function saveDB() {
   }
   try {
     const snapshot = JSON.stringify(localDB);
-    localStorage.setItem("plane_dapp_local_db", snapshot);
+    try {
+      localStorage.setItem("plane_dapp_local_db", snapshot);
+    } catch {
+      // If full DB exceeds localStorage quota (5MB limit in Chrome), save essential lightweight DB to localStorage
+      // Full database with all issue activities and comments is preserved in IndexedDB and sessionStorage!
+      const lightDB = {
+        users: localDB.users,
+        workspaces: localDB.workspaces,
+        workspace_members: localDB.workspace_members,
+        projects: localDB.projects,
+        invitations: localDB.invitations,
+        states: localDB.states,
+        labels: localDB.labels,
+        removed_members: localDB.removed_members,
+        _email_wallet_map: localDB._email_wallet_map,
+        instance: localDB.instance,
+      };
+      localStorage.setItem("plane_dapp_local_db", JSON.stringify(lightDB));
+    }
     sessionStorage.setItem("plane_dapp_latest_db", snapshot);
+  } catch (err) {
+    console.warn("[DApp Store] localStorage.setItem(plane_dapp_local_db) fallback failed:", err);
+  }
+  try {
     if (localDB.removed_members) {
       localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
     }
   } catch (err) {
-    console.warn("[DApp Store] localStorage.setItem failed (possibly quota exceeded):", err);
+    console.warn("[DApp Store] localStorage.setItem(plane_dapp_removed_members) failed:", err);
   }
   try {
     const curCid = (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") : null);
@@ -1707,6 +1732,15 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
       );
       if (isMember) return true;
 
+      // 2.5 Has pending or accepted invitation for this workspace
+      if (activeMail) {
+        const hasInv = (localDB.invitations || []).some((inv: any) => {
+          const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
+          return (!invWs || invWs === w.slug || invWs === w.id) && (inv.email || "").toLowerCase().trim() === activeMail;
+        });
+        if (hasInv) return true;
+      }
+
       // 3. Fallback for unowned default workspace (when system has only 1 initial user)
       if ((!w.created_by || w.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
         return true;
@@ -1728,11 +1762,13 @@ export function getUserProfile() {
     : null;
 
   let activeUser: any = null;
-  if (activeUserId || loggedInEmail) {
+  if (loggedInEmail) {
     activeUser = (localDB.users || []).find((u: any) =>
-      (activeUserId && u.id === activeUserId) ||
-      (loggedInEmail && u.email?.toLowerCase().trim() === loggedInEmail.toLowerCase().trim())
+      u.email?.toLowerCase().trim() === loggedInEmail.toLowerCase().trim()
     ) || null;
+  }
+  if (!activeUser && activeUserId) {
+    activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId) || null;
   }
   if (!activeUser && activeWallet) {
     activeUser = (localDB.users || []).find((u: any) =>
@@ -1882,15 +1918,23 @@ export function getUserProfile() {
 
 export function getUserSettings() {
   const activeUserId = getLoggedInUserId();
-  const loggedInEmail = typeof window !== "undefined" ? localStorage.getItem("plane_dapp_auth_email") : null;
+  const loggedInEmail = getLoggedInEmail();
   const activeWallet = typeof window !== "undefined"
     ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))?.toLowerCase().trim()
     : null;
-  const activeUser = (localDB.users || []).find((u: any) =>
-    (activeUserId && u.id === activeUserId) ||
-    (loggedInEmail && u.email?.toLowerCase() === loggedInEmail.toLowerCase()) ||
-    (activeWallet && (u.metanode_wallet_address?.toLowerCase() === activeWallet || u.id?.toLowerCase() === activeWallet))
-  ) || null;
+  let activeUser = loggedInEmail
+    ? (localDB.users || []).find((u: any) => u.email?.toLowerCase().trim() === loggedInEmail.toLowerCase().trim())
+    : null;
+  if (!activeUser && activeUserId) {
+    activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId) || null;
+  }
+  if (!activeUser && activeWallet) {
+    activeUser = (localDB.users || []).find((u: any) =>
+      u.metanode_wallet_address?.toLowerCase() === activeWallet ||
+      u.wallet_address?.toLowerCase() === activeWallet ||
+      u.id?.toLowerCase() === activeWallet
+    ) || null;
+  }
 
   const localSlug = typeof window !== "undefined" ? localStorage.getItem("last_workspace_slug") : null;
   const myWorkspaces = getUserWorkspaces(activeUser?.id || activeUserId, activeUser?.email || loggedInEmail);

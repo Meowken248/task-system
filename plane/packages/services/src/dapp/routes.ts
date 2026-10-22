@@ -150,11 +150,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))?.toLowerCase().trim()
     : null;
   let activeUser: any = null;
-  if (activeUserId || loggedInEmail) {
+  if (loggedInEmail) {
     activeUser = (localDB.users || []).find((u: any) =>
-      (activeUserId && u.id === activeUserId) ||
-      (loggedInEmail && u.email?.toLowerCase().trim() === loggedInEmail.toLowerCase().trim())
+      u.email?.toLowerCase().trim() === loggedInEmail.toLowerCase().trim()
     );
+  }
+  if (!activeUser && activeUserId) {
+    activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId);
   }
   if (!activeUser && (currentUserAddress || activeWallet)) {
     const targetWallet = (currentUserAddress || activeWallet || "").toLowerCase().trim();
@@ -1077,6 +1079,42 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       saveDB();
     }
 
+    // Auto-accept any pending invitations for this verified email
+    const cleanMail = email.toLowerCase().trim();
+    const pendingInvs = (localDB.invitations || []).filter(
+      (inv: any) => (inv.email || "").toLowerCase().trim() === cleanMail && !inv.accepted
+    );
+    for (const inv of pendingInvs) {
+      inv.accepted = true;
+      inv.responded_at = new Date().toISOString();
+      inv.updated_at = new Date().toISOString();
+      const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "fiai";
+      const ws = (localDB.workspaces || []).find((w: any) => w.slug === invWs || w.id === invWs);
+      const targetWsId = ws?.id || invWs;
+      if (!localDB.workspace_members) localDB.workspace_members = [];
+      const isAlready = localDB.workspace_members.some(
+        (m: any) => (m.workspace === invWs || m.workspace === targetWsId || m.workspace_id === invWs || m.workspace_id === targetWsId) &&
+          ((m.email || "").toLowerCase().trim() === cleanMail || m.member === user.id)
+      );
+      if (!isAlready) {
+        localDB.workspace_members.push({
+          id: `ws-member-${inv.id || Date.now()}`,
+          workspace: targetWsId,
+          workspace_id: targetWsId,
+          member: user.id,
+          email: cleanMail,
+          role: inv.role || 15,
+          is_active: true,
+          verified_on_chain: true,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+    if (pendingInvs.length > 0) {
+      saveStoredInvitations(localDB.invitations);
+      saveDB();
+    }
+
     // Validate user's workspace access
     const myWorkspaces = getUserWorkspaces(user.id, user.email);
     const validCurrentWs = myWorkspaces.find((w: any) => w.slug === user.last_workspace_slug || w.id === user.last_workspace_id);
@@ -1152,6 +1190,42 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       user = createUserObject(`user-${Date.now()}`, email, undefined, undefined, storedHash, isFirstUser);
       if (!localDB.users) localDB.users = [];
       localDB.users.push(user);
+      saveDB();
+    }
+
+    // Auto-accept any pending invitations for this verified email
+    const cleanMail = email.toLowerCase().trim();
+    const pendingInvs = (localDB.invitations || []).filter(
+      (inv: any) => (inv.email || "").toLowerCase().trim() === cleanMail && !inv.accepted
+    );
+    for (const inv of pendingInvs) {
+      inv.accepted = true;
+      inv.responded_at = new Date().toISOString();
+      inv.updated_at = new Date().toISOString();
+      const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "fiai";
+      const ws = (localDB.workspaces || []).find((w: any) => w.slug === invWs || w.id === invWs);
+      const targetWsId = ws?.id || invWs;
+      if (!localDB.workspace_members) localDB.workspace_members = [];
+      const isAlready = localDB.workspace_members.some(
+        (m: any) => (m.workspace === invWs || m.workspace === targetWsId || m.workspace_id === invWs || m.workspace_id === targetWsId) &&
+          ((m.email || "").toLowerCase().trim() === cleanMail || m.member === user.id)
+      );
+      if (!isAlready) {
+        localDB.workspace_members.push({
+          id: `ws-member-${inv.id || Date.now()}`,
+          workspace: targetWsId,
+          workspace_id: targetWsId,
+          member: user.id,
+          email: cleanMail,
+          role: inv.role || 15,
+          is_active: true,
+          verified_on_chain: true,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+    if (pendingInvs.length > 0) {
+      saveStoredInvitations(localDB.invitations);
       saveDB();
     }
 
@@ -1882,7 +1956,44 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         currentUserAddress ||
         ""
       ).toLowerCase().trim();
-      const myWorkspaces = getUserWorkspaces(activeId, activeMail);
+
+      // Auto-accept any pending invitations for this verified email
+      if (activeMail) {
+        const pendingInvs = (localDB.invitations || []).filter(
+          (inv: any) => (inv.email || "").toLowerCase().trim() === activeMail && !inv.accepted
+        );
+        if (pendingInvs.length > 0) {
+          for (const inv of pendingInvs) {
+            inv.accepted = true;
+            inv.responded_at = new Date().toISOString();
+            inv.updated_at = new Date().toISOString();
+            const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "fiai";
+            const ws = (localDB.workspaces || []).find((w: any) => w.slug === invWs || w.id === invWs);
+            const targetWsId = ws?.id || invWs;
+            if (!localDB.workspace_members) localDB.workspace_members = [];
+            const isAlready = localDB.workspace_members.some(
+              (m: any) => (m.workspace === invWs || m.workspace === targetWsId || m.workspace_id === invWs || m.workspace_id === targetWsId) &&
+                ((m.email || "").toLowerCase().trim() === activeMail || m.member === activeId)
+            );
+            if (!isAlready) {
+              localDB.workspace_members.push({
+                id: `ws-member-${inv.id || Date.now()}`,
+                workspace: targetWsId,
+                workspace_id: targetWsId,
+                member: activeId,
+                email: activeMail,
+                role: inv.role || 15,
+                is_active: true,
+                verified_on_chain: true,
+                created_at: new Date().toISOString(),
+              });
+            }
+          }
+          saveStoredInvitations(localDB.invitations);
+          saveDB();
+        }
+      }
+      let myWorkspaces = getUserWorkspaces(activeId, activeMail);
       const enriched = myWorkspaces.map((ws: any) => {
         const isOwner =
           ws.created_by === activeId ||
@@ -3181,17 +3292,19 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             for (const cleanAddr of uniqueOnChainMembers) {
               if (ownerEth && cleanAddr === ownerEth.toLowerCase()) continue;
 
-              // Check unaccepted invitations
-              const unacceptedInvs = (localDB.invitations || []).filter(
-                (inv: any) =>
-                  (inv.workspace?.slug === wsSlug || inv.workspace_slug === wsSlug || inv.workspace === wsSlug || inv.workspace === ws?.id) &&
-                  !inv.accepted
-              );
+              // Check unaccepted invitations specifically matching cleanAddr
+              const matchingPendingInv = (localDB.invitations || []).find((inv: any) => {
+                const isWs = (inv.workspace?.slug === wsSlug || inv.workspace_slug === wsSlug || inv.workspace === wsSlug || inv.workspace === ws?.id);
+                if (!isWs || inv.accepted) return false;
+                if (inv.wallet_address && inv.wallet_address.toLowerCase().trim() === cleanAddr) return true;
+                if (localDB._email_wallet_map && inv.email && String(localDB._email_wallet_map[inv.email.toLowerCase().trim()] || "").toLowerCase() === cleanAddr) return true;
+                return false;
+              });
 
               // If cleanAddr was in removedSet, but there is an unaccepted invitation waiting to be fulfilled, un-stale it!
               if (removedSet.has(cleanAddr)) {
-                if (unacceptedInvs.length > 0) {
-                  console.log(`[DApp Routes] Un-stale ví ${cleanAddr} khỏi removed_members vì có ${unacceptedInvs.length} lời mời pending.`);
+                if (matchingPendingInv) {
+                  console.log(`[DApp Routes] Un-stale ví ${cleanAddr} khỏi removed_members vì có lời mời pending hợp lệ: ${matchingPendingInv.email || matchingPendingInv.id}`);
                   removedSet.delete(cleanAddr);
                   const targetKeys = Array.from(new Set([wsSlug, ws?.slug, ws?.id].filter(Boolean)));
                   for (const k of targetKeys) {
@@ -3208,6 +3321,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
                   console.log(`[DApp Routes] Bỏ qua ví đã bị Admin xóa (removed_members): ${cleanAddr}`);
                   continue;
                 }
+              }
+
+              // Verify on-chain role: Role.None (0) means removed or non-member
+              const onChainRole = await fetchMemberRoleOnChain(wsSlug, cleanAddr);
+              if (onChainRole <= 0) {
+                console.log(`[DApp Routes] Bỏ qua ví ${cleanAddr} vì on-chain role = ${onChainRole} (None)`);
+                continue;
               }
 
               const existingIdx = localDB.workspace_members.findIndex(
@@ -7771,18 +7891,20 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
             for (const cleanAddr of uniqueOnChainMembers) {
               if (ownerEth && cleanAddr === ownerEth.toLowerCase()) continue;
 
-              // Check unaccepted invitations
-              const unacceptedInvs = (localDB.invitations || []).filter(
-                (inv: any) =>
-                  (inv.workspace?.slug === wsSlug || inv.workspace_slug === wsSlug || inv.workspace === wsSlug || inv.workspace === ws?.id) &&
-                  !inv.accepted
-              );
+              // Check unaccepted invitations specifically matching cleanAddr
+              const matchingPendingInv = (localDB.invitations || []).find((inv: any) => {
+                const isWs = (inv.workspace?.slug === wsSlug || inv.workspace_slug === wsSlug || inv.workspace === wsSlug || inv.workspace === ws?.id);
+                if (!isWs || inv.accepted) return false;
+                if (inv.wallet_address && inv.wallet_address.toLowerCase().trim() === cleanAddr) return true;
+                if (localDB._email_wallet_map && inv.email && String(localDB._email_wallet_map[inv.email.toLowerCase().trim()] || "").toLowerCase() === cleanAddr) return true;
+                return false;
+              });
 
               // If cleanAddr was in removedSet, but there is an unaccepted invitation waiting to be fulfilled
               // (e.g. admin invited a new user who used this wallet, or re-invited), un-stale it!
               if (removedSet.has(cleanAddr)) {
-                if (unacceptedInvs.length > 0) {
-                  console.log(`[DApp Routes] Un-stale ví ${cleanAddr} khỏi removed_members vì có ${unacceptedInvs.length} lời mời pending.`);
+                if (matchingPendingInv) {
+                  console.log(`[DApp Routes] Un-stale ví ${cleanAddr} khỏi removed_members vì có lời mời pending hợp lệ: ${matchingPendingInv.email || matchingPendingInv.id}`);
                   removedSet.delete(cleanAddr);
                   const targetKeys = Array.from(new Set([wsSlug, ws?.slug, ws?.id].filter(Boolean)));
                   for (const k of targetKeys) {
@@ -7799,6 +7921,13 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
                   console.log(`[DApp Routes] Bỏ qua ví đã bị Admin xóa (removed_members): ${cleanAddr}`);
                   continue;
                 }
+              }
+
+              // Verify on-chain role: Role.None (0) means removed or non-member
+              const onChainRole = await fetchMemberRoleOnChain(wsSlug, cleanAddr);
+              if (onChainRole <= 0) {
+                console.log(`[DApp Routes] Bỏ qua ví ${cleanAddr} vì on-chain role = ${onChainRole} (None)`);
+                continue;
               }
 
               const existingIdx = localDB.workspace_members.findIndex(

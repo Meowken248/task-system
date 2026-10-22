@@ -282,10 +282,24 @@ contract PlaneWorkspaceRegistry {
         return result;
     }
 
-    /// @notice Get member list for a workspace
+    /// @notice Get member list for a workspace (only active members with role != None)
     function getWorkspaceMembers(string calldata slug) external view returns (address[] memory) {
         if (!_workspaces[slug].exists) revert WorkspaceNotFound();
-        return _workspaceMemberList[slug];
+        address[] storage all = _workspaceMemberList[slug];
+        uint256 activeCount = 0;
+        for (uint256 i = 0; i < all.length; i++) {
+            if (_workspaceMembers[slug][all[i]] != Role.None) {
+                activeCount++;
+            }
+        }
+        address[] memory result = new address[](activeCount);
+        uint256 cursor = 0;
+        for (uint256 i = 0; i < all.length; i++) {
+            if (_workspaceMembers[slug][all[i]] != Role.None) {
+                result[cursor++] = all[i];
+            }
+        }
+        return result;
     }
 
     /// @notice Get a user's role in a workspace
