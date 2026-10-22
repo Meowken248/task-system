@@ -18,6 +18,7 @@ import { StoreProvider } from "@/lib/store-context";
 import { MetanodeBootstrap } from "@/components/blockchain/metanode-bootstrap";
 import { DbBootstrap } from "@/components/blockchain/db-bootstrap";
 import { SyncToChainButton } from "@/components/blockchain/sync-button";
+import { WalletCenter } from "@/components/blockchain/wallet-center";
 
 // lazy imports
 const AppProgressBar = lazy(function AppProgressBar() {
@@ -58,6 +59,7 @@ export function AppProvider(props: IAppProvider) {
           </StoreWrapper>
         </TranslationProvider>
         <SyncToChainButton />
+        <WalletCenter />
       </>
     </StoreProvider>
   );

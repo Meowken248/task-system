@@ -154,26 +154,63 @@ function registerWalletSelectionBridge(sdk: FiaiSDK): void {
   });
 }
 
-function getOrCreateContainer(): HTMLElement {
-  const existingContainer = document.getElementById("fiai-container");
-  if (existingContainer) return existingContainer;
-
-  const container = document.createElement("div");
-  container.id = "fiai-container";
-  container.setAttribute("aria-hidden", "true");
-  Object.assign(container.style, {
-    position: "absolute",
-    width: "0",
-    height: "0",
-    overflow: "hidden",
-    pointerEvents: "none",
-  });
-  document.body.appendChild(container);
-  return container;
-}
-
 export function getFiaiSDK(): FiaiSDK | null {
   return sdkInstance;
+}
+
+/** Các frame bắt buộc phải handshake xong trước khi ký giao dịch. */
+const REQUIRED_SIGNING_FRAMES = ["blockchain-bridge", "crypto-vault"] as const;
+
+export function getFiaiFrameStatus(): Record<string, string> {
+  const sdk = sdkInstance as unknown as { getStatus?: () => Record<string, string> } | null;
+  if (!sdk || typeof sdk.getStatus !== "function") return {};
+  try {
+    return sdk.getStatus();
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Bảo đảm các iframe cần cho việc ký (bridge 6001 + Crypto Vault 6002) đã sẵn sàng.
+ *
+ * `FiaiSDK.init` chỉ chờ tối đa 10s cho mỗi frame rồi bỏ qua frame lỗi. Nếu Crypto Vault
+ * không load được, `sendTransaction` sẽ treo tới khi timeout mà người dùng KHÔNG hề thấy
+ * hộp thoại mật khẩu — nhìn bên ngoài giống như "bấm Sync mà không có gì xảy ra".
+ * Hàm này biến tình huống đó thành lỗi rõ ràng, kèm trạng thái từng frame.
+ */
+export async function ensureFiaiFramesReady(timeoutMs = 20_000): Promise<FiaiSDK | null> {
+  const sdk = await initFiaiSDK();
+  if (!sdk) return null;
+
+  const getMissingFrames = (): string[] => {
+    const status = getFiaiFrameStatus();
+    // Mock SDK (hoặc SDK không expose getStatus) → không kiểm tra được, cho qua.
+    if (Object.keys(status).length === 0) return [];
+    return REQUIRED_SIGNING_FRAMES.filter((name) => status[name] !== "ready");
+  };
+
+  if (getMissingFrames().length === 0) return sdk;
+
+  const deadline = Date.now() + timeoutMs;
+  const poll = (): Promise<FiaiSDK> =>
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 500);
+    }).then(() => {
+      const stillMissing = getMissingFrames();
+      if (stillMissing.length === 0) return sdk;
+      if (Date.now() >= deadline) {
+        const status = getFiaiFrameStatus();
+        console.error("[FiaiSDK] Frame chưa sẵn sàng để ký:", stillMissing, status);
+        throw new Error(
+          `MetaNode frame chưa sẵn sàng: ${stillMissing.map((name) => `${name}=${status[name] ?? "unknown"}`).join(", ")}. ` +
+            "Hãy kiểm tra blockchain-bridge (6001) và Crypto Vault (6002) đang chạy rồi tải lại trang."
+        );
+      }
+      return poll();
+    });
+
+  return poll();
 }
 
 export function getLastSelectedMetanodeWallet(): unknown {
@@ -209,8 +246,6 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
     return mockSdk;
   }
 
-  getOrCreateContainer();
-
   const timeoutMs = Number(readEnv("VITE_FIAI_TIMEOUT")) || 60_000;
   const rpcUrl = readEnv("VITE_RPC_URL");
   if (!rpcUrl) {
@@ -225,6 +260,7 @@ export async function initFiaiSDK(): Promise<FiaiSDK | null> {
   console.log(`[FiaiSDK] Bắt đầu init với timeout ${timeoutMs}ms, RPC=${rpcUrl}, WS=${wsUrl}, ChainId=${chainId}`);
 
   const initOptions: Parameters<typeof FiaiSDK.init>[0] = {
+    container: typeof document !== "undefined" ? document.body : undefined,
     timeout: timeoutMs,
     chainConfig: {
       rpcUrl,

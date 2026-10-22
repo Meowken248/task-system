@@ -8619,13 +8619,26 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
               const wsInfo = decodeAbiWorkspace(wsInfoRaw);
               const contractCid = wsInfo?.ipfsCID?.trim();
               const localCid = (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") || "" : "").trim();
-              if (contractCid && contractCid !== localCid && contractCid !== getLastUploadedCID()) {
+              // Local đang giữ CID mới hơn nhưng chưa kịp ghi on-chain (auto-commit throttle / ví khóa)
+              // → KHÔNG được ghi đè bằng snapshot cũ trên contract, nếu không sẽ mất dữ liệu vừa sửa.
+              const pendingOnchainCid = (
+                typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_pending_onchain_cid") || "" : ""
+              ).trim();
+              const hasUncommittedLocalCid = Boolean(localCid) && pendingOnchainCid === localCid;
+              if (
+                !hasUncommittedLocalCid &&
+                contractCid &&
+                contractCid !== localCid &&
+                contractCid !== getLastUploadedCID()
+              ) {
                 console.log(`[DApp Routes] Phát hiện CID mới trên contract cho ${wsSlug}: ${contractCid}. Đang đồng bộ từ IPFS...`);
                 const remoteDB = await fetchFromIPFS(contractCid);
                 if (remoteDB && remoteDB.workspaces) {
                   applyOffchainDB(remoteDB);
                   if (typeof localStorage !== "undefined") {
                     localStorage.setItem("plane_dapp_ipfs_cid_local", contractCid);
+                    // Dữ liệu remote đã thay thế local → cờ "chờ ghi on-chain" không còn ý nghĩa.
+                    localStorage.removeItem("plane_dapp_pending_onchain_cid");
                   }
                   saveDB();
                 }

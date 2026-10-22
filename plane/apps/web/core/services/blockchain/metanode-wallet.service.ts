@@ -1,4 +1,5 @@
 import type { Wallet } from "@metanodejs/system-core";
+import { getVaultFrameUrl, getVaultWalletsDetailed, VaultSigningError } from "@plane/services";
 
 import {
   clearLastSelectedMetanodeWallet,
@@ -7,6 +8,7 @@ import {
   initFiaiSDK,
 } from "./fiai-sdk.service";
 import { UserService } from "@/services/user.service";
+import { openWalletCenter } from "./wallet-center-events";
 
 type WalletLike = { address?: unknown };
 type ConnectWallet = (mode: "light") => Promise<unknown> | unknown;
@@ -127,12 +129,27 @@ function readWallets(value: unknown): unknown[] {
 }
 
 async function getWallets(): Promise<unknown[]> {
+  try {
+    const sysCore = (await import("@metanodejs/system-core")) as any;
+    if (typeof sysCore?.getAllWallets === "function") {
+      const coreWallets = await sysCore.getAllWallets().catch(() => []);
+      if (Array.isArray(coreWallets) && coreWallets.length > 0) return coreWallets;
+    }
+  } catch {}
   const sdk = (await initFiaiSDK()) ?? getFiaiSDK();
   if (!sdk) throw new Error("FiaiSDK is not available.");
   return readWallets(await sdk.request<unknown>("getAllWallets", {}));
 }
 
 async function getActiveWalletAddress(): Promise<string | null> {
+  try {
+    const sysCore = (await import("@metanodejs/system-core")) as any;
+    if (typeof sysCore?.getActiveWallet === "function") {
+      const active = await sysCore.getActiveWallet().catch(() => null);
+      const addr = readAddress(active);
+      if (addr) return addr;
+    }
+  } catch {}
   const sdk = (await initFiaiSDK()) ?? getFiaiSDK();
   if (!sdk) return null;
   const dappActive = await sdk
@@ -188,13 +205,14 @@ async function persistLinkedWallet(address: string): Promise<void> {
         const localDB = JSON.parse(rawDb);
         let updated = false;
         const loggedEmail = (
-          window.sessionStorage.getItem("plane_dapp_auth_email") ||
-          window.localStorage.getItem("plane_dapp_auth_email")
-        )?.trim().toLowerCase();
+          window.sessionStorage.getItem("plane_dapp_auth_email") || window.localStorage.getItem("plane_dapp_auth_email")
+        )
+          ?.trim()
+          .toLowerCase();
 
         if (Array.isArray(localDB.users)) {
-          const user = localDB.users.find((u: any) =>
-            (userId && u.id === userId) || (loggedEmail && u.email?.toLowerCase() === loggedEmail)
+          const user = localDB.users.find(
+            (u: any) => (userId && u.id === userId) || (loggedEmail && u.email?.toLowerCase() === loggedEmail)
           );
           if (user && user.metanode_wallet_address !== normalizedAddress) {
             user.metanode_wallet_address = normalizedAddress;
@@ -202,8 +220,8 @@ async function persistLinkedWallet(address: string): Promise<void> {
           }
         }
         if (Array.isArray(localDB.workspace_members)) {
-          const member = localDB.workspace_members.find((m: any) =>
-            (loggedEmail && m.email?.toLowerCase() === loggedEmail) || (userId && m.member === userId)
+          const member = localDB.workspace_members.find(
+            (m: any) => (loggedEmail && m.email?.toLowerCase() === loggedEmail) || (userId && m.member === userId)
           );
           if (member && member.wallet_address !== normalizedAddress) {
             member.wallet_address = normalizedAddress;
@@ -394,6 +412,19 @@ export async function activateMetanodeWallet(address: string): Promise<boolean> 
   return true;
 }
 
+/**
+ * Ghi nhớ ví người dùng chọn trong "Trung tâm ví" cho tài khoản Plane hiện tại
+ * (localStorage theo user + hồ sơ user + setActiveWalletDapp cho domain), rồi xác nhận lại với
+ * Crypto Vault. Dùng khi người dùng chủ động đổi ví — khác với auto-resolve nền.
+ */
+export async function linkMetanodeWalletAddress(address: string): Promise<boolean> {
+  if (!isWalletAddress(address)) return false;
+  const normalized = normalizeWalletAddress(address);
+  await persistLinkedWallet(normalized);
+  await activateMetanodeWallet(normalized).catch(() => false);
+  return true;
+}
+
 export function preloadMetanodeWallet(): Promise<ConnectWallet> | null {
   if (typeof window === "undefined") return null;
   if (connectWalletFn) return Promise.resolve(connectWalletFn);
@@ -447,7 +478,7 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
   if (!isMetanodeWalletRuntimeSupported()) {
     throw new Error(
       "Trình duyệt không cho phép kết nối ví MetaNode trên kết nối HTTP không an toàn. " +
-      "Hãy dùng http://localhost:3000 hoặc mạng nội bộ (LAN)."
+        "Hãy dùng http://localhost:3000 hoặc mạng nội bộ (LAN)."
     );
   }
 
@@ -485,24 +516,33 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
       if (rawDb) {
         const localDB = JSON.parse(rawDb);
         const loggedEmail = (
-          window.sessionStorage.getItem("plane_dapp_auth_email") ||
-          window.localStorage.getItem("plane_dapp_auth_email")
-        )?.trim().toLowerCase();
+          window.sessionStorage.getItem("plane_dapp_auth_email") || window.localStorage.getItem("plane_dapp_auth_email")
+        )
+          ?.trim()
+          .toLowerCase();
 
         if (Array.isArray(localDB.users)) {
-          const userRec = localDB.users.find((u: any) =>
-            (userId && u.id === userId) || (loggedEmail && u.email?.toLowerCase() === loggedEmail)
+          const userRec = localDB.users.find(
+            (u: any) => (userId && u.id === userId) || (loggedEmail && u.email?.toLowerCase() === loggedEmail)
           );
           if (userRec?.metanode_wallet_address && isWalletAddress(userRec.metanode_wallet_address)) {
             sessionCandidates.push(normalizeWalletAddress(userRec.metanode_wallet_address));
           }
         }
         if (Array.isArray(localDB.workspace_members)) {
-          const memberRec = localDB.workspace_members.find((m: any) =>
-            (loggedEmail && m.email?.toLowerCase() === loggedEmail) || (userId && m.member === userId)
+          const memberRec = localDB.workspace_members.find(
+            (m: any) => (loggedEmail && m.email?.toLowerCase() === loggedEmail) || (userId && m.member === userId)
           );
           if (memberRec?.wallet_address && isWalletAddress(memberRec.wallet_address)) {
             sessionCandidates.push(normalizeWalletAddress(memberRec.wallet_address));
+          }
+        }
+        if (Array.isArray(localDB.workspaces)) {
+          for (const ws of localDB.workspaces) {
+            const ownerEth = ws.owner?.wallet_address || ws.owner_details?.wallet_address || ws.owner;
+            if (ownerEth && typeof ownerEth === "string" && isWalletAddress(ownerEth)) {
+              sessionCandidates.push(normalizeWalletAddress(ownerEth));
+            }
           }
         }
       }
@@ -520,15 +560,20 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
     fallbackCandidates.push(normalizeWalletAddress(lastSelected));
   }
 
-  const rawWallets = await getWallets().catch(() => []);
-  const availableAddresses = [
-    ...new Set(
-      rawWallets
-        .map((wallet) => readAddress(wallet))
-        .filter((address): address is string => Boolean(address))
-        .map(normalizeWalletAddress)
-    ),
-  ];
+  // Nguồn sự thật duy nhất: danh sách ví THẬT trong Crypto Vault mà Plane đang kết nối.
+  // `null` = không đọc được Vault (frame chưa ready/timeout) — KHÁC với `[]` = Vault rỗng.
+  // Chỉ đọc tươi khi người dùng chủ động chọn ví; luồng thường dùng cache ngắn để không gọi
+  // `getAllWallets` (có RPC balance) trên mỗi lần ghi on-chain.
+  const vaultWallets = await getVaultWalletsDetailed({ refresh: forceSelect });
+  if (vaultWallets === null) {
+    if (silent) return ZERO_ADDRESS;
+    throw new VaultSigningError(
+      "VAULT_UNAVAILABLE",
+      `Không đọc được danh sách ví từ Crypto Vault (${getVaultFrameUrl() || "6002"}). ` +
+        "Hãy kiểm tra crypto-vault đang chạy rồi tải lại trang."
+    );
+  }
+  const availableAddresses = [...new Set(vaultWallets.map((wallet) => wallet.address))];
 
   const uniqueSessionCandidates = [...new Set(sessionCandidates)];
 
@@ -575,16 +620,16 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
     // In interactive mode with multiple wallets (or forceSelect): prompt user to pick!
     return selectAndLinkWallet();
   } else {
-    // Case 2: Crypto Vault returned 0 wallets or failed to respond
-    if (uniqueSessionCandidates.length > 0) {
-      const fallback = uniqueSessionCandidates[0];
-      linkedWalletAddress = fallback;
-      return fallback;
-    }
-    if (silent) {
-      return ZERO_ADDRESS;
-    }
-    return selectAndLinkWallet();
+    // Case 2: Crypto Vault trả lời nhưng KHÔNG có ví nào.
+    // Tuyệt đối không trả về địa chỉ cũ (từ session/localDB/IPFS) — Vault không giữ ví đó nên
+    // bridge sẽ báo "Wallet not found", hộp thoại mật khẩu không bao giờ hiện và dữ liệu không
+    // lên chain. Chặn sớm + chỉ rõ cách khắc phục thay vì chờ 120s vô vọng.
+    if (silent) return ZERO_ADDRESS;
+    throw new VaultSigningError(
+      "VAULT_EMPTY",
+      `${getVaultFrameUrl() || "Crypto Vault"} chưa có ví nào. ` +
+        'Mở "Trung tâm ví" để import private key vào đúng Crypto Vault Plane đang dùng, rồi bấm Sync to Chain lại.'
+    );
   }
 }
 
@@ -597,9 +642,44 @@ async function hasWallet(address: string): Promise<boolean> {
   });
 }
 
+async function detectLinkedWallet(targetAddress: string, knownAddresses: Set<string>): Promise<string | null> {
+  // Đọc danh sách ví đúng 1 lần (getAllWallets có gọi RPC lấy balance) rồi đối chiếu:
+  // 1. Đúng ví Plane cần → dùng luôn.
+  // 2. Ví mới xuất hiện trong Vault (người dùng vừa import/tạo) → dùng ví đó.
+  // 3. Ví người dùng chọn trong hộp thoại Crypto Vault → dùng ví đó.
+  const vaultAddresses = (await getWallets().catch(() => []))
+    .map((wallet) => readAddress(wallet))
+    .filter((addr): addr is string => Boolean(addr));
+
+  if (vaultAddresses.includes(targetAddress)) return targetAddress;
+
+  const importedAddress = vaultAddresses.find((addr) => !knownAddresses.has(addr)) ?? null;
+  const selectedAddress =
+    readAddress(getLastSelectedMetanodeWallet()) ?? (await getActiveWalletAddress()) ?? importedAddress;
+  if (selectedAddress && vaultAddresses.includes(selectedAddress)) return selectedAddress;
+  return importedAddress;
+}
+
 export async function promptForMetanodeWalletImport(address: string): Promise<boolean> {
   if (typeof window === "undefined" || !isWalletAddress(address)) return false;
-  if (await hasWallet(address)) return activateMetanodeWallet(address);
+  const targetAddress = normalizeWalletAddress(address);
+  if (await hasWallet(targetAddress)) return activateMetanodeWallet(targetAddress);
+
+  // Vault rỗng ⇒ không có gì để chọn: mở "Trung tâm ví" (chế độ import) và báo thất bại NGAY,
+  // thay vì poll 60s chờ một ví không thể xuất hiện trong Vault này (nguyên nhân "treo" cũ).
+  const vaultWallets = await getVaultWalletsDetailed({ refresh: true }).catch(() => null);
+  if (vaultWallets && vaultWallets.length === 0) {
+    console.warn("[MetaNode Wallet] Crypto Vault chưa có ví nào — mở Trung tâm ví để import private key.");
+    openWalletCenter("import");
+    return false;
+  }
+
+  // Ảnh chụp danh sách ví TRƯỚC khi mở hộp thoại: ví nào xuất hiện thêm sau đó = ví vừa import/tạo.
+  const knownAddresses = new Set(
+    (await getWallets().catch(() => []))
+      .map((wallet) => readAddress(wallet))
+      .filter((addr): addr is string => Boolean(addr))
+  );
 
   clearLastSelectedMetanodeWallet();
 
@@ -613,33 +693,23 @@ export async function promptForMetanodeWalletImport(address: string): Promise<bo
       console.error("Connect Wallet fallback failed:", popupError);
     }
   });
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     // oxlint-disable-next-line no-await-in-loop -- wallet availability must be polled sequentially.
-    if (await hasWallet(address)) {
-      // oxlint-disable-next-line no-await-in-loop -- activation must finish before closing the wallet window.
-      const activated = await activateMetanodeWallet(address);
-      await dismissMetanodeWalletPicker(address);
-      return activated;
-    }
-
-    // Also check if the user selected or imported a different wallet in Crypto Vault
-    // oxlint-disable-next-line no-await-in-loop
-    const newlySelected = readAddress(getLastSelectedMetanodeWallet()) ?? (await getActiveWalletAddress());
-    // oxlint-disable-next-line no-await-in-loop
-    if (newlySelected && (await hasWallet(newlySelected))) {
+    const detected = await detectLinkedWallet(targetAddress, knownAddresses);
+    if (detected) {
+      // oxlint-disable-next-line no-await-in-loop -- the account link must finish before the wallet window closes.
+      await persistLinkedWallet(detected);
       // oxlint-disable-next-line no-await-in-loop
-      await persistLinkedWallet(newlySelected);
+      const activated = await activateMetanodeWallet(detected);
       // oxlint-disable-next-line no-await-in-loop
-      const activated = await activateMetanodeWallet(newlySelected);
-      // oxlint-disable-next-line no-await-in-loop
-      await dismissMetanodeWalletPicker(newlySelected);
+      await dismissMetanodeWalletPicker(detected);
       return activated;
     }
 
     // oxlint-disable-next-line no-await-in-loop -- this delay intentionally throttles the polling loop.
     await new Promise((resolve) => window.setTimeout(resolve, 500));
   }
+  console.warn(`[MetaNode Wallet] Hết thời gian chờ liên kết ví ${targetAddress} trong Crypto Vault.`);
   return false;
 }
-
