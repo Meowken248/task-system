@@ -1,19 +1,65 @@
 import { getEnvVar } from "./store";
 
 const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
-const DEFAULT_BREVO_API_KEY =
-  "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";
 const DEFAULT_SENDER_NAME = "Plane Workspace";
-const DEFAULT_SENDER_EMAIL = "anh2482006@gmail.com";
 
+/**
+ * Mail credentials must come from the environment.
+ *
+ * ⚠️ Never hardcode a Brevo API key (or any other secret) in this package: everything
+ * in `packages/services` ends up in the browser bundle and would be readable by anyone.
+ * Instead the API key is injected through `VITE_BREVO_API_KEY` at build time.
+ *
+ * When the key/sender is missing the mail helpers degrade gracefully: they log a
+ * warning and return `false`, and the calling flow (invitations, OTP) keeps working.
+ */
 export function getBrevoApiKey(): string {
-  return (getEnvVar("VITE_BREVO_API_KEY") || DEFAULT_BREVO_API_KEY).trim();
+  return (getEnvVar("VITE_BREVO_API_KEY") || "").trim();
 }
 
 export function getEmailSender(): { name: string; email: string } {
   const name = (getEnvVar("VITE_EMAIL_SENDER_NAME") || DEFAULT_SENDER_NAME).trim();
-  const email = (getEnvVar("VITE_EMAIL_SENDER_ADDRESS") || DEFAULT_SENDER_EMAIL).trim();
+  const email = (getEnvVar("VITE_EMAIL_SENDER_ADDRESS") || "").trim();
   return { name, email };
+}
+
+export function isEmailDeliveryConfigured(): boolean {
+  const sender = getEmailSender();
+  return Boolean(sender.email && (getMailProxyUrl() || getBrevoApiKey()));
+}
+
+/**
+ * Optional server-side relay (e.g. the `plane-ipfs-proxy` Cloudflare Worker style
+ * deployment used for Pinata) that forwards the mail request to Brevo while keeping
+ * the API key on the server. When set, the browser never sees a Brevo key at all.
+ */
+export function getMailProxyUrl(): string {
+  return (getEnvVar("VITE_MAIL_PROXY_URL") || "").trim();
+}
+
+/**
+ * Sends the payload either through the configured proxy or directly to Brevo.
+ * Direct mode requires `VITE_BREVO_API_KEY`; proxy mode requires nothing.
+ */
+async function postEmailPayload(
+  payload: Record<string, unknown>,
+  apiKey: string,
+  signal?: AbortSignal
+): Promise<Response> {
+  const proxyUrl = getMailProxyUrl();
+  const targetUrl = proxyUrl || BREVO_API_URL;
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "content-type": "application/json",
+  };
+  if (!proxyUrl) headers["api-key"] = apiKey;
+
+  return fetch(targetUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal,
+  });
 }
 
 export function getRoleLabel(role: number | string): string {
@@ -76,12 +122,20 @@ export async function sendWorkspaceInviteEmail(options: ISendWorkspaceInviteEmai
   } = options;
 
   const apiKey = getBrevoApiKey();
-  if (!apiKey) {
-    console.warn("[Brevo Mail] ⚠️ Brevo API key is not configured; skipping email dispatch.");
+  if (!apiKey && !getMailProxyUrl()) {
+    console.warn(
+      "[Brevo Mail] ⚠️ Mail is not configured (neither VITE_MAIL_PROXY_URL nor VITE_BREVO_API_KEY); skipping email dispatch."
+    );
     return false;
   }
 
   const sender = getEmailSender();
+  if (!sender.email) {
+    console.warn(
+      "[Brevo Mail] ⚠️ VITE_EMAIL_SENDER_ADDRESS is not configured; skipping invitation email dispatch."
+    );
+    return false;
+  }
   const fullInviteUrl = buildFullInviteUrl(inviteLink);
   const roleLabel = getRoleLabel(role);
   const subject = `Lời mời tham gia không gian làm việc "${workspaceName}" trên Plane`;
@@ -248,15 +302,7 @@ export async function sendWorkspaceInviteEmail(options: ISendWorkspaceInviteEmai
 
     console.log(`[Brevo Mail] 📤 Sending invitation email to ${recipientEmail} for workspace "${workspaceName}"...`);
 
-    const response = await fetch(BREVO_API_URL, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "api-key": apiKey,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    const response = await postEmailPayload(payload, apiKey);
 
     if (response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -275,12 +321,18 @@ export async function sendWorkspaceInviteEmail(options: ISendWorkspaceInviteEmai
 
 export async function sendOtpEmail(recipientEmail: string, otpCode: string): Promise<boolean> {
   const apiKey = getBrevoApiKey();
-  if (!apiKey) {
-    console.warn("[Brevo Mail] ⚠️ Brevo API key is not configured; skipping OTP email.");
+  if (!apiKey && !getMailProxyUrl()) {
+    console.warn(
+      "[Brevo Mail] ⚠️ Mail is not configured (neither VITE_MAIL_PROXY_URL nor VITE_BREVO_API_KEY); skipping OTP email."
+    );
     return false;
   }
 
   const sender = getEmailSender();
+  if (!sender.email) {
+    console.warn("[Brevo Mail] ⚠️ VITE_EMAIL_SENDER_ADDRESS is not configured; skipping OTP email.");
+    return false;
+  }
   const subject = `Mã xác nhận đăng nhập Plane của bạn: ${otpCode}`;
 
   const htmlContent = `
@@ -383,16 +435,7 @@ export async function sendOtpEmail(recipientEmail: string, otpCode: string): Pro
     const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
     const timeoutId = controller ? setTimeout(() => controller.abort(), 6000) : null;
 
-    const response = await fetch(BREVO_API_URL, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "api-key": apiKey,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: controller ? controller.signal : undefined,
-    });
+    const response = await postEmailPayload(payload, apiKey, controller ? controller.signal : undefined);
 
     if (timeoutId) clearTimeout(timeoutId);
 

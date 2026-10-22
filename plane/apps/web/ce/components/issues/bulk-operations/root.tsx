@@ -36,9 +36,10 @@ import { Avatar, AlertModalCore } from "@plane/ui";
 import { cn } from "@plane/utils";
 import { useOutsideClickDetector } from "@plane/hooks";
 import type { TIssuePriorities } from "@plane/types";
+import { EIssuesStoreType } from "@plane/types";
 // hooks
 import { useMultipleSelectStore } from "@/hooks/store/use-multiple-select-store";
-import { useIssuesStore } from "@/hooks/use-issue-layout-store";
+import { useIssueStoreType, useIssuesStore } from "@/hooks/use-issue-layout-store";
 import { useProjectState } from "@/hooks/store/use-project-state";
 import { useMember } from "@/hooks/store/use-member";
 import { useLabel } from "@/hooks/store/use-label";
@@ -385,6 +386,7 @@ export const IssueBulkOperationsRoot = observer(function IssueBulkOperationsRoot
 
   // issues store
   const { issues, issueMap } = useIssuesStore();
+  const storeType = useIssueStoreType();
 
   // state & modals
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -651,16 +653,37 @@ export const IssueBulkOperationsRoot = observer(function IssueBulkOperationsRoot
     try {
       for (const issueId of selectedEntityIds) {
         const issue = issueMap?.[issueId];
-        if (issue && "createIssue" in issues && typeof (issues as any).createIssue === "function") {
-          await (issues as any).createIssue(workspaceSlug, projectId, {
+        if (!issue || !("createIssue" in issues) || typeof (issues as any).createIssue !== "function") continue;
+
+        // Cycle / module layouts need the container id as the 4th argument so the
+        // duplicate is attached to the same cycle/module as the source work item.
+        const containerId =
+          storeType === EIssuesStoreType.CYCLE
+            ? (issue.cycle_id ?? undefined)
+            : storeType === EIssuesStoreType.MODULE
+              ? issue.module_ids?.[0]
+              : undefined;
+
+        await (issues as any).createIssue(
+          workspaceSlug,
+          projectId,
+          {
             name: `${issue.name} (Copy)`,
-            description_html: issue.description_html || "",
+            description_html: issue.description_html || "<p></p>",
             priority: issue.priority,
             state_id: issue.state_id,
             assignee_ids: issue.assignee_ids,
             label_ids: issue.label_ids,
-          });
-        }
+            start_date: issue.start_date,
+            target_date: issue.target_date,
+            estimate_point: issue.estimate_point,
+            type_id: issue.type_id,
+            parent_id: issue.parent_id,
+            cycle_id: issue.cycle_id,
+            module_ids: issue.module_ids,
+          },
+          containerId
+        );
       }
       selectionHelpers.handleClearSelection();
       setToast({

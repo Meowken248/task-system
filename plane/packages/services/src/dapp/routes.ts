@@ -139,6 +139,347 @@ export function addWorkspaceRemovedIdentifiers(slugOrId: string | undefined | nu
   } catch {}
 }
 
+
+// ── Work item activity helpers ────────────────────────────────────────
+// Every mutation of a work item records an entry in `localDB.issue_activities`.
+// That single collection feeds both `/issues/:id/history/` (activity tab) and
+// `/users/me/activities/` (home widgets), mirroring the real Plane API.
+const getIssueActivities = (): any[] => {
+  if (!Array.isArray(localDB.issue_activities)) localDB.issue_activities = [];
+  return localDB.issue_activities;
+};
+
+const getActivityActorDetail = () => {
+  const users = localDB.users || [];
+  const loggedInId = getLoggedInUserId();
+  const normalizedEmail = (getLoggedInEmail() || "").toLowerCase().trim();
+  const actor =
+    (normalizedEmail
+      ? users.find((user: any) => (user.email || "").toLowerCase().trim() === normalizedEmail)
+      : null) ||
+    users.find((user: any) => user.id === loggedInId) ||
+    users[0];
+  const firstName = actor?.first_name || "";
+  const lastName = actor?.last_name || "";
+  return {
+    id: actor?.id || loggedInId || "user-default",
+    first_name: firstName,
+    last_name: lastName,
+    avatar_url: actor?.avatar_url || actor?.avatar || "",
+    is_bot: false,
+    display_name:
+      actor?.display_name || [firstName, lastName].filter(Boolean).join(" ") || actor?.email || "Plane",
+  };
+};
+
+const getActivityWorkspaceDetail = (issue: any) => {
+  const project =
+    issue?.project_detail ||
+    (localDB.projects || []).find((item: any) => item.id === (issue?.project_id || issue?.project));
+  const wsKey =
+    issue?.workspace_id ||
+    issue?.workspace ||
+    project?.workspace_id ||
+    project?.workspace ||
+    issue?.project_detail?.workspace_id ||
+    issue?.project_detail?.workspace;
+  const ws = (localDB.workspaces || []).find((item: any) => item.id === wsKey || item.slug === wsKey);
+  return { id: ws?.id || wsKey || "", slug: ws?.slug || "", name: ws?.name || "" };
+};
+
+const getActivityProjectDetail = (issue: any) => {
+  const project =
+    issue?.project_detail ||
+    (localDB.projects || []).find((p: any) => p.id === (issue?.project_id || issue?.project));
+  return {
+    id: project?.id || issue?.project_id || issue?.project || "",
+    identifier: project?.identifier || "",
+    name: project?.name || "",
+    cover_image: project?.cover_image || "",
+    description: project?.description ?? null,
+    emoji: project?.emoji ?? null,
+    icon_prop: project?.icon_prop ?? null,
+  };
+};
+
+const formatActivityValue = (value: any): string => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object" && typeof value.name === "string") return value.name;
+  return "";
+};
+
+const createIssueActivity = (
+  issue: any,
+  field: string | null,
+  oldValue: any,
+  newValue: any,
+  verb: "created" | "updated" | "deleted" = "updated",
+  identifiers: { oldIdentifier?: string | null; newIdentifier?: string | null } = {}
+) => {
+  if (!issue?.id) return null;
+  const actorDetail = getActivityActorDetail();
+  const timestamp = new Date().toISOString();
+  const activity = {
+    id: crypto.randomUUID?.() || `activity-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    workspace: issue?.workspace_id || issue?.workspace || "",
+    workspace_detail: getActivityWorkspaceDetail(issue),
+    project: issue?.project_id || issue?.project || "",
+    project_detail: getActivityProjectDetail(issue),
+    issue: issue.id,
+    issue_detail: {
+      id: issue.id,
+      sequence_id: issue.sequence_id,
+      sort_order: issue.sort_order,
+      name: issue.name,
+      description_html: issue.description_html || "<p></p>",
+      priority: issue.priority ?? "none",
+      start_date: issue.start_date ?? null,
+      target_date: issue.target_date ?? null,
+      is_draft: Boolean(issue.is_draft),
+    },
+    actor: actorDetail.id,
+    actor_detail: actorDetail,
+    created_at: timestamp,
+    updated_at: timestamp,
+    created_by: actorDetail.id,
+    updated_by: actorDetail.id,
+    attachments: [],
+    verb,
+    field,
+    old_value: formatActivityValue(oldValue),
+    new_value: formatActivityValue(newValue),
+    comment: null,
+    old_identifier: identifiers.oldIdentifier ?? null,
+    new_identifier: identifiers.newIdentifier ?? null,
+    epoch: Date.parse(timestamp),
+    issue_comment: null,
+    source_data: { source: "IN_APP", extra: {} },
+  };
+  getIssueActivities().push(activity);
+  return activity;
+};
+
+const toIdArray = (value: any): string[] =>
+  Array.isArray(value)
+    ? value.filter((item: any) => item !== null && item !== undefined && item !== "").map(String)
+    : [];
+
+const resolveAssigneeName = (assigneeId: string): string => {
+  const user = (localDB.users || []).find((u: any) => u.id === assigneeId);
+  if (user) {
+    return (
+      user.display_name || [user.first_name, user.last_name].filter(Boolean).join(" ") || user.email || assigneeId
+    );
+  }
+  const member = (localDB.workspace_members || []).find(
+    (m: any) => m.member === assigneeId || m.id === assigneeId || m.email === assigneeId
+  );
+  if (member) {
+    return (
+      member.display_name ||
+      [member.first_name, member.last_name].filter(Boolean).join(" ") ||
+      member.email ||
+      assigneeId
+    );
+  }
+  return assigneeId;
+};
+
+const resolveLabelName = (labelId: string): string => {
+  const label = (localDB.labels || []).find((l: any) => l.id === labelId);
+  return label?.name || labelId;
+};
+
+const resolveStateName = (stateId: string): string => {
+  if (!stateId) return "";
+  const state = (localDB.states || []).find((s: any) => s.id === stateId);
+  return state?.name || stateId;
+};
+
+/**
+ * Compares the previous and the updated version of a work item and records one
+ * activity entry per changed property, following the exact `field` / `old_value`
+ * / `new_value` conventions the activity UI components consume.
+ */
+const recordIssueUpdateActivities = (previous: any, next: any) => {
+  if (!previous || !next) return;
+
+  const previousStateId = previous.state_id || previous.state || "";
+  const nextStateId = next.state_id || next.state || "";
+  if (nextStateId && nextStateId !== previousStateId) {
+    createIssueActivity(next, "state", resolveStateName(previousStateId), resolveStateName(nextStateId));
+  }
+
+  if (next.priority && next.priority !== previous.priority) {
+    createIssueActivity(next, "priority", previous.priority, next.priority);
+  }
+
+  if (typeof next.name === "string" && next.name !== previous.name) {
+    createIssueActivity(next, "name", previous.name, next.name);
+  }
+
+  if (typeof next.description_html === "string" && next.description_html !== previous.description_html) {
+    createIssueActivity(next, "description", previous.description_html, next.description_html);
+  }
+
+  if (next.start_date !== previous.start_date) {
+    createIssueActivity(next, "start_date", previous.start_date, next.start_date);
+  }
+
+  if (next.target_date !== previous.target_date) {
+    createIssueActivity(next, "target_date", previous.target_date, next.target_date);
+  }
+
+  const previousAssignees = toIdArray(previous.assignee_ids);
+  const nextAssignees = toIdArray(next.assignee_ids);
+  nextAssignees
+    .filter((assigneeId) => !previousAssignees.includes(assigneeId))
+    .forEach((assigneeId) =>
+      createIssueActivity(next, "assignees", "", resolveAssigneeName(assigneeId), "updated", {
+        newIdentifier: assigneeId,
+      })
+    );
+  previousAssignees
+    .filter((assigneeId) => !nextAssignees.includes(assigneeId))
+    .forEach((assigneeId) =>
+      createIssueActivity(next, "assignees", resolveAssigneeName(assigneeId), "", "updated", {
+        oldIdentifier: assigneeId,
+      })
+    );
+
+  const previousLabels = toIdArray(previous.label_ids);
+  const nextLabels = toIdArray(next.label_ids);
+  nextLabels
+    .filter((labelId) => !previousLabels.includes(labelId))
+    .forEach((labelId) =>
+      createIssueActivity(next, "labels", "", resolveLabelName(labelId), "updated", { newIdentifier: labelId })
+    );
+  previousLabels
+    .filter((labelId) => !nextLabels.includes(labelId))
+    .forEach((labelId) =>
+      createIssueActivity(next, "labels", resolveLabelName(labelId), "", "updated", { oldIdentifier: labelId })
+    );
+};
+
+/**
+ * Resolves a work item from the URL scope, supporting both UUIDs and
+ * `<PROJECT_IDENTIFIER>-<sequence_id>` style identifiers.
+ */
+const findIssueByRouteParam = (issueParam: string, projectParam?: string | null) => {
+  if (!issueParam) return undefined;
+  const issues = localDB.issues || [];
+  const directMatch = issues.find((issue: any) => issue.id === issueParam);
+  if (directMatch) return directMatch;
+
+  const project = projectParam
+    ? (localDB.projects || []).find(
+        (p: any) =>
+          p.id === projectParam || (p.identifier && p.identifier.toLowerCase() === projectParam.toLowerCase())
+      )
+    : undefined;
+  const projectKeys = new Set([projectParam, project?.id, project?.identifier].filter(Boolean) as string[]);
+
+  const sequenceMatch = issues.find(
+    (issue: any) =>
+      String(issue.sequence_id) === String(issueParam) &&
+      (projectKeys.size === 0 ||
+        projectKeys.has(issue.project) ||
+        projectKeys.has(issue.project_id) ||
+        projectKeys.has(issue.project_detail?.identifier))
+  );
+  if (sequenceMatch) return sequenceMatch;
+
+  if (issueParam.includes("-")) {
+    const [identifier, sequence] = issueParam.split("-");
+    const parsedSequence = Number.parseInt(sequence, 10);
+    if (identifier && !Number.isNaN(parsedSequence)) {
+      return issues.find(
+        (issue: any) =>
+          issue.project_detail?.identifier?.toLowerCase() === identifier.toLowerCase() &&
+          Number(issue.sequence_id) === parsedSequence
+      );
+    }
+  }
+
+  return undefined;
+};
+
+/**
+ * Builds the paginated envelope expected by `BaseIssuesStore.processIssueResponse`.
+ * An array `results` means "ungrouped"; an object keyed by group id means "grouped".
+ */
+const buildIssueResponseEnvelope = (issues: any[], groupBy?: string | null) => {
+  const totalCount = issues.length;
+  const baseEnvelope = {
+    count: totalCount,
+    next_cursor: `${issues.length}:0:0`,
+    prev_cursor: `${issues.length}:0:0`,
+    next_page_results: false,
+    prev_page_results: false,
+    total_pages: 1,
+    total_count: totalCount,
+    extra_stats: null,
+  };
+
+  if (!groupBy) {
+    return { ...baseEnvelope, grouped_by: null, sub_grouped_by: null, results: issues };
+  }
+
+  const groupedResults: Record<string, { results: any[]; total_results: number }> = {};
+  issues.forEach((issue: any) => {
+    let groupKeys: string[] = [];
+    switch (groupBy) {
+      case "state":
+        groupKeys = [issue.state_id || issue.state || "none"];
+        break;
+      case "priority":
+        groupKeys = [issue.priority || "none"];
+        break;
+      case "cycle":
+        groupKeys = [issue.cycle_id || issue.cycle || "none"];
+        break;
+      case "module":
+        groupKeys = toIdArray(issue.module_ids);
+        break;
+      case "labels":
+        groupKeys = toIdArray(issue.label_ids);
+        break;
+      case "assignees":
+        groupKeys = toIdArray(issue.assignee_ids);
+        break;
+      case "created_by":
+        groupKeys = [issue.created_by || "none"];
+        break;
+      default:
+        groupKeys = [];
+    }
+    if (groupKeys.length === 0) groupKeys = ["none"];
+    groupKeys.forEach((groupKey) => {
+      if (!groupedResults[groupKey]) groupedResults[groupKey] = { results: [], total_results: 0 };
+      groupedResults[groupKey].results.push(issue);
+      groupedResults[groupKey].total_results += 1;
+    });
+  });
+
+  return { ...baseEnvelope, grouped_by: groupBy, sub_grouped_by: null, results: groupedResults };
+};
+
+/** Matches a comma separated query filter (e.g. `priority=high,urgent`). */
+const matchesCsvFilter = (rawValues: any, filterValue: string | null): boolean => {
+  if (!filterValue) return true;
+  const expected = filterValue
+    .split(",")
+    .map((value) => decodeURIComponent(value).trim().toLowerCase())
+    .filter(Boolean);
+  if (expected.length === 0) return true;
+  const actualValues = (Array.isArray(rawValues) ? rawValues : [rawValues])
+    .filter((value: any) => value !== null && value !== undefined)
+    .map((value) => String(value).toLowerCase().trim());
+  return expected.some((value) => actualValues.includes(value));
+};
+
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   syncCrossPortWorkspaces();
@@ -179,6 +520,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   if (!activeUser && (localDB.users || []).length === 1 && !loggedInEmail && !currentUserAddress && !activeWallet) {
     activeUser = localDB.users[0];
   }
+
 
   // ── Workspace Membership Route Guard (block removed members from workspace APIs) ──
   const wsGuardMatch = url.match(/\/api\/workspaces\/([^/?#]+)/);
@@ -5324,8 +5666,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
 
     // Default: return activity history (issue-property type)
-    const history = (localDB.history || []).filter((h: any) => h.issue === issueId || h.issue_id === issueId);
-    return ok(history);
+    const createdAfterMatch = url.match(/[?&]created_at__gt=([^&]+)/);
+    const createdAfter = createdAfterMatch ? decodeURIComponent(createdAfterMatch[1]) : null;
+    const activities = (Array.isArray(localDB.issue_activities) ? localDB.issue_activities : [])
+      .filter((activity: any) => activity.issue === issueId || activity.issue_id === issueId)
+      .filter((activity: any) => !createdAfter || new Date(activity.created_at) > new Date(createdAfter))
+      .slice()
+      .sort((first: any, second: any) => new Date(first.created_at).getTime() - new Date(second.created_at).getTime());
+    return ok(activities);
   }
 
   // comments
@@ -6819,6 +7167,138 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     return ok({ message: "Issues updated successfully" });
   }
 
+  // ── Archived work items (list + archive/restore) ─────────────────────
+  const archivedIssuesMatch = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/archived-issues\/?(?:\?.*)?$/);
+  if (archivedIssuesMatch && method === "get") {
+    const projectParam = decodeURIComponent(archivedIssuesMatch[2]);
+    const project = (localDB.projects || []).find(
+      (p: any) => p.id === projectParam || (p.identifier && p.identifier.toLowerCase() === projectParam.toLowerCase())
+    );
+    const projectKeys = new Set([projectParam, project?.id, project?.identifier].filter(Boolean) as string[]);
+    const query = new URL(url, "http://localhost").searchParams;
+
+    let archivedIssues = (localDB.issues || []).filter(
+      (issue: any) =>
+        !!issue.archived_at &&
+        (projectKeys.has(issue.project) ||
+          projectKeys.has(issue.project_id) ||
+          projectKeys.has(issue.project_detail?.identifier))
+    );
+
+    const stateFilter = query.get("state_id");
+    if (stateFilter) {
+      archivedIssues = archivedIssues.filter((issue: any) =>
+        matchesCsvFilter(issue.state_id || issue.state, stateFilter)
+      );
+    }
+    const priorityFilter = query.get("priority");
+    if (priorityFilter) {
+      archivedIssues = archivedIssues.filter((issue: any) => matchesCsvFilter(issue.priority, priorityFilter));
+    }
+    const assigneeFilter = query.get("assignee_id");
+    if (assigneeFilter) {
+      archivedIssues = archivedIssues.filter((issue: any) => matchesCsvFilter(issue.assignee_ids, assigneeFilter));
+    }
+    const labelFilter = query.get("label_id");
+    if (labelFilter) {
+      archivedIssues = archivedIssues.filter((issue: any) => matchesCsvFilter(issue.label_ids, labelFilter));
+    }
+    const cycleFilter = query.get("cycle_id");
+    if (cycleFilter) {
+      archivedIssues = archivedIssues.filter((issue: any) =>
+        matchesCsvFilter(issue.cycle_id || issue.cycle, cycleFilter)
+      );
+    }
+    const moduleFilter = query.get("module_id");
+    if (moduleFilter) {
+      archivedIssues = archivedIssues.filter((issue: any) => matchesCsvFilter(issue.module_ids, moduleFilter));
+    }
+    const createdByFilter = query.get("created_by_id");
+    if (createdByFilter) {
+      archivedIssues = archivedIssues.filter((issue: any) => matchesCsvFilter(issue.created_by, createdByFilter));
+    }
+
+    const orderBy = query.get("order_by");
+    if (orderBy) {
+      const isDescending = orderBy.startsWith("-");
+      const sortKey = isDescending ? orderBy.slice(1) : orderBy;
+      const priorityRank: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
+      archivedIssues = archivedIssues.slice().sort((first: any, second: any) => {
+        let firstValue: any;
+        let secondValue: any;
+        switch (sortKey) {
+          case "priority":
+            firstValue = priorityRank[first.priority] ?? 5;
+            secondValue = priorityRank[second.priority] ?? 5;
+            break;
+          case "start_date":
+          case "target_date":
+          case "created_at":
+          case "updated_at":
+            firstValue = first[sortKey] ? new Date(first[sortKey]).getTime() : 0;
+            secondValue = second[sortKey] ? new Date(second[sortKey]).getTime() : 0;
+            break;
+          default:
+            firstValue = Number(first.sort_order) || 0;
+            secondValue = Number(second.sort_order) || 0;
+        }
+        if (firstValue === secondValue) return 0;
+        const result = firstValue > secondValue ? 1 : -1;
+        return isDescending ? -result : result;
+      });
+    } else {
+      archivedIssues = archivedIssues
+        .slice()
+        .sort((first: any, second: any) => Number(first.sort_order || 0) - Number(second.sort_order || 0));
+    }
+
+    return ok(buildIssueResponseEnvelope(archivedIssues, query.get("group_by")));
+  }
+
+  // ── Single work item archive / restore ───────────────────────────────
+  const issueArchiveMatch = url.match(
+    /\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:issues|work-items|epics)\/([^/]+)\/archive\/?(?:\?.*)?$/
+  );
+  if (issueArchiveMatch) {
+    const [, , projectParam, issueParam] = issueArchiveMatch;
+    const issue = findIssueByRouteParam(decodeURIComponent(issueParam), decodeURIComponent(projectParam));
+    const issueIndex = issue ? (localDB.issues || []).findIndex((item: any) => item.id === issue.id) : -1;
+
+    if (!issue || issueIndex === -1) {
+      return { data: { error: "The requested work item does not exist." }, status: 404 };
+    }
+
+    if (method === "post") {
+      const archivedAt = new Date().toISOString();
+      localDB.issues[issueIndex] = {
+        ...localDB.issues[issueIndex],
+        archived_at: archivedAt,
+        archived_by: getActivityActorDetail().id,
+        updated_at: archivedAt,
+      };
+      createIssueActivity(localDB.issues[issueIndex], "archived_at", "", "archive");
+      saveDB();
+      syncDAppRecord("issues", issue.id, localDB.issues[issueIndex]);
+      return ok({ archived_at: archivedAt });
+    }
+
+    if (method === "delete") {
+      const restoredAt = new Date().toISOString();
+      localDB.issues[issueIndex] = {
+        ...localDB.issues[issueIndex],
+        archived_at: null,
+        archived_by: null,
+        updated_at: restoredAt,
+      };
+      createIssueActivity(localDB.issues[issueIndex], "archived_at", "archive", "restore");
+      saveDB();
+      syncDAppRecord("issues", issue.id, localDB.issues[issueIndex]);
+      return ok({ archived_at: null });
+    }
+
+    if (method === "get") return ok(localDB.issues[issueIndex]);
+  }
+
   // Handle bulk-archive-issues endpoint
   if (
     (collection === "bulk-archive-issues" || url.includes("/bulk-archive-issues")) &&
@@ -6829,7 +7309,10 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     if (localDB.issues) {
       localDB.issues = localDB.issues.map((i: any) => {
         if (issueIds.includes(i.id)) {
-          return { ...i, archived_at };
+          const updated = { ...i, archived_at, archived_by: getActivityActorDetail().id };
+          createIssueActivity(updated, "archived_at", "", "archive");
+          syncDAppRecord("issues", updated.id, updated);
+          return updated;
         }
         return i;
       });
@@ -7033,20 +7516,311 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     collection = "issues";
   }
 
-  if (collection === "issue-relation" && method === "get") {
-    return ok({ relates_to: [], duplicate: [], blocked_by: [], blocking: [] });
+  // ── Work item relations ──────────────────────────────────────────────
+  const issueRelationMatch = url.match(
+    /\/(?:issues|work-items|epics)\/([^/]+)\/(issue-relation|remove-relation)\/?(?:\?.*)?$/
+  );
+  if (issueRelationMatch) {
+    const issueParam = decodeURIComponent(issueRelationMatch[1]);
+    const relationAction = issueRelationMatch[2];
+    const projectParam = url.match(/\/projects\/([^/]+)\//)?.[1];
+    const issue = findIssueByRouteParam(issueParam, projectParam);
+
+    if (!issue) {
+      return { data: { error: "The requested work item does not exist." }, status: 404 };
+    }
+
+    if (!Array.isArray(localDB.issue_relations)) localDB.issue_relations = [];
+
+    const relationTypes = ["blocking", "blocked_by", "duplicate", "relates_to"];
+    const reverseRelationType: Record<string, string> = {
+      blocking: "blocked_by",
+      blocked_by: "blocking",
+      duplicate: "duplicate",
+      relates_to: "relates_to",
+    };
+    const findRelatedIssue = (relatedIssueId: string) =>
+      (localDB.issues || []).find((item: any) => item.id === relatedIssueId);
+    const describeRelatedIssue = (relatedIssue: any) =>
+      relatedIssue?.project_detail?.identifier && relatedIssue?.sequence_id
+        ? `${relatedIssue.project_detail.identifier}-${relatedIssue.sequence_id}`
+        : relatedIssue?.name || "";
+
+    if (relationAction === "issue-relation" && method === "get") {
+      const groupedRelations: Record<string, any[]> = {
+        relates_to: [],
+        duplicate: [],
+        blocked_by: [],
+        blocking: [],
+      };
+      localDB.issue_relations
+        .filter((relation: any) => relation.issue === issue.id)
+        .forEach((relation: any) => {
+          const relatedIssue = findRelatedIssue(relation.related_issue);
+          if (relatedIssue && groupedRelations[relation.relation_type]) {
+            groupedRelations[relation.relation_type].push(relatedIssue);
+          }
+        });
+      return ok(groupedRelations);
+    }
+
+    if (relationAction === "issue-relation" && method === "post") {
+      const relationType = relationTypes.includes(body?.relation_type) ? body.relation_type : null;
+      const relatedIssueIds = Array.isArray(body?.issues) ? body.issues : [];
+      if (!relationType || relatedIssueIds.length === 0) {
+        return { data: { error: "relation_type and issues are required." }, status: 400 };
+      }
+
+      const createdIssues: any[] = [];
+      relatedIssueIds.forEach((relatedIssueId: string) => {
+        const relatedIssue = findRelatedIssue(relatedIssueId);
+        if (!relatedIssue || relatedIssue.id === issue.id) return;
+
+        const now = new Date().toISOString();
+        const actorId = getActivityActorDetail().id;
+        const alreadyRelated = localDB.issue_relations.some(
+          (relation: any) =>
+            relation.issue === issue.id &&
+            relation.related_issue === relatedIssue.id &&
+            relation.relation_type === relationType
+        );
+
+        if (!alreadyRelated) {
+          localDB.issue_relations.push({
+            id: crypto.randomUUID?.() || `relation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            issue: issue.id,
+            related_issue: relatedIssue.id,
+            relation_type: relationType,
+            project: issue.project_id || issue.project,
+            workspace: issue.workspace_id || issue.workspace,
+            created_at: now,
+            created_by: actorId,
+          });
+          localDB.issue_relations.push({
+            id: crypto.randomUUID?.() || `relation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            issue: relatedIssue.id,
+            related_issue: issue.id,
+            relation_type: reverseRelationType[relationType],
+            project: relatedIssue.project_id || relatedIssue.project,
+            workspace: relatedIssue.workspace_id || relatedIssue.workspace,
+            created_at: now,
+            created_by: actorId,
+          });
+          createIssueActivity(issue, relationType, "", describeRelatedIssue(relatedIssue));
+        }
+
+        createdIssues.push(relatedIssue);
+      });
+
+      if (createdIssues.length > 0) {
+        saveDB();
+        syncDAppRecord("issues", issue.id, issue);
+      }
+      return ok(createdIssues);
+    }
+
+    if (relationAction === "remove-relation" && method === "post") {
+      const relationType = relationTypes.includes(body?.relation_type) ? body.relation_type : null;
+      const relatedIssueId = body?.related_issue as string | undefined;
+      if (!relationType || !relatedIssueId) {
+        return { data: { error: "relation_type and related_issue are required." }, status: 400 };
+      }
+
+      const relatedIssue = findRelatedIssue(relatedIssueId);
+      const reverseType = reverseRelationType[relationType];
+      localDB.issue_relations = localDB.issue_relations.filter(
+        (relation: any) =>
+          !(
+            (relation.issue === issue.id &&
+              relation.related_issue === relatedIssueId &&
+              relation.relation_type === relationType) ||
+            (relation.issue === relatedIssueId &&
+              relation.related_issue === issue.id &&
+              relation.relation_type === reverseType)
+          )
+      );
+      if (relatedIssue) {
+        createIssueActivity(issue, relationType, describeRelatedIssue(relatedIssue), "");
+      }
+      saveDB();
+      syncDAppRecord("issues", issue.id, issue);
+      return ok({ message: "Relation removed successfully" });
+    }
   }
+  // ── Sub work items ───────────────────────────────────────────────────
+  const subIssuesMatch = url.match(/\/(?:issues|work-items)\/([^/]+)\/sub-issues\/?(?:\?.*)?$/);
+  if (subIssuesMatch && (method === "get" || method === "post")) {
+    const parentIssueParam = decodeURIComponent(subIssuesMatch[1]);
+    const projectParam = url.match(/\/projects\/([^/]+)\//)?.[1];
+    const parentIssue = findIssueByRouteParam(parentIssueParam, projectParam);
+
+    if (!parentIssue) {
+      return { data: { error: "The requested work item does not exist." }, status: 404 };
+    }
+
+    if (method === "post") {
+      const subIssueIds: string[] = Array.isArray(body?.sub_issue_ids) ? body.sub_issue_ids : [];
+      subIssueIds.forEach((subIssueId: string) => {
+        const childIndex = (localDB.issues || []).findIndex((item: any) => item.id === subIssueId);
+        if (childIndex === -1 || subIssueId === parentIssue.id) return;
+        localDB.issues[childIndex] = {
+          ...localDB.issues[childIndex],
+          parent_id: parentIssue.id,
+          parent: parentIssue.id,
+          updated_at: new Date().toISOString(),
+        };
+        syncDAppRecord("issues", subIssueId, localDB.issues[childIndex]);
+      });
+      saveDB();
+    }
+
+    const subIssues = (localDB.issues || []).filter(
+      (item: any) => (item.parent_id || item.parent) === parentIssue.id
+    );
+    const stateDistribution: Record<string, string[]> = {
+      backlog: [],
+      unstarted: [],
+      started: [],
+      completed: [],
+      cancelled: [],
+    };
+    subIssues.forEach((subIssue: any) => {
+      const state =
+        (localDB.states || []).find((item: any) => item.id === (subIssue.state_id || subIssue.state)) ||
+        subIssue.state_detail;
+      const group = state?.group && stateDistribution[state.group] ? state.group : "backlog";
+      stateDistribution[group].push(subIssue.id);
+    });
+
+    const parentIndex = (localDB.issues || []).findIndex((item: any) => item.id === parentIssue.id);
+    if (parentIndex > -1 && localDB.issues[parentIndex].sub_issues_count !== subIssues.length) {
+      localDB.issues[parentIndex].sub_issues_count = subIssues.length;
+      saveDB();
+    }
+
+    return ok({ sub_issues: subIssues, state_distribution: stateDistribution });
+  }
+
   if (collection === "sub-issues" && method === "get") {
     return ok({
       sub_issues: [],
       state_distribution: { backlog: [], unstarted: [], started: [], completed: [], cancelled: [] },
     });
   }
-  if ((collection === "links" || collection === "issue-links") && method === "get") {
-    return ok([]);
+  // ── Work item links ──────────────────────────────────────────────────
+  if (collection === "issue-links" || collection === "links") collection = "issue_links";
+  const issueLinkMatch = url.match(/\/(?:issues|work-items|epics)\/([^/]+)\/(?:issue-links|links)\/?(?:\?.*)?$/);
+  if (issueLinkMatch && (method === "get" || method === "post")) {
+    const linkProjectParam = url.match(/\/projects\/([^/]+)\//)?.[1];
+    const linkIssue = findIssueByRouteParam(decodeURIComponent(issueLinkMatch[1]), linkProjectParam);
+
+    if (!linkIssue) {
+      return { data: { error: "The requested work item does not exist." }, status: 404 };
+    }
+
+    if (!Array.isArray(localDB.issue_links)) localDB.issue_links = [];
+
+    if (method === "get") {
+      return ok(
+        localDB.issue_links.filter((link: any) => (link.issue_id || link.issue) === linkIssue.id)
+      );
+    }
+
+    const now = new Date().toISOString();
+    const issueLink = {
+      id: crypto.randomUUID?.() || `link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      title: body?.title || "",
+      url: body?.url || "",
+      metadata: body?.metadata ?? {},
+      issue_id: linkIssue.id,
+      issue: linkIssue.id,
+      project_id: linkIssue.project_id || linkIssue.project,
+      workspace_id: linkIssue.workspace_id || linkIssue.workspace,
+      created_by_id: getActivityActorDetail().id,
+      created_at: now,
+      updated_at: now,
+    };
+    localDB.issue_links.push(issueLink);
+    saveDB();
+    syncDAppRecord("issue_links", issueLink.id, issueLink);
+    return ok(issueLink);
   }
-  if (collection === "reactions" && method === "get") {
-    return ok([]);
+
+  // ── Reactions (work item + comment) ──────────────────────────────────
+  if (collection === "reactions") {
+    const isCommentReaction = url.includes("/comments/");
+    const targetCollectionKey = isCommentReaction ? "comment_reactions" : "issue_reactions";
+    if (!Array.isArray(localDB[targetCollectionKey])) localDB[targetCollectionKey] = [];
+
+    const targetMatch = isCommentReaction
+      ? url.match(/\/comments\/([^/?#]+)\/reactions/)
+      : url.match(/\/(?:issues|work-items|epics)\/([^/?#]+)\/reactions/);
+    const projectParam = url.match(/\/projects\/([^/]+)\//)?.[1];
+    const targetParam = targetMatch ? decodeURIComponent(targetMatch[1]) : null;
+    const targetIssue =
+      !isCommentReaction && targetParam ? findIssueByRouteParam(targetParam, projectParam) : undefined;
+    const targetId = targetIssue?.id || targetParam;
+
+    if (!targetId) {
+      return { data: { error: "The requested resource does not exist." }, status: 404 };
+    }
+
+    const matchesTarget = (record: any) =>
+      isCommentReaction
+        ? record.comment === targetId || record.comment_id === targetId
+        : record.issue === targetId || record.issue_id === targetId;
+
+    if (method === "get") {
+      return ok(localDB[targetCollectionKey].filter(matchesTarget));
+    }
+
+    const actor = getActivityActorDetail();
+
+    if (method === "post") {
+      const reactionValue = typeof body?.reaction === "string" ? body.reaction : "";
+      if (!reactionValue) {
+        return { data: { error: "reaction is required." }, status: 400 };
+      }
+      const existingReaction = localDB[targetCollectionKey].find(
+        (record: any) => matchesTarget(record) && record.actor === actor.id && record.reaction === reactionValue
+      );
+      if (existingReaction) return ok(existingReaction);
+
+      const now = new Date().toISOString();
+      const reactionRecord = {
+        id: crypto.randomUUID?.() || `reaction-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        actor: actor.id,
+        actor_detail: actor,
+        reaction: reactionValue,
+        display_name: actor.display_name,
+        issue: isCommentReaction ? null : targetId,
+        issue_id: isCommentReaction ? null : targetId,
+        comment: isCommentReaction ? targetId : null,
+        comment_id: isCommentReaction ? targetId : null,
+        project: targetIssue?.project_id || targetIssue?.project || null,
+        workspace: targetIssue?.workspace_id || targetIssue?.workspace || null,
+        created_at: now,
+        updated_at: now,
+      };
+      localDB[targetCollectionKey].push(reactionRecord);
+      saveDB();
+      return ok(reactionRecord);
+    }
+
+    if (method === "delete") {
+      const reactionParam = url.match(/\/reactions\/([^/?#]+)\/?(?:\?.*)?$/)?.[1];
+      const reactionValue = reactionParam ? decodeURIComponent(reactionParam) : "";
+      localDB[targetCollectionKey] = localDB[targetCollectionKey].filter(
+        (record: any) =>
+          !(
+            matchesTarget(record) &&
+            record.actor === actor.id &&
+            (!reactionValue || record.reaction === reactionValue)
+          )
+      );
+      saveDB();
+      return ok({ message: "Reaction removed successfully" });
+    }
   }
 
   // Sub-resource collections that don't have persistent storage — return empty stubs
@@ -7494,6 +8268,12 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       return ok(item);
     }
     let list = localDB[collection] || [];
+
+    // Archived work items only live in the archived section; exclude them from the
+    // regular work item lists (they would otherwise reappear after a refresh).
+    if (collection === "issues") {
+      list = list.filter((issue: any) => !issue.archived_at);
+    }
 
     // History endpoint should also return comments
     if (collection === "history") {
@@ -9139,6 +9919,11 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     if (!localDB[collection]) localDB[collection] = [];
     localDB[collection].push(newRecord);
 
+    // Every work item creation is part of its activity timeline (verb: "created")
+    if (collection === "issues") {
+      createIssueActivity(newRecord, null, null, null, "created");
+    }
+
     // If this is an issue and it has a parent, update the parent's sub_issues_count
     if (collection === "issues" && newRecord.parent_id) {
       const parentIdx = localDB[collection].findIndex((i: any) => i.id === newRecord.parent_id);
@@ -9238,10 +10023,17 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       }
     }
     if (idx > -1) {
+      const previousRecord = { ...localDB[collection][idx] };
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
       if (collection === "issues") {
         if (body.state_id) localDB[collection][idx].state = body.state_id;
         if (body.state) localDB[collection][idx].state_id = body.state;
+        const updatedStateId = localDB[collection][idx].state_id || localDB[collection][idx].state;
+        if (updatedStateId && updatedStateId !== (previousRecord.state_id || previousRecord.state)) {
+          const matchedState = (localDB.states || []).find((s: any) => s.id === updatedStateId);
+          if (matchedState) localDB[collection][idx].state_detail = matchedState;
+        }
+        recordIssueUpdateActivities(previousRecord, localDB[collection][idx]);
       }
       saveDB();
       syncDAppRecord(collection, id!, localDB[collection][idx]);
