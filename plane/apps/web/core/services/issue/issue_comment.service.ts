@@ -12,6 +12,7 @@ import { EIssueServiceType } from "@plane/types";
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isOnChainTaskSyncAvailable, issueExistsOnChain, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
+import { notifyVaultProblem } from "@/services/blockchain/vault-notice";
 import { FileUploadService } from "@/services/file-upload.service";
 
 export class IssueCommentService extends APIService {
@@ -85,6 +86,7 @@ export class IssueCommentService extends APIService {
             })
             .catch((trackingError) => console.warn("Audit bình luận đang chờ tự đồng bộ.", trackingError));
         } catch (chainError) {
+          notifyVaultProblem(chainError);
           console.warn("Đồng bộ bình luận on-chain không thành công; nội dung đã được lưu nội bộ:", chainError);
         }
       })();

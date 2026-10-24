@@ -1,6 +1,6 @@
 import { API_BASE_URL } from "@plane/constants";
 import { APIService } from "@/services/api.service";
-import { getLinkedMetanodeWalletAddress } from "@/services/blockchain/metanode-wallet.service";
+import { getSigningWalletAddress } from "@/services/blockchain/metanode-wallet.service";
 
 export type TBlockchainTrackingRecord = {
   report_id?: string;
@@ -158,7 +158,7 @@ class BlockchainTrackingService extends APIService {
       priority: payload.priority,
       assignee_wallet: payload.assigneeWallet,
       assignee_id: payload.assigneeId,
-      wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
+      wallet_address: getSigningWalletAddress() ?? undefined,
       contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
       chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
@@ -209,7 +209,7 @@ class BlockchainTrackingService extends APIService {
       event_type: "daily_report",
       issue_id: payload.issueId,
       issue_name: payload.issueName,
-      wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
+      wallet_address: getSigningWalletAddress() ?? undefined,
       contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
       chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
@@ -265,7 +265,7 @@ class BlockchainTrackingService extends APIService {
       event_type: "task_content",
       issue_id: payload.issueId,
       issue_name: payload.issueName,
-      wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
+      wallet_address: getSigningWalletAddress() ?? undefined,
       contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
       chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
@@ -297,7 +297,7 @@ class BlockchainTrackingService extends APIService {
       event_type: "delete_task",
       issue_id: payload.issueId,
       issue_name: payload.issueName,
-      wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
+      wallet_address: getSigningWalletAddress() ?? undefined,
       contract_address: readEnv("VITE_CONTRACT_ADDRESS"),
       chain_id: readEnv("VITE_CHAIN_ID"),
       transaction_hash: payload.transactionHash,
@@ -339,7 +339,7 @@ class BlockchainTrackingService extends APIService {
       event_type: "assign_task",
       issue_id: payload.issueId,
       issue_name: payload.issueName,
-      wallet_address: getLinkedMetanodeWalletAddress() ?? undefined,
+      wallet_address: getSigningWalletAddress() ?? undefined,
       assignee_wallet: payload.assigneeWallet,
       assignee_id: payload.assigneeId,
       assignee_name: payload.assigneeName,

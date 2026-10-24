@@ -22,6 +22,7 @@ import type {
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
+import { notifyVaultProblem } from "@/services/blockchain/vault-notice";
 import {
   assignIssueByIssueIdOnChain,
   cancelIssueByIssueIdOnChain,
@@ -100,6 +101,7 @@ export class IssueService extends APIService {
         console.warn("Task cha có task con nên tiến độ phải được tính tự động từ các task con.");
       } else if (!stats) {
         await updateIssueProgressByIssueIdOnChain(issueId, progress).catch((err) => {
+          notifyVaultProblem(err);
           console.warn("Không cập nhật được progress on-chain:", err);
         });
       }
@@ -163,6 +165,7 @@ export class IssueService extends APIService {
       console.info(`Đã tạo lại task on-chain cho issue ${issue.id} (trước đó chưa tồn tại trên contract).`);
       return true;
     } catch (chainError) {
+      notifyVaultProblem(chainError);
       console.warn("Không thể tạo lại task on-chain cho issue; dữ liệu off-chain vẫn được lưu:", chainError);
       return false;
     } finally {
@@ -205,6 +208,7 @@ export class IssueService extends APIService {
             console.warn("Task đã được tạo on-chain; audit đang chờ tự đồng bộ.", trackingError);
           });
       } catch (chainError) {
+        notifyVaultProblem(chainError);
         console.warn("Tạo task on-chain không thành công; nội dung vẫn được lưu:", chainError);
       }
     }
@@ -440,6 +444,7 @@ export class IssueService extends APIService {
           }
         }
       } catch (chainError) {
+        notifyVaultProblem(chainError);
         console.warn("Cập nhật on-chain không thành công; nội dung vẫn được lưu:", chainError);
       }
     }
@@ -473,6 +478,7 @@ export class IssueService extends APIService {
               });
           }
         } catch (chainError) {
+          notifyVaultProblem(chainError);
           console.warn("Giao task on-chain không thành công; nội dung vẫn được lưu:", chainError);
         }
       }
@@ -514,6 +520,7 @@ export class IssueService extends APIService {
           });
       }
     } catch (chainError) {
+      notifyVaultProblem(chainError);
       console.warn("Không xóa được task on-chain; vẫn tiếp tục xóa task trên Plane.", chainError);
     }
 

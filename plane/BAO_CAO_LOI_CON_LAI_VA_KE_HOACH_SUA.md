@@ -108,7 +108,7 @@ Mỗi lỗi có 7 phần cố định để bất kỳ ai (kể cả người m�
 
 ### 1.2 Năm kết luận quan trọng nhất
 
-1. **Lỗi "Wallet not found" đã được xử lý đúng hướng** — nhưng chỉ ở luồng *Sync to Chain*. Luồng ghi khác (tạo task, comment, attachment, join workspace) vẫn đi qua `resolveMetanodeWalletAddress()` **không preflight** và **không dùng error-mapper chung** (`WALLET-02`).
+1. **Lỗi "Wallet not found" đã được xử lý đúng hướng** — trước đây chỉ ở luồng *Sync to Chain*; **nay đã áp dụng cho cả luồng ghi khác** (tạo task, cập nhật, giao việc, xoá, bình luận, tệp đính kèm): `confirmSigningWallet()` kiểm tra ví trước khi ký và `notifyVaultProblem()` mở "Trung tâm ví" đúng chế độ (`WALLET-02`, §5.2).
 2. **Rủi ro lớn nhất hiện tại là on-chain task**, không còn là ví: `getIssueTaskId()` revert (`execution reverted`, selector `0x0531bbb1` / `0x464522a9`) làm **mọi** thao tác task thất bại, kéo theo attachment treo "Pending" (`BA-32`) và backfill báo sai (`CHAIN-03`).
 3. **Sync đang "nói dối" ở một nhánh**: nếu `updateWorkspaceCID`/`createWorkspace` fail, lỗi bị `console.warn` nuốt và UI vẫn hiện toast **"Đồng bộ on-chain thành công"** (`CHAIN-02`).
 4. **Lỗi "1 hành động bị ký 2–3 lần" (`CHAIN-09`) là lỗi P0 mới, đã tìm ra nguyên nhân gốc**: mỗi lần lưu dữ liệu (`saveDB`) đều tự sinh thêm 1 giao dịch `updateWorkspaceCID`; cộng với giao dịch nghiệp vụ và 3 lớp retry không idempotent ⇒ nonce tăng 2–3. Chi tiết + kế hoạch sửa ở §3.
@@ -716,12 +716,15 @@ export type SyncResult = {
 * **Sửa**: (a) trỏ nút "Mở MetaNode Wallet" về **cùng origin** với Vault Plane dùng; (b) nếu buộc khác origin, hiển thị cảnh báo rõ + deep-link `plane://wallet-center`; (c) thêm kiểm tra khởi động: so `new URL(VITE_FIAI_CRYPTO_VAULT_URL).origin` với origin của connect-wallet, lệch ⇒ log cảnh báo.
 * **Nghiệm thu**: từ máy sạch, bấm "Mở MetaNode Wallet" → import → quay lại Plane thấy ví trong "Trung tâm ví" **không cần thao tác phụ**.
 
-### 5.2 `WALLET-02` — Luồng ghi khác **không preflight** Vault · 1 ngày
+### 5.2 `WALLET-02` — Luồng ghi khác **không preflight** Vault · 1 ngày — ✅ **đã sửa trong mã (chờ QA)**
 
 * **Triệu chứng**: tạo task/comment/attachment khi Vault rỗng ⇒ lỗi khó hiểu (`Wallet not found` / treo), không có hướng dẫn.
 * **Nguyên nhân**: chỉ `syncDAppDBToChain` gọi `assertVaultSigningAddress` (`chain.ts:2847`). `createIssueOnChain` → `resolveMetanodeWalletAddress()` (`plane-task-chain.service.ts:485`) **không** kiểm tra Vault; lỗi chỉ nổi lên ở tầng bridge.
-* **Sửa**: gọi `assertVaultSigningAddress(from)` ở đầu `sendContractTransactionNow` và map `VaultSigningError` sang UI (mở Trung tâm ví, đúng như `sync-button.tsx:117-123` đang làm).
-* **Nghiệm thu**: Vault rỗng + tạo task ⇒ toast "Chưa có ví trong Crypto Vault" + nút mở Trung tâm ví; **không** còn `Wallet not found`.
+* **Đã sửa**:
+  1. `plane-task-chain.service.ts`: thêm `confirmSigningWallet()` — gọi `assertVaultSigningAddress(from, { refresh: false })` ở **mọi** bước ký (`sendContractTransactionNow`, nhánh tự phục hồi ví, và `createIssueOnChain`). Địa chỉ không còn trong ứng dụng ví ⇒ dừng trước khi gửi giao dịch với `VaultSigningError` có mã (`VAULT_EMPTY` / `WALLET_NOT_IN_VAULT`); nếu chỉ **không đọc được** danh sách ví thì giữ nguyên hành vi cũ (không chặn nhầm giao dịch có thể vẫn ký được).
+  2. `vault-notice.ts` (mới): `notifyVaultProblem(error)` — gộp một chỗ: ghi log kỹ thuật + mở "Trung tâm ví" đúng chế độ (`import` khi chưa có ví, `select` khi ví lệch), có chống mở lặp trong 15 giây. Được gọi ở **tất cả** nhánh on-chain trước đây chỉ `console.warn`: tạo task, tự tạo lại task, cập nhật, giao việc, xoá, cập nhật tiến độ (`issue.service.ts`), bình luận (`issue_comment.service.ts`), tệp đính kèm (`issue_attachment.service.ts`).
+  3. Câu thông báo đổi sang ngôn ngữ người dùng: bỏ tên cổng/kỹ thuật — "Ứng dụng ví chưa có ví nào. Mở “Trung tâm ví” để thêm ví của bạn rồi thực hiện lại."
+* **Nghiệm thu**: Vault rỗng + tạo task ⇒ nội dung vẫn được lưu, **"Trung tâm ví" tự mở** ở chế độ thêm ví, thông báo bằng tiếng Việt dễ hiểu; **không** còn `Wallet not found`.
 
 ### 5.3 `CHAIN-03` — `backfillIssuesOnChain` gộp lỗi & báo success dù `failed > 0` · 0.5 ngày
 
@@ -733,12 +736,18 @@ export type SyncResult = {
 
 * Nội dung gốc: retry không idempotent. Nay được phân tích đầy đủ ở §3.4 RC-3 và sửa ở §3.7 Bước 3. **Giữ ID** để truy vết, **không** làm riêng.
 
-### 5.5 `CHAIN-05` — 3 địa chỉ ví lệch nhau ⇒ quyền on-chain sai · 1–2 ngày
+### 5.5 `CHAIN-05` — 3 địa chỉ ví lệch nhau ⇒ quyền on-chain sai · 1–2 ngày — ✅ **đã sửa trong mã (chờ QA)**
 
 * **Triệu chứng**: cùng một người, Plane hiển thị 3 địa chỉ khác nhau (`0xb3b9…`, `0x4e…`, `0xec4c…2d6d`); có lúc là Member, có lúc không.
 * **Nguyên nhân**: địa chỉ được lưu ở **4 nơi** không đồng bộ: `localStorage["plane:metanode-wallet:<userId>"]`, `sessionStorage["plane_active_wallet_address"]`, `localDB.workspace_members[].wallet_address`, và `getActiveWalletDapp()` của Vault. `configureMetanodeWalletAddress` (`metanode-wallet.service.ts:41-59`) ưu tiên local hơn server ⇒ lệch dần theo thời gian.
-* **Sửa**: coi **Vault là nguồn sự thật duy nhất**; mọi nơi khác chỉ cache kèm `verifiedAt`; thêm job "reconcile wallet" khi mở app: `vaultAddress !== storedAddress` ⇒ hỏi người dùng chọn lại + ghi đè tất cả nơi lưu.
-* **Nghiệm thu**: đổi ví trong Vault → mở lại Plane → **tất cả** màn hình hiển thị cùng 1 địa chỉ; `getMemberRole` on-chain khớp UI.
+* **Quyết định (D3, đã chốt theo nguyên tắc kỹ thuật — không cần đổi contract)**: **ví đã ký giao dịch (`msg.sender`) là chuẩn**; địa chỉ trong hồ sơ chỉ để hiển thị và là bản cache, không được dùng để ghi sổ.
+* **Đã sửa**:
+  1. `metanode-wallet.service.ts`: thêm `signingWalletAddress` + `getSigningWalletAddress()` / `rememberSigningWalletAddress(address)`.
+  2. `plane-task-chain.service.ts` (`confirmSigningWallet`): **mỗi** lần ký đều xác nhận ví bằng `assertVaultSigningAddress` rồi gọi `rememberSigningWalletAddress(ví vừa xác nhận)`. Ví ký trở thành nguồn sự thật trong phiên.
+  3. Phát hiện lệch (ví ký ≠ địa chỉ đang lưu) ⇒ tự động đồng bộ lại **mọi** nơi lưu qua `linkMetanodeWalletAddress` (localStorage theo user, `localDB.users[].metanode_wallet_address`, `localDB.workspace_members[].wallet_address`, hồ sơ người dùng) + phát `plane:wallet-changed` để UI cập nhật ngay; không chặn bước ký đang chờ.
+  4. `blockchain-tracking.service.ts`: cả 5 loại bản ghi audit (`create_task`, `daily_report`, `task_content`, `delete_task`, `assign_task`) ghi `wallet_address` theo `getSigningWalletAddress()` thay vì địa chỉ hồ sơ ⇒ sổ audit không còn ghi sai chủ.
+  5. `createIssueOnChain`: ví tạo task (đồng thời là ví được ghi làm người thực hiện khi không giao cho ai) lấy từ `confirmSigningWallet` ⇒ đúng ví đã ký.
+* **Nghiệm thu**: đổi ví trong ứng dụng ví → mở lại Plane → làm một thao tác bất kỳ ⇒ bản ghi audit mới mang **đúng** địa chỉ vừa ký; hồ sơ và danh sách thành viên được cập nhật theo, không còn 3 địa chỉ cho một người. (Phần kiểm tra quyền **phía contract** vẫn do contract quyết định theo `msg.sender` — mã nguồn không đổi contract.)
 
 ### 5.6 `BA-08` — Dropdown Assignee bỏ sót thành viên Workspace · 2 giờ
 
@@ -1024,6 +1033,8 @@ git status --porcelain
 | `SEC-05` | ❌ RPC `http://` không có cảnh báo | 🟡 Giảm thiểu | Cảnh báo một lần khi `VITE_RPC_URL` dùng `http://` trên địa chỉ công khai (không chặn để khỏi sập môi trường đang chạy) | `chain.ts` (`getRpcUrl`) |
 | `WALLET-05` | ❌ Nút đồng bộ + Trung tâm ví hiện cả trang đăng nhập | ✅ Sửa mã | Ẩn khi chưa đăng nhập (`useUser().data`) | `sync-button.tsx`, `wallet-center.tsx` |
 | `BA-32` | ❌ Upload tệp đính kèm treo "Pending" rồi lỗi | ✅ Sửa mã | Đọc tệp tại máy (bỏ POST multipart tới `""`); lưu tệp **trước khi ký**, kiểm tra lại ngay; `asset_url` là khoá tra cứu trong máy + `is_uploaded = true`; router đọc `assetId` ở đoạn cuối URL | `issue_attachment.service.ts`, `routes.ts` |
+| `WALLET-02` | ❌ Luồng ghi khác không kiểm tra ví trước khi ký | ✅ Sửa mã | `confirmSigningWallet()` gọi `assertVaultSigningAddress` trước mọi bước ký; `notifyVaultProblem()` mở "Trung tâm ví" đúng chế độ ở tất cả nhánh on-chain trước đây chỉ ghi log; câu báo lỗi bỏ thuật ngữ | `plane-task-chain.service.ts`, `vault-notice.ts` (mới), `issue.service.ts`, `issue_comment.service.ts`, `issue_attachment.service.ts`, `metanode-wallet.service.ts` |
+| `CHAIN-05` | ❌ 3 địa chỉ ví lệch nhau, sổ audit ghi sai chủ | ✅ Sửa mã | Ví **đã ký** là nguồn sự thật: `rememberSigningWalletAddress()` + `getSigningWalletAddress()`; lệch ⇒ tự đồng bộ lại mọi nơi lưu + phát `plane:wallet-changed`; audit ghi theo ví ký; `createIssueOnChain` dùng đúng ví ký | `metanode-wallet.service.ts`, `plane-task-chain.service.ts`, `blockchain-tracking.service.ts` |
 | Văn bản UI | ❌ Nhiều thuật ngữ kỹ thuật | ✅ Sửa mã | Bỏ "Crypto Vault / on-chain / nonce / IPFS / SDK / cổng 600x" khỏi mọi thông báo người dùng thấy | `sync-button.tsx`, `wallet-center.tsx`, `plane-task-chain.service.ts`, `chain.ts` |
 
 
@@ -1166,7 +1177,7 @@ Nếu Q1/Q2/Q4 cho kết quả khác bảng trên ⇒ mở lại `CHAIN-09` kèm
 |---|---|---|
 | **D1** | Có cần ghi ngầm CID workspace nữa không (`VITE_AUTO_COMMIT_ONCHAIN=true`), hay chỉ ghi khi người dùng bấm? | Nếu bật: thêm 1 giao dịch/phiên (đã gộp 90–120s). Nếu tắt: tiết kiệm phí tối đa nhưng dữ liệu chỉ lên chain khi bấm |
 | **D2** | Contract có bắt buộc `blsPrivateKey` cho `createTask`/`updateWorkspaceCID`/`joinWorkspace` không? | Quyết định có thể bỏ hẳn khoá khỏi bundle (đóng `SEC-02`) hay phải làm dịch vụ ký riêng |
-| **D3** | Ai là "nguồn sự thật" cho địa chỉ ví thành viên? | Đóng `CHAIN-05` + `WALLET-02` |
+| **D3** | Ai là "nguồn sự thật" cho địa chỉ ví thành viên? | ✅ **Đã chốt trong mã**: ví đã ký (`msg.sender`). Đóng `CHAIN-05` + `WALLET-02`; hồ sơ chỉ hiển thị. Nếu nghiệp vụ muốn ngược lại (ví hồ sơ là chuẩn) thì phải sửa lại `confirmSigningWallet` — báo trước khi QA |
 
 ## 11.9 Nên sửa gì tiếp — thứ tự đề xuất (sau khi đã sửa `BA-32`)
 
@@ -1174,7 +1185,7 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 
 | Thứ tự | Việc | Vì sao làm bây giờ | Công | Chặn bởi |
 |:--:|---|---|:--:|---|
-| **1** | `CHAIN-05` + `WALLET-02` — **danh tính ví**: mọi chỗ ghi/kiểm tra quyền dùng **đúng địa chỉ đang ký** (`msg.sender`), ví hồ sơ chỉ để hiển thị | Hai mã này là **cùng một gốc**; hiện `blockchain-tracking.service.ts` ghi sổ theo `getLinkedMetanodeWalletAddress()` còn giao dịch ký bằng địa chỉ ví trong ứng dụng ví ⇒ lệch sổ. Không sửa thì mọi bản ghi audit đều có thể sai chủ | ~1 ngày | Chỉ cần chốt **D3** (một câu: "ví ký là chuẩn") — không cần đổi contract |
+| **1** | ✅ **Đã làm** `CHAIN-05` + `WALLET-02` — **danh tính ví**: mọi chỗ ghi/kiểm tra quyền dùng **đúng địa chỉ đang ký** (`msg.sender`), ví hồ sơ chỉ để hiển thị | Hai mã này là **cùng một gốc**; trước đây `blockchain-tracking.service.ts` ghi sổ theo `getLinkedMetanodeWalletAddress()` còn giao dịch ký bằng địa chỉ ví trong ứng dụng ví ⇒ lệch sổ. Nay sổ audit ghi theo ví đã ký và tự đồng bộ lại các nơi lưu khi phát hiện lệch | ~1 ngày | Không (D3 đã chốt trong mã) |
 | **2** | `BA-21` — link chia sẻ dự án trả `404` thay vì "Chưa có quyền" | Người nhận link thấy "không tìm thấy" ⇒ tưởng mất dữ liệu; sửa thuần router + UI, không đụng ví/chain | 0,5–1 ngày | Không |
 | **3** | `WALLET-06` — import có thể "nhận vơ" ví cũ | Rủi ro gắn nhầm danh tính on-chain cho tài khoản; sửa nhỏ (nếu không đọc được danh sách ví trước đó ⇒ bắt xác nhận địa chỉ) | 2 giờ | Cần 2 ví thật để thử |
 | **4** | `CHAIN-08` — hiển thị "đã/chưa đồng bộ" | Người dùng không biết dữ liệu đã lên hệ thống chưa; đây là cách duy nhất để họ tự kiểm tra thay vì bấm đồng bộ nhiều lần | 1–2 ngày | Cần design 1 buổi (icon + tooltip + vị trí) |
@@ -1192,9 +1203,9 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 
 **Hết báo cáo v1.1.** Tình trạng thật, tính theo 31 mã lỗi trong §1.1:
 
-- **10 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp.
+- **12 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`, `WALLET-02`, `CHAIN-05`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp, `WALLET-02` + `CHAIN-05` cần thử với ứng dụng ví thật (rỗng ví / đổi ví).
 - **5 mã mới giảm thiểu, chưa đóng** (`SEC-01`, `SEC-02`, `SEC-03`, `CHAIN-04`, `SEC-05`) — cần rotate khoá, backend, hoặc chuyển ký sang server.
-- **16 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `WALLET-02`, `WALLET-06`, `CHAIN-05`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
+- **14 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `WALLET-06`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
 
 
 Riêng `CHAIN-09`: 4/5 nguyên nhân gốc (RC-2…RC-5) đã xử lý; **RC-1 (mỗi lần lưu = một giao dịch) chỉ được gộp trong cửa sổ 90–120 giây, chưa bị loại bỏ về mặt thiết kế** — người dùng thao tác cách nhau hơn 2 phút vẫn sinh giao dịch mới cho mỗi thao tác. Không có mục nào được ghi "đã xong" mà thiếu bằng chứng.

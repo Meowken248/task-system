@@ -1,5 +1,5 @@
 import type { AbiItem } from "@metanodejs/mtn-contract";
-import { runExclusiveChainTx } from "@plane/services";
+import { assertVaultSigningAddress, isVaultSigningError, runExclusiveChainTx } from "@plane/services";
 import type { TIssue, TIssuePriorities } from "@plane/types";
 import { planeTaskManagerAbi } from "@/contracts/plane-task-manager.abi";
 import { getFiaiSDK, getLatestCapturedWalletTxHash, initFiaiSDK, resetFiaiSDK } from "./fiai-sdk.service";
@@ -7,6 +7,7 @@ import {
   isMetanodeWalletRuntimeSupported,
   isWalletAddress,
   promptForMetanodeWalletImport,
+  rememberSigningWalletAddress,
   resolveMetanodeWalletAddress,
 } from "./metanode-wallet.service";
 
@@ -383,6 +384,33 @@ export class ChainTransactionLandedError extends Error {
   }
 }
 
+/**
+ * Trước khi ký: xác nhận địa chỉ sắp dùng CÓ THẬT trong ứng dụng ví, và ghi nhớ đó là ví đang ký.
+ *
+ * Vì sao cần: địa chỉ lưu trong hồ sơ/trình duyệt có thể đã cũ (người dùng đổi ví trong ứng dụng
+ * ví), khi đó giao dịch sẽ thất bại với thông báo khó hiểu từ cầu nối ví ("Wallet not found").
+ * Kiểm tra ở đây cho ra lỗi rõ ràng kèm mã để UI mở "Trung tâm ví" (WALLET-02); đồng thời mọi bản
+ * ghi audit sau đó dùng đúng ví đã ký (CHAIN-05).
+ *
+ * Không chặn nhầm: nếu KHÔNG đọc được danh sách ví (ứng dụng ví chưa sẵn sàng) thì giữ nguyên
+ * hành vi cũ — để bước ký báo lỗi chính xác thay vì chặn một giao dịch có thể vẫn ký được.
+ */
+async function confirmSigningWallet(candidate: string): Promise<string> {
+  try {
+    // `refresh: false` = dùng danh sách ví vừa đọc khi chọn ví, không gọi lại cầu nối ví.
+    const address = await assertVaultSigningAddress(candidate, { refresh: false });
+    rememberSigningWalletAddress(address);
+    return address;
+  } catch (error) {
+    if (!isVaultSigningError(error)) throw error;
+    if (error.code === "VAULT_UNAVAILABLE") {
+      console.warn("[Chain] Không kiểm tra được danh sách ví trước khi ký:", error.message);
+      return candidate;
+    }
+    throw error;
+  }
+}
+
 async function sendContractTransactionNow(functionName: string, values: Record<string, InputValue>): Promise<string> {
   if (typeof window !== "undefined" && !isMetanodeWalletRuntimeSupported()) {
     throw new Error(
@@ -396,6 +424,7 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
   let bridge = (await initFiaiSDK()) ?? getFiaiSDK();
   if (!bridge) throw new Error("Chưa kết nối được ứng dụng ví. Hãy mở ứng dụng ví rồi thử lại.");
   let from = await resolveMetanodeWalletAddress();
+  from = await confirmSigningWallet(from);
   // Hash tài khoản trước khi gửi, đọc BÊN TRONG khoá giao dịch để không nhầm với
   // giao dịch của luồng khác (xem `tx-gateway.ts`).
   let hashBeforeSend: string | null = null;
@@ -442,6 +471,7 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
       if (!imported)
         throw new Error("Không tìm thấy ví hoặc phiên kết nối ví đã hết hạn. Hãy chọn lại ví.", { cause: error });
       from = await resolveMetanodeWalletAddress();
+      from = await confirmSigningWallet(from);
       return send(from);
     }
   };
@@ -540,7 +570,8 @@ async function supportsAtomicHierarchy(): Promise<boolean> {
 }
 
 export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHash: string; assigneeWallet: string }> {
-  const creatorWallet = await resolveMetanodeWalletAddress();
+  // Ví tạo task cũng là ví được ghi làm người thực hiện → phải là ví thật sự ký.
+  const creatorWallet = await confirmSigningWallet(await resolveMetanodeWalletAddress());
   const assignee = pendingCreateAssigneeWallet === ZERO_ADDRESS ? creatorWallet : pendingCreateAssigneeWallet;
   pendingCreateAssigneeWallet = ZERO_ADDRESS;
   const commonValues = {

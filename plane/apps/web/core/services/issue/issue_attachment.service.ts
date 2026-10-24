@@ -13,6 +13,7 @@ import { EIssueServiceType } from "@plane/types";
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isOnChainTaskSyncAvailable, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
+import { notifyVaultProblem } from "@/services/blockchain/vault-notice";
 import { localDB, saveDB } from "@plane/services";
 import { getAttachmentFromStorage, saveAttachmentToStorage, deleteAttachmentFromStorage } from "@plane/utils";
 
@@ -103,8 +104,12 @@ export class IssueAttachmentService extends APIService {
     } catch (chainError) {
       // Chưa có dấu vết trên hệ thống thì không giữ tệp lại (tránh tệp mồ côi).
       await deleteAttachmentFromStorage(assetId).catch(() => {});
+      // Lỗi ví (chưa có ví / ví đang chọn không còn trong ứng dụng ví): mở "Trung tâm ví"
+      // để người dùng khắc phục ngay, thay vì chỉ thấy một câu lỗi rồi không biết làm gì.
+      notifyVaultProblem(chainError);
       throw {
-        error: chainError instanceof Error ? chainError.message : "Ghi bằng chứng đính kèm lên hệ thống thất bại.",
+        error:
+          chainError instanceof Error ? chainError.message : "Ghi bằng chứng đính kèm lên hệ thống thất bại.",
         isChainError: true,
       };
     }

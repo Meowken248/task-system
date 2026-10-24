@@ -1,5 +1,5 @@
 import type { Wallet } from "@metanodejs/system-core";
-import { getVaultFrameUrl, getVaultWalletsDetailed, VaultSigningError } from "@plane/services";
+import { getVaultWalletsDetailed, VaultSigningError } from "@plane/services";
 
 import {
   clearLastSelectedMetanodeWallet,
@@ -8,7 +8,7 @@ import {
   initFiaiSDK,
 } from "./fiai-sdk.service";
 import { UserService } from "@/services/user.service";
-import { openWalletCenter } from "./wallet-center-events";
+import { openWalletCenter, notifyWalletChanged } from "./wallet-center-events";
 
 type WalletLike = { address?: unknown };
 type ConnectWallet = (mode: "light") => Promise<unknown> | unknown;
@@ -18,6 +18,12 @@ let systemCorePromise: Promise<ConnectWallet> | null = null;
 let connectWalletPopup: Window | null = null;
 let currentPlaneUserId: string | null = null;
 let linkedWalletAddress: string | null = null;
+/**
+ * Ví THẬT SỰ ký giao dịch gần nhất (do ứng dụng ví trả về), khác với `linkedWalletAddress`
+ * là địa chỉ đang lưu trong hồ sơ/trình duyệt. Sổ audit phải ghi theo ví ký, nếu không bản ghi
+ * sẽ mang tên một địa chỉ không hề thực hiện giao dịch (lỗi CHAIN-05).
+ */
+let signingWalletAddress: string | null = null;
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 let activeResolvePromise: Promise<string> | null = null;
 const userService = new UserService();
@@ -40,6 +46,8 @@ function getEffectivePlaneUserId(): string | null {
 
 export function configureMetanodeWalletUser(userId?: string, walletAddress?: string | null): void {
   currentPlaneUserId = userId || null;
+  // Phiên mới (đăng nhập/đổi tài khoản) ⇒ chưa biết ví nào sẽ ký.
+  signingWalletAddress = null;
   if (!currentPlaneUserId || typeof window === "undefined") {
     linkedWalletAddress = null;
     return;
@@ -60,6 +68,43 @@ export function configureMetanodeWalletUser(userId?: string, walletAddress?: str
 
 export function getLinkedMetanodeWalletAddress(): string | null {
   return linkedWalletAddress;
+}
+
+/**
+ * Ghi nhớ ví THẬT SỰ ký giao dịch (đã được ứng dụng ví xác nhận) và đồng bộ luôn các nơi
+ * đang lưu địa chỉ dùng cho hiển thị. Nhờ vậy mọi màn hình và sổ audit cùng trỏ về một
+ * địa chỉ duy nhất — địa chỉ mà ứng dụng ví thực sự dùng để ký (CHAIN-05).
+ */
+export function rememberSigningWalletAddress(address?: string | null): void {
+  const normalized = normalizeWalletAddress(address ?? "");
+  if (!isWalletAddress(normalized)) return;
+  const previous = linkedWalletAddress;
+  signingWalletAddress = normalized;
+  linkedWalletAddress = normalized;
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem("plane_active_wallet_address", normalized);
+    window.localStorage.setItem("plane_active_wallet_address", normalized);
+  } catch {
+    // Trình duyệt chặn lưu trữ (chế độ riêng tư) — không ảnh hưởng tới luồng ký.
+  }
+  if (previous && previous.toLowerCase() === normalized.toLowerCase()) return;
+  // Phát hiện lệch: ví đang ký khác địa chỉ đang lưu trong hồ sơ/trình duyệt.
+  // Đồng bộ lại mọi nơi lưu (localDB + hồ sơ) để màn hình thành viên và sổ audit cùng một
+  // địa chỉ, đồng thời không chặn bước ký đang chờ.
+  console.warn(`[Ví] Đồng bộ lại địa chỉ ví theo ví đang ký: ${previous ?? "(chưa có)"} → ${normalized}`);
+  void linkMetanodeWalletAddress(normalized).catch((error) => {
+    console.warn("[Ví] Chưa lưu được địa chỉ ví mới vào hồ sơ:", error);
+  });
+  notifyWalletChanged(normalized);
+}
+
+/**
+ * Địa chỉ đang dùng để ký, đã xác nhận có trong ứng dụng ví. `null` khi chưa xác định được
+ * trong phiên này (khi đó nơi gọi dùng địa chỉ hồ sơ làm phương án dự phòng).
+ */
+export function getSigningWalletAddress(): string | null {
+  return signingWalletAddress ?? linkedWalletAddress;
 }
 
 export function isMetanodeWalletRuntimeSupported(): boolean {
@@ -477,8 +522,7 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
 
   if (!isMetanodeWalletRuntimeSupported()) {
     throw new Error(
-      "Trình duyệt không cho phép kết nối ví MetaNode trên kết nối HTTP không an toàn. " +
-        "Hãy dùng http://localhost:3000 hoặc mạng nội bộ (LAN)."
+      "Trình duyệt chặn kết nối ví trên địa chỉ không bảo mật. Hãy mở Plane bằng địa chỉ do quản trị viên cung cấp."
     );
   }
 
@@ -569,8 +613,7 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
     if (silent) return ZERO_ADDRESS;
     throw new VaultSigningError(
       "VAULT_UNAVAILABLE",
-      `Không đọc được danh sách ví từ Crypto Vault (${getVaultFrameUrl() || "6002"}). ` +
-        "Hãy kiểm tra crypto-vault đang chạy rồi tải lại trang."
+      "Chưa mở được ứng dụng ví nên chưa thể xác nhận thay đổi. Hãy mở ứng dụng ví trên máy rồi thực hiện lại."
     );
   }
   const availableAddresses = [...new Set(vaultWallets.map((wallet) => wallet.address))];
@@ -627,8 +670,7 @@ async function doResolveMetanodeWalletAddress(silent: boolean, forceSelect = fal
     if (silent) return ZERO_ADDRESS;
     throw new VaultSigningError(
       "VAULT_EMPTY",
-      `${getVaultFrameUrl() || "Crypto Vault"} chưa có ví nào. ` +
-        'Mở "Trung tâm ví" để import private key vào đúng Crypto Vault Plane đang dùng, rồi bấm Sync to Chain lại.'
+      "Ứng dụng ví chưa có ví nào. Mở “Trung tâm ví” để thêm ví của bạn rồi thực hiện lại."
     );
   }
 }
