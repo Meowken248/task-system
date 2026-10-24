@@ -6,7 +6,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Wallet } from "lucide-react";
-import { isVaultSigningError, localDB, syncDAppDBToChain, VaultSigningError } from "@plane/services";
+import {
+  getDAppSyncStatus,
+  isVaultSigningError,
+  localDB,
+  syncDAppDBToChain,
+  VaultSigningError,
+  type DAppSyncStatus,
+} from "@plane/services";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 import { cn } from "@plane/utils";
 
@@ -96,6 +103,7 @@ export function SyncToChainButton() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStage, setSyncStage] = useState<string>("Đang xử lý…");
   const [walletState, setWalletState] = useState<SigningWalletState | null>(null);
+  const [syncStatus, setSyncStatus] = useState<DAppSyncStatus | null>(null);
 
   const refreshWalletState = useCallback(async (options?: { refresh?: boolean }) => {
     try {
@@ -130,6 +138,21 @@ export function SyncToChainButton() {
     window.addEventListener(WALLET_CHANGED_EVENT, onWalletChanged);
     return () => window.removeEventListener(WALLET_CHANGED_EVENT, onWalletChanged);
   }, [currentUser?.id, refreshWalletState]);
+
+  // Nhãn "đã lưu / chưa lưu" (CHAIN-08). Chỉ đọc dữ liệu có sẵn trong máy nên cập nhật định kỳ
+  // không tốn mạng; nhờ vậy người dùng biết dữ liệu đã lên hệ thống lưu trữ chưa thay vì bấm
+  // "Đồng bộ dữ liệu" nhiều lần.
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const update = () => setSyncStatus(getDAppSyncStatus());
+    update();
+    const timer = window.setInterval(update, 5_000);
+    window.addEventListener(WALLET_CHANGED_EVENT, update);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener(WALLET_CHANGED_EVENT, update);
+    };
+  }, [currentUser?.id]);
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -223,6 +246,8 @@ export function SyncToChainButton() {
       }
     } finally {
       setIsSyncing(false);
+      // Đọc lại trạng thái lưu trữ để nhãn ở góc màn hình phản ánh kết quả vừa xong.
+      setSyncStatus(getDAppSyncStatus());
       void refreshWalletState({ refresh: true });
     }
   };
@@ -243,6 +268,27 @@ export function SyncToChainButton() {
 
   return (
     <div className="fixed right-4 bottom-4 z-50 flex flex-col items-end gap-2">
+      {syncStatus && (
+        <span
+          title={syncStatus.description}
+          className="shadow-sm flex items-center gap-1.5 rounded-full border border-subtle bg-surface-1 px-2.5 py-1 text-11 font-medium text-secondary"
+        >
+          <span
+            className={cn(
+              "size-1.5 rounded-full",
+              syncStatus.state === "synced"
+                ? "bg-emerald-500"
+                : syncStatus.state === "pending"
+                  ? "bg-amber-500"
+                  : syncStatus.state === "unsynced"
+                    ? "bg-red-500"
+                    : "bg-gray-400"
+            )}
+          />
+          {syncStatus.label}
+        </span>
+      )}
+
       <button
         type="button"
         onClick={() => {

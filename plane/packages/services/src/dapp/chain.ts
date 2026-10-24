@@ -1085,6 +1085,104 @@ export function setDirtyState(val: boolean): void {
   }
 }
 
+export type DAppSyncStatusState = "synced" | "pending" | "unsynced" | "unknown";
+
+export type DAppSyncStatus = {
+  state: DAppSyncStatusState;
+  /** Câu ngắn hiển thị cho người dùng cuối — không dùng thuật ngữ kỹ thuật. */
+  label: string;
+  /** Giải thích thêm cho tooltip (vẫn là ngôn ngữ người dùng). */
+  description: string;
+  /** CID đang có trên máy (bản dữ liệu mới nhất đã đóng gói). */
+  localCid: string | null;
+  /** CID đã được xác nhận ghi lên hệ thống lưu trữ. */
+  committedCid: string | null;
+  /** Còn một bản đang chờ ghi lên hệ thống lưu trữ. */
+  hasPendingCommit: boolean;
+  /** Trên máy đang có thay đổi chưa đóng gói. */
+  hasUnsavedChanges: boolean;
+};
+
+/**
+ * Trạng thái "dữ liệu của tôi đã được lưu lên hệ thống lưu trữ chưa?" — dùng cho badge ở góc
+ * màn hình (lỗi CHAIN-08: trước đây người dùng không có cách nào biết, nên bấm "Đồng bộ dữ liệu"
+ * nhiều lần và sinh thêm giao dịch).
+ *
+ * Chỉ đọc dữ liệu đã có trong máy (bộ nhớ + localStorage), KHÔNG gọi mạng, nên gọi lại vài giây
+ * một lần cũng không ảnh hưởng hiệu năng.
+ */
+export function getDAppSyncStatus(slug?: string): DAppSyncStatus {
+  const targetSlug = slug || getDefaultWorkspaceSlug();
+  const localCid = getLastUploadedCID();
+  const pendingJob = readPendingOnChainCommit();
+  const committedCid = targetSlug ? readCommittedWorkspaceCid(targetSlug) : null;
+  const hasUnsavedChanges = isDirtyState;
+  // Sau khi tải lại trang, "đang chờ ghi" chỉ còn dấu vết trong localStorage (biến bộ nhớ đã mất).
+  // Khoá này được xoá đúng lúc ghi thành công nên dùng được làm tín hiệu.
+  let pendingCid: string | null = null;
+  if (typeof localStorage !== "undefined") {
+    try {
+      const stored = localStorage.getItem("plane_dapp_pending_onchain_cid");
+      pendingCid = stored && localCid && stored === localCid ? stored : null;
+    } catch {
+      pendingCid = null;
+    }
+  }
+  const hasPendingCommit =
+    Boolean(pendingJob) || Boolean(pendingCid) || Boolean(localCid && committedCid && localCid !== committedCid);
+
+  const base = {
+    localCid,
+    committedCid,
+    hasPendingCommit,
+    hasUnsavedChanges,
+  };
+
+  if (hasUnsavedChanges) {
+    return {
+      ...base,
+      state: "unsynced",
+      label: "Có thay đổi chưa lưu",
+      description: "Thay đổi mới nhất mới nằm trên máy này. Bấm “Đồng bộ dữ liệu” để lưu lại.",
+    };
+  }
+
+  if (!localCid) {
+    return {
+      ...base,
+      state: "unknown",
+      label: "Chưa lưu lần nào",
+      description: "Dữ liệu chưa được lưu lên hệ thống lưu trữ. Bấm “Đồng bộ dữ liệu” khi bạn sẵn sàng.",
+    };
+  }
+
+  if (hasPendingCommit || (committedCid && committedCid !== localCid)) {
+    return {
+      ...base,
+      state: "pending",
+      label: "Đang chờ lưu",
+      description: "Bản mới nhất đã được đóng gói và đang chờ xác nhận bằng ví.",
+    };
+  }
+
+  if (committedCid === localCid) {
+    return {
+      ...base,
+      state: "synced",
+      label: "Đã lưu",
+      description: "Dữ liệu trên máy và trên hệ thống lưu trữ đang khớp nhau.",
+    };
+  }
+
+  // Chưa từng ghi mốc xác nhận cho không gian làm việc này (ví dụ chế độ chỉ ghi từng công việc).
+  return {
+    ...base,
+    state: "unknown",
+    label: "Chưa xác nhận",
+    description: "Chưa có mốc xác nhận cho không gian làm việc này. Bấm “Đồng bộ dữ liệu” để chắc chắn.",
+  };
+}
+
 function getDBStorageKey(): string {
   return currentUserAddress || "local";
 }

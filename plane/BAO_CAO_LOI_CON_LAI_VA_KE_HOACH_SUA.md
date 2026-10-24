@@ -448,7 +448,7 @@ Gọi trong `fiai-sdk.service.ts` `resetFiaiSDK()` (sau `disposeFiaiSDK()`), và
 
 * Trước khi gửi, hiển thị: `"Thao tác này cần 1 giao dịch on-chain"` (hoặc 2 nếu có commit CID).
 * Sau khi gửi, hiển thị hash + nonce cho từng tx (giúp đối chiếu `check-wallet.mjs`).
-* Thêm badge `"Chưa đồng bộ on-chain"` khi `pendingOnChainCommit !== null` (liên quan `CHAIN-08`).
+* ✅ **Đã làm**: badge trạng thái lưu trữ (`getDAppSyncStatus()` + nhãn ở góc màn hình) — xem `CHAIN-08`.
 
 > **Dài hạn (không nằm trong 3 ngày)**: gộp nhiều lệnh ghi vào **1 giao dịch** bằng hàm batch/multicall ở contract, hoặc chuyển sang mô hình "1 tx = 1 batch thay đổi" (event-sourcing). Khi đó mới đạt đúng kỳ vọng "1 hành động = 1 nonce".
 
@@ -804,7 +804,7 @@ export type SyncResult = {
 |---|:--:|---|---|:--:|
 | `CHAIN-06` | P2 | `issueExistsOnChain` nuốt **mọi** lỗi ⇒ `false` (2 nhánh `return false` giống nhau, `plane-task-chain.service.ts:644-647`) | Chỉ trả `false` khi `InvalidTask()`; lỗi khác phải throw | 1 giờ |
 | `CHAIN-07` | P2 | Đọc contract bằng `ZERO_ADDRESS` khi Vault rỗng (`plane-task-chain.service.ts:601-604`) | Trả lỗi rõ "chưa có ví" thay vì đọc bằng zero | 2 giờ |
-| `CHAIN-08` | P2 | Không hiển thị "đã/chưa đồng bộ on-chain" | Badge dựa trên `pendingOnChainCommit` + `readCommittedWorkspaceCid` | 1–2 ngày |
+| `CHAIN-08` | P2 | Không hiển thị "đã/chưa đồng bộ on-chain" — ✅ **đã sửa trong mã** | `getDAppSyncStatus()` đọc CID local + CID đã xác nhận + bản đang chờ; badge ở góc màn hình ("Đã lưu" / "Đang chờ lưu" / "Có thay đổi chưa lưu" / "Chưa xác nhận") | 2 giờ |
 | `WALLET-03` | P2 | Badge ví không cập nhật sau khi chọn/import | Phát event `wallet-changed` + `useSyncExternalStore` | 0.5 ngày |
 | `WALLET-04` | P2 | Trung tâm ví gọi `getAllWallets` (có RPC balance) mỗi lần `focus` | Cache 30s + chỉ refresh khi mở panel | 2 giờ |
 | `WALLET-05` | P2 | `Sync button` + Trung tâm ví render **toàn cục**, cả trang login | Chỉ mount trong `(app)` layout | 2 giờ |
@@ -1040,6 +1040,7 @@ git status --porcelain
 | `CHAIN-05` | ❌ 3 địa chỉ ví lệch nhau, sổ audit ghi sai chủ | ✅ Sửa mã | Ví **đã ký** là nguồn sự thật: `rememberSigningWalletAddress()` + `getSigningWalletAddress()`; lệch ⇒ tự đồng bộ lại mọi nơi lưu + phát `plane:wallet-changed`; audit ghi theo ví ký; `createIssueOnChain` dùng đúng ví ký | `metanode-wallet.service.ts`, `plane-task-chain.service.ts`, `blockchain-tracking.service.ts` |
 | `BA-21` | ❌ Link dự án chia sẻ trả 404 ⇒ tưởng mất dữ liệu | ✅ Sửa mã | Nhánh "không thấy dự án trong máy" kiểm tra dự án có trong dữ liệu không gian làm việc trên chain: có ⇒ `403 NOT_AUTHORIZED` (màn "Chưa có quyền"), không có/đã xoá ⇒ `404` | `routes.ts` |
 | `WALLET-06` | ❌ Import có thể "nhận vơ" ví cũ | ✅ Sửa mã | Phân biệt "không đọc được danh sách" với "chưa có ví"; chỉ nhận ví vừa thêm khi địa chỉ có thật trong danh sách **và** không có trong ảnh chụp trước; không xác nhận được thì báo rõ để người dùng tự chọn ví | `wallet-vault.service.ts` |
+| `CHAIN-08` | ❌ Người dùng không biết dữ liệu đã lưu chưa | ✅ Sửa mã | `getDAppSyncStatus()` (chỉ đọc dữ liệu trong máy, không gọi mạng) trả 4 trạng thái: đã lưu / đang chờ lưu / có thay đổi chưa lưu / chưa xác nhận; hiển thị thành nhãn nhỏ cạnh nút đồng bộ, tự cập nhật 5 giây/lần và ngay sau khi đồng bộ | `chain.ts`, `sync-button.tsx` |
 | Văn bản UI | ❌ Nhiều thuật ngữ kỹ thuật | ✅ Sửa mã | Bỏ "Crypto Vault / on-chain / nonce / IPFS / SDK / cổng 600x" khỏi mọi thông báo người dùng thấy | `sync-button.tsx`, `wallet-center.tsx`, `plane-task-chain.service.ts`, `chain.ts` |
 
 
@@ -1151,7 +1152,7 @@ Lý do phải chặn: đã kiểm chứng bằng cách grep bundle build ra — 
 | `SEC-03` xác thực OTP phía server | Cần backend thật; hiện dữ liệu nằm trong `localStorage` của trình duyệt | Kiến trúc + backend |
 | `CHAIN-01` `getIssueTaskId` revert | Lỗi nằm ở dữ liệu/contract (task chưa tồn tại hoặc contract mới deploy). Phía app đã có preflight + `unknown`, nhưng muốn hết hẳn phải sửa dữ liệu on-chain | Dev + chủ contract |
 | `CHAIN-05` 3 nguồn địa chỉ membership | Cần chốt "nguồn sự thật" (ví ký / ví hồ sơ / ví trên contract) — là quyết định nghiệp vụ | BA + Dev |
-| `CHAIN-08` hiển thị trạng thái đã/chưa đồng bộ | Cần thiết kế UI (icon, tooltip, nơi đặt) — không nên tự phát minh | BA/Design |
+| `CHAIN-08` hiển thị trạng thái đã/chưa đồng bộ | ✅ Đã làm: nhãn trạng thái dùng chữ thuần (không icon mới, không thuật ngữ), đặt ngay trên nút "Đồng bộ dữ liệu" | Xong (cần QA mắt thường) |
 | `WALLET-01` mở `:6005` khác origin | **Đã đo lại phạm vi**: ở bản production hiện tại, `VITE_URL_CONNECT_WALLET=https://json.iqnb.com/connectWalletWeb/` và `VITE_FIAI_CRYPTO_VAULT_URL=https://json.iqnb.com/fiai-sdk/crypto-vault/` **cùng origin** ⇒ dùng chung IndexedDB, lỗi **không** xảy ra với người dùng thật. Lỗi chỉ xuất hiện khi chạy local/LAN với hai cổng khác nhau (`.env`: `6005` vs `6002`). Không nên sửa mù vì luồng chọn ví hiện tại đang chạy được | Dev (chỉ môi trường dev) |
 | `WALLET-02` preflight cho luồng ghi khác | Phụ thuộc `CHAIN-05` (chốt nguồn địa chỉ) | Dev |
 | `WALLET-06` | Cần kịch bản thử với nhiều ví thật (WALLET-03 đã sửa: badge cập nhật qua sự kiện `plane:wallet-changed`) | QA |
@@ -1193,7 +1194,7 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 | **1** | ✅ **Đã làm** `CHAIN-05` + `WALLET-02` — **danh tính ví**: mọi chỗ ghi/kiểm tra quyền dùng **đúng địa chỉ đang ký** (`msg.sender`), ví hồ sơ chỉ để hiển thị | Hai mã này là **cùng một gốc**; trước đây `blockchain-tracking.service.ts` ghi sổ theo `getLinkedMetanodeWalletAddress()` còn giao dịch ký bằng địa chỉ ví trong ứng dụng ví ⇒ lệch sổ. Nay sổ audit ghi theo ví đã ký và tự đồng bộ lại các nơi lưu khi phát hiện lệch | ~1 ngày | Không (D3 đã chốt trong mã) |
 | **2** | ✅ **Đã làm** `BA-21` — link chia sẻ dự án trả `404` thay vì "Chưa có quyền" | Người nhận link thấy "không tìm thấy" ⇒ tưởng mất dữ liệu; sửa thuần router + UI, không đụng ví/chain | 0,5–1 ngày | Không |
 | **3** | ✅ **Đã làm** `WALLET-06` — import có thể "nhận vơ" ví cũ | Rủi ro gắn nhầm danh tính on-chain cho tài khoản; nay không đoán: đọc không được danh sách ví trước đó thì yêu cầu người dùng chọn đúng ví | 2 giờ | QA với 2 ví thật |
-| **4** | `CHAIN-08` — hiển thị "đã/chưa đồng bộ" | Người dùng không biết dữ liệu đã lên hệ thống chưa; đây là cách duy nhất để họ tự kiểm tra thay vì bấm đồng bộ nhiều lần | 1–2 ngày | Cần design 1 buổi (icon + tooltip + vị trí) |
+| **4** | ✅ **Đã làm** `CHAIN-08` — hiển thị "đã/chưa đồng bộ" | Người dùng không biết dữ liệu đã lên hệ thống chưa; đây là cách duy nhất để họ tự kiểm tra thay vì bấm đồng bộ nhiều lần | 2 giờ | Chỉ cần QA mắt thường |
 | **5** | `ARCH-02` — hai tab ghi đè `localStorage` của nhau | Nếu có phản ánh "mất dữ liệu", đây là nghi phạm số một (không phải chain) | ~2 ngày | Chỉ làm khi có phản ánh thật |
 
 **Chưa nên làm / cố ý hoãn**
@@ -1208,9 +1209,9 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 
 **Hết báo cáo v1.1.** Tình trạng thật, tính theo 31 mã lỗi trong §1.1:
 
-- **14 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`, `WALLET-02`, `CHAIN-05`, `BA-21`, `WALLET-06`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp, `WALLET-02` + `CHAIN-05` cần thử với ứng dụng ví thật (rỗng ví / đổi ví), `BA-21` cần mở link bằng tài khoản thứ hai, `WALLET-06` cần thử với 2 ví thật.
+- **15 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`, `WALLET-02`, `CHAIN-05`, `BA-21`, `WALLET-06`, `CHAIN-08`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp, `WALLET-02` + `CHAIN-05` cần thử với ứng dụng ví thật (rỗng ví / đổi ví), `BA-21` cần mở link bằng tài khoản thứ hai, `WALLET-06` cần thử với 2 ví thật, `CHAIN-08` cần nhìn nhãn trên giao diện.
 - **5 mã mới giảm thiểu, chưa đóng** (`SEC-01`, `SEC-02`, `SEC-03`, `CHAIN-04`, `SEC-05`) — cần rotate khoá, backend, hoặc chuyển ký sang server.
-- **12 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
+- **11 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
 
 
 Riêng `CHAIN-09`: 4/5 nguyên nhân gốc (RC-2…RC-5) đã xử lý; **RC-1 (mỗi lần lưu = một giao dịch) chỉ được gộp trong cửa sổ 90–120 giây, chưa bị loại bỏ về mặt thiết kế** — người dùng thao tác cách nhau hơn 2 phút vẫn sinh giao dịch mới cho mỗi thao tác. Không có mục nào được ghi "đã xong" mà thiếu bằng chứng.
