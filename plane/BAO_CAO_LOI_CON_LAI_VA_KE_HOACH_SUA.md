@@ -755,11 +755,14 @@ export type SyncResult = {
 * **Sửa**: gộp 2 nguồn, dedupe theo `member_id`/email/wallet, đánh dấu `source: "workspace" | "project"`.
 * **Nghiệm thu**: mời người mới vào Workspace (chưa thêm vào Project) ⇒ xuất hiện ngay trong dropdown Assignee.
 
-### 5.7 `BA-21` — Link dự án chia sẻ trả **404** thay vì "không có quyền" · 1 ngày
+### 5.7 `BA-21` — Link dự án chia sẻ trả **404** thay vì "không có quyền" · 1 ngày — ✅ **đã sửa trong mã (chờ QA)**
 
 * **Nguyên nhân**: router trả `404` khi không tìm thấy project trong `localDB` của **máy người nhận** (dữ liệu chưa đồng bộ) — không phân biệt "không tồn tại" với "chưa được cấp quyền/chưa đồng bộ".
-* **Sửa**: nếu project tồn tại trên chain/IPFS nhưng chưa có local ⇒ trả `403` + `{error: "NOT_AUTHORIZED"}` để UI hiện màn "Yêu cầu quyền truy cập" thay vì 404.
-* **Nghiệm thu**: mở link bằng tài khoản không thuộc workspace ⇒ màn "Not Authorized" + nút xin quyền; **không** còn 404.
+* **Đã sửa** (`routes.ts`): thêm `projectExistsInWorkspaceSnapshot(slug, projectId)` — chỉ chạy ở nhánh **không tìm thấy dự án trong dữ liệu của máy**: đọc con trỏ dữ liệu của không gian làm việc từ chain rồi tìm dự án trong bản dữ liệu đó.
+  * Dự án **có thật** ⇒ trả `403 { error: "NOT_AUTHORIZED" }` ⇒ UI hiện màn "Chưa có quyền" (quản trị viên không gian làm việc còn có nút xin tham gia), thay vì "Dự án không tồn tại".
+  * Dự án **không có** trong dữ liệu đó, thuộc danh sách đã xoá, hoặc không đọc được chain ⇒ vẫn `404` (đúng nghĩa "không tìm thấy").
+  * Không đổi hợp đồng, không đổi luồng bình thường: chỉ tốn thêm 1 lần đọc khi trang báo lỗi.
+* **Nghiệm thu**: mở link dự án bằng tài khoản không có dự án đó trong máy ⇒ màn "Chưa có quyền", **không** còn 404; link sai/dự án đã xoá vẫn là 404.
 
 ### 5.8 `BA-32` — Upload attachment treo "Pending" tới 2 phút rồi lỗi · 1–2 ngày — ✅ **đã sửa trong mã (chờ QA)**
 
@@ -1035,6 +1038,7 @@ git status --porcelain
 | `BA-32` | ❌ Upload tệp đính kèm treo "Pending" rồi lỗi | ✅ Sửa mã | Đọc tệp tại máy (bỏ POST multipart tới `""`); lưu tệp **trước khi ký**, kiểm tra lại ngay; `asset_url` là khoá tra cứu trong máy + `is_uploaded = true`; router đọc `assetId` ở đoạn cuối URL | `issue_attachment.service.ts`, `routes.ts` |
 | `WALLET-02` | ❌ Luồng ghi khác không kiểm tra ví trước khi ký | ✅ Sửa mã | `confirmSigningWallet()` gọi `assertVaultSigningAddress` trước mọi bước ký; `notifyVaultProblem()` mở "Trung tâm ví" đúng chế độ ở tất cả nhánh on-chain trước đây chỉ ghi log; câu báo lỗi bỏ thuật ngữ | `plane-task-chain.service.ts`, `vault-notice.ts` (mới), `issue.service.ts`, `issue_comment.service.ts`, `issue_attachment.service.ts`, `metanode-wallet.service.ts` |
 | `CHAIN-05` | ❌ 3 địa chỉ ví lệch nhau, sổ audit ghi sai chủ | ✅ Sửa mã | Ví **đã ký** là nguồn sự thật: `rememberSigningWalletAddress()` + `getSigningWalletAddress()`; lệch ⇒ tự đồng bộ lại mọi nơi lưu + phát `plane:wallet-changed`; audit ghi theo ví ký; `createIssueOnChain` dùng đúng ví ký | `metanode-wallet.service.ts`, `plane-task-chain.service.ts`, `blockchain-tracking.service.ts` |
+| `BA-21` | ❌ Link dự án chia sẻ trả 404 ⇒ tưởng mất dữ liệu | ✅ Sửa mã | Nhánh "không thấy dự án trong máy" kiểm tra dự án có trong dữ liệu không gian làm việc trên chain: có ⇒ `403 NOT_AUTHORIZED` (màn "Chưa có quyền"), không có/đã xoá ⇒ `404` | `routes.ts` |
 | Văn bản UI | ❌ Nhiều thuật ngữ kỹ thuật | ✅ Sửa mã | Bỏ "Crypto Vault / on-chain / nonce / IPFS / SDK / cổng 600x" khỏi mọi thông báo người dùng thấy | `sync-button.tsx`, `wallet-center.tsx`, `plane-task-chain.service.ts`, `chain.ts` |
 
 
@@ -1186,7 +1190,7 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 | Thứ tự | Việc | Vì sao làm bây giờ | Công | Chặn bởi |
 |:--:|---|---|:--:|---|
 | **1** | ✅ **Đã làm** `CHAIN-05` + `WALLET-02` — **danh tính ví**: mọi chỗ ghi/kiểm tra quyền dùng **đúng địa chỉ đang ký** (`msg.sender`), ví hồ sơ chỉ để hiển thị | Hai mã này là **cùng một gốc**; trước đây `blockchain-tracking.service.ts` ghi sổ theo `getLinkedMetanodeWalletAddress()` còn giao dịch ký bằng địa chỉ ví trong ứng dụng ví ⇒ lệch sổ. Nay sổ audit ghi theo ví đã ký và tự đồng bộ lại các nơi lưu khi phát hiện lệch | ~1 ngày | Không (D3 đã chốt trong mã) |
-| **2** | `BA-21` — link chia sẻ dự án trả `404` thay vì "Chưa có quyền" | Người nhận link thấy "không tìm thấy" ⇒ tưởng mất dữ liệu; sửa thuần router + UI, không đụng ví/chain | 0,5–1 ngày | Không |
+| **2** | ✅ **Đã làm** `BA-21` — link chia sẻ dự án trả `404` thay vì "Chưa có quyền" | Người nhận link thấy "không tìm thấy" ⇒ tưởng mất dữ liệu; sửa thuần router + UI, không đụng ví/chain | 0,5–1 ngày | Không |
 | **3** | `WALLET-06` — import có thể "nhận vơ" ví cũ | Rủi ro gắn nhầm danh tính on-chain cho tài khoản; sửa nhỏ (nếu không đọc được danh sách ví trước đó ⇒ bắt xác nhận địa chỉ) | 2 giờ | Cần 2 ví thật để thử |
 | **4** | `CHAIN-08` — hiển thị "đã/chưa đồng bộ" | Người dùng không biết dữ liệu đã lên hệ thống chưa; đây là cách duy nhất để họ tự kiểm tra thay vì bấm đồng bộ nhiều lần | 1–2 ngày | Cần design 1 buổi (icon + tooltip + vị trí) |
 | **5** | `ARCH-02` — hai tab ghi đè `localStorage` của nhau | Nếu có phản ánh "mất dữ liệu", đây là nghi phạm số một (không phải chain) | ~2 ngày | Chỉ làm khi có phản ánh thật |
@@ -1203,9 +1207,9 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 
 **Hết báo cáo v1.1.** Tình trạng thật, tính theo 31 mã lỗi trong §1.1:
 
-- **12 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`, `WALLET-02`, `CHAIN-05`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp, `WALLET-02` + `CHAIN-05` cần thử với ứng dụng ví thật (rỗng ví / đổi ví).
+- **13 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`, `WALLET-02`, `CHAIN-05`, `BA-21`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp, `WALLET-02` + `CHAIN-05` cần thử với ứng dụng ví thật (rỗng ví / đổi ví), `BA-21` cần mở link bằng tài khoản thứ hai.
 - **5 mã mới giảm thiểu, chưa đóng** (`SEC-01`, `SEC-02`, `SEC-03`, `CHAIN-04`, `SEC-05`) — cần rotate khoá, backend, hoặc chuyển ký sang server.
-- **14 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `WALLET-06`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
+- **13 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `WALLET-06`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
 
 
 Riêng `CHAIN-09`: 4/5 nguyên nhân gốc (RC-2…RC-5) đã xử lý; **RC-1 (mỗi lần lưu = một giao dịch) chỉ được gộp trong cửa sổ 90–120 giây, chưa bị loại bỏ về mặt thiết kế** — người dùng thao tác cách nhau hơn 2 phút vẫn sinh giao dịch mới cho mỗi thao tác. Không có mục nào được ghi "đã xong" mà thiếu bằng chứng.

@@ -480,6 +480,37 @@ const matchesCsvFilter = (rawValues: any, filterValue: string | null): boolean =
   return expected.some((value) => actualValues.includes(value));
 };
 
+/**
+ * Kiểm tra nhanh một dự án có thật trong bản dữ liệu của không gian làm việc trên chain hay không.
+ *
+ * Dùng cho trường hợp **mở link chia sẻ** mà bản dữ liệu trên máy chưa có dự án: cần phân biệt
+ * "dự án không tồn tại" (404) với "dự án có thật nhưng mình chưa được cấp quyền / chưa đồng bộ"
+ * (403) — nếu trả 404, người dùng tưởng dự án đã bị xoá (lỗi BA-21).
+ *
+ * Chỉ chạy ở nhánh không tìm thấy dự án trong dữ liệu cục bộ nên không ảnh hưởng luồng bình thường.
+ */
+async function projectExistsInWorkspaceSnapshot(wsSlug: string, projectId: string): Promise<boolean> {
+  if (!wsSlug || !projectId) return false;
+  const registry = getWorkspaceRegistryAddress();
+  if (!registry) return false;
+  try {
+    const workspaceInfo = await directRpcRead(registry, abiEncodeGetWorkspace(wsSlug), 4000);
+    const cid = decodeAbiWorkspace(workspaceInfo)?.ipfsCID?.trim();
+    if (!cid) return false;
+    const snapshot = await fetchFromIPFS(cid);
+    const projects: any[] = Array.isArray(snapshot?.projects) ? snapshot.projects : [];
+    const target = projectId.toLowerCase();
+    return projects.some(
+      (project: any) =>
+        String(project?.id ?? "").toLowerCase() === target ||
+        String(project?.identifier ?? "").toLowerCase() === target
+    );
+  } catch (error) {
+    console.warn("[DApp Routes] Không đọc được dữ liệu không gian làm việc trên chain để kiểm tra quyền:", error);
+    return false;
+  }
+}
+
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   syncCrossPortWorkspaces();
@@ -4921,6 +4952,21 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           return ok({});
         }
       } else if (method === "get") {
+        // BA-21: dự án có thật trên hệ thống nhưng máy này chưa có (mở link chia sẻ khi chưa
+        // được cấp quyền, hoặc dữ liệu chưa kịp đồng bộ) trước đây bị báo 404 "không tìm thấy"
+        // ⇒ người dùng tưởng dự án bị xoá. Xác nhận dự án có trong dữ liệu của không gian làm
+        // việc trên chain rồi trả 403 để UI mở màn "Chưa có quyền" (kèm nút xin tham gia).
+        const wsSlugMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
+        const wsSlug = wsSlugMatch?.[1] ?? "";
+        if (wsSlug && !deletedSet.has(projectId) && (await projectExistsInWorkspaceSnapshot(wsSlug, projectId))) {
+          return {
+            data: {
+              error: "NOT_AUTHORIZED",
+              detail: "Bạn chưa được cấp quyền truy cập dự án này.",
+            },
+            status: 403,
+          };
+        }
         return { data: { error: "Project not found" }, status: 404 };
       }
     }
