@@ -4125,6 +4125,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
       // 1. Initial match against workspace_members, invitations, and users
       const matchedMembers = (localDB.workspace_members || []).filter((m: any) => {
+        const mWs = String(m.workspace || m.workspace_id || "").toLowerCase().trim();
+        const allowedWs = [wsSlug, ws?.id, ws?.slug]
+          .filter(Boolean)
+          .map((x: any) => String(x).toLowerCase().trim());
+        if (mWs && !allowedWs.includes(mWs)) return false; // never touch another workspace
         const mId = String(m.id || "").toLowerCase().trim();
         const mMem = String(m.member || "").toLowerCase().trim();
         const mWallet = (m.wallet_address || "").toLowerCase().trim();
@@ -4140,6 +4145,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       });
 
       const matchedInvs = (localDB.invitations || []).filter((i: any) => {
+        const iWsKeys = getInvitationWorkspaceKeys(i);
+        const allowedInvWs = [wsSlug, ws?.id, ws?.slug]
+          .filter(Boolean)
+          .map((x: any) => String(x).toLowerCase().trim());
+        if (iWsKeys.length > 0 && !iWsKeys.some((k: string) => allowedInvWs.includes(k))) return false;
         const iId = String(i.id || "").toLowerCase().trim();
         const iMail = (i.email || "").toLowerCase().trim();
         const iWallet = (i.wallet_address || "").toLowerCase().trim();
@@ -4164,6 +4174,17 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           (cleanMemberId.startsWith("0x") && uWallet === cleanMemberId.toLowerCase())
         );
       });
+
+      // 1.1 Nothing matched in this workspace -> report it instead of pretending
+      if (matchedMembers.length === 0 && matchedInvs.length === 0 && matchedUsers.length === 0) {
+        return {
+          data: {
+            error: "Không tìm thấy thành viên này trong không gian làm việc hiện tại.",
+            code: "MEMBER_NOT_FOUND",
+          },
+          status: 404,
+        };
+      }
 
       // 2. Aggregate all emails, wallets, and IDs across matched entities
       const resolvedEmails = new Set<string>();
@@ -4296,19 +4317,46 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         allTargetIdentifiers: Array.from(allTargetIdentifiers),
       });
 
-      // 5. Execute on-chain removal for all resolved wallets
+      // 5. Revoke on-chain access FIRST (fail-closed).
+      //    Removing a member is a security operation: if the workspace has an
+      //    on-chain registry and we cannot revoke the role, we must NOT report
+      //    success nor hide the member locally - otherwise the UI claims the
+      //    person is gone while they still hold on-chain permissions (RC-8).
       const actingAdminWallet = adminWallet || getWorkspaceOwnerEth(ws, wsSlug) || currentUserAddress || getStoredWalletAddress();
-      for (const wallet of Array.from(resolvedWallets)) {
-        if (actingAdminWallet) {
+      const chainRegistryAddr = getWorkspaceRegistryAddress();
+      const chainRequired = Boolean(chainRegistryAddr && actingAdminWallet && resolvedWallets.size > 0 && getFiaiSDK());
+      const chainFailures: { wallet: string; error: string }[] = [];
+
+      if (chainRequired) {
+        for (const wallet of Array.from(resolvedWallets)) {
           try {
             console.log(`[DApp Routes] Removing member on-chain: wallet=${wallet}, admin=${actingAdminWallet}`);
-            const removed = await removeWorkspaceMemberOnChain(wsSlug, wallet, actingAdminWallet);
+            const removed = await removeWorkspaceMemberOnChain(wsSlug, wallet, actingAdminWallet || undefined);
             if (!removed) {
-              console.warn(`[DApp Routes] removeWorkspaceMemberOnChain returned false for ví ${wallet}. Proceeding with off-chain removal & tombstone.`);
+              chainFailures.push({
+                wallet,
+                error: "Không thể thu hồi quyền trên blockchain (giao dịch bị từ chối hoặc ví chưa mở khoá).",
+              });
             }
           } catch (chainErr: any) {
+            const message = String(chainErr?.message || chainErr || "Unknown error");
             console.warn("[DApp Routes] removeWorkspaceMemberOnChain error:", chainErr);
+            chainFailures.push({ wallet, error: message });
           }
+        }
+
+        if (chainFailures.length > 0) {
+          console.error("[DApp Routes] Member removal aborted - on-chain revocation failed:", chainFailures);
+          return {
+            data: {
+              error:
+                "Không thể xóa thành viên: chưa thu hồi được quyền trên blockchain. Thành viên vẫn được giữ nguyên, vui lòng thử lại sau khi ví quản trị sẵn sàng.",
+              code: "CHAIN_REVOCATION_FAILED",
+              removed_count: 0,
+              chain_failures: chainFailures,
+            },
+            status: 502,
+          };
         }
       }
 
@@ -4327,6 +4375,36 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         });
       }
 
+      // 6b. Drop the person from every project membership of this workspace.
+      //     Leaving stale project_members rows behind kept them assignable on
+      //     work items after being removed from the workspace (RC-10).
+      if (localDB.project_members && Array.isArray(localDB.project_members)) {
+        const removedProjectIds = new Set(
+          (localDB.projects || [])
+            .filter(
+              (p: any) =>
+                p.workspace === wsSlug ||
+                p.workspace === ws?.id ||
+                p.workspace_id === wsSlug ||
+                p.workspace_id === ws?.id
+            )
+            .map((p: any) => String(p.id))
+        );
+        localDB.project_members = localDB.project_members.filter((pm: any) => {
+          const pmProject = String(pm.project || pm.project_id || "");
+          if (removedProjectIds.size > 0 && !removedProjectIds.has(pmProject)) return true;
+          const pmMember = String(typeof pm.member === "object" && pm.member?.id ? pm.member.id : (pm.member || pm.id || ""))
+            .toLowerCase()
+            .trim();
+          const pmMail = (pm.email || pm.member?.email || "").toLowerCase().trim();
+          const pmEth = extractEthAddress(pm.member || pm.email || pm.wallet_address);
+          if (allTargetIdentifiers.has(pmMember)) return false;
+          if (pmMail && resolvedEmails.has(pmMail)) return false;
+          if (pmEth && resolvedWallets.has(pmEth.toLowerCase())) return false;
+          return true;
+        });
+      }
+
       // 7. Add all identifiers to removed_members (both wsSlug and ws?.id)
       const identifiersToAdd = Array.from(allTargetIdentifiers);
       addWorkspaceRemovedIdentifiers(wsSlug, identifiersToAdd);
@@ -4334,7 +4412,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         addWorkspaceRemovedIdentifiers(ws.id, identifiersToAdd);
       }
 
-      // 8. Permanently remove any invitations matching this member
+      // 8. Permanently remove any invitations matching this member (workspace scoped)
       if (localDB.invitations && Array.isArray(localDB.invitations)) {
         const invsToRemove = localDB.invitations.filter((i: any) => {
           const iWs = i.workspace?.slug || i.workspace_slug || i.workspace?.id || i.workspace;
@@ -4349,15 +4427,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           );
         });
         invsToRemove.forEach((inv: any) => {
-          removeStoredInvitation(inv.id, inv.email);
+          removeStoredInvitation(inv.id, inv.email, wsSlug);
         });
       }
       for (const email of Array.from(resolvedEmails)) {
-        removeStoredInvitation(`inv-${wsSlug}-${email}`, email);
-        removeStoredInvitation("", email);
+        removeStoredInvitation(`inv-${wsSlug}-${email}`, email, wsSlug);
       }
       for (const id of Array.from(allTargetIdentifiers)) {
-        removeStoredInvitation(id);
+        removeStoredInvitation(id, undefined, wsSlug);
       }
 
       // 9. Purge notifications
