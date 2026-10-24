@@ -17,6 +17,10 @@ import {
   getStoredInvitations,
   saveStoredInvitations,
   removeStoredInvitation,
+  readInvitationTombstones,
+  isInvitationDeleted,
+  makeInvitationTombstoneKey,
+  getInvitationWorkspaceKeys,
   dappSyncChannel,
   getEnvVar,
   getWorkspaceMemberCount,
@@ -83,6 +87,49 @@ export function decodeInviteToken(token: string): any {
   } catch {
     return null;
   }
+}
+
+/** Invitation links stay valid for 14 days (enterprise default, rotate by re-inviting). */
+export const INVITE_TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Creates an opaque, unguessable invitation token.
+ *
+ * This is a capability URL (industry standard for invite links): the token is
+ * random, carries no claims, and is only accepted when it matches the stored
+ * invitation record. It therefore cannot be forged into a new invitation, and
+ * it cannot be used to "un-delete" an invitation (see RC-3/SEC-A).
+ *
+ * NOTE: `encodeInviteToken`/`decodeInviteToken` are kept only to resolve
+ * legacy links that were already delivered by email.
+ */
+export function generateInviteToken(): string {
+  const bytes = new Uint8Array(32);
+  const webCrypto = typeof crypto !== "undefined" ? crypto : undefined;
+  if (webCrypto?.getRandomValues) {
+    webCrypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  let b64 = "";
+  if (typeof Buffer !== "undefined") {
+    b64 = Buffer.from(bytes).toString("base64url");
+  } else {
+    let binary = "";
+    bytes.forEach((b) => {
+      binary += String.fromCharCode(b);
+    });
+    b64 = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  return `inv_${b64}`;
+}
+
+export function isInviteTokenExpired(inv: any): boolean {
+  const raw = inv?.token_expires_at || inv?.invite_expires_at;
+  if (!raw) return false; // legacy invitations predate expiry
+  const ts = new Date(raw).getTime();
+  if (Number.isNaN(ts)) return false;
+  return ts < Date.now();
 }
 
 let lastLoadedPublicCid: string | null = null;
@@ -2624,52 +2671,17 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const invIdClean = invitationId.toLowerCase().trim();
     const invWallet = (inv?.wallet_address || decoded?.wallet || "").toLowerCase().trim();
 
-    // 4. Check if invitation was DELETED or member was REMOVED by Admin
-    let deletedSet = new Set<string>();
-    if (typeof window !== "undefined") {
-      const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
-      if (deletedRaw) {
-        try {
-          const parsed = JSON.parse(deletedRaw);
-          if (Array.isArray(parsed)) deletedSet = new Set(parsed);
-        } catch { }
-      }
-    }
-    if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
-      localDB._deleted_invitation_ids.forEach((d: string) => deletedSet.add(d));
-    }
-
-    // If a valid signed token for this workspace is present, the Admin intentionally invited this user!
-    // Un-ban the invited email and target from stale deletion lists or past removed_members.
-    const hasValidToken = Boolean(decoded && (decoded.ws === wsSlug || !decoded.ws));
-    if (hasValidToken) {
-      if (invMail) {
-        deletedSet.delete(invMail);
-        if (localDB._deleted_invitation_ids) {
-          localDB._deleted_invitation_ids = localDB._deleted_invitation_ids.filter((x: string) => x !== invMail);
-        }
-        if (localDB.removed_members?.[wsSlug]) {
-          localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((x: string) => {
-            const clean = String(x).toLowerCase().trim();
-            return clean !== invMail && clean !== invIdClean && (!activeWallet || clean !== activeWallet);
-          });
-        }
-      }
-      if (decoded?.id) {
-        deletedSet.delete(decoded.id);
-        if (localDB._deleted_invitation_ids) {
-          localDB._deleted_invitation_ids = localDB._deleted_invitation_ids.filter((x: string) => x !== decoded.id);
-        }
-      }
-    }
-
+    // 4. Tombstones are final for JOIN requests.
+    //    An invitation token is a capability URL: it identifies an invitation
+    //    that already exists. It is NOT authority to re-create one, so it can
+    //    never clear a deletion tombstone (previously it could - RC-3/SEC-A).
+    const deletedSet = readInvitationTombstones();
     const isDeletedInvitation =
       deletedSet.has(invitationId) ||
       (currentToken && deletedSet.has(currentToken)) ||
-      (!hasValidToken && (
-        (decoded?.id && deletedSet.has(decoded.id)) ||
-        (invMail && deletedSet.has(invMail))
-      ));
+      (inv
+        ? isInvitationDeleted(inv, deletedSet)
+        : Boolean(decoded?.id && deletedSet.has(String(decoded.id))));
 
     if (isDeletedInvitation) {
       console.warn(`[DApp Routes] Blocked deleted invitation (${invitationId || invMail}) on workspace "${wsSlug}"`);
@@ -2685,13 +2697,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
 
     const isTargetRemoved =
-      !hasValidToken && (
-        (invMail && removedList.includes(invMail)) ||
-        (invWallet && removedList.includes(invWallet)) ||
-        removedList.includes(invIdClean) ||
-        (activeMail && activeMail !== "admin@plane.local" && removedList.includes(activeMail)) ||
-        (activeWallet && removedList.includes(activeWallet))
-      );
+      (invMail && removedList.includes(invMail)) ||
+      (invWallet && removedList.includes(invWallet)) ||
+      removedList.includes(invIdClean) ||
+      (activeMail && activeMail !== "admin@plane.local" && removedList.includes(activeMail)) ||
+      (activeWallet && removedList.includes(activeWallet));
 
     if (isTargetRemoved) {
       console.warn(`[DApp Routes] Blocked old/revoked invitation for removed member (${invMail || invIdClean || activeMail}) on workspace "${wsSlug}"`);
@@ -2722,37 +2732,22 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       );
     });
 
-    // 6. Decode token fallback ONLY if workspace matches and invitation not removed/deleted
-    if (
-      !inv &&
-      decoded &&
-      (decoded.ws === wsSlug || !decoded.ws) &&
-      !isTargetRemoved &&
-      !isDeletedInvitation
-    ) {
-      inv = {
-        id: decoded.id || invitationId,
-        email: decoded.email || "",
-        role: decoded.role || 15,
-        token: currentToken,
-        accepted: isAlreadyMember,
-        responded_at: isAlreadyMember ? new Date().toISOString() : null,
-        message: "You have been invited.",
-        invite_link: `/workspace-invitations?invitation_id=${decoded.id || invitationId}&slug=${wsSlug}&token=${currentToken}`,
-        workspace: {
-          id: ws?.id || wsSlug,
-          name: ws?.name || wsSlug,
-          slug: wsSlug,
-          logo_url: ws?.logo_url || "",
-        },
-        workspace_id: ws?.id || wsSlug,
-        workspace_slug: wsSlug,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      localDB.invitations.push(inv);
-      saveStoredInvitations(localDB.invitations);
-      saveDB();
+    // 6. Legacy links (already delivered by email) carry a self-describing
+    //    `inv_<base64>` token. Its payload is used ONLY to locate an existing
+    //    invitation record - never to synthesise a new one.
+    if (!inv && decoded?.id) {
+      const legacyWs = String(decoded.ws || "").toLowerCase().trim();
+      const wsMatches = !legacyWs || legacyWs === wsSlug.toLowerCase() || legacyWs === String(ws?.id || "").toLowerCase();
+      if (wsMatches) {
+        const legacyId = String(decoded.id);
+        const findLegacy = (i: any) =>
+          String(i.id) === legacyId &&
+          (!i.workspace_slug || i.workspace_slug === wsSlug || i.workspace?.slug === wsSlug || i.workspace?.id === ws?.id);
+        inv = (localDB.invitations || []).find(findLegacy) || getStoredInvitations().find(findLegacy);
+        if (inv && !localDB.invitations.some((x: any) => x.id === inv.id)) {
+          localDB.invitations.push(inv);
+        }
+      }
     }
 
     // 7. If still not found: DO NOT invent a fake invitation! Return 404
@@ -2765,6 +2760,34 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           accepted: false,
         },
         status: 404,
+      };
+    }
+
+    // 8. Token integrity + expiry.
+    //    The request token must match the token stored on the invitation record
+    //    (when both exist), otherwise a link could be reused/redirected to a
+    //    different invitation id.
+    if (inv.token && currentToken && String(inv.token) !== String(currentToken)) {
+      console.warn(`[DApp Routes] Token/record mismatch for invitation ${invitationId} on "${wsSlug}"`);
+      return {
+        data: {
+          error: "Liên kết mời không hợp lệ. Vui lòng dùng đúng liên kết trong email mời.",
+          responded_at: new Date().toISOString(),
+          accepted: false,
+        },
+        status: 400,
+      };
+    }
+
+    if (isInviteTokenExpired(inv)) {
+      return {
+        data: {
+          error: "Lời mời đã hết hạn. Vui lòng liên hệ quản trị viên để được mời lại.",
+          is_expired: true,
+          responded_at: new Date().toISOString(),
+          accepted: false,
+        },
+        status: 410,
       };
     }
 
@@ -3772,19 +3795,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
                   );
                 }
               }
-              if (!matchedInv) {
-                // Fallback 2: match any unaccepted invitation in this workspace
-                const unacceptedInvs = (localDB.invitations || []).filter(
-                  (inv: any) =>
-                    (inv.workspace?.slug === wsSlug || inv.workspace_slug === wsSlug || inv.workspace === wsSlug || inv.workspace === ws?.id) &&
-                    !inv.accepted &&
-                    !removedSet.has((inv.email || "").toLowerCase().trim()) &&
-                    !removedSet.has(String(inv.id || "").toLowerCase().trim())
-                );
-                if (unacceptedInvs.length >= 1) {
-                  matchedInv = unacceptedInvs[0];
-                }
-              }
+              // NOTE: there used to be a "match any unaccepted invitation" fallback
+              // here. It attached arbitrary on-chain wallets to whichever pending
+              // invite happened to be first, producing phantom members and
+              // unlocking a random user's invitation. Matching is now exact only.
 
               if (matchedInv) {
                 const invMail = (matchedInv.email || "").toLowerCase().trim();
@@ -3887,7 +3901,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         (m: any) => (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id)
       );
 
-      // Auto-resolve any pending invites for confirmed active members (with alias/prefix/wallet support)
+      // Auto-resolve pending invitations for confirmed active members.
+      // Exact email / wallet match only: the former email-prefix (">= 6 chars")
+      // heuristic marked other people's invitations as accepted.
       const activeWsMemberMails = new Set(
         workspaceMembers.map((m: any) => (m.email || "").toLowerCase().trim()).filter(Boolean)
       );
@@ -3913,20 +3929,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
               ""
             ).toLowerCase().trim();
 
-            let matched =
-              (invMail && activeWsMemberMails.has(invMail)) ||
-              (invWallet && activeWsMemberWallets.has(invWallet)) ||
-              (mappedWallet && activeWsMemberWallets.has(mappedWallet));
-            if (!matched && invMail) {
-              for (const actMail of Array.from(activeWsMemberMails)) {
-                const actPrefix = String(actMail).split("@")[0];
-                const invPrefix = invMail.split("@")[0];
-                if ((actPrefix.length >= 6 && invPrefix.startsWith(actPrefix)) || (invPrefix.length >= 6 && actPrefix.startsWith(invPrefix))) {
-                  matched = true;
-                  break;
-                }
-              }
-            }
+            const matched =
+              Boolean(invMail && activeWsMemberMails.has(invMail)) ||
+              Boolean(invWallet && activeWsMemberWallets.has(invWallet)) ||
+              Boolean(mappedWallet && activeWsMemberWallets.has(mappedWallet));
             if (matched && !inv.accepted) {
               inv.accepted = true;
               if (mappedWallet && !inv.wallet_address) {
@@ -3994,86 +4000,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         if (memberObj.email) addedMemberKeys.add(memberObj.email.toLowerCase().trim());
       });
 
-      // 3.5. Also include any Accepted Invitations that might not yet be in workspaceMembers
-      (localDB.invitations || []).forEach((inv: any) => {
-        const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-        const isTarget = !invWs || invWs === wsSlug || invWs === ws?.id;
-        if (!isTarget || !inv.accepted) return;
-
-        const invMail = (inv.email || "").toLowerCase().trim();
-        const invWallet = (inv.wallet_address || "").toLowerCase().trim();
-        const invId = String(inv.id || "").toLowerCase().trim();
-        if (
-          removedSet.has(invMail) ||
-          removedSet.has(invWallet) ||
-          removedSet.has(invId) ||
-          removedSet.has(`ws-member-${invId}`) ||
-          removedSet.has(`inv-${invId}`)
-        ) {
-          return;
-        }
-        if ((invMail && addedMemberKeys.has(invMail)) || (invWallet && addedMemberKeys.has(invWallet)) || (inv.id && addedMemberKeys.has(inv.id))) {
-          return;
-        }
-
-        const user = (localDB.users || []).find(
-          (u: any) =>
-            (invMail && (u.email || "").toLowerCase().trim() === invMail) ||
-            (!invMail && invWallet && (
-              (u.metanode_wallet_address && u.metanode_wallet_address.toLowerCase() === invWallet) ||
-              (typeof u.id === "string" && u.id.toLowerCase() === invWallet)
-            ))
-        );
-        const isEth = Boolean(invWallet && invWallet.startsWith("0x"));
-        const resolvedEmail = invMail || (user && (!invMail || (user.email || "").toLowerCase().trim() === invMail) ? user.email : null) || (isEth ? `${invWallet}@fiai.network` : "");
-        const shortAddr = isEth ? `${invWallet.slice(0, 6)}...${invWallet.slice(-4)}` : "Member";
-        const namePart = resolvedEmail.includes("@") ? resolvedEmail.split("@")[0] : shortAddr;
-        const isUserMatch = Boolean(user && (!invMail || (user.email || "").toLowerCase().trim() === invMail));
-        const memberObj = isUserMatch ? user : {
-          id: user?.id || (invWallet ? invWallet : inv.id) || `member-${namePart}`,
-          email: resolvedEmail,
-          first_name: inv.first_name || namePart,
-          last_name: inv.last_name || "",
-          display_name: inv.display_name || inv.first_name || namePart,
-          avatar_url: "",
-          is_active: true,
-        };
-
-        membersList.push({
-          id: `ws-member-${inv.id || memberObj.id}`,
-          member: memberObj,
-          role: inv.role || 15,
-          workspace: ws?.id || wsSlug,
-          is_active: true,
-          created_at: inv.responded_at || inv.created_at || new Date().toISOString(),
-        });
-        if (memberObj.id && memberObj.id !== "user-default") addedMemberKeys.add(memberObj.id);
-        if (memberObj.email) addedMemberKeys.add(memberObj.email.toLowerCase().trim());
-        if (invWallet) addedMemberKeys.add(invWallet);
-
-        // Ensure localDB.workspace_members has this record so future queries have it
-        if (!localDB.workspace_members) localDB.workspace_members = [];
-        const existingIdx = localDB.workspace_members.findIndex(
-          (m: any) =>
-            (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id) &&
-            ((invMail && m.email && m.email.toLowerCase().trim() === invMail) ||
-              (invWallet && (m.wallet_address?.toLowerCase() === invWallet || m.member?.toLowerCase() === invWallet)))
-        );
-        if (existingIdx === -1) {
-          localDB.workspace_members.push({
-            id: `ws-member-${inv.id || Date.now()}`,
-            workspace: ws?.id || wsSlug,
-            workspace_id: ws?.id || wsSlug,
-            member: user?.id || (invWallet ? invWallet : inv.id),
-            email: resolvedEmail,
-            wallet_address: invWallet || undefined,
-            role: inv.role || 15,
-            is_active: true,
-            verified_on_chain: Boolean(invWallet),
-            created_at: inv.responded_at || inv.created_at || new Date().toISOString(),
-          });
-        }
-      });
+      // 3.5. Accepted invitations are NOT members.
+      //     Membership is derived exclusively from `workspace_members` rows, which
+      //     are written by the join flow (accept invitation) or by on-chain sync.
+      //     Fabricating member rows from accepted invitations produced "phantom"
+      //     members (RC-7) and made admin deletion impossible: the row was
+      //     re-created on every GET /members/.
 
       // 4. Fallback for single-user initial installation
       const activeId = activeUser?.id || activeUserId;
@@ -8853,19 +8785,10 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
                   );
                 }
               }
-              if (!matchedInv) {
-                // Fallback 2: match any unaccepted invitation in this workspace
-                const unacceptedInvs = (localDB.invitations || []).filter(
-                  (inv: any) =>
-                    (inv.workspace?.slug === wsSlug || inv.workspace_slug === wsSlug || inv.workspace === wsSlug || inv.workspace === ws?.id) &&
-                    !inv.accepted &&
-                    !removedSet.has((inv.email || "").toLowerCase().trim()) &&
-                    !removedSet.has(String(inv.id || "").toLowerCase().trim())
-                );
-                if (unacceptedInvs.length >= 1) {
-                  matchedInv = unacceptedInvs[0];
-                }
-              }
+              // NOTE: there used to be a "match any unaccepted invitation" fallback
+              // here. It attached arbitrary on-chain wallets to whichever pending
+              // invite happened to be first, producing phantom members and
+              // unlocking a random user's invitation. Matching is now exact only.
 
               if (matchedInv) {
                 const invMail = (matchedInv.email || "").toLowerCase().trim();
@@ -9019,12 +8942,16 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         saveDB();
       }
 
-      // Deduplicate pending invites by email in case older duplicates exist
-      const seenPendingMails = new Set<string>();
+      // Deduplicate pending invites per (workspace, email). Deduplicating on the
+      // email alone hid the same person's invitation in another workspace.
+      const seenPendingKeys = new Set<string>();
       list = list.filter((item: any) => {
         const mail = (item.email || "").toLowerCase().trim();
-        if (seenPendingMails.has(mail)) return false;
-        seenPendingMails.add(mail);
+        const wsKey =
+          item.workspace?.slug || item.workspace_slug || item.workspace?.id || item.workspace_id || item.workspace || "default";
+        const key = `${String(wsKey).toLowerCase().trim()}::${mail}`;
+        if (seenPendingKeys.has(key)) return false;
+        seenPendingKeys.add(key);
         return true;
       });
 
@@ -9368,16 +9295,33 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         try {
           const rawDel = localStorage.getItem("plane_dapp_deleted_invitations");
           if (rawDel) {
-            let delList = JSON.parse(rawDel);
+            const delList = JSON.parse(rawDel);
             if (Array.isArray(delList)) {
-              delList = delList.filter((d: string) => d !== rawEmail && !d.includes(rawEmail));
-              localStorage.setItem("plane_dapp_deleted_invitations", JSON.stringify(delList));
+              // Only clear tombstones that belong to THIS workspace + this exact
+              // email. The previous `d.includes(rawEmail)` also wiped scoped
+              // tombstones of other workspaces (RC-6).
+              const scopedKeys = new Set<string>();
+              keysToClean.forEach((k) => {
+                const scoped = makeInvitationTombstoneKey(k, rawEmail);
+                if (scoped) scopedKeys.add(scoped);
+                scopedKeys.add(`inv-${k}-${rawEmail}`);
+              });
+              const filtered = delList.filter(
+                (d: string) => d !== rawEmail && !scopedKeys.has(String(d).toLowerCase().trim())
+              );
+              localStorage.setItem("plane_dapp_deleted_invitations", JSON.stringify(filtered));
             }
           }
         } catch { }
         if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
+          const scopedKeys = new Set<string>([rawEmail]);
+          keysToClean.forEach((k) => {
+            const scoped = makeInvitationTombstoneKey(k, rawEmail);
+            if (scoped) scopedKeys.add(scoped);
+            scopedKeys.add(`inv-${k}-${rawEmail}`);
+          });
           localDB._deleted_invitation_ids = localDB._deleted_invitation_ids.filter(
-            (d: string) => d !== rawEmail && !d.includes(rawEmail)
+            (d: string) => !scopedKeys.has(String(d).toLowerCase().trim())
           );
         }
 
@@ -9391,20 +9335,20 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         if (existingInv) {
           existingInv.role = e.role || existingInv.role || 15;
           existingInv.updated_at = new Date().toISOString();
+          // Rotate the capability token only when the record has none; renew the
+          // expiry so the freshly sent email link stays usable.
+          existingInv.token = existingInv.token || generateInviteToken();
+          existingInv.token_expires_at = new Date(Date.now() + INVITE_TOKEN_TTL_MS).toISOString();
+          existingInv.invite_link = `/workspace-invitations?invitation_id=${existingInv.id}&slug=${wsSlug}&token=${existingInv.token}`;
           newInvites.push(existingInv);
           console.log(`[DApp Interceptor] Updated existing pending invite for ${rawEmail} (${existingInv.id})`);
         } else {
           const invId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
-          const token = encodeInviteToken({
-            id: invId,
-            email: e.email,
-            role: e.role || 15,
-            ws: wsSlug,
-            time: Date.now(),
-          });
+          const token = generateInviteToken();
           const createdInv = {
             id: invId,
             token: token,
+            token_expires_at: new Date(Date.now() + INVITE_TOKEN_TTL_MS).toISOString(),
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
             email: e.email,
@@ -9476,41 +9420,40 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         });
       });
 
-      // Xử lý từng invitee: kích hoạt addMember on-chain nếu có địa chỉ ví
+      // Per-invitee on-chain provisioning: awaited so the caller receives the
+      // real outcome instead of an unconditional success (RC-4). Only wallet
+      // invitations can be provisioned on-chain; email invitees join by link.
+      const chainErrors: { email: string; error: string }[] = [];
       for (const e of body.emails) {
         const memberAddress = extractEthAddress(e.email);
-
-        // Gọi smart contract PlaneWorkspaceRegistry.addMember
         const bridge = getFiaiSDK();
         const wsRegistryAddr = getWorkspaceRegistryAddress();
-        if (memberAddress && wsRegistryAddr && bridge && currentUserAddress) {
+        if (!memberAddress || !wsRegistryAddr || !bridge || !currentUserAddress) continue;
+        try {
           const contractRole = mapPlaneRoleToContractRole(e.role);
-          bridge
-            .request("sendTransaction", {
-              from: currentUserAddress,
-              to: wsRegistryAddr,
-              abiData: [ADD_MEMBER_ABI],
-              functionName: "addMember",
-              feeType: "sc",
-              amount: "0",
-              value: "0",
-              gas: getContractGas(),
-              type: "transaction",
-              inputArray: [
-                { name: "slug", type: "string", value: wsSlug },
-                { name: "member", type: "address", value: memberAddress },
-                { name: "role", type: "uint8", value: String(contractRole) },
-              ],
-              isReadOnly: false,
-              bundleId: "",
-            })
-            .then(() => {
-              console.log(`[DApp Interceptor] ✅ Đã thêm thành viên on-chain: ${memberAddress} vào workspace: ${wsSlug}`);
-              return true;
-            })
-            .catch((err: any) => {
-              console.warn(`[DApp Interceptor] addMember on-chain thất bại:`, err);
-            });
+          await bridge.request("sendTransaction", {
+            from: currentUserAddress,
+            to: wsRegistryAddr,
+            abiData: [ADD_MEMBER_ABI],
+            functionName: "addMember",
+            feeType: "sc",
+            amount: "0",
+            value: "0",
+            gas: getContractGas(),
+            type: "transaction",
+            inputArray: [
+              { name: "slug", type: "string", value: wsSlug },
+              { name: "member", type: "address", value: memberAddress },
+              { name: "role", type: "uint8", value: String(contractRole) },
+            ],
+            isReadOnly: false,
+            bundleId: "",
+          });
+          console.log(`[DApp Interceptor] ✅ Đã thêm thành viên on-chain: ${memberAddress} vào workspace: ${wsSlug}`);
+        } catch (chainErr: any) {
+          const message = String(chainErr?.message || chainErr || "Unknown error");
+          console.warn(`[DApp Interceptor] addMember on-chain thất bại (${memberAddress}):`, chainErr);
+          chainErrors.push({ email: (e.email || "").toLowerCase().trim(), error: message });
         }
       }
 
@@ -9518,18 +9461,24 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       newInvites.forEach((inv) => syncDAppRecord(collection, inv.id, inv));
       void uploadToIPFS(true);
 
-      // Gửi email lời mời tham gia qua Brevo SMTP API
-      try {
-        body.emails.forEach((e: any) => {
-          const rawEmail = (e.email || "").toLowerCase().trim();
-          if (!rawEmail || !rawEmail.includes("@")) return;
+      // Send invitation emails and report the REAL delivery result back to the
+      // admin. Previously this was fire-and-forget, so the UI always claimed
+      // success even when no email was sent (RC-1).
+      const mailFailed: { email: string; error: string }[] = [];
+      let mailSent = 0;
+      for (const e of body.emails) {
+        const rawEmail = (e.email || "").toLowerCase().trim();
+        if (!rawEmail || !rawEmail.includes("@")) continue;
+        // Wallet-style invitees have no mailbox to deliver to.
+        if (extractEthAddress(rawEmail)) continue;
 
-          const inv = newInvites.find((i: any) => (i.email || "").toLowerCase().trim() === rawEmail);
-          const inviteLink =
-            inv?.invite_link ||
-            `/workspace-invitations?invitation_id=${inv?.id || "inv"}&slug=${wsSlug}&token=${inv?.token || "tok"}`;
+        const inv = newInvites.find((i: any) => (i.email || "").toLowerCase().trim() === rawEmail);
+        const inviteLink =
+          inv?.invite_link ||
+          `/workspace-invitations?invitation_id=${inv?.id || "inv"}&slug=${wsSlug}&token=${inv?.token || "tok"}`;
 
-          void sendWorkspaceInviteEmail({
+        try {
+          const delivered = await sendWorkspaceInviteEmail({
             recipientEmail: rawEmail,
             workspaceName: currentWs?.name || wsSlug,
             workspaceSlug: wsSlug,
@@ -9541,12 +9490,30 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
               currentWs?.name ||
               "Plane Workspace",
           });
-        });
-      } catch (mailErr: any) {
-        console.warn("[DApp Interceptor] Lỗi khi gửi email mời workspace qua Brevo:", mailErr);
+          if (delivered) {
+            mailSent += 1;
+          } else {
+            mailFailed.push({ email: rawEmail, error: "Email service is not configured or refused the message." });
+          }
+        } catch (mailErr: any) {
+          const message = String(mailErr?.message || mailErr || "Unknown error");
+          console.warn("[DApp Interceptor] Lỗi khi gửi email mời workspace qua Brevo:", mailErr);
+          mailFailed.push({ email: rawEmail, error: message });
+        }
       }
 
-      return ok({ message: "Invitations sent successfully" });
+      const invitationsCreated = newInvites.length;
+      return ok({
+        message:
+          mailFailed.length === 0 && chainErrors.length === 0
+            ? "Invitations sent successfully"
+            : "Invitations created with warnings",
+        invitations: newInvites,
+        created_count: invitationsCreated,
+        email_sent_count: mailSent,
+        email_failures: mailFailed,
+        chain_failures: chainErrors,
+      });
     }
 
     let newRecord: any = {
@@ -10351,8 +10318,23 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         );
       }
     } else if (collection === "invitations" && id) {
+      const wsMatchDel = url.match(/\/api\/workspaces\/([^/]+)\/invitations\//);
+      const wsSlugDel = wsMatchDel ? decodeURIComponent(wsMatchDel[1]).toLowerCase().trim() : "";
       const targetInv = (localDB.invitations || []).find((i: any) => i.id === id);
-      removeStoredInvitation(id, targetInv?.email);
+      const invWsKeys = targetInv ? getInvitationWorkspaceKeys(targetInv) : [];
+
+      // An invitation belongs to exactly one workspace. Refuse a cross-workspace
+      // delete instead of silently deleting somebody else's invitation (RC-6).
+      if (wsSlugDel && invWsKeys.length > 0 && !invWsKeys.includes(wsSlugDel)) {
+        return { data: { error: "Invitation does not belong to this workspace" }, status: 404 };
+      }
+
+      removeStoredInvitation(
+        id,
+        targetInv?.email,
+        wsSlugDel || invWsKeys[0] || undefined
+      );
+      localDB.invitations = (localDB.invitations || []).filter((i: any) => i.id !== id);
     } else {
       localDB[collection] = (localDB[collection] || []).filter((r: any) => r.id !== id);
     }
