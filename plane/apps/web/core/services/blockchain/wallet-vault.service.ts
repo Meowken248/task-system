@@ -76,7 +76,7 @@ async function getSdk(): Promise<FiaiSDK> {
   if (!sdk) {
     throw new VaultSigningError(
       "VAULT_UNAVAILABLE",
-      "MetaNode SDK chưa sẵn sàng. Hãy kiểm tra blockchain-bridge (6001) + Crypto Vault (6002) rồi tải lại trang."
+      "MetaNode SDK chưa sẵn sàng. Hãy kiểm tra blockchain-bridge  + Crypto Vault  rồi tải lại trang."
     );
   }
   return sdk;
