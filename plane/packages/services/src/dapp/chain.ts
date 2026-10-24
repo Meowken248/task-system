@@ -17,6 +17,7 @@ import {
 } from "./store";
 import { setStoredCredential } from "./auth";
 import { saveSnapshotToIDB, loadSnapshotFromIDB, saveCidToIDB, getCidFromIDB } from "./indexed-db";
+import { registerSigningSessionInvalidator, runExclusiveChainTx } from "./tx-gateway";
 
 /**
  * Generic on-chain sync (fire-and-forget, never blocks UI)
@@ -70,8 +71,26 @@ export function getWorkspaceRegistryAddress(): string {
   return getEnvVar("VITE_WORKSPACE_REGISTRY_ADDRESS") || getEnvVar("NEXT_PUBLIC_WORKSPACE_REGISTRY_ADDRESS") || "";
 }
 
+let warnedAboutClientSigningKey = false;
+
+/**
+ * Khoá BLS dùng khi contract yêu cầu chữ ký BLS.
+ *
+ * CẢNH BÁO: đây là biến `VITE_*` nên giá trị sẽ nằm trong bundle trình duyệt.
+ * Production phải để trống (xem `.env.production.example`); chỉ dùng ở môi
+ * trường phát triển khi kiểm thử contract.
+ */
 export function getBlsPrivateKey(): string | undefined {
-  return getEnvVar("VITE_BLS_PRIVATE_KEY") || getEnvVar("NEXT_PUBLIC_BLS_PRIVATE_KEY") || undefined;
+  const key = (getEnvVar("VITE_BLS_PRIVATE_KEY") || "").trim();
+  if (!key) return undefined;
+  if (!warnedAboutClientSigningKey) {
+    warnedAboutClientSigningKey = true;
+    console.warn(
+      "[DApp Chain] Đang dùng khoá ký BLS ngay trên trình duyệt (VITE_BLS_PRIVATE_KEY). " +
+        "Khoá nằm trong bundle công khai nên chỉ được dùng ở môi trường phát triển."
+    );
+  }
+  return key;
 }
 
 export const CONTRACT_ADDRESS = getRegistryContractAddress();
@@ -190,8 +209,28 @@ const GET_WORKSPACE_SELECTOR = "0x1cd7381a";
 const GET_MEMBER_ROLE_SELECTOR = "0xb1eed828";
 const GET_WORKSPACE_MEMBERS_SELECTOR = "0x4f597d85";
 
+let warnedInsecureRpc = false;
+
+/**
+ * URL node đọc dữ liệu on-chain. Cảnh báo một lần nếu cấu hình dùng `http://` trên
+ * địa chỉ không phải mạng nội bộ: dữ liệu (và chữ ký đọc) có thể bị nghe lén/sửa
+ * trên đường truyền (SEC-05). Cảnh báo thay vì chặn để không làm sập môi trường
+ * đang chạy, nhưng phải xử lý trước khi mở ra Internet.
+ */
 export function getRpcUrl(): string {
-  return (getEnvVar("VITE_RPC_URL") || "").trim();
+  const url = (getEnvVar("VITE_RPC_URL") || "").trim();
+  if (!warnedInsecureRpc && url && typeof window !== "undefined") {
+    warnedInsecureRpc = true;
+    const isPrivateHost = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(
+      url
+    );
+    if (url.toLowerCase().startsWith("http://") && !isPrivateHost) {
+      console.warn(
+        "[DApp Chain] VITE_RPC_URL đang dùng http:// trên địa chỉ công khai — dữ liệu có thể bị đọc/sửa trên đường truyền. Hãy chuyển sang https."
+      );
+    }
+  }
+  return url;
 }
 
 function padHex(hex: string, bytes: number): string {
@@ -566,14 +605,31 @@ let isDirtyState = false;
 let isDAppDBInitialized = false;
 
 // ── Auto commit CID on-chain ─────────────────────────────────────────────
-// Trước đây việc ghi CID on-chain chỉ chạy khi `VITE_AUTO_COMMIT_ONCHAIN === "true"` và biến này
-// không được khai báo ở bất kỳ file .env nào, nên dữ liệu chỉ nằm trên IPFS/Pinata.
-// Nay mặc định BẬT, nhưng có throttle + dedupe để không bật màn hình ký sau mỗi lần lưu.
-const ONCHAIN_COMMIT_DEBOUNCE_MS = 8000;
-const ONCHAIN_COMMIT_MIN_INTERVAL_MS = 25000;
-const ONCHAIN_COMMIT_RETRY_MS = 15000;
-// Số lần tự thử lại khi ví/vault chưa sẵn sàng (~5 phút với retry 15s).
-const ONCHAIN_COMMIT_MAX_ATTEMPTS = 20;
+// Việc ghi CID on-chain là *bản sao lưu con trỏ dữ liệu*, không phải dữ liệu
+// nghiệp vụ. Trước đây nó bật mặc định và bắn một giao dịch cho mỗi lần lưu,
+// nên một thao tác của người dùng sinh 2–3 giao dịch và nonce nhảy 2–3
+// (lỗi CHAIN-09). Nay:
+//   - Mặc định chỉ bật khi công việc KHÔNG được ghi on-chain (xem
+//     `isAutoCommitOnChainEnabled`), nhờ vậy mỗi thao tác chỉ có 1 giao dịch.
+//   - Thời gian gộp/thử lại đọc từ .env để vận hành chỉnh được mà không sửa mã.
+function readPositiveIntEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = (getEnvVar(name) || "").trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.round(parsed), min), max);
+}
+
+const ONCHAIN_COMMIT_DEBOUNCE_MS = readPositiveIntEnv("VITE_ONCHAIN_COMMIT_DEBOUNCE_MS", 90_000, 5_000, 15 * 60_000);
+const ONCHAIN_COMMIT_MIN_INTERVAL_MS = readPositiveIntEnv(
+  "VITE_ONCHAIN_COMMIT_MIN_INTERVAL_MS",
+  120_000,
+  0,
+  30 * 60_000
+);
+const ONCHAIN_COMMIT_RETRY_MS = readPositiveIntEnv("VITE_ONCHAIN_COMMIT_RETRY_MS", 30_000, 5_000, 10 * 60_000);
+// Số lần tự thử lại khi ví/vault chưa sẵn sàng.
+const ONCHAIN_COMMIT_MAX_ATTEMPTS = readPositiveIntEnv("VITE_ONCHAIN_COMMIT_MAX_ATTEMPTS", 5, 1, 20);
 let pendingOnChainCommit: { slug: string; cid: string } | null = null;
 let onChainCommitTimer: ReturnType<typeof setTimeout> | null = null;
 let isOnChainCommitInFlight = false;
@@ -672,6 +728,71 @@ export function isSigningSessionReady(address?: string | null): boolean {
 }
 
 /**
+ * Quên phiên ký đã cache.
+ *
+ * Phải gọi hàm này mỗi khi reset SDK / đổi ví: nếu không, lần ghi kế tiếp tưởng
+ * ví đã mở khoá nên gửi giao dịch mà không kèm hộp thoại mật khẩu, dẫn tới lỗi
+ * "không gửi được giao dịch" rất khó hiểu với người dùng.
+ */
+export function invalidateSigningSession(address?: string | null): void {
+  if (address) {
+    const addr = normalizeSigningAddress(address);
+    if (addr) signingReadyAddresses.delete(addr);
+  } else {
+    signingReadyAddresses.clear();
+  }
+  userDeclinedVaultUnlock = false;
+}
+
+// Lớp web reset SDK ở module khác; đăng ký để cờ phiên ký luôn được xoá theo.
+registerSigningSessionInvalidator(() => invalidateSigningSession());
+
+const ACCOUNT_STATE_TIMEOUT_MS = 2500;
+
+function normalizeRpcHash(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  const raw = trimmed.startsWith("0x") || trimmed.startsWith("0X") ? trimmed.slice(2) : trimmed;
+  if (!/^[a-fA-F0-9]{64}$/.test(raw) || /^0{64}$/.test(raw)) return null;
+  return `0x${raw.toLowerCase()}`;
+}
+
+/**
+ * Đọc hash giao dịch gần nhất của một tài khoản từ RPC (`mtn_getAccountState`).
+ *
+ * Dùng để trả lời câu hỏi "giao dịch vừa gửi đã lên chain chưa?" sau khi cầu nối
+ * ví trả về timeout. Nếu đã lên chain thì KHÔNG được gửi lại — gửi lại chính là
+ * nguyên nhân nonce nhảy 2–3 cho một hành động.
+ */
+async function readRpcAccountLastHash(address?: string | null): Promise<string | null> {
+  const rpcUrl = getEnvVar("VITE_RPC_URL");
+  if (!rpcUrl || !address || typeof fetch === "undefined") return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ACCOUNT_STATE_TIMEOUT_MS);
+  try {
+    const response = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "mtn_getAccountState",
+        params: [address, "latest"],
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const json = await response.json();
+    return normalizeRpcHash(json?.result?.lastHash ?? json?.result?.last_hash);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Chờ Crypto Vault được mở khoá (người dùng nhập mật khẩu xong).
  * Trả về true ngay khi `getVaultStatus().isLocked === false`.
  */
@@ -696,6 +817,10 @@ export function waitForVaultUnlock(timeoutMs = VAULT_UNLOCK_WAIT_MS): Promise<bo
  * Trước đây lỗi này nổi lên UI và giao dịch bị bỏ → không có gì lên chain.
  * Nay ta chờ Vault mở khoá rồi ký lại (key đã nằm trong RAM của Vault nên lần sau tức thì).
  */
+type SignAttemptOutcome =
+  | { ok: true; value: unknown }
+  | { ok: false; error: unknown; hashBefore: string | null; hashAfter: string | null };
+
 export async function signTransactionWithUnlockRetry(
   bridge: { request: (action: string, params: unknown, options?: unknown) => Promise<unknown> },
   params: Record<string, unknown>,
@@ -703,42 +828,71 @@ export async function signTransactionWithUnlockRetry(
   options?: { maxAttempts?: number }
 ): Promise<unknown> {
   const maxAttempts = Math.max(1, options?.maxAttempts ?? SIGN_RETRY_MAX_ATTEMPTS);
+  const from = typeof params.from === "string" ? params.from : null;
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      // oxlint-disable-next-line no-await-in-loop -- các lần thử phải tuần tự để chờ mở khoá.
-      const result = await withBridgeTimeout<unknown>(
-        bridge.request("sendTransaction", params),
-        BRIDGE_SIGN_TIMEOUT_MS,
-        `Ví không phản hồi khi ký ${label} (Crypto Vault có thể đang khoá).`
-      );
-      if (typeof params.from === "string") markSigningSessionReady(params.from);
-      userDeclinedVaultUnlock = false;
-      return result;
-    } catch (err) {
-      lastError = err;
-      const message = err instanceof Error ? err.message : String(err);
-      if (SIGN_CANCELLED_ERROR_RE.test(message)) {
-        // Người dùng chủ động đóng hộp thoại mật khẩu → không tự mở lại (xem commitWorkspaceCID).
-        userDeclinedVaultUnlock = true;
-        throw new Error("Bạn đã đóng hộp thoại mở khoá Crypto Vault nên giao dịch chưa được gửi lên chain.", {
-          cause: err,
-        });
+    // Toàn bộ "đọc hash tài khoản → gửi → xác minh đã lên chain chưa" nằm trong
+    // MỘT khoá của cổng giao dịch dùng chung. Nhờ vậy không giao dịch nào khác
+    // chen vào giữa lúc ta đọc hash và lúc ta gửi, và không có hai lần ký chồng nhau.
+    // oxlint-disable-next-line no-await-in-loop -- các lần thử phải tuần tự để chờ người dùng mở khoá ví.
+    const outcome = await runExclusiveChainTx<SignAttemptOutcome>(`sign:${label}`, async () => {
+      const hashBefore = await readRpcAccountLastHash(from);
+      try {
+        const value = await withBridgeTimeout<unknown>(
+          bridge.request("sendTransaction", params),
+          BRIDGE_SIGN_TIMEOUT_MS,
+          "Ví điện tử chưa phản hồi khi xác nhận. Bạn hãy mở khoá ví rồi thực hiện lại."
+        );
+        const success: SignAttemptOutcome = { ok: true, value };
+        return success;
+      } catch (error) {
+        const hashAfter = await readRpcAccountLastHash(from);
+        const failure: SignAttemptOutcome = { ok: false, error, hashBefore, hashAfter };
+        return failure;
       }
-      if (!SIGN_RETRYABLE_ERROR_RE.test(message) || attempt >= maxAttempts) throw err;
-      console.warn(
-        `[DApp Chain] Ký ${label} lần ${attempt} chưa xong (${message}). ` +
-          "Đang chờ bạn nhập mật khẩu mở khoá Crypto Vault rồi ký lại..."
-      );
-      // oxlint-disable-next-line no-await-in-loop -- phải chờ mở khoá xong mới ký lại được.
-      const unlocked = await waitForVaultUnlock();
-      if (!unlocked) break;
-      console.log(`[DApp Chain] Crypto Vault đã mở khoá — ký lại ${label} (lần ${attempt + 1}).`);
+    });
+
+    if (outcome.ok) {
+      if (from) markSigningSessionReady(from);
+      userDeclinedVaultUnlock = false;
+      return outcome.value;
     }
+
+    const { error, hashBefore, hashAfter } = outcome;
+
+    // Giao dịch đã lên chain dù phản hồi của ví bị timeout ⇒ trả về hash thật và
+    // TUYỆT ĐỐI không gửi lại (gửi lại làm nonce nhảy thêm và mất thêm phí).
+    if (hashAfter && hashAfter !== hashBefore) {
+      if (from) markSigningSessionReady(from);
+      userDeclinedVaultUnlock = false;
+      console.log(
+        `[DApp Chain] ${label} đã lên chain (${hashAfter}) dù phản hồi ví bị timeout — không gửi lại.`
+      );
+      return { txHash: hashAfter, recoveredFromTimeout: true };
+    }
+
+    lastError = error;
+    const message = error instanceof Error ? error.message : String(error);
+    if (SIGN_CANCELLED_ERROR_RE.test(message)) {
+      // Người dùng chủ động đóng cửa sổ mật khẩu → không tự mở lại (xem commitWorkspaceCID).
+      userDeclinedVaultUnlock = true;
+      throw new Error("Bạn đã đóng cửa sổ mở khoá ví nên thay đổi chưa được lưu lên hệ thống.", {
+        cause: error,
+      });
+    }
+    if (!SIGN_RETRYABLE_ERROR_RE.test(message) || attempt >= maxAttempts) throw error;
+    console.warn(
+      `[DApp Chain] Ký ${label} lần ${attempt} chưa xong (${message}). ` +
+        "Đang chờ bạn nhập mật khẩu mở khoá ví rồi ký lại..."
+    );
+    // oxlint-disable-next-line no-await-in-loop -- phải chờ mở khoá xong mới ký lại được.
+    const unlocked = await waitForVaultUnlock();
+    if (!unlocked) break;
+    console.log(`[DApp Chain] Ví đã mở khoá — ký lại ${label} (lần ${attempt + 1}).`);
   }
 
-  throw lastError instanceof Error ? lastError : new Error(`Không thể ký ${label}.`);
+  throw lastError instanceof Error ? lastError : new Error("Không thể xác nhận giao dịch bằng ví của bạn.");
 }
 
 function stopVaultUnlockWatcher(): void {
@@ -777,8 +931,23 @@ function ensureVaultUnlockWatcher(): void {
 }
 
 export function isAutoCommitOnChainEnabled(): boolean {
-  const raw = (getEnvVar("VITE_AUTO_COMMIT_ONCHAIN") || "true").trim().toLowerCase();
-  return raw !== "false" && raw !== "0" && raw !== "off" && raw !== "no";
+  const raw = (getEnvVar("VITE_AUTO_COMMIT_ONCHAIN") || "").trim().toLowerCase();
+
+  // Cấu hình tường minh trong .env luôn thắng.
+  if (raw) return !["false", "0", "off", "no"].includes(raw);
+
+  // Chưa cấu hình → chọn chế độ chỉ phát sinh MỘT giao dịch cho mỗi thao tác:
+  // - Công việc đã được ghi on-chain ⇒ mỗi thao tác đã có giao dịch riêng, nên
+  //   không ghi thêm CID (nếu không nonce sẽ nhảy 2–3 — lỗi CHAIN-09).
+  // - Công việc KHÔNG ghi on-chain ⇒ CID là đường duy nhất đưa dữ liệu lên
+  //   chain, buộc phải bật.
+  return !isOnChainTaskSyncEnabled();
+}
+
+/** Đọc cờ ghi công việc on-chain (dùng cho quyết định auto-commit ở trên). */
+function isOnChainTaskSyncEnabled(): boolean {
+  const raw = (getEnvVar("VITE_ONCHAIN_TASKS_ENABLED") || "").trim().toLowerCase();
+  return ["true", "1", "on", "yes"].includes(raw);
 }
 
 function readCommittedWorkspaceCid(slug: string): string | null {
@@ -1346,7 +1515,6 @@ export async function assertVaultSigningAddress(
   preferred?: string | null,
   options?: { refresh?: boolean }
 ): Promise<string> {
-  const vaultUrl = getVaultFrameUrl() || "Crypto Vault";
   const preferredAddr =
     normalizeWalletAddress(preferred) ??
     normalizeWalletAddress(currentUserAddress) ??
@@ -1356,7 +1524,7 @@ export async function assertVaultSigningAddress(
   if (!bridge) {
     throw new VaultSigningError(
       "VAULT_UNAVAILABLE",
-      "Chưa kết nối được MetaNode SDK. Hãy tải lại trang và kiểm tra blockchain-bridge (6001) + Crypto Vault (6002) đang chạy."
+      "Chưa kết nối được ứng dụng ví. Hãy mở ứng dụng ví rồi tải lại trang."
     );
   }
 
@@ -1364,7 +1532,7 @@ export async function assertVaultSigningAddress(
   if (!wallets) {
     throw new VaultSigningError(
       "VAULT_UNAVAILABLE",
-      `Không đọc được danh sách ví từ ${vaultUrl}. Hãy kiểm tra crypto-vault đang chạy rồi tải lại trang.`,
+      "Không đọc được danh sách ví. Hãy mở ứng dụng ví rồi tải lại trang.",
       []
     );
   }
@@ -1373,7 +1541,7 @@ export async function assertVaultSigningAddress(
   if (addresses.length === 0) {
     throw new VaultSigningError(
       "VAULT_EMPTY",
-      `${vaultUrl} chưa có ví nào nên không thể ký giao dịch. Mở "Trung tâm ví" để import private key vào đúng Crypto Vault này.`,
+      `Ứng dụng ví chưa có ví nào nên chưa thể xác nhận thay đổi. Mở "Trung tâm ví" để thêm ví.`,
       addresses
     );
   }
@@ -1413,7 +1581,7 @@ export async function assertVaultSigningAddress(
   if (!replacement) {
     throw new VaultSigningError(
       "WALLET_NOT_IN_VAULT",
-      `Ví ${preferredAddr ?? "(chưa xác định)"} không có trong ${vaultUrl}. ` +
+      `Ví ${preferredAddr ?? "(chưa xác định)"} không có trong ứng dụng ví. ` +
         `Ví đang có: ${addresses.join(", ")}. Hãy chọn đúng ví trong "Trung tâm ví" rồi thử lại.`,
       addresses
     );
@@ -1435,13 +1603,54 @@ export async function assertVaultSigningAddress(
   return replacement;
 }
 
-export async function commitWorkspaceCID(
+let inFlightCommitKey = "";
+let inFlightCommitPromise: Promise<boolean> | null = null;
+
+/**
+ * Ghi CID của workspace lên registry on-chain.
+ *
+ * Ba lớp bảo vệ chống "1 hành động ⇒ nhiều giao dịch":
+ *  1. Dedupe theo CID đã ghi thành công (đọc từ localStorage + cache RAM).
+ *  2. Single-flight theo cặp (slug, cid): mọi lời gọi trùng trong lúc đang gửi
+ *     sẽ dùng chung một promise thay vì mở giao dịch thứ hai.
+ *  3. Tuần tự hoá qua cổng giao dịch dùng chung (xem `signTransactionWithUnlockRetry`).
+ */
+export function commitWorkspaceCID(
+  slug: string,
+  newCid: string,
+  options?: { force?: boolean }
+): Promise<boolean> {
+  const key = `${slug}::${newCid}`;
+  if (inFlightCommitPromise && inFlightCommitKey === key) return inFlightCommitPromise;
+
+  const run = commitWorkspaceCIDOnce(slug, newCid, options);
+  inFlightCommitKey = key;
+  inFlightCommitPromise = run;
+  void run
+    .finally(() => {
+      if (inFlightCommitPromise === run) {
+        inFlightCommitPromise = null;
+        inFlightCommitKey = "";
+      }
+    })
+    .catch(() => undefined);
+  return run;
+}
+
+async function commitWorkspaceCIDOnce(
   slug: string,
   newCid: string,
   options?: { force?: boolean }
 ): Promise<boolean> {
   const wsRegistryAddr = getWorkspaceRegistryAddress();
   if (!wsRegistryAddr || !newCid) return false;
+
+  // CID này đã nằm on-chain ⇒ không gửi lại. Đây là lớp chặn cuối cùng cho các
+  // luồng gọi trực tiếp (ví dụ đoạn tự đồng bộ trong routes.ts).
+  if (!options?.force && readCommittedWorkspaceCid(slug) === newCid) {
+    console.log(`[DApp Chain] Bỏ qua updateWorkspaceCID("${slug}") — CID "${newCid}" đã có trên chain.`);
+    return true;
+  }
 
   const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
   const preferredAddr = currentUserAddress || getStoredWalletAddress();
@@ -2838,9 +3047,31 @@ export async function initDAppDB(): Promise<{ status: string; cid?: string; ipfs
   return Promise.race([_initDAppDB(), timeoutTask]);
 }
 
-export async function syncDAppDBToChain(forcedWallet?: string) {
+export type DAppSyncWarningCode =
+  | "WORKSPACE_REGISTRY"
+  | "WORKSPACE_NOT_MEMBER"
+  | "WORKSPACE_NOT_OWNER";
+
+export type DAppSyncWarning = {
+  code: DAppSyncWarningCode;
+  /** Câu giải thích cho người dùng cuối, không dùng thuật ngữ kỹ thuật. */
+  message: string;
+};
+
+export type DAppSyncResult = {
+  /** `true` chỉ khi MỌI bước ghi dữ liệu đều thành công. */
+  ok: boolean;
+  cid: string;
+  wallet: string;
+  /** Slug workspace đã được cập nhật trên chain (rỗng nếu chỉ ghi con trỏ dữ liệu). */
+  workspaceSlug: string;
+  /** Các bước chưa hoàn tất — UI phải hiển thị cảnh báo, không được báo "thành công". */
+  warnings: DAppSyncWarning[];
+};
+
+export async function syncDAppDBToChain(forcedWallet?: string): Promise<DAppSyncResult> {
   const requestedWallet = forcedWallet || getStoredWalletAddress();
-  if (!requestedWallet) throw new Error("Chưa kết nối ví. Vui lòng kết nối ví từ giao diện.");
+  if (!requestedWallet) throw new Error("Chưa có ví. Hãy mở “Trung tâm ví” để thêm ví rồi thử lại.");
   // PREFLIGHT BẮT BUỘC: chỉ ký bằng ví thật sự có trong Crypto Vault. Nếu Vault rỗng / không đọc
   // được / ví Plane đang giữ không còn trong Vault thì dừng ngay với `VaultSigningError` có mã lỗi
   // để UI mở "Trung tâm ví" — thay vì gửi giao dịch rồi nhận `Wallet not found` từ bridge.
@@ -2854,7 +3085,7 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   if (!hasRealContent) {
     console.warn("[DApp Sync] Chặn đồng bộ on-chain: Cơ sở dữ liệu đang rỗng (chưa có dự án hoặc công việc).");
     throw new Error(
-      "Không có dữ liệu thực (dự án hoặc công việc) để đồng bộ lên Blockchain. Vui lòng tạo dự án/công việc trước."
+      "Chưa có dự án hoặc công việc nào để lưu. Hãy tạo dự án hoặc công việc trước."
     );
   }
 
@@ -2863,6 +3094,9 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   const contractGas = getContractGas();
   const blsPrivateKey = getBlsPrivateKey();
   const defaultSlug = getDefaultWorkspaceSlug();
+  // Các bước chưa hoàn tất. UI dựa vào đây để KHÔNG báo "thành công" khi thực tế
+  // còn phần dữ liệu chưa lên chain (lỗi CHAIN-02/CHAIN-03).
+  const syncWarnings: DAppSyncWarning[] = [];
 
   let cid = isDirtyState ? null : getLastUploadedCID();
   if (!cid) {
@@ -2872,7 +3106,7 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
     }
     cid = await uploadToIPFS(true);
   }
-  if (!cid) throw new Error("Không thể upload dữ liệu lên IPFS.");
+  if (!cid) throw new Error("Không lưu được dữ liệu lên kho lưu trữ. Vui lòng thử lại.");
 
   // `uploadToIPFS` ở trên đã hẹn ghi ngầm CID này on-chain. Ta đang ghi trực tiếp ngay bây giờ
   // nên huỷ lịch hẹn để không gửi trùng 1 giao dịch (mỗi giao dịch là 1 lần xác nhận ký ví).
@@ -2883,7 +3117,7 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   }
 
   const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
-  if (!bridge) throw new Error("FiaiSDK is not available.");
+  if (!bridge) throw new Error("Chưa kết nối được ứng dụng ví. Hãy mở ứng dụng ví rồi thử lại.");
 
   try {
     const sysCore = (await import("@metanodejs/system-core")) as any;
@@ -2907,28 +3141,42 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
   // and prevents poisoning blockchain-bridge's in-memory account nonce cache.
   if (registryAddr) {
     try {
-      await signTransactionWithUnlockRetry(
-        bridge,
-        {
-          from: currentUserAddress as string,
-          to: registryAddr,
-          abiData: [SET_CID_ABI],
-          functionName: "setCID",
-          feeType: "sc",
-          amount: "0",
-          value: "0",
-          gas: contractGas,
-          type: "transaction",
-          inputArray: [
-            { ...SET_CID_ABI.inputs[0], value: "plane_dapp_db" },
-            { ...SET_CID_ABI.inputs[1], value: cid },
-          ],
-          isReadOnly: false,
-          bundleId: "",
-          ...(blsPrivateKey ? { blsPrivateKey } : {}),
-        },
-        "setCID"
-      );
+      // Đọc con trỏ hiện tại trên chain trước khi ghi. Nếu đã đúng CID này thì bỏ
+      // hẳn giao dịch — mỗi giao dịch là một lần người dùng phải xác nhận ví.
+      const currentOnChainCid = await directRpcRead(
+        registryAddr,
+        abiEncodeGetCID(currentUserAddress as string, "plane_dapp_db"),
+        5000
+      )
+        .then((raw) => decodeAbiString(raw))
+        .catch(() => "");
+
+      if (currentOnChainCid === cid) {
+        console.log("[DApp Sync] Bỏ qua setCID: con trỏ dữ liệu trên chain đã đúng CID này.");
+      } else {
+        await signTransactionWithUnlockRetry(
+          bridge,
+          {
+            from: currentUserAddress as string,
+            to: registryAddr,
+            abiData: [SET_CID_ABI],
+            functionName: "setCID",
+            feeType: "sc",
+            amount: "0",
+            value: "0",
+            gas: contractGas,
+            type: "transaction",
+            inputArray: [
+              { ...SET_CID_ABI.inputs[0], value: "plane_dapp_db" },
+              { ...SET_CID_ABI.inputs[1], value: cid },
+            ],
+            isReadOnly: false,
+            bundleId: "",
+            ...(blsPrivateKey ? { blsPrivateKey } : {}),
+          },
+          "setCID"
+        );
+      }
     } catch (signError) {
       const message = signError instanceof Error ? signError.message : String(signError);
       if (WALLET_NOT_IN_VAULT_RE.test(message)) {
@@ -3050,11 +3298,23 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
             })
             .catch((updateErr: any) => {
               console.warn("[DApp Sync] updateWorkspaceCID failed:", updateErr);
+              syncWarnings.push({
+                code: "WORKSPACE_REGISTRY",
+                message:
+                  "Chưa cập nhật được thông tin workspace trên hệ thống lưu trữ. " +
+                  "Dữ liệu công việc vẫn an toàn trên máy bạn và sẽ được gửi lại ở lần đồng bộ sau.",
+              });
             });
         } else {
           console.info(
             `[DApp Sync] Bỏ qua updateWorkspaceCID("${targetSlug}") vì ví ${currentUserAddress} không phải Member/Admin/Owner của workspace trên contract.`
           );
+          syncWarnings.push({
+            code: "WORKSPACE_NOT_MEMBER",
+            message:
+              "Bạn chưa được cấp quyền cập nhật thông tin chung của workspace này trên hệ thống, " +
+              "nên lần này chỉ dữ liệu do bạn tạo được lưu lại.",
+          });
         }
       } else {
         const isOwnerOfWs =
@@ -3096,15 +3356,33 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
             })
             .catch((createErr: any) => {
               console.warn("[DApp Sync] createWorkspace failed:", createErr);
+              syncWarnings.push({
+                code: "WORKSPACE_REGISTRY",
+                message:
+                  "Chưa tạo được workspace trên hệ thống lưu trữ. " +
+                  "Dữ liệu công việc vẫn an toàn trên máy bạn và sẽ được gửi lại ở lần đồng bộ sau.",
+              });
             });
         } else {
           console.info(
             `[DApp Sync] Không tìm thấy workspace "${targetSlug}" on-chain và ví ${currentUserAddress} không phải Owner. Bỏ qua createWorkspace.`
           );
+          syncWarnings.push({
+            code: "WORKSPACE_NOT_OWNER",
+            message:
+              "Workspace này chưa có trên hệ thống lưu trữ và bạn không phải người tạo workspace, " +
+              "nên chưa thể lưu thông tin chung. Hãy nhờ người tạo workspace đồng bộ trước.",
+          });
         }
       }
     } catch (wsErr) {
       console.warn("[DApp Sync] Workspace registry error:", wsErr);
+      syncWarnings.push({
+        code: "WORKSPACE_REGISTRY",
+        message:
+          "Chưa kiểm tra được thông tin workspace trên hệ thống lưu trữ, nên phần thông tin chung chưa được cập nhật. " +
+          "Dữ liệu công việc vẫn an toàn trên máy bạn.",
+      });
     }
   }
 
@@ -3135,7 +3413,14 @@ export async function syncDAppDBToChain(forcedWallet?: string) {
 
   baseCID = cid;
   isDirtyState = false;
-  return cid;
+
+  return {
+    ok: syncWarnings.length === 0,
+    cid,
+    wallet: currentUserAddress as string,
+    workspaceSlug: syncedWorkspaceSlug,
+    warnings: syncWarnings,
+  };
 }
 
 // ── Connect Hooks ────────────────────────────────────────────────────────

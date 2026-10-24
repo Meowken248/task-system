@@ -1,10 +1,18 @@
+/**
+ * Copyright (c) 2023-present Plane Software, Inc. and contributors
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * See the LICENSE file for details.
+ */
+
 import { useCallback, useEffect, useState } from "react";
 import { Wallet } from "lucide-react";
-import { localDB, syncDAppDBToChain, isVaultSigningError, VaultSigningError } from "@plane/services";
+import { isVaultSigningError, localDB, syncDAppDBToChain, VaultSigningError } from "@plane/services";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 import { cn } from "@plane/utils";
 
-import { ensureFiaiFramesReady, resetFiaiSDK } from "../../services/blockchain/fiai-sdk.service";
+import { useUser } from "@/hooks/store/user";
+import { ensureFiaiFramesReady } from "../../services/blockchain/fiai-sdk.service";
+import { WALLET_CHANGED_EVENT } from "../../services/blockchain/wallet-center-events";
 import {
   loadSigningWalletState,
   openWalletCenter,
@@ -13,140 +21,137 @@ import {
 } from "../../services/blockchain/wallet-vault.service";
 import { backfillIssuesOnChain, isOnChainTaskSyncAvailable } from "../../services/blockchain/plane-task-chain.service";
 
-const SIGN_NONCE_ERROR_RE = /invalid sign|invalid nonce|nonce too low|nonce has already been used|nonce conflict/i;
-
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
-  return String(error ?? "Lỗi không xác định");
+  return String(error ?? "");
 }
 
-/** Biến lỗi ví/ký thành thông báo có tiêu đề + hướng khắc phục cụ thể. */
+/**
+ * Biến lỗi ví thành câu thông báo cho người dùng cuối.
+ *
+ * Nguyên tắc: KHÔNG hiển thị thuật ngữ kỹ thuật (tên SDK, số cổng, blockchain,
+ * nonce, IPFS…). Người dùng chỉ cần biết: chuyện gì xảy ra và bấm vào đâu tiếp.
+ * Chi tiết kỹ thuật vẫn được ghi ở console để đội vận hành tra cứu.
+ */
 function presentSyncError(error: unknown): { title: string; message: string } {
   const message = errorMessage(error);
 
   if (isVaultSigningError(error)) {
     if (error.code === "VAULT_EMPTY") {
       return {
-        title: "Crypto Vault chưa có ví",
-        message:
-          `${message}\n\n` +
-          'Bấm "Trung tâm ví" → import private key vào đúng Crypto Vault mà Plane đang dùng ' +
-          "(khóa chỉ đi vào Vault, Plane không lưu), rồi bấm Sync to Chain lại.",
+        title: "Chưa có ví",
+        message: "Mở “Trung tâm ví” và thêm ví của bạn, sau đó bấm “Đồng bộ dữ liệu” lại.",
       };
     }
     if (error.code === "WALLET_NOT_IN_VAULT") {
       return {
-        title: "Ví chưa khớp với Crypto Vault",
-        message: `${message}\n\nMở "Trung tâm ví" → chọn ví đang có trong Vault (hoặc import ví của bạn) rồi Sync lại.`,
+        title: "Ví chưa khớp",
+        message: "Mở “Trung tâm ví”, chọn đúng ví bạn đang dùng (hoặc thêm ví) rồi thử lại.",
       };
     }
     return {
-      title: "Crypto Vault không phản hồi",
-      message:
-        `${message}\n\n` +
-        "Kiểm tra blockchain-bridge (:6001) và crypto-vault (:6002) đang chạy, sau đó tải lại trang.",
+      title: "Chưa kết nối được ví",
+      message: "Hãy mở ứng dụng ví trên máy, đăng nhập lại và thử lại. Nếu vẫn lỗi, tải lại trang.",
     };
   }
 
-  if (/UNLOCK_CANCELLED|đóng hộp thoại mở khoá/i.test(message)) {
+  if (/UNLOCK_CANCELLED|đóng (hộp thoại|cửa sổ) mở khoá/i.test(message)) {
     return {
-      title: "Chưa mở khoá Crypto Vault",
-      message: `${message}\n\nBấm Sync to Chain và nhập mật khẩu khi hộp thoại Crypto Vault hiện ra.`,
+      title: "Chưa mở khoá ví",
+      message: "Thay đổi vẫn được giữ trên máy. Khi sẵn sàng, bấm “Đồng bộ dữ liệu” và nhập mật khẩu ví.",
     };
   }
   if (/wallet not found/i.test(message)) {
     return {
-      title: "Ví không có trong Crypto Vault",
-      message:
-        `${message}\n\n` +
-        "Ví Plane đang dùng không tồn tại trong Crypto Vault nên Vault không ký được. " +
-        'Mở "Trung tâm ví" để chọn/import đúng ví rồi Sync lại.',
+      title: "Không tìm thấy ví",
+      message: "Mở “Trung tâm ví” để chọn hoặc thêm ví bạn đang dùng rồi thử lại.",
     };
   }
-  if (/MetaNode frame chưa sẵn sàng/i.test(message)) {
+  if (/frame chưa sẵn sàng|not responding|no frame found/i.test(message)) {
     return {
-      title: "MetaNode frame chưa sẵn sàng",
-      message: `${message}\n\nKhởi động lại blockchain-bridge (:6001) + crypto-vault (:6002) rồi tải lại trang.`,
+      title: "Ứng dụng ví chưa sẵn sàng",
+      message: "Hãy mở ứng dụng ví trên máy rồi tải lại trang này.",
     };
   }
-  if (/Ví không phản hồi|Crypto Vault đang khoá/i.test(message)) {
+  if (/Ví (điện tử )?(không|chưa) phản hồi|Vault đang khoá|đang khoá/i.test(message)) {
     return {
-      title: "Ví không phản hồi",
-      message: `${message}\n\nMở "Trung tâm ví" → "Mở khoá Vault" rồi bấm Sync lại.`,
+      title: "Ví chưa phản hồi",
+      message: "Mở “Trung tâm ví” → “Mở khoá ví” rồi bấm “Đồng bộ dữ liệu” lại.",
     };
   }
-  return { title: "Đồng bộ thất bại", message };
+  if (/không phản hồi|quá \d+ giây/i.test(message)) {
+    return {
+      title: "Ví phản hồi chậm",
+      message: "Hãy kiểm tra ứng dụng ví vẫn đang mở, sau đó thử lại. Dữ liệu trên máy không bị mất.",
+    };
+  }
+  return {
+    title: "Chưa lưu được lên hệ thống",
+    message: `${message}\n\nDữ liệu vẫn được giữ trên máy. Bạn có thể thử lại bất cứ lúc nào.`,
+  };
 }
 
 export function SyncToChainButton() {
+  const { data: currentUser } = useUser();
   const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStage, setSyncStage] = useState<string>("Đang đồng bộ...");
+  const [syncStage, setSyncStage] = useState<string>("Đang xử lý…");
   const [walletState, setWalletState] = useState<SigningWalletState | null>(null);
 
   const refreshWalletState = useCallback(async (options?: { refresh?: boolean }) => {
     try {
       setWalletState(await loadSigningWalletState(options));
     } catch (error) {
-      console.warn("[Sync] Không đọc được trạng thái Crypto Vault:", error);
+      console.warn("[Sync] Không đọc được trạng thái ví:", error);
     }
   }, []);
 
   useEffect(() => {
-    // Không chặn render: kiểm tra ví sau khi trang đã tải xong, và mỗi lần tab được focus lại.
-    // Dùng cache để không gọi `getAllWallets` (có RPC balance) mỗi lần đổi tab.
-    const timer = window.setTimeout(() => void refreshWalletState({ refresh: false }), 4000);
-    const onFocus = () => void refreshWalletState({ refresh: false });
+    // Chưa đăng nhập thì không dò ví (tránh gọi SDK ở trang đăng nhập — WALLET-05).
+    if (!currentUser?.id) return;
+    void refreshWalletState();
+    // Cập nhật lại nhãn ví khi người dùng quay lại tab (ví có thể đã được thêm/xoá).
+    let timer: number | undefined;
+    const onFocus = () => {
+      window.clearTimeout(timer);
+      // Đọc lại nhãn ví từ cache: không gọi danh sách ví (tốn RPC) mỗi lần focus.
+      timer = window.setTimeout(() => void refreshWalletState({ refresh: false }), 400);
+    };
     window.addEventListener("focus", onFocus);
     return () => {
       window.clearTimeout(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refreshWalletState]);
+  }, [currentUser?.id, refreshWalletState]);
+
+  // Ví vừa được thêm/đổi ở "Trung tâm ví" → cập nhật badge ngay (WALLET-03).
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const onWalletChanged = () => void refreshWalletState({ refresh: true });
+    window.addEventListener(WALLET_CHANGED_EVENT, onWalletChanged);
+    return () => window.removeEventListener(WALLET_CHANGED_EVENT, onWalletChanged);
+  }, [currentUser?.id, refreshWalletState]);
 
   const handleSync = async () => {
     setIsSyncing(true);
     try {
-      // 1. Bảo đảm bridge (6001) + Crypto Vault (6002) đã handshake xong trước khi ký.
-      setSyncStage("1/4: Kiểm tra cầu nối SDK...");
+      setSyncStage("Đang kiểm tra ví…");
       await ensureFiaiFramesReady();
 
-      // 2. Preflight: ví phải tồn tại THẬT trong Crypto Vault mà Plane đang dùng.
-      setSyncStage("2/4: Đối chiếu ví với Crypto Vault...");
       const state = await loadSigningWalletState();
       setWalletState(state);
       if (!state.ready || !state.address) {
         openWalletCenter(state.code === "VAULT_EMPTY" ? "import" : "select");
-        throw new VaultSigningError(
-          state.code ?? "VAULT_EMPTY",
-          state.message ?? "Chưa có ví hợp lệ trong Crypto Vault."
-        );
+        throw new VaultSigningError(state.code ?? "VAULT_EMPTY", state.message ?? "Chưa có ví hợp lệ.");
       }
 
-      // 3. Gửi transaction (kèm retry khi lỗi chữ ký/nonce do bridge cache).
-      setSyncStage("3/4: Ký giao dịch on-chain...");
-      try {
-        await syncDAppDBToChain(state.address);
-      } catch (sendError) {
-        const message = errorMessage(sendError);
-        if (!SIGN_NONCE_ERROR_RE.test(message)) throw sendError;
+      setSyncStage("Đang lưu dữ liệu…");
+      // Lớp services đã tự chống gửi trùng và tự kiểm tra "giao dịch đã lên chưa"
+      // trước khi thử lại, nên ở đây KHÔNG chạy lại toàn bộ quy trình khi lỗi.
+      const result = await syncDAppDBToChain(state.address);
 
-        console.warn("[Sync] Phát hiện lỗi chữ ký/nonce, đang reset SDK và thử lại...", message);
-        setSyncStage("3/4: Ký lại giao dịch...");
-        await resetFiaiSDK();
-        const refreshed = await loadSigningWalletState();
-        setWalletState(refreshed);
-        if (!refreshed.ready || !refreshed.address) {
-          throw new VaultSigningError(
-            refreshed.code ?? "VAULT_EMPTY",
-            refreshed.message ?? "Chưa có ví hợp lệ trong Crypto Vault."
-          );
-        }
-        await syncDAppDBToChain(refreshed.address);
-      }
-
-      // 4. Tạo lại (backfill) các task chưa tồn tại on-chain.
-      setSyncStage("4/4: Tạo task còn thiếu on-chain...");
+      setSyncStage("Đang hoàn tất…");
       let backfillSummary = "";
+      let backfillHadFailures = false;
       if (isOnChainTaskSyncAvailable()) {
         const deletedIssueIds = new Set<string>(localDB._deleted_issue_ids || []);
         const issuesToBackfill = (localDB.issues || []).filter(
@@ -154,30 +159,60 @@ export function SyncToChainButton() {
         );
         if (issuesToBackfill.length > 0) {
           const shouldBackfill = window.confirm(
-            `Có ${issuesToBackfill.length} công việc có thể chưa được ghi on-chain.\n` +
-              "Tạo lại trên blockchain ngay? Mỗi công việc có thể cần một lần xác nhận ký ví."
+            `Có ${issuesToBackfill.length} công việc có thể chưa được lưu trên hệ thống.\n` +
+              "Lưu lại ngay? Mỗi công việc có thể cần bạn xác nhận bằng ví."
           );
           if (shouldBackfill) {
-            const result = await backfillIssuesOnChain(issuesToBackfill, (message) => console.log(`[Sync] ${message}`));
+            const backfill = await backfillIssuesOnChain(issuesToBackfill, (note) => console.log(`[Sync] ${note}`));
+            const unknownNote = backfill.unknown > 0 ? `, chưa kiểm tra được ${backfill.unknown}` : "";
+            backfillHadFailures = backfill.failed > 0 || backfill.unknown > 0;
             backfillSummary =
-              `\nTask on-chain: tạo mới ${result.created}, đã có sẵn ${result.skipped}, lỗi ${result.failed}` +
-              (result.aborted ? " (đã dừng sớm do lỗi liên tiếp)" : "");
+              `\nCông việc: đã lưu ${backfill.created}, đã có sẵn ${backfill.skipped}` +
+              `, chưa lưu được ${backfill.failed}${unknownNote}` +
+              (backfill.aborted ? " (đã dừng vì lỗi liên tiếp)." : ".");
+            if (backfill.errors.length > 0) {
+              const names = backfill.errors
+                .slice(0, 3)
+                .map((item) => item.name)
+                .join(", ");
+              backfillSummary += `\nChưa lưu được: ${names}${backfill.errors.length > 3 ? "…" : ""}.`;
+            }
           }
         }
       }
 
+      if (!result.ok) {
+        // Một phần dữ liệu chưa lên hệ thống → cảnh báo, KHÔNG báo thành công.
+        const details = result.warnings.map((warning) => `• ${warning.message}`).join("\n");
+        setToast({
+          type: TOAST_TYPE.WARNING,
+          title: "Mới lưu được một phần",
+          message: `Dữ liệu trên máy đã an toàn, nhưng chưa gửi hết lên hệ thống:\n${details}${backfillSummary}`,
+        });
+        return;
+      }
+
+      if (backfillHadFailures) {
+        setToast({
+          type: TOAST_TYPE.WARNING,
+          title: "Đã lưu, còn vài công việc chưa xong",
+          message: `Dữ liệu chính đã được lưu.${backfillSummary}\nBạn có thể bấm “Đồng bộ dữ liệu” lại để lưu nốt.`,
+        });
+        return;
+      }
+
       setToast({
         type: TOAST_TYPE.SUCCESS,
-        title: "Đồng bộ on-chain thành công",
-        message: `Dữ liệu đã được ghi lên blockchain.${backfillSummary}`,
+        title: "Đã lưu xong",
+        message: `Dữ liệu đã được lưu an toàn.${backfillSummary}`,
       });
     } catch (error) {
-      console.error("[Sync] Đồng bộ on-chain thất bại:", error);
+      console.error("[Sync] Đồng bộ thất bại:", error);
       if (/LỖI XUNG ĐỘT/.test(errorMessage(error))) {
         setToast({
           type: TOAST_TYPE.WARNING,
-          title: "Xung đột dữ liệu on-chain",
-          message: `${errorMessage(error)}\n\nHãy sao lưu thủ công phần việc đang làm trước khi F5!`,
+          title: "Dữ liệu trên máy và trên hệ thống khác nhau",
+          message: "Hệ thống giữ lại bản cũ để tránh ghi đè. Hãy sao lưu phần đang làm trước khi tải lại trang.",
         });
       } else {
         const { title, message } = presentSyncError(error);
@@ -188,7 +223,7 @@ export function SyncToChainButton() {
       }
     } finally {
       setIsSyncing(false);
-      void refreshWalletState();
+      void refreshWalletState({ refresh: true });
     }
   };
 
@@ -198,17 +233,20 @@ export function SyncToChainButton() {
     : isWalletReady
       ? `Ví: ${shortenAddress(walletState.address, 4)}`
       : walletState.code === "VAULT_EMPTY"
-        ? "Ví: Vault chưa có ví"
+        ? "Ví: chưa có ví"
         : walletState.code === "VAULT_UNAVAILABLE"
-          ? "Ví: Vault không phản hồi"
+          ? "Ví: chưa kết nối"
           : "Ví: cần chọn lại";
+
+  // Chưa đăng nhập thì không hiển thị nút đồng bộ (lỗi WALLET-05).
+  if (!currentUser?.id) return null;
 
   return (
     <div className="fixed right-4 bottom-4 z-50 flex flex-col items-end gap-2">
       <button
         type="button"
         onClick={() => {
-          void refreshWalletState();
+          void refreshWalletState({ refresh: true });
           openWalletCenter(isWalletReady ? "diagnose" : walletState?.code === "VAULT_EMPTY" ? "import" : "select");
         }}
         className={cn(
@@ -226,6 +264,7 @@ export function SyncToChainButton() {
       <button
         onClick={handleSync}
         disabled={isSyncing}
+        title="Lưu dữ liệu của bạn lên hệ thống lưu trữ an toàn"
         className={`shadow-lg rounded px-4 py-2 font-medium text-white transition-colors ${
           isSyncing ? "bg-gray-500 cursor-not-allowed opacity-75" : "bg-blue-600 hover:bg-blue-700 cursor-pointer"
         }`}
@@ -248,10 +287,10 @@ export function SyncToChainButton() {
                 d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
               />
             </svg>
-            {syncStage || "Đang xử lý..."}
+            {syncStage || "Đang xử lý…"}
           </span>
         ) : (
-          "Sync to Chain"
+          "Đồng bộ dữ liệu"
         )}
       </button>
     </div>

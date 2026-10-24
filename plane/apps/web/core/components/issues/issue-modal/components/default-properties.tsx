@@ -157,7 +157,7 @@ export const IssueDefaultProperties = observer(function IssueDefaultProperties(p
                 if (date && targetDate) {
                   const currentTarget = getDate(targetDate);
                   if (currentTarget && currentTarget < date) {
-                    setValue("target_date", formattedDate, { shouldDirty: true });
+                    setValue("target_date", formattedDate ?? null, { shouldDirty: true });
                   }
                 }
                 handleFormChange();

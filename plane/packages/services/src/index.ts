@@ -24,5 +24,6 @@ export * from "./dapp/routes";
 export * from "./dapp/store";
 export * from "./dapp/mail";
 export * from "./dapp/chain";
+export * from "./dapp/tx-gateway";
 export * from "./dapp/indexed-db";
 export * from "./issue";

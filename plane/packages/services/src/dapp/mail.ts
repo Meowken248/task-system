@@ -333,7 +333,9 @@ export async function sendOtpEmail(recipientEmail: string, otpCode: string): Pro
     console.warn("[Brevo Mail] ⚠️ VITE_EMAIL_SENDER_ADDRESS is not configured; skipping OTP email.");
     return false;
   }
-  const subject = `Mã xác nhận đăng nhập Plane của bạn: ${otpCode}`;
+  // Không đưa mã vào tiêu đề email: tiêu đề hiện trên màn hình khoá điện thoại
+  // và bị lưu vĩnh viễn trong hộp thư (người khác có thể nhìn thấy mã).
+  const subject = "Mã xác nhận đăng nhập Plane";
 
   const htmlContent = `
 <!DOCTYPE html>

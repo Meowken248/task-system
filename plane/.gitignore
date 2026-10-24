@@ -118,3 +118,12 @@ apps/go-api/bin/
 apps/go-api/api.exe
 *.codegraph
 *.zip
+# ── Environment files (secrets) ──────────────────────────────────────────────
+# Real .env files hold deployment secrets: mail API keys, signing keys and private
+# RPC endpoints. They must never be committed. Only *.example templates are tracked.
+.env
+.env.*
+!.env.example
+!**/.env.example
+!.env.production.example
+!**/.env.production.example

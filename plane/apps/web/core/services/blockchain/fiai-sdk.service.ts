@@ -1,4 +1,5 @@
 import { FiaiSDK } from "@metanodejs/fiai-sdk";
+import { invalidateAllSigningSessions } from "@plane/services";
 
 type FiaiSdkWindow = Window & {
   fiaiSDK?: FiaiSDK;
@@ -319,6 +320,10 @@ export function disposeFiaiSDK(): void {
 }
 
 export async function resetFiaiSDK(): Promise<FiaiSDK | null> {
+  // Reset SDK chỉ xoá cache nonce/phiên bên trong bundle. Cờ "đã có phiên ký"
+  // nằm ở lớp services, nên phải xoá luôn — nếu không, lần ghi kế tiếp sẽ tưởng
+  // ví đã mở khoá, gửi giao dịch mà không kèm hộp thoại mật khẩu và thất bại.
+  invalidateAllSigningSessions();
   disposeFiaiSDK();
   if (typeof document !== "undefined") document.getElementById("fiai-container")?.remove();
   await new Promise<void>((resolve) => window.setTimeout(resolve, 0));

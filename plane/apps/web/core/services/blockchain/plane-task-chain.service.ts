@@ -1,4 +1,5 @@
 import type { AbiItem } from "@metanodejs/mtn-contract";
+import { runExclusiveChainTx } from "@plane/services";
 import type { TIssue, TIssuePriorities } from "@plane/types";
 import { planeTaskManagerAbi } from "@/contracts/plane-task-manager.abi";
 import { getFiaiSDK, getLatestCapturedWalletTxHash, initFiaiSDK, resetFiaiSDK } from "./fiai-sdk.service";
@@ -19,8 +20,26 @@ function getContractGas(): string {
   return readEnv("VITE_CONTRACT_GAS") || "3000000";
 }
 
+let warnedAboutClientSigningKey = false;
+
+/**
+ * Khoá BLS dùng khi contract yêu cầu chữ ký BLS.
+ *
+ * CẢNH BÁO: mọi biến `VITE_*` đều bị nhúng vào bundle tải về trình duyệt.
+ * Production phải để trống biến này (xem `.env.production.example`); chỉ dùng
+ * cho môi trường phát triển khi kiểm thử contract.
+ */
 function getBlsPrivateKey(): string | undefined {
-  return readEnv("VITE_BLS_PRIVATE_KEY") || readEnv("NEXT_PUBLIC_BLS_PRIVATE_KEY") || undefined;
+  const key = readEnv("VITE_BLS_PRIVATE_KEY");
+  if (!key) return undefined;
+  if (!warnedAboutClientSigningKey && typeof window !== "undefined") {
+    warnedAboutClientSigningKey = true;
+    console.warn(
+      "[Blockchain] Đang dùng khoá ký BLS ngay trên trình duyệt (VITE_BLS_PRIVATE_KEY). " +
+        "Khoá nằm trong bundle công khai nên chỉ được dùng ở môi trường phát triển."
+    );
+  }
+  return key;
 }
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -277,7 +296,9 @@ function enqueueTransaction<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 function isNonceError(error: unknown): boolean {
-  return /invalid nonce|nonce too low|nonce has already been used|replacement transaction underpriced|nonce conflict|invalid sign/i.test(
+  // "invalid sign" KHÔNG phải lỗi nonce: nó là lỗi chữ ký/phiên ký. Xếp chung
+  // vào đây từng khiến hệ thống gửi lại giao dịch không cần thiết.
+  return /invalid nonce|nonce too low|nonce has already been used|replacement transaction underpriced|nonce conflict/i.test(
     blockchainErrorMessage(error)
   );
 }
@@ -348,41 +369,68 @@ async function readLatestWalletTxHash(
   return null;
 }
 
+/**
+ * Giao dịch đã được ghi lên hệ thống nhưng ứng dụng ví không kịp phản hồi.
+ * Đây KHÔNG phải lỗi: lớp trên phải coi như thành công và tuyệt đối không gửi lại.
+ */
+export class ChainTransactionLandedError extends Error {
+  readonly txHash: string;
+
+  constructor(txHash: string, cause?: unknown) {
+    super("Giao dịch đã được ghi nhận trên hệ thống dù ứng dụng ví chưa kịp phản hồi.", { cause });
+    this.name = "ChainTransactionLandedError";
+    this.txHash = txHash;
+  }
+}
+
 async function sendContractTransactionNow(functionName: string, values: Record<string, InputValue>): Promise<string> {
   if (typeof window !== "undefined" && !isMetanodeWalletRuntimeSupported()) {
     throw new Error(
-      "MetaNode Wallet không thể ký an toàn trên địa chỉ HTTP công cộng. Hãy mở http://localhost:3000/plane/ hoặc mạng nội bộ (LAN)."
+      "Trình duyệt chặn kết nối ví trên địa chỉ không bảo mật. Hãy mở Plane bằng địa chỉ nội bộ do quản trị viên cung cấp."
     );
   }
   const abi = contractFunctions.find((item) => item.type === "function" && item.name === functionName);
-  if (!abi) throw new Error(`Contract function ${functionName} is missing from the ABI.`);
+  if (!abi) throw new Error("Tính năng này chưa được cấu hình trên hệ thống. Vui lòng liên hệ quản trị viên.");
   const contractAddress = readEnv("VITE_CONTRACT_ADDRESS");
-  if (!isWalletAddress(contractAddress)) throw new Error("VITE_CONTRACT_ADDRESS is invalid.");
+  if (!isWalletAddress(contractAddress)) throw new Error("Hệ thống chưa được cấu hình nơi lưu dữ liệu. Vui lòng liên hệ quản trị viên.");
   let bridge = (await initFiaiSDK()) ?? getFiaiSDK();
-  if (!bridge) throw new Error("FiaiSDK is not available.");
+  if (!bridge) throw new Error("Chưa kết nối được ứng dụng ví. Hãy mở ứng dụng ví rồi thử lại.");
   let from = await resolveMetanodeWalletAddress();
-  const hashBeforeSend = await readLatestWalletTxHash(bridge, from).catch(() => null);
+  // Hash tài khoản trước khi gửi, đọc BÊN TRONG khoá giao dịch để không nhầm với
+  // giao dịch của luồng khác (xem `tx-gateway.ts`).
+  let hashBeforeSend: string | null = null;
 
   const send = (senderAddress: string) =>
-    withTimeout(
-      bridge!.request("sendTransaction", {
-        from: senderAddress,
-        to: contractAddress,
-        abiData: [abi],
-        functionName,
-        feeType: "sc",
-        amount: "0",
-        value: "0",
-        gas: getContractGas(),
-        type: "transaction",
-        inputArray: abi.inputs.map((input) => Object.assign({}, input, { value: values[input.name ?? ""] ?? "" })),
-        isReadOnly: false,
-        bundleId: "",
-        blsPrivateKey: getBlsPrivateKey(),
-      }),
-      SIGN_TIMEOUT_MS,
-      "Ví không phản hồi khi ký giao dịch (Crypto Vault có thể đang khoá). Hãy mở khoá ví rồi thực hiện lại."
-    );
+    runExclusiveChainTx(`task:${functionName}`, async () => {
+      hashBeforeSend = await readLatestWalletTxHash(bridge!, senderAddress).catch(() => null);
+      try {
+        return await withTimeout(
+          bridge!.request("sendTransaction", {
+            from: senderAddress,
+            to: contractAddress,
+            abiData: [abi],
+            functionName,
+            feeType: "sc",
+            amount: "0",
+            value: "0",
+            gas: getContractGas(),
+            type: "transaction",
+            inputArray: abi.inputs.map((input) => Object.assign({}, input, { value: values[input.name ?? ""] ?? "" })),
+            isReadOnly: false,
+            bundleId: "",
+            blsPrivateKey: getBlsPrivateKey(),
+          }),
+          SIGN_TIMEOUT_MS,
+          "Ví điện tử chưa phản hồi khi xác nhận. Bạn hãy mở khoá ví rồi thực hiện lại."
+        );
+      } catch (error) {
+        // Ví có thể đã ghi giao dịch lên hệ thống nhưng không kịp phản hồi. Kiểm
+        // tra lại hash trong CÙNG khoá: nếu đã lên thì báo "xong" thay vì gửi lại.
+        const landed = await readLatestWalletTxHash(bridge!, senderAddress).catch(() => null);
+        if (landed && landed !== hashBeforeSend) throw new ChainTransactionLandedError(landed, error);
+        throw error;
+      }
+    });
 
   const sendWithWalletRecovery = async (): Promise<unknown> => {
     try {
@@ -392,7 +440,7 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
       if (!/wallet not found/i.test(message)) throw error;
       const imported = await promptForMetanodeWalletImport(from);
       if (!imported)
-        throw new Error("Không tìm thấy ví trong Crypto Vault hoặc thao tác kết nối đã hết hạn.", { cause: error });
+        throw new Error("Không tìm thấy ví hoặc phiên kết nối ví đã hết hạn. Hãy chọn lại ví.", { cause: error });
       from = await resolveMetanodeWalletAddress();
       return send(from);
     }
@@ -403,10 +451,11 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
   try {
     result = await sendWithWalletRecovery();
   } catch (error) {
+    if (error instanceof ChainTransactionLandedError) throw error;
     const message = blockchainErrorMessage(error);
     if (/failed to decrypt payload/i.test(message)) {
       bridge = await resetFiaiSDK();
-      if (!bridge) throw new Error("Không thể tạo lại phiên bảo mật với Crypto Vault.", { cause: error });
+      if (!bridge) throw new Error("Không kết nối lại được với ứng dụng ví. Hãy mở ứng dụng ví rồi thử lại.", { cause: error });
       result = await sendWithWalletRecovery();
     } else if (isConfirmationTimeoutError(error)) {
       confirmationTimeoutError = error;
@@ -433,12 +482,12 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
   if (!hash) {
     if (confirmationTimeoutError) {
       throw new Error(
-        `Blockchain Bridge chưa xác nhận giao dịch sau ${Math.round(hashWaitTimeout / 1000)} giây và Crypto Vault không trả hash mới. Vui lòng kiểm tra lịch sử ví trước khi gửi lại.`,
+        `Chưa nhận được xác nhận sau ${Math.round(hashWaitTimeout / 1000)} giây. Hãy kiểm tra lịch sử ví trước khi thử lại để tránh lưu trùng.`,
         { cause: confirmationTimeoutError }
       );
     }
     throw new Error(
-      `Giao dịch đã được gửi nhưng Crypto Vault chưa trả transaction hash mới sau ${Math.round(hashWaitTimeout / 1000)} giây. Dữ liệu chưa được ghi để tránh dùng nhầm hash cũ.`
+      `Thay đổi đã được gửi nhưng chưa nhận được xác nhận sau ${Math.round(hashWaitTimeout / 1000)} giây. Dữ liệu chưa được ghi để tránh lưu trùng.`
     );
   }
   return hash;
@@ -446,18 +495,27 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
 
 async function sendContractTransaction(functionName: string, values: Record<string, InputValue>): Promise<string> {
   return enqueueTransaction(async () => {
+    const wallet = await resolveMetanodeWalletAddress().catch(() => "");
+    const hashBeforeAttempt = wallet ? await fetchRpcAccountLastHash(wallet).catch(() => null) : null;
+
     try {
       return await sendContractTransactionNow(functionName, values);
     } catch (error) {
+      if (error instanceof ChainTransactionLandedError) return error.txHash;
+
       const msg = blockchainErrorMessage(error);
-      const isUserCancel = /cancel|user rejected|đã hủy/i.test(msg);
-      if (!isUserCancel) {
-        // Reset bridge session so blockchain-bridge's in-memory accountMap nonce
-        // is refreshed from on-chain state on the next transaction.
-        await resetFiaiSDK().catch(() => null);
-      }
+      if (/cancel|user rejected|đã hủy|đã huỷ/i.test(msg)) throw error;
+
+      // Trước khi quyết định gửi lại, hỏi thẳng node: giao dịch đã lên chưa?
+      // Nếu đã lên thì trả về hash thật — gửi lại chỉ làm nonce nhảy thêm.
+      const landed = wallet ? await fetchRpcAccountLastHash(wallet).catch(() => null) : null;
+      if (landed && landed !== hashBeforeAttempt) return landed;
+
       if (!isNonceError(error)) throw error;
 
+      // Nonce lệch do cache của cầu nối ví → tạo lại phiên (đồng thời xoá cờ
+      // "đã có phiên ký") rồi gửi lại ĐÚNG MỘT lần.
+      await resetFiaiSDK().catch(() => null);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 1_500));
       return sendContractTransactionNow(functionName, values);
     }
@@ -518,7 +576,7 @@ export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHa
 }
 
 export async function assignIssueOnChain(taskId: number, walletAddress: string): Promise<string> {
-  if (!isWalletAddress(walletAddress)) throw new Error("The employee wallet address is invalid.");
+  if (!isWalletAddress(walletAddress)) throw new Error("Địa chỉ ví của nhân viên không hợp lệ.");
   return sendContractTransaction("assignTask", { taskId, assignee: walletAddress });
 }
 
@@ -537,7 +595,7 @@ export async function deleteIssueByIssueIdOnChain(issueId: string, parentIssueId
       externalId: await hashTaskValue(`plane-sub-issue:${issueId}`),
     })
   );
-  if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
+  if (subTaskId === null) throw new Error("Không tìm thấy công việc con trên hệ thống.");
   if (await supportsAtomicHierarchy()) {
     return sendContractTransaction("deleteChildTask", { childTaskId, parentTaskId, subTaskId });
   }
@@ -546,7 +604,7 @@ export async function deleteIssueByIssueIdOnChain(issueId: string, parentIssueId
 }
 
 export async function updateIssueProgressOnChain(taskId: number, progress: number): Promise<string> {
-  if (!Number.isInteger(progress) || progress < 0 || progress > 100) throw new Error("Progress must be 0-100.");
+  if (!Number.isInteger(progress) || progress < 0 || progress > 100) throw new Error("Tiến độ phải nằm trong khoảng 0–100.");
   return sendContractTransaction("updateProgress", { taskId, progress });
 }
 export async function updateIssueProgressByIssueIdOnChain(issueId: string, progress: number): Promise<string> {
@@ -592,16 +650,27 @@ function readNumericResult(value: unknown): number | null {
   return null;
 }
 
+/** Không xác định được ví để ĐỌC dữ liệu (khác với "không có dữ liệu"). */
+export class WalletUnavailableError extends Error {
+  constructor(message = "Chưa xác định được ví để đọc dữ liệu. Hãy kết nối ví rồi thử lại.") {
+    super(message);
+    this.name = "WalletUnavailableError";
+  }
+}
+
 async function readContract(functionName: string, values: Record<string, InputValue>): Promise<unknown> {
   const abi = contractFunctions.find((item) => item.type === "function" && item.name === functionName);
-  if (!abi) throw new Error(`Contract function ${functionName} is missing from the ABI.`);
+  if (!abi) throw new Error("Tính năng này chưa được cấu hình trên hệ thống. Vui lòng liên hệ quản trị viên.");
   const contractAddress = readEnv("VITE_CONTRACT_ADDRESS");
-  if (!isWalletAddress(contractAddress)) throw new Error("VITE_CONTRACT_ADDRESS is invalid.");
+  if (!isWalletAddress(contractAddress)) throw new Error("Hệ thống chưa được cấu hình nơi lưu dữ liệu. Vui lòng liên hệ quản trị viên.");
   await initFiaiSDK();
-  const from = await resolveMetanodeWalletAddress({ silent: true }).catch(
-    () => "0x0000000000000000000000000000000000000000"
-  );
-  const effectiveFrom = isWalletAddress(from) ? from : "0x0000000000000000000000000000000000000000";
+  const from = await resolveMetanodeWalletAddress({ silent: true }).catch(() => "");
+
+  // KHÔNG đọc bằng địa chỉ 0x000…0: kết quả không gắn với ví nào và rất dễ bị hiểu
+  // nhầm là "chưa có trên hệ thống" ⇒ hệ thống tạo trùng dữ liệu (lỗi CHAIN-07).
+  if (!isWalletAddress(from) || from === ZERO_ADDRESS) throw new WalletUnavailableError();
+
+  const effectiveFrom = from;
   const { MtnContract } = await import("@metanodejs/mtn-contract");
   const contract = new MtnContract({ from: effectiveFrom, to: contractAddress });
   return withTimeout(
@@ -627,7 +696,7 @@ async function readContract(functionName: string, values: Record<string, InputVa
 export async function getIssueTaskId(issueId: string): Promise<number> {
   const result = await readContract("getTaskId", { externalId: await hashTaskValue(`plane-issue:${issueId}`) });
   const taskId = readNumericResult(result);
-  if (taskId === null) throw new Error("Could not read the on-chain task ID.");
+  if (taskId === null) throw new Error("Không xác định được mã công việc trên hệ thống.");
   return taskId;
 }
 
@@ -637,21 +706,43 @@ export function isMissingOnChainRecordError(error: unknown): boolean {
   );
 }
 
-export async function issueExistsOnChain(issueId: string): Promise<boolean> {
+/**
+ * Trạng thái của một công việc trên contract.
+ *
+ * `unknown` rất quan trọng: khi không đọc được trạng thái (RPC lỗi, ví chưa
+ * sẵn sàng), TUYỆT ĐỐI không được coi là "chưa có" — nếu không hệ thống sẽ tạo
+ * trùng dữ liệu (lỗi CHAIN-06).
+ */
+export type OnChainPresence = "present" | "missing" | "unknown";
+
+export async function getIssueOnChainPresence(issueId: string): Promise<OnChainPresence> {
   try {
     const taskId = await getIssueTaskId(issueId);
-    return taskId !== null && taskId !== undefined && taskId >= 0;
+    return taskId !== null && taskId !== undefined && taskId >= 0 ? "present" : "missing";
   } catch (error) {
-    if (isMissingOnChainRecordError(error)) return false;
-    return false;
+    if (isMissingOnChainRecordError(error)) return "missing";
+    console.warn("[Blockchain] Không đọc được trạng thái công việc trên hệ thống:", error);
+    return "unknown";
   }
+}
+
+/**
+ * @deprecated Dùng `getIssueOnChainPresence` để phân biệt được "chưa có" và
+ * "không đọc được". Hàm này chỉ trả `true` khi chắc chắn công việc đã có.
+ */
+export async function issueExistsOnChain(issueId: string): Promise<boolean> {
+  return (await getIssueOnChainPresence(issueId)) === "present";
 }
 
 export type OnChainTaskBackfillResult = {
   created: number;
   skipped: number;
   failed: number;
+  /** Bỏ qua vì không đọc được trạng thái (không phải "đã có sẵn"). */
+  unknown: number;
   aborted: boolean;
+  /** Chi tiết từng công việc không lưu được — dùng để báo đúng cho người dùng. */
+  errors: { issueId: string; name: string; message: string }[];
 };
 
 /**
@@ -664,7 +755,7 @@ export async function backfillIssuesOnChain(
   issues: TIssue[],
   onProgress?: (message: string) => void
 ): Promise<OnChainTaskBackfillResult> {
-  const result: OnChainTaskBackfillResult = { created: 0, skipped: 0, failed: 0, aborted: false };
+  const result: OnChainTaskBackfillResult = { created: 0, skipped: 0, failed: 0, unknown: 0, aborted: false, errors: [] };
   if (!isOnChainTaskSyncAvailable()) return { ...result, aborted: true };
 
   const validIssues = (issues || []).filter((issue) => Boolean(issue?.id));
@@ -686,19 +777,20 @@ export async function backfillIssuesOnChain(
 
   let consecutiveFailures = 0;
   for (const issue of orderedIssues) {
-    // Chỉ tạo mới khi contract xác nhận task không tồn tại; lỗi RPC/bridge → bỏ qua, không tạo trùng.
-    let isMissingOnChain = false;
-    try {
-      await getIssueTaskId(issue.id);
-    } catch (probeError) {
-      isMissingOnChain = isMissingOnChainRecordError(probeError);
-    }
-    if (!isMissingOnChain) {
+    // Chỉ tạo mới khi contract xác nhận task KHÔNG tồn tại. Nếu không đọc được
+    // trạng thái thì đếm vào `unknown` — không tạo trùng, nhưng cũng không được
+    // báo là "đã có sẵn" cho người dùng.
+    const presence = await getIssueOnChainPresence(issue.id);
+    if (presence === "present") {
       result.skipped += 1;
       continue;
     }
+    if (presence === "unknown") {
+      result.unknown += 1;
+      continue;
+    }
 
-    onProgress?.(`Đang tạo task on-chain: ${issue.name || issue.id}`);
+    onProgress?.(`Đang lưu công việc: ${issue.name || issue.id}`);
     try {
       await createIssueOnChain(issue);
       result.created += 1;
@@ -711,6 +803,11 @@ export async function backfillIssuesOnChain(
       }
       result.failed += 1;
       consecutiveFailures += 1;
+      result.errors.push({
+        issueId: issue.id,
+        name: issue.name || issue.id,
+        message: blockchainErrorMessage(error).slice(0, 300),
+      });
       console.warn(`Không tạo được task on-chain cho issue ${issue.id}:`, error);
       // Ví bị từ chối ký / RPC lỗi liên tiếp → dừng để tránh bật popup ký hàng loạt.
       if (consecutiveFailures >= 2) {
@@ -751,7 +848,7 @@ function findTaskProgress(value: unknown): number | null {
 export async function getIssueOnChainProgress(issueId: string): Promise<number> {
   const taskId = await getIssueTaskId(issueId);
   const progress = findTaskProgress(await readContract("getTask", { taskId }));
-  if (progress === null) throw new Error("Không đọc được tiến độ task từ contract.");
+  if (progress === null) throw new Error("Không đọc được tiến độ công việc. Vui lòng thử lại.");
   return progress;
 }
 
@@ -882,7 +979,7 @@ function findSubTaskStats(value: unknown): OnChainSubTaskStats | null {
 export async function getIssueSubTaskStats(issueId: string): Promise<OnChainSubTaskStats> {
   const taskId = await getIssueTaskId(issueId);
   const stats = findSubTaskStats(await readContract("getSubTaskStats", { taskId }));
-  if (!stats) throw new Error("Không đọc được thống kê sub-task từ contract.");
+  if (!stats) throw new Error("Không đọc được thông tin công việc con. Vui lòng thử lại.");
   return stats;
 }
 
@@ -912,7 +1009,7 @@ export async function deleteIssueSubTaskOnChain(parentIssueId: string, subIssueI
     externalId: await hashTaskValue(`plane-sub-issue:${subIssueId}`),
   });
   const subTaskId = readNumericResult(subTaskIdResult);
-  if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
+  if (subTaskId === null) throw new Error("Không tìm thấy công việc con trên hệ thống.");
   return sendContractTransaction("deleteSubTask", { taskId, subTaskId });
 }
 export async function updateIssueSubTaskStatusOnChain(
@@ -926,7 +1023,7 @@ export async function updateIssueSubTaskStatusOnChain(
     externalId: await hashTaskValue(`plane-sub-issue:${subIssueId}`),
   });
   const subTaskId = readNumericResult(subTaskIdResult);
-  if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
+  if (subTaskId === null) throw new Error("Không tìm thấy công việc con trên hệ thống.");
   return sendContractTransaction("updateSubTaskStatus", { taskId, subTaskId, status });
 }
 export async function updateIssueSubTaskProgressOnChain(
@@ -935,7 +1032,7 @@ export async function updateIssueSubTaskProgressOnChain(
   progress: number
 ): Promise<string> {
   if (!Number.isInteger(progress) || progress < 0 || progress > 100) {
-    throw new Error("Progress must be 0-100.");
+    throw new Error("Tiến độ phải nằm trong khoảng 0–100.");
   }
   const taskId = await getIssueTaskId(parentIssueId);
   const subTaskIdResult = await readContract("getSubTaskId", {
@@ -943,7 +1040,7 @@ export async function updateIssueSubTaskProgressOnChain(
     externalId: await hashTaskValue(`plane-sub-issue:${subIssueId}`),
   });
   const subTaskId = readNumericResult(subTaskIdResult);
-  if (subTaskId === null) throw new Error("Không tìm thấy sub-task on-chain.");
+  if (subTaskId === null) throw new Error("Không tìm thấy công việc con trên hệ thống.");
   return sendContractTransaction("updateSubTaskProgress", { taskId, subTaskId, progress });
 }
 export async function submitIssueDailyReportOnChain(
@@ -991,7 +1088,7 @@ export async function submitIssueDailyReportOnChain(
         externalId: relationshipExternalId,
       });
       const subTaskId = readNumericResult(subTaskResult);
-      if (subTaskId === null) throw new Error("Không tìm thấy quan hệ task cha on-chain.");
+      if (subTaskId === null) throw new Error("Không tìm thấy công việc cha trên hệ thống.");
       parentTaskIds.push(parentTaskId);
       subTaskIds.push(subTaskId);
       childIssueId = parentIssueId;
@@ -1115,7 +1212,7 @@ export async function getWalletKPI(walletAddress?: string): Promise<{ wallet: st
     };
   }
   const values = findKpiValues(await readContract("getKPI", { assignee: wallet }));
-  if (!values) throw new Error("Could not parse KPI returned by the contract.");
+  if (!values) throw new Error("Không đọc được chỉ số KPI trả về. Vui lòng thử lại.");
   const [total, todo, completed, inProgress, cancelled, onSchedule, delayed, overdue, progressSum, averageProgress] =
     values;
   return {

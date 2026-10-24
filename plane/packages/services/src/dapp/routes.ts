@@ -43,7 +43,7 @@ import {
   getLastUploadedCID,
   joinWorkspaceOnChain,
   removeWorkspaceMemberOnChain,
-  commitWorkspaceCID,
+  scheduleWorkspaceCIDCommit,
   fetchWorkspaceMembersOnChain,
   fetchMemberRoleOnChain,
   invalidateWorkspaceMembersOnChainCache,
@@ -1381,8 +1381,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       return { data: { error: "Vui lòng cung cấp địa chỉ email hợp lệ." }, status: 400 };
     }
 
-    const otpCode = generateAndStoreOtp(email);
-    console.log(`[DApp Auth OTP] 🔑 Mã xác nhận đăng nhập cho ${email}: ${otpCode}`);
+    const otpCode = await generateAndStoreOtp(email);
+    // KHÔNG log mã xác nhận: log trình duyệt/CI có thể bị thu thập và làm lộ mã.
 
     // Gửi email qua Brevo (chạy nền, bắt lỗi an toàn)
     void sendOtpEmail(email, otpCode).catch((err) => {
@@ -1404,7 +1404,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       return { data: { error: "Vui lòng nhập mã xác nhận." }, status: 400 };
     }
 
-    const verifyResult = verifyOtpCode(email, code);
+    const verifyResult = await verifyOtpCode(email, code);
     if (!verifyResult.valid) {
       return { data: { error: verifyResult.error || "Mã xác nhận không chính xác hoặc đã hết hạn." }, status: 400 };
     }
@@ -4427,7 +4427,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       saveDB();
       const newCid = await uploadToIPFS(true);
       if (newCid) {
-        void commitWorkspaceCID(wsSlug, newCid);
+        // Đi qua bộ hẹn giờ dùng chung (dedupe + gộp) thay vì gọi thẳng
+        // `commitWorkspaceCID`: gọi thẳng bỏ qua kiểm tra "CID đã ở trên chain"
+        // và có thể tạo giao dịch thứ hai cho cùng một hành động (CHAIN-09).
+        scheduleWorkspaceCIDCommit(wsSlug, newCid, 0);
       }
 
       return ok({ message: "Member removed" });

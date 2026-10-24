@@ -106,7 +106,7 @@ export const DraftIssueProperties = observer(function DraftIssueProperties(props
   const handleStartDate = (date: Date | null) => {
     if (!issue?.project_id || !updateIssue) return;
     const newStartDateStr = date ? (renderFormattedPayloadDate(date) ?? undefined) : undefined;
-    const payload: Partial<TIssue> = { start_date: newStartDateStr };
+    const payload: Partial<TWorkspaceDraftIssue> = { start_date: newStartDateStr };
     if (date && issue.target_date) {
       const currentTarget = getDate(issue.target_date);
       if (currentTarget && currentTarget < date) {

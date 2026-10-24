@@ -23,6 +23,7 @@ import {
 
 import { getFiaiSDK, initFiaiSDK } from "./fiai-sdk.service";
 import { getLinkedMetanodeWalletAddress, linkMetanodeWalletAddress } from "./metanode-wallet.service";
+import { notifyWalletChanged } from "./wallet-center-events";
 
 const PRIVATE_KEY_RE = /^(0x)?[a-fA-F0-9]{64}$/;
 /** Overlay mật khẩu/thiết lập bảo mật nằm trong Crypto Vault — phải chờ người dùng thao tác. */
@@ -210,6 +211,9 @@ export async function importPrivateKeyToVault(privateKey: string, name?: string)
 export async function selectVaultWallet(address: string): Promise<void> {
   await linkMetanodeWalletAddress(address);
   invalidateVaultWalletCache();
+  // Báo cho badge ví / các màn hình khác cập nhật ngay, không cần chờ người dùng
+  // chuyển tab (trước đây badge vẫn hiện ví cũ — lỗi WALLET-03).
+  notifyWalletChanged(address);
 }
 
 /**

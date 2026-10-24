@@ -90,7 +90,10 @@ export function createUserObject(
 
 // ── OTP Magic Code Helper (10 minutes TTL, max 5 attempts) ───────────────────
 export interface IOtpRecord {
-  code: string;
+  /** SHA-256 của mã xác nhận — KHÔNG bao giờ lưu mã thô trong trình duyệt. */
+  codeHash: string;
+  /** Trường của dữ liệu cũ (mã thô). Bị xoá ngay khi đọc, không dùng để xác thực. */
+  code?: string;
   expiresAt: number;
   attempts: number;
 }
@@ -98,6 +101,43 @@ export interface IOtpRecord {
 const OTP_CACHE_KEY = "plane_dapp_otp_cache";
 const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_OTP_ATTEMPTS = 5;
+const OTP_HASH_PREFIX = "sha256:";
+
+/** Sinh mã 6 chữ số bằng nguồn ngẫu nhiên mật mã (không dùng Math.random đơn thuần). */
+function createOtpCode(): string {
+  const values = new Uint32Array(1);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(values);
+  } else {
+    // Môi trường rất cũ: vẫn còn ngẫu nhiên, chỉ kém mạnh hơn.
+    values[0] = Math.floor(Math.random() * 0xffffffff);
+  }
+  return (100000 + (values[0] % 900000)).toString();
+}
+
+/** Băm mã xác nhận trước khi lưu. Không lưu mã thô để tránh lộ khi máy bị đọc trộm. */
+async function hashOtpCode(code: string): Promise<string> {
+  const bytes = new TextEncoder().encode(code);
+  if (typeof crypto !== "undefined" && crypto.subtle?.digest) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return (
+      OTP_HASH_PREFIX +
+      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    );
+  }
+  // Không có WebCrypto: vẫn băm (không lưu thô). Chỉ dùng cho trình duyệt quá cũ.
+  let hash = 0;
+  for (let index = 0; index < code.length; index += 1) hash = (hash * 31 + code.charCodeAt(index)) | 0;
+  return `${OTP_HASH_PREFIX}fallback:${(hash >>> 0).toString(16)}`;
+}
+
+/** So sánh chuỗi theo thời gian hằng để không lộ thông tin qua thời gian phản hồi. */
+function safeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let index = 0; index < left.length; index += 1) diff |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return diff === 0;
+}
 
 export function getStoredOtpMap(): Record<string, IOtpRecord> {
   if (typeof window === "undefined") return {};
@@ -116,15 +156,14 @@ export function saveStoredOtpMap(map: Record<string, IOtpRecord>): void {
   } catch { }
 }
 
-export function generateAndStoreOtp(email: string): string {
+export async function generateAndStoreOtp(email: string): Promise<string> {
   const cleanEmail = (email || "").trim().toLowerCase();
   if (!cleanEmail) return "";
 
-  // Sinh mã số ngẫu nhiên 6 chữ số từ 100000 đến 999999
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const code = createOtpCode();
   const map = getStoredOtpMap();
   map[cleanEmail] = {
-    code,
+    codeHash: await hashOtpCode(code),
     expiresAt: Date.now() + OTP_TTL_MS,
     attempts: 0,
   };
@@ -132,10 +171,10 @@ export function generateAndStoreOtp(email: string): string {
   return code;
 }
 
-export function verifyOtpCode(
+export async function verifyOtpCode(
   email: string,
   inputCode: string
-): { valid: boolean; error?: string } {
+): Promise<{ valid: boolean; error?: string }> {
   const cleanEmail = (email || "").trim().toLowerCase();
   const cleanCode = (inputCode || "").trim();
 
@@ -149,7 +188,12 @@ export function verifyOtpCode(
   const map = getStoredOtpMap();
   const record = map[cleanEmail];
 
-  if (!record || !record.code) {
+  // Dữ liệu cũ (trước khi băm) không còn dùng được → buộc lấy mã mới.
+  if (!record || !record.codeHash) {
+    if (record) {
+      delete map[cleanEmail];
+      saveStoredOtpMap(map);
+    }
     return {
       valid: false,
       error: "Mã xác nhận không tồn tại hoặc đã hết hạn. Vui lòng bấm gửi lại mã.",
@@ -165,7 +209,8 @@ export function verifyOtpCode(
     };
   }
 
-  if (record.code !== cleanCode) {
+  const matches = safeEqual(record.codeHash, await hashOtpCode(cleanCode));
+  if (!matches) {
     record.attempts = (record.attempts || 0) + 1;
     if (record.attempts >= MAX_OTP_ATTEMPTS) {
       delete map[cleanEmail];

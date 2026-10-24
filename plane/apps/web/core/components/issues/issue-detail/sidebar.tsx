@@ -10,6 +10,8 @@ import { observer } from "mobx-react";
 // i18n
 import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
+// types
+import type { TIssue } from "@plane/types";
 // ui
 import {
   CycleIcon,
