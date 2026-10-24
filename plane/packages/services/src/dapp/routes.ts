@@ -5614,7 +5614,19 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
   if (url.match(/\/api\/assets\/v2\//) && method === "patch") {
-    const assetMatch = url.match(/\/attachments\/([^/]+)\/?/); const assetId = assetMatch ? assetMatch[1] : null; const attachment = (localDB["attachments"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId); if (attachment) { attachment.is_uploaded = true; saveDB(); return ok(attachment); } return ok({ success: true });
+    // Plane gọi PATCH `/api/assets/v2/workspaces/{slug}/{assetId}/` (và biến thể có
+    // `projects/{projectId}`), KHÔNG có đoạn `/attachments/`. Trước đây chỉ tìm theo
+    // `/attachments/{id}` nên không bao giờ tìm ra bản ghi → tệp treo ở "Pending" mãi.
+    const segmentMatch = url.match(/\/attachments\/([^/]+)\/?/);
+    const trailingId = (url.split("?")[0] || "").replace(/\/+$/, "").split("/").pop() || null;
+    const assetId = segmentMatch ? segmentMatch[1] : trailingId;
+    const attachment = (localDB["attachments"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
+    if (attachment) {
+      attachment.is_uploaded = true;
+      saveDB();
+      return ok(attachment);
+    }
+    return ok({ success: true });
   }
 
   // ── Issue sub-resource endpoints ─────────────────────────────────────

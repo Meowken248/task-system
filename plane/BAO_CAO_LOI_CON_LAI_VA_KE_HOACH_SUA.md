@@ -752,11 +752,12 @@ export type SyncResult = {
 * **Sửa**: nếu project tồn tại trên chain/IPFS nhưng chưa có local ⇒ trả `403` + `{error: "NOT_AUTHORIZED"}` để UI hiện màn "Yêu cầu quyền truy cập" thay vì 404.
 * **Nghiệm thu**: mở link bằng tài khoản không thuộc workspace ⇒ màn "Not Authorized" + nút xin quyền; **không** còn 404.
 
-### 5.8 `BA-32` — Upload attachment treo "Pending" tới 2 phút rồi lỗi · 1–2 ngày
+### 5.8 `BA-32` — Upload attachment treo "Pending" tới 2 phút rồi lỗi · 1–2 ngày — ✅ **đã sửa trong mã (chờ QA)**
 
-* **Nguyên nhân**: `file-upload.service.ts` upload xong thì **bắt buộc** `recordIssueContentOnChain`; bước này gọi `getIssueTaskId` (đang revert — `CHAIN-01`) hoặc chờ dialog ký, nên promise không resolve; `attachmentsUploadStatusMap[tempId].is_uploaded` không được set ⇒ UI pending.
-* **Sửa**: (1) tách 2 pha: **upload xong ⇒ set `is_uploaded = true`**; (2) ghi on-chain là pha 2, có timeout + trạng thái riêng (`on_chain_status: pending|ok|failed`) và retry nền; (3) khi `CHAIN-01` được sửa, pha 2 mới thực sự chạy.
-* **Nghiệm thu**: tắt mạng on-chain vẫn upload được file, UI báo "đã tải lên, chưa ghi on-chain"; không còn pending vô hạn.
+* **Nguyên nhân (đã xác minh trong mã, khác giả thuyết ban đầu)**: `issue_attachment.service.ts` gọi `fileUploadService.uploadFile("", formData)` — `FileUploadService` có `baseURL = ""` nên lời gọi này **POST multipart tới gốc ứng dụng** (`/`), không phải nơi nhận tệp. Yêu cầu treo tới khi bị timeout (≈2 phút) rồi throw; toàn bộ phần lưu tệp + ghi dấu vết nằm **sau** lời gọi này nên không bao giờ chạy tới ⇒ "Pending rồi lỗi".
+* **Nguyên nhân phụ**: `routes.ts` xử lý `PATCH /api/assets/v2/...` bằng regex `/attachments/([^/]+)/`, nhưng Plane gọi `/api/assets/v2/workspaces/{slug}/{assetId}/` (không có đoạn `/attachments/`) ⇒ không tìm ra bản ghi ⇒ `is_uploaded` không bao giờ được bật.
+* **Sửa**: (1) đọc tệp **ngay trên máy** (`FileReader` → base64), bỏ hẳn lời gọi mạng `uploadFile("")`; (2) lưu tệp vào IndexedDB **trước khi ký** và kiểm tra lại ngay — không đủ chỗ thì dừng trước khi ký, để người dùng không mất một lượt ký vô ích; (3) ghi dấu vết on-chain là một bước riêng sau đó, thất bại/huỷ thì xoá tệp vừa lưu (không để tệp mồ côi); (4) `asset_url` = khoá tra cứu trong máy, `is_uploaded = true`; (5) router xác định `assetId` theo đoạn cuối URL khi không có `/attachments/`.
+* **Nghiệm thu**: kéo 1 tệp nhỏ vào một công việc ⇒ **không** còn treo 2 phút; tải lại tệp đó xuống được (đọc từ máy); huỷ hộp thoại mật khẩu ví ⇒ tệp không được ghi nhận và không còn tệp mồ côi. Lưu ý: việc ghi dấu vết vẫn cần **1 lượt ký** (thiết kế hiện tại: bằng chứng đính kèm nằm on-chain); nếu muốn bỏ hẳn chữ ký này thì phải chốt ở mức sản phẩm.
 
 ### 5.9 `BA-14/07` — Email mời/OTP vào **Spam** + lộ khoá Brevo · 1 ngày + DNS
 
@@ -831,7 +832,7 @@ export type SyncResult = {
 | 29 | Comment gốc | **RISK** | UI PASS; ghi on-chain dễ fail/timeout — `CHAIN-01`, `BA-32` |
 | 30 | Toggle Public/Private comment | **FAIL** | Nằm trong menu — `BA-30` (P3) |
 | 31 | Make a copy / Duplicate | PASS | Đã triển khai duplicate thật |
-| 32 | Upload attachment treo Pending | **FAIL** | `BA-32` |
+| 32 | Upload attachment treo Pending | **FAIL (đã sửa mã, chờ QA)** | `BA-32` |
 | 33 | Tạo xong không treo loading | PASS | HTTP 201 + dữ liệu enrich |
 | 34 | Tabs Activity/Updates/Transaction/History | PASS | Đã sửa: ghi/đọc `issue_activities` |
 | 35 | Blocked By loại bỏ chính nó | PASS | Lọc `item.id === currentIssueId` |
@@ -1022,6 +1023,7 @@ git status --porcelain
 | `WALLET-03` | ❌ Badge ví không đổi sau khi chọn/thêm ví | ✅ Sửa mã | Phát sự kiện `plane:wallet-changed` từ `selectVaultWallet`; badge nghe và làm mới ngay | `wallet-center-events.ts`, `wallet-vault.service.ts`, `sync-button.tsx` |
 | `SEC-05` | ❌ RPC `http://` không có cảnh báo | 🟡 Giảm thiểu | Cảnh báo một lần khi `VITE_RPC_URL` dùng `http://` trên địa chỉ công khai (không chặn để khỏi sập môi trường đang chạy) | `chain.ts` (`getRpcUrl`) |
 | `WALLET-05` | ❌ Nút đồng bộ + Trung tâm ví hiện cả trang đăng nhập | ✅ Sửa mã | Ẩn khi chưa đăng nhập (`useUser().data`) | `sync-button.tsx`, `wallet-center.tsx` |
+| `BA-32` | ❌ Upload tệp đính kèm treo "Pending" rồi lỗi | ✅ Sửa mã | Đọc tệp tại máy (bỏ POST multipart tới `""`); lưu tệp **trước khi ký**, kiểm tra lại ngay; `asset_url` là khoá tra cứu trong máy + `is_uploaded = true`; router đọc `assetId` ở đoạn cuối URL | `issue_attachment.service.ts`, `routes.ts` |
 | Văn bản UI | ❌ Nhiều thuật ngữ kỹ thuật | ✅ Sửa mã | Bỏ "Crypto Vault / on-chain / nonce / IPFS / SDK / cổng 600x" khỏi mọi thông báo người dùng thấy | `sync-button.tsx`, `wallet-center.tsx`, `plane-task-chain.service.ts`, `chain.ts` |
 
 
@@ -1134,11 +1136,12 @@ Lý do phải chặn: đã kiểm chứng bằng cách grep bundle build ra — 
 | `CHAIN-01` `getIssueTaskId` revert | Lỗi nằm ở dữ liệu/contract (task chưa tồn tại hoặc contract mới deploy). Phía app đã có preflight + `unknown`, nhưng muốn hết hẳn phải sửa dữ liệu on-chain | Dev + chủ contract |
 | `CHAIN-05` 3 nguồn địa chỉ membership | Cần chốt "nguồn sự thật" (ví ký / ví hồ sơ / ví trên contract) — là quyết định nghiệp vụ | BA + Dev |
 | `CHAIN-08` hiển thị trạng thái đã/chưa đồng bộ | Cần thiết kế UI (icon, tooltip, nơi đặt) — không nên tự phát minh | BA/Design |
-| `WALLET-01` mở `:6005` khác origin | Đổi luồng mở ví có thể làm hỏng bước chọn ví hiện tại; cần thử trên máy có cả 2 dịch vụ | Dev + QA |
+| `WALLET-01` mở `:6005` khác origin | **Đã đo lại phạm vi**: ở bản production hiện tại, `VITE_URL_CONNECT_WALLET=https://json.iqnb.com/connectWalletWeb/` và `VITE_FIAI_CRYPTO_VAULT_URL=https://json.iqnb.com/fiai-sdk/crypto-vault/` **cùng origin** ⇒ dùng chung IndexedDB, lỗi **không** xảy ra với người dùng thật. Lỗi chỉ xuất hiện khi chạy local/LAN với hai cổng khác nhau (`.env`: `6005` vs `6002`). Không nên sửa mù vì luồng chọn ví hiện tại đang chạy được | Dev (chỉ môi trường dev) |
 | `WALLET-02` preflight cho luồng ghi khác | Phụ thuộc `CHAIN-05` (chốt nguồn địa chỉ) | Dev |
 | `WALLET-06` | Cần kịch bản thử với nhiều ví thật (WALLET-03 đã sửa: badge cập nhật qua sự kiện `plane:wallet-changed`) | QA |
 | `ARCH-01` indexer đa máy | Thay đổi kiến trúc nhiều tuần | Quản lý |
-| `BA-08`, `BA-14/07`, `BA-18`, `BA-21`, `BA-27`, `BA-30`, `BA-32`, `BA-41` | Thuộc phạm vi nghiệp vụ/BA (một số cần DNS, một số cần quyết định sản phẩm) | BA/PM |
+| `BA-08`, `BA-14/07`, `BA-18`, `BA-21`, `BA-27`, `BA-30`, `BA-41` | Thuộc phạm vi nghiệp vụ/BA (một số cần DNS, một số cần quyết định sản phẩm) | BA/PM |
+| Toàn bộ nhóm **email** (`BA-14/07` vào Spam, chất lượng thư mời) | **Theo yêu cầu của chủ sản phẩm**: email đang gửi ổn định trong thực tế nên **tạm bỏ khỏi phạm vi** lần này. Lưu ý tách bạch: việc **thu hồi khoá Brevo** (`SEC-01`) vẫn phải làm vì là rủi ro bảo mật, không phải lỗi chức năng email | Quản trị hệ thống |
 
 ## 11.7 Kịch bản QA cần chạy để đóng `CHAIN-09` (bắt buộc trước khi coi là xong)
 
@@ -1165,13 +1168,34 @@ Nếu Q1/Q2/Q4 cho kết quả khác bảng trên ⇒ mở lại `CHAIN-09` kèm
 | **D2** | Contract có bắt buộc `blsPrivateKey` cho `createTask`/`updateWorkspaceCID`/`joinWorkspace` không? | Quyết định có thể bỏ hẳn khoá khỏi bundle (đóng `SEC-02`) hay phải làm dịch vụ ký riêng |
 | **D3** | Ai là "nguồn sự thật" cho địa chỉ ví thành viên? | Đóng `CHAIN-05` + `WALLET-02` |
 
+## 11.9 Nên sửa gì tiếp — thứ tự đề xuất (sau khi đã sửa `BA-32`)
+
+Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**, không cần quyết định sản phẩm/contract; (2) ưu tiên lỗi **đang thực sự hỏng** và người dùng thấy ngay; (3) không mở thêm đường mới khi đường cũ còn chưa được QA trên chain thật.
+
+| Thứ tự | Việc | Vì sao làm bây giờ | Công | Chặn bởi |
+|:--:|---|---|:--:|---|
+| **1** | `CHAIN-05` + `WALLET-02` — **danh tính ví**: mọi chỗ ghi/kiểm tra quyền dùng **đúng địa chỉ đang ký** (`msg.sender`), ví hồ sơ chỉ để hiển thị | Hai mã này là **cùng một gốc**; hiện `blockchain-tracking.service.ts` ghi sổ theo `getLinkedMetanodeWalletAddress()` còn giao dịch ký bằng địa chỉ ví trong ứng dụng ví ⇒ lệch sổ. Không sửa thì mọi bản ghi audit đều có thể sai chủ | ~1 ngày | Chỉ cần chốt **D3** (một câu: "ví ký là chuẩn") — không cần đổi contract |
+| **2** | `BA-21` — link chia sẻ dự án trả `404` thay vì "Chưa có quyền" | Người nhận link thấy "không tìm thấy" ⇒ tưởng mất dữ liệu; sửa thuần router + UI, không đụng ví/chain | 0,5–1 ngày | Không |
+| **3** | `WALLET-06` — import có thể "nhận vơ" ví cũ | Rủi ro gắn nhầm danh tính on-chain cho tài khoản; sửa nhỏ (nếu không đọc được danh sách ví trước đó ⇒ bắt xác nhận địa chỉ) | 2 giờ | Cần 2 ví thật để thử |
+| **4** | `CHAIN-08` — hiển thị "đã/chưa đồng bộ" | Người dùng không biết dữ liệu đã lên hệ thống chưa; đây là cách duy nhất để họ tự kiểm tra thay vì bấm đồng bộ nhiều lần | 1–2 ngày | Cần design 1 buổi (icon + tooltip + vị trí) |
+| **5** | `ARCH-02` — hai tab ghi đè `localStorage` của nhau | Nếu có phản ánh "mất dữ liệu", đây là nghi phạm số một (không phải chain) | ~2 ngày | Chỉ làm khi có phản ánh thật |
+
+**Chưa nên làm / cố ý hoãn**
+
+* `CHAIN-09`: **không sửa thêm** cho tới khi chạy xong Q1–Q8 (§11.7) — sửa tiếp lúc chưa có số đo sẽ làm mất khả năng quy kết.
+* `WALLET-01`: **hạ ưu tiên** — bản production dùng chung origin nên lỗi chỉ xảy ra ở môi trường dev/LAN (§11.6).
+* `SEC-02`, `SEC-03`: chờ **D2** và backend; riêng `SEC-01` (thu hồi khoá Brevo + BLS) là việc vận hành, **phải làm song song bất kể thứ tự trên**.
+* `SEC-06`, `ARCH-01`: thay đổi kiến trúc (tuần), cần quyết định ở mức quản lý.
+* Nhóm **email**: tạm bỏ khỏi phạm vi theo yêu cầu.
+
 ---
 
 **Hết báo cáo v1.1.** Tình trạng thật, tính theo 31 mã lỗi trong §1.1:
 
-- **9 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8.
+- **10 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp.
 - **5 mã mới giảm thiểu, chưa đóng** (`SEC-01`, `SEC-02`, `SEC-03`, `CHAIN-04`, `SEC-05`) — cần rotate khoá, backend, hoặc chuyển ký sang server.
-- **17 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `WALLET-02`, `WALLET-06`, `CHAIN-05`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 8 case BA).
+- **16 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `WALLET-02`, `WALLET-06`, `CHAIN-05`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
+
 
 Riêng `CHAIN-09`: 4/5 nguyên nhân gốc (RC-2…RC-5) đã xử lý; **RC-1 (mỗi lần lưu = một giao dịch) chỉ được gộp trong cửa sổ 90–120 giây, chưa bị loại bỏ về mặt thiết kế** — người dùng thao tác cách nhau hơn 2 phút vẫn sinh giao dịch mới cho mỗi thao tác. Không có mục nào được ghi "đã xong" mà thiếu bằng chứng.
 
