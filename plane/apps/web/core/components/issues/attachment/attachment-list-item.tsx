@@ -17,7 +17,6 @@ import { CustomMenu } from "@plane/ui";
 import {
   convertBytesToSize,
   downloadBase64File,
-  downloadBlob,
   getAttachmentFromStorage,
   getFileExtension,
   getFileName,
@@ -112,26 +111,14 @@ export const IssueAttachmentsListItem = observer(function IssueAttachmentsListIt
             return;
           }
 
-          // 4. Fallback if not found in storage: create blockchain proof export
-          const proofContent = JSON.stringify(
-            {
-              fileName: fullName,
-              fileSize: attachment.attributes?.size,
-              blockchainHash: rawUrl || attachment.id,
-              issueId: attachment.issue_id,
-              uploadedAt: attachment.updated_at,
-              status: "Verified On-Chain",
-              notice: "Tệp này được lưu trữ xác thực trên blockchain.",
-            },
-            null,
-            2
-          );
-          const proofBlob = new Blob([proofContent], { type: "application/json" });
-          downloadBlob(proofBlob, `${fullName}.blockchain-proof.json`);
+          // 4. Không tìm thấy tệp trong máy này (ví dụ mở trên máy khác) → nói thẳng cho người dùng.
+          // Trước đây màn hình tải xuống một tệp "chứng thực blockchain" tự sinh, khiến người dùng
+          // tưởng đã tải được tệp thật.
           setToast({
-            type: TOAST_TYPE.INFO,
-            title: "Chứng thực Blockchain",
-            message: `Đã tải tệp chứng thực On-Chain cho ${fullName}.`,
+            type: TOAST_TYPE.WARNING,
+            title: "Không mở được tệp",
+            message:
+              "Tệp này không có trên máy bạn. Hãy mở bằng chính máy đã tải tệp lên, hoặc nhờ người gửi lại tệp.",
           });
         }}
       >
