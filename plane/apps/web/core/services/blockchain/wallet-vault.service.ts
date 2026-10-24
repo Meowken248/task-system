@@ -169,8 +169,14 @@ export async function importPrivateKeyToVault(privateKey: string, name?: string)
   const sdk = await getSdk();
 
   invalidateVaultWalletCache();
-  const before = new Set(((await getVaultWalletsDetailed({ refresh: true })) ?? []).map((wallet) => wallet.address));
+  // Ảnh chụp danh sách ví TRƯỚC khi import. `null` = KHÔNG đọc được danh sách (khác với `[]` =
+  // chưa có ví nào). Khi không đọc được thì KHÔNG thể biết ví nào vừa được tạo — trước đây code
+  // coi như danh sách rỗng nên "ví đầu tiên tìm thấy" bị nhận vơ là ví vừa thêm, gán nhầm danh
+  // tính on-chain cho tài khoản (WALLET-06).
+  const walletsBefore = await getVaultWalletsDetailed({ refresh: true });
+  const before = walletsBefore ? new Set(walletsBefore.map((wallet) => wallet.address)) : null;
   let failure: unknown = null;
+  let addressFromResponse: string | null = null;
 
   try {
     const response = await sdk.request<unknown>(
@@ -182,20 +188,26 @@ export async function importPrivateKeyToVault(privateKey: string, name?: string)
       },
       { timeout: VAULT_UI_TIMEOUT_MS }
     );
-    const created = readAddressFromResponse(response);
-    if (created) {
-      invalidateVaultWalletCache();
-      return created;
-    }
+    addressFromResponse = readAddressFromResponse(response);
   } catch (error) {
     failure = error;
   }
 
   // Xác nhận lại bằng dữ liệu thật của Vault (kể cả khi request timeout nhưng ví đã được tạo).
   invalidateVaultWalletCache();
-  const after = (await getVaultWalletsDetailed({ refresh: true })) ?? [];
-  const created = after.find((wallet) => !before.has(wallet.address));
-  if (created) return created.address;
+  const after = await getVaultWalletsDetailed({ refresh: true });
+  const existsInVault = (address: string) => Boolean(after?.some((wallet) => wallet.address === address));
+  const isNewAddress = (address: string) => !before || !before.has(address);
+
+  // Địa chỉ Vault trả về chỉ được coi là ví vừa thêm khi nó CÓ THẬT trong danh sách ví và chưa
+  // có trong ảnh chụp trước đó — tránh nhận vơ một ví cũ (WALLET-06).
+  if (addressFromResponse && existsInVault(addressFromResponse) && isNewAddress(addressFromResponse)) {
+    return addressFromResponse;
+  }
+  if (before && after) {
+    const created = after.find((wallet) => !before.has(wallet.address));
+    if (created) return created.address;
+  }
 
   const message = failure instanceof Error ? failure.message : String(failure ?? "");
   if (/already exists/i.test(message)) {
@@ -203,6 +215,14 @@ export async function importPrivateKeyToVault(privateKey: string, name?: string)
   }
   if (/UNLOCK_CANCELLED|cancel|closed/i.test(message)) {
     throw new Error("Bạn đã đóng hộp thoại Crypto Vault nên ví chưa được import.");
+  }
+  if (!before || !after) {
+    // Không có ảnh chụp trước/sau ⇒ không đủ căn cứ để khẳng định ví nào vừa được thêm.
+    // Không đoán: yêu cầu người dùng chọn đúng ví trong danh sách.
+    throw new Error(
+      "Chưa đọc lại được danh sách ví nên không xác nhận được ví vừa thêm. " +
+        "Hãy mở “Trung tâm ví” và chọn đúng ví bạn vừa thêm."
+    );
   }
   throw new Error(message || "Không import được ví vào Crypto Vault.");
 }

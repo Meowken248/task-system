@@ -808,7 +808,7 @@ export type SyncResult = {
 | `WALLET-03` | P2 | Badge ví không cập nhật sau khi chọn/import | Phát event `wallet-changed` + `useSyncExternalStore` | 0.5 ngày |
 | `WALLET-04` | P2 | Trung tâm ví gọi `getAllWallets` (có RPC balance) mỗi lần `focus` | Cache 30s + chỉ refresh khi mở panel | 2 giờ |
 | `WALLET-05` | P2 | `Sync button` + Trung tâm ví render **toàn cục**, cả trang login | Chỉ mount trong `(app)` layout | 2 giờ |
-| `WALLET-06` | P2 | Import có thể "nhận vơ" ví cũ khi không đọc được danh sách trước | Nếu `before` rỗng ⇒ bắt buộc xác nhận địa chỉ | 2 giờ |
+| `WALLET-06` | P2 | Import có thể "nhận vơ" ví cũ khi không đọc được danh sách trước — ✅ **đã sửa trong mã** | `null` (không đọc được) ≠ `[]` (chưa có ví): không đoán ví vừa thêm, địa chỉ Vault trả về phải có thật trong danh sách và chưa có trước đó | 2 giờ |
 | `BA-18` | P2 | Phân trang chỉ là hình thức (`total_pages = 1`) | Cắt theo `per_page`/`cursor` | 2–3 ngày |
 | `BA-27` | P2 | `/importers` trả `[]` | Viết importer CSV/JSON | 3–5 ngày |
 | `BA-41` | P3 | Đăng nhập email ưu tiên password thay vì OTP | **Cần BA quyết định** (xem §10) | — |
@@ -1039,6 +1039,7 @@ git status --porcelain
 | `WALLET-02` | ❌ Luồng ghi khác không kiểm tra ví trước khi ký | ✅ Sửa mã | `confirmSigningWallet()` gọi `assertVaultSigningAddress` trước mọi bước ký; `notifyVaultProblem()` mở "Trung tâm ví" đúng chế độ ở tất cả nhánh on-chain trước đây chỉ ghi log; câu báo lỗi bỏ thuật ngữ | `plane-task-chain.service.ts`, `vault-notice.ts` (mới), `issue.service.ts`, `issue_comment.service.ts`, `issue_attachment.service.ts`, `metanode-wallet.service.ts` |
 | `CHAIN-05` | ❌ 3 địa chỉ ví lệch nhau, sổ audit ghi sai chủ | ✅ Sửa mã | Ví **đã ký** là nguồn sự thật: `rememberSigningWalletAddress()` + `getSigningWalletAddress()`; lệch ⇒ tự đồng bộ lại mọi nơi lưu + phát `plane:wallet-changed`; audit ghi theo ví ký; `createIssueOnChain` dùng đúng ví ký | `metanode-wallet.service.ts`, `plane-task-chain.service.ts`, `blockchain-tracking.service.ts` |
 | `BA-21` | ❌ Link dự án chia sẻ trả 404 ⇒ tưởng mất dữ liệu | ✅ Sửa mã | Nhánh "không thấy dự án trong máy" kiểm tra dự án có trong dữ liệu không gian làm việc trên chain: có ⇒ `403 NOT_AUTHORIZED` (màn "Chưa có quyền"), không có/đã xoá ⇒ `404` | `routes.ts` |
+| `WALLET-06` | ❌ Import có thể "nhận vơ" ví cũ | ✅ Sửa mã | Phân biệt "không đọc được danh sách" với "chưa có ví"; chỉ nhận ví vừa thêm khi địa chỉ có thật trong danh sách **và** không có trong ảnh chụp trước; không xác nhận được thì báo rõ để người dùng tự chọn ví | `wallet-vault.service.ts` |
 | Văn bản UI | ❌ Nhiều thuật ngữ kỹ thuật | ✅ Sửa mã | Bỏ "Crypto Vault / on-chain / nonce / IPFS / SDK / cổng 600x" khỏi mọi thông báo người dùng thấy | `sync-button.tsx`, `wallet-center.tsx`, `plane-task-chain.service.ts`, `chain.ts` |
 
 
@@ -1191,7 +1192,7 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 |:--:|---|---|:--:|---|
 | **1** | ✅ **Đã làm** `CHAIN-05` + `WALLET-02` — **danh tính ví**: mọi chỗ ghi/kiểm tra quyền dùng **đúng địa chỉ đang ký** (`msg.sender`), ví hồ sơ chỉ để hiển thị | Hai mã này là **cùng một gốc**; trước đây `blockchain-tracking.service.ts` ghi sổ theo `getLinkedMetanodeWalletAddress()` còn giao dịch ký bằng địa chỉ ví trong ứng dụng ví ⇒ lệch sổ. Nay sổ audit ghi theo ví đã ký và tự đồng bộ lại các nơi lưu khi phát hiện lệch | ~1 ngày | Không (D3 đã chốt trong mã) |
 | **2** | ✅ **Đã làm** `BA-21` — link chia sẻ dự án trả `404` thay vì "Chưa có quyền" | Người nhận link thấy "không tìm thấy" ⇒ tưởng mất dữ liệu; sửa thuần router + UI, không đụng ví/chain | 0,5–1 ngày | Không |
-| **3** | `WALLET-06` — import có thể "nhận vơ" ví cũ | Rủi ro gắn nhầm danh tính on-chain cho tài khoản; sửa nhỏ (nếu không đọc được danh sách ví trước đó ⇒ bắt xác nhận địa chỉ) | 2 giờ | Cần 2 ví thật để thử |
+| **3** | ✅ **Đã làm** `WALLET-06` — import có thể "nhận vơ" ví cũ | Rủi ro gắn nhầm danh tính on-chain cho tài khoản; nay không đoán: đọc không được danh sách ví trước đó thì yêu cầu người dùng chọn đúng ví | 2 giờ | QA với 2 ví thật |
 | **4** | `CHAIN-08` — hiển thị "đã/chưa đồng bộ" | Người dùng không biết dữ liệu đã lên hệ thống chưa; đây là cách duy nhất để họ tự kiểm tra thay vì bấm đồng bộ nhiều lần | 1–2 ngày | Cần design 1 buổi (icon + tooltip + vị trí) |
 | **5** | `ARCH-02` — hai tab ghi đè `localStorage` của nhau | Nếu có phản ánh "mất dữ liệu", đây là nghi phạm số một (không phải chain) | ~2 ngày | Chỉ làm khi có phản ánh thật |
 
@@ -1207,9 +1208,9 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 
 **Hết báo cáo v1.1.** Tình trạng thật, tính theo 31 mã lỗi trong §1.1:
 
-- **13 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`, `WALLET-02`, `CHAIN-05`, `BA-21`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp, `WALLET-02` + `CHAIN-05` cần thử với ứng dụng ví thật (rỗng ví / đổi ví), `BA-21` cần mở link bằng tài khoản thứ hai.
+- **14 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`, `WALLET-02`, `CHAIN-05`, `BA-21`, `WALLET-06`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp, `WALLET-02` + `CHAIN-05` cần thử với ứng dụng ví thật (rỗng ví / đổi ví), `BA-21` cần mở link bằng tài khoản thứ hai, `WALLET-06` cần thử với 2 ví thật.
 - **5 mã mới giảm thiểu, chưa đóng** (`SEC-01`, `SEC-02`, `SEC-03`, `CHAIN-04`, `SEC-05`) — cần rotate khoá, backend, hoặc chuyển ký sang server.
-- **13 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `WALLET-06`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
+- **12 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `CHAIN-08`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
 
 
 Riêng `CHAIN-09`: 4/5 nguyên nhân gốc (RC-2…RC-5) đã xử lý; **RC-1 (mỗi lần lưu = một giao dịch) chỉ được gộp trong cửa sổ 90–120 giây, chưa bị loại bỏ về mặt thiết kế** — người dùng thao tác cách nhau hơn 2 phút vẫn sinh giao dịch mới cho mỗi thao tác. Không có mục nào được ghi "đã xong" mà thiếu bằng chứng.
