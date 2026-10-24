@@ -457,26 +457,130 @@ export function syncIssueParentsToTransactions() {
 }
 syncIssueParentsToTransactions();
 
+// ── Invitation tombstone helpers ─────────────────────────────────────────
+// Tombstones are the only mechanism that stops a deleted invitation from being
+// resurrected by the cross-port cookie, the IPFS snapshot, or the notification
+// fallback. They are scoped to (workspace, email) so that removing a person
+// from workspace A never suppresses their invitation in workspace B.
+export function getInvitationWorkspaceKeys(inv: any): string[] {
+  const raw = [
+    inv?.workspace?.slug,
+    inv?.workspace_slug,
+    inv?.workspace?.id,
+    inv?.workspace_id,
+    typeof inv?.workspace === "string" ? inv.workspace : null,
+  ];
+  return Array.from(
+    new Set(
+      raw
+        .filter(Boolean)
+        .map((w: any) => String(w).toLowerCase().trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+export function makeInvitationTombstoneKey(workspaceSlug: string | undefined | null, email: string | undefined | null): string | null {
+  const ws = String(workspaceSlug || "").toLowerCase().trim();
+  const mail = String(email || "").toLowerCase().trim();
+  if (!ws || !mail) return null;
+  return `ws:${ws}|email:${mail}`;
+}
+
+/**
+ * Returns true when an invitation has been permanently deleted.
+ *
+ * Matching rules (most specific first):
+ *  1. invitation id (globally unique) - legacy tombstones also stored the
+ *     `ws-member-` / `inv-` / `member-` prefixed variants of the id;
+ *  2. invitation token;
+ *  3. `ws:<workspace>|email:<email>` - current, workspace-scoped scope;
+ *  4. bare email - legacy tombstones written by older versions (kept so that
+ *     users who already deleted an invitation do not see it resurrect).
+ */
+export function isInvitationDeleted(inv: any, deletedSet: Set<string>): boolean {
+  if (!inv || !deletedSet || deletedSet.size === 0) return false;
+  const rawId = String(inv.id || "").trim();
+  const invId = rawId.toLowerCase();
+  const invToken = String(inv.token || "").trim();
+  const invMail = (inv.email || "").toLowerCase().trim();
+
+  if (rawId && deletedSet.has(rawId)) return true;
+  if (invId && deletedSet.has(invId)) return true;
+  if (invToken && deletedSet.has(invToken)) return true;
+  if (invId) {
+    if (deletedSet.has(`ws-member-${invId}`)) return true;
+    if (deletedSet.has(`member-${invId}`)) return true;
+    if (deletedSet.has(`inv-${invId}`)) return true;
+  }
+  if (invMail) {
+    for (const ws of getInvitationWorkspaceKeys(inv)) {
+      if (deletedSet.has(`ws:${ws}|email:${invMail}`)) return true;
+      if (invId && deletedSet.has(`ws:${ws}|inv:${invId}`)) return true;
+    }
+    if (deletedSet.has(invMail)) return true;
+  }
+  return false;
+}
+
+export function readInvitationTombstones(): Set<string> {
+  const deletedSet = new Set<string>();
+  try {
+    const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
+    if (deletedRaw) {
+      const parsed = JSON.parse(deletedRaw);
+      if (Array.isArray(parsed)) parsed.forEach((d: any) => d && deletedSet.add(String(d)));
+    }
+  } catch { }
+  if (Array.isArray(localDB._deleted_invitation_ids)) {
+    localDB._deleted_invitation_ids.forEach((d: string) => d && deletedSet.add(String(d)));
+  }
+  return deletedSet;
+}
+
 // ── Permanent Invitations Store ──────────────────────────────────────────
-export function removeStoredInvitation(id: string, email?: string): void {
+/**
+ * Permanently deletes an invitation.
+ *
+ * @param id            invitation id (or legacy prefixed id / token)
+ * @param email         invited email; required for legacy token/id-less links
+ * @param workspaceSlug workspace the invitation belongs to. When provided the
+ *                      tombstone is workspace-scoped; when omitted the legacy
+ *                      global-by-email tombstone is written (kept only for
+ *                      backward compatibility with older call sites).
+ */
+export function removeStoredInvitation(id: string, email?: string, workspaceSlug?: string): void {
   if (typeof window === "undefined" || (!id && !email)) return;
   try {
     let cleanMail = (email || "").toLowerCase().trim();
     const cleanId = (id || "").trim();
+    const cleanWs = (workspaceSlug || "").toLowerCase().trim();
     const rawId = cleanId.replace(/^ws-member-/, "").replace(/^member-/, "").replace(/^inv-/, "").trim();
 
-    // Auto-discover email if not passed
-    if (!cleanMail && (cleanId || rawId)) {
+    // Auto-discover email (and workspace) if not passed
+    let effectiveWs = cleanWs;
+    if ((!cleanMail || !effectiveWs) && (cleanId || rawId)) {
       const foundInv = (localDB.invitations || []).find((i: any) =>
         (cleanId && (i.id === cleanId || i.token === cleanId)) ||
         (rawId && (i.id === rawId || i.token === rawId))
       );
-      if (foundInv?.email) {
+      if (!cleanMail && foundInv?.email) {
         cleanMail = String(foundInv.email).toLowerCase().trim();
+      }
+      if (!effectiveWs && foundInv) {
+        effectiveWs = getInvitationWorkspaceKeys(foundInv)[0] || "";
       }
     }
 
-    console.log(`[DApp Store] Permanently removing invitation: id=${cleanId}, rawId=${rawId}, email=${cleanMail}`);
+    console.log(
+      `[DApp Store] Permanently removing invitation: id=${cleanId}, rawId=${rawId}, email=${cleanMail}, workspace=${effectiveWs || "(global)"}`
+    );
+
+    const matchesWorkspace = (i: any): boolean => {
+      if (!effectiveWs) return true;
+      const keys = getInvitationWorkspaceKeys(i);
+      return keys.length === 0 || keys.includes(effectiveWs);
+    };
 
     const idCandidates = new Set<string>();
     if (cleanId) {
@@ -494,27 +598,21 @@ export function removeStoredInvitation(id: string, email?: string): void {
       idCandidates.add(`member-${rawId.toLowerCase()}`);
     }
 
+    const isTargetInvitation = (i: any): boolean => {
+      const iId = String(i.id || "");
+      const iToken = String(i.token || "");
+      if (idCandidates.has(iId) || (iToken && idCandidates.has(iToken))) return true;
+      const iMail = (i.email || "").toLowerCase().trim();
+      return Boolean(cleanMail && iMail === cleanMail && matchesWorkspace(i));
+    };
+
     // 1. Remove from localDB.invitations
     if (localDB.invitations && Array.isArray(localDB.invitations)) {
-      localDB.invitations = localDB.invitations.filter((i: any) => {
-        const iId = String(i.id || "");
-        const iMail = (i.email || "").toLowerCase().trim();
-        const iToken = String(i.token || "");
-        if (idCandidates.has(iId) || (iToken && idCandidates.has(iToken))) return false;
-        if (cleanMail && iMail === cleanMail) return false;
-        return true;
-      });
+      localDB.invitations = localDB.invitations.filter((i: any) => !isTargetInvitation(i));
     }
 
-    // 2. Track deleted ID & email in localStorage and localDB so it won't be resurrected
-    let deletedSet = new Set<string>();
-    const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
-    if (deletedRaw) {
-      try {
-        const parsed = JSON.parse(deletedRaw);
-        if (Array.isArray(parsed)) deletedSet = new Set(parsed);
-      } catch { }
-    }
+    // 2. Track deleted ID & (workspace, email) pair so it won't be resurrected
+    let deletedSet = readInvitationTombstones();
     if (!localDB._deleted_invitation_ids) localDB._deleted_invitation_ids = [];
     idCandidates.forEach((cid) => {
       deletedSet.add(cid);
@@ -523,16 +621,27 @@ export function removeStoredInvitation(id: string, email?: string): void {
       }
     });
     if (cleanMail) {
-      deletedSet.add(cleanMail);
-      (localDB.workspaces || []).forEach((w: any) => {
-        const s = w.slug || w.id;
-        if (s) {
-          deletedSet.add(`inv-${s}-${cleanMail}`);
-          if (!localDB._deleted_invitation_ids.includes(`inv-${s}-${cleanMail}`)) {
-            localDB._deleted_invitation_ids.push(`inv-${s}-${cleanMail}`);
+      const scopedKey = makeInvitationTombstoneKey(effectiveWs, cleanMail);
+      if (scopedKey) {
+        deletedSet.add(scopedKey);
+        if (!localDB._deleted_invitation_ids.includes(scopedKey)) {
+          localDB._deleted_invitation_ids.push(scopedKey);
+        }
+        if (rawId) {
+          const scopedIdKey = `ws:${effectiveWs}|inv:${rawId.toLowerCase()}`;
+          deletedSet.add(scopedIdKey);
+          if (!localDB._deleted_invitation_ids.includes(scopedIdKey)) {
+            localDB._deleted_invitation_ids.push(scopedIdKey);
           }
         }
-      });
+      } else {
+        // Legacy call site without workspace context: keep the historical
+        // global-by-email tombstone so nothing regresses.
+        deletedSet.add(cleanMail);
+        if (!localDB._deleted_invitation_ids.includes(cleanMail)) {
+          localDB._deleted_invitation_ids.push(cleanMail);
+        }
+      }
     }
     localStorage.setItem("plane_dapp_deleted_invitations", JSON.stringify(Array.from(deletedSet)));
 
@@ -542,29 +651,14 @@ export function removeStoredInvitation(id: string, email?: string): void {
       try {
         const parsedAll = JSON.parse(rawAll);
         if (Array.isArray(parsedAll)) {
-          const filtered = parsedAll.filter((i: any) => {
-            const iId = String(i.id || "");
-            const iMail = (i.email || "").toLowerCase().trim();
-            const iToken = String(i.token || "");
-            if (idCandidates.has(iId) || (iToken && idCandidates.has(iToken))) return false;
-            if (cleanMail && iMail === cleanMail) return false;
-            return true;
-          });
+          const filtered = parsedAll.filter((i: any) => !isTargetInvitation(i));
           localStorage.setItem("plane_dapp_all_invitations", JSON.stringify(filtered));
         }
       } catch { }
     }
 
     // 4. Update sync cookie
-    const currentInvites = (localDB.invitations || []).filter((i: any) => {
-      const iId = String(i.id || "");
-      const iMail = (i.email || "").toLowerCase().trim();
-      const iToken = String(i.token || "");
-      if (idCandidates.has(iId) || (iToken && idCandidates.has(iToken))) return false;
-      if (cleanMail && iMail === cleanMail) return false;
-      if (deletedSet.has(iId) || deletedSet.has(iMail)) return false;
-      return true;
-    });
+    const currentInvites = (localDB.invitations || []).filter((i: any) => !isInvitationDeleted(i, deletedSet));
     const pending = currentInvites.filter((i: any) => !i.accepted).map((i: any) => ({
       id: i.id,
       email: (i.email || "").toLowerCase().trim(),
@@ -582,13 +676,15 @@ export function removeStoredInvitation(id: string, email?: string): void {
     }));
     document.cookie = `plane_dapp_sync_invitations=${encodeURIComponent(JSON.stringify(pending))}; path=/; max-age=31536000; SameSite=Lax`;
 
-    // 5. Clean up notifications referencing this invite id or email
+    // 5. Clean up notifications referencing this invite id or email (workspace scoped)
     if (localDB.notifications && Array.isArray(localDB.notifications)) {
       localDB.notifications = localDB.notifications.filter((n: any) => {
         const nMail = (n.recipient_email || n.recipient || "").toLowerCase().trim();
         const nInvId = String(n.data?.invitation_id || "").toLowerCase().trim();
-        if (cleanMail && nMail === cleanMail) return false;
+        const nWs = String(n.workspace_slug || n.data?.workspace_slug || "").toLowerCase().trim();
+        const sameWs = !effectiveWs || !nWs || nWs === effectiveWs;
         if (nInvId && idCandidates.has(nInvId)) return false;
+        if (cleanMail && nMail === cleanMail && sameWs) return false;
         return true;
       });
     }
@@ -600,17 +696,7 @@ export function removeStoredInvitation(id: string, email?: string): void {
 export function getStoredInvitations(): any[] {
   if (typeof window === "undefined") return [];
   try {
-    let deletedSet = new Set<string>();
-    const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
-    if (deletedRaw) {
-      try {
-        const parsed = JSON.parse(deletedRaw);
-        if (Array.isArray(parsed)) deletedSet = new Set(parsed);
-      } catch { }
-    }
-    if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
-      localDB._deleted_invitation_ids.forEach((d: string) => deletedSet.add(d));
-    }
+    const deletedSet = readInvitationTombstones();
 
     // Active member emails to auto-resolve accepted status
     const activeMemberEmails = new Set(
@@ -623,29 +709,20 @@ export function getStoredInvitations(): any[] {
     const list: any[] = [];
     const idSet = new Set<string>();
 
+    // Identity resolution is exact-match only. The former "email prefix >= 6
+    // characters" heuristic marked unrelated invitations as accepted (and even
+    // created phantom memberships), e.g. `nguyen@corp.com` vs `nguyenthi@corp.com`.
     const isMemberMatch = (targetMail: string) => {
       if (!targetMail) return false;
-      const cleanTarget = targetMail.toLowerCase().trim();
-      if (activeMemberEmails.has(cleanTarget)) return true;
-      const targetPrefix = cleanTarget.split("@")[0];
-      for (const actMail of Array.from(activeMemberEmails)) {
-        const actPrefix = String(actMail).split("@")[0];
-        if (
-          (actPrefix.length >= 6 && targetPrefix.startsWith(actPrefix)) ||
-          (targetPrefix.length >= 6 && actPrefix.startsWith(targetPrefix))
-        ) {
-          return true;
-        }
-      }
-      return false;
+      return activeMemberEmails.has(targetMail.toLowerCase().trim());
     };
 
     const addInv = (inv: any) => {
-      if (!inv || !inv.id || deletedSet.has(inv.id) || (inv.token && deletedSet.has(inv.token))) return;
+      if (!inv || !inv.id) return;
+      if (isInvitationDeleted(inv, deletedSet)) return;
       const invMail = (inv.email || "").toLowerCase().trim();
-      const hasSignedToken = Boolean(inv.token && String(inv.token).startsWith("inv_"));
       const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-      if (invWs && localDB.removed_members?.[invWs] && !hasSignedToken) {
+      if (invWs && localDB.removed_members?.[invWs]) {
         const isRemoved = localDB.removed_members[invWs].some(
           (r: string) => r.toLowerCase().trim() === invMail || r.toLowerCase().trim() === inv.id
         );
@@ -695,61 +772,18 @@ export function getStoredInvitations(): any[] {
       localDB.invitations.forEach(addInv);
     }
 
-    // 4. Fallback recovery from localDB.notifications
-    if (localDB && Array.isArray(localDB.notifications)) {
-      localDB.notifications.forEach((n: any) => {
-        if (n.title === "Workspace Invitation" || n.message?.includes("invited to join workspace")) {
-          const email = (n.recipient_email || "").toLowerCase().trim();
-          const wsSlug = n.workspace_slug || n.data?.workspace_slug || "fiai";
-          const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-          const syntheticId = `inv-${wsSlug}-${email}`;
-          const isRemovedUser = (localDB.removed_members?.[wsSlug] || []).some(
-            (r: string) => r.toLowerCase().trim() === email
-          );
-          const nInvId = n.data?.invitation_id || "";
-          if (
-            email &&
-            !isRemovedUser &&
-            !deletedSet.has(syntheticId) &&
-            !deletedSet.has(email) &&
-            (!nInvId || !deletedSet.has(nInvId)) &&
-            !isMemberMatch(email) &&
-            !list.some((existing) => (existing.email || "").toLowerCase().trim() === email && (existing.workspace?.slug === wsSlug || existing.workspace_slug === wsSlug))
-          ) {
-            addInv({
-              id: syntheticId,
-              email: email,
-              role: n.data?.role || 15,
-              token: `tok-${wsSlug}-${Date.now()}`,
-              accepted: false,
-              responded_at: null,
-              message: n.message || "You have been invited.",
-              invite_link: `/workspace-invitations?invitation_id=${syntheticId}&slug=${wsSlug}&token=tok-${wsSlug}`,
-              workspace: {
-                id: ws?.id || wsSlug,
-                name: ws?.name || n.data?.workspace_name || wsSlug,
-                slug: wsSlug,
-                logo_url: ws?.logo_url || "",
-              },
-              workspace_id: ws?.id || wsSlug,
-              workspace_slug: wsSlug,
-              created_at: n.created_at || new Date().toISOString(),
-              updated_at: n.updated_at || new Date().toISOString(),
-            });
-          }
-        }
-      });
-    }
+    // 4. Notifications are intentionally NOT converted into invitations.
+    //    A notification is a local read-model; promoting it back to an
+    //    invitation resurrected deleted invites (`inv-<ws>-<email>` synthetic
+    //    rows) and produced duplicate "phantom" entries in the invite list.
+    //    The authoritative sources are the sync cookie + localDB.invitations.
 
     const filteredList = list.filter((inv: any) => {
       const invId = String(inv.id || "").toLowerCase().trim();
-      const invToken = String(inv.token || "").toLowerCase().trim();
       const invMail = (inv.email || "").toLowerCase().trim();
       const invWallet = (inv.wallet_address || "").toLowerCase().trim();
 
-      if (deletedSet.has(inv.id) || (invToken && deletedSet.has(invToken))) return false;
-      if (invId && (deletedSet.has(invId) || deletedSet.has(`ws-member-${invId}`) || deletedSet.has(`inv-${invId}`))) return false;
-      if (invMail && deletedSet.has(invMail)) return false;
+      if (isInvitationDeleted(inv, deletedSet)) return false;
 
       const invWs = String(inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "").toLowerCase().trim();
       if (invWs && localDB.removed_members) {
@@ -778,17 +812,7 @@ export function getStoredInvitations(): any[] {
 export function saveStoredInvitations(invites: any[]): void {
   if (typeof window === "undefined" || !Array.isArray(invites)) return;
   try {
-    let deletedSet = new Set<string>();
-    const deletedRaw = localStorage.getItem("plane_dapp_deleted_invitations");
-    if (deletedRaw) {
-      try {
-        const parsed = JSON.parse(deletedRaw);
-        if (Array.isArray(parsed)) deletedSet = new Set(parsed);
-      } catch { }
-    }
-    if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
-      localDB._deleted_invitation_ids.forEach((d: string) => deletedSet.add(d));
-    }
+    const deletedSet = readInvitationTombstones();
 
     // Active member emails to auto-resolve accepted status
     const activeMemberEmails = new Set(
@@ -801,12 +825,12 @@ export function saveStoredInvitations(invites: any[]): void {
     const existing = getStoredInvitations();
     const map = new Map<string, any>();
     for (const inv of existing) {
-      if (inv && inv.id && !deletedSet.has(inv.id)) {
+      if (inv && inv.id && !isInvitationDeleted(inv, deletedSet)) {
         map.set(inv.id, inv);
       }
     }
     for (const inv of invites) {
-      if (inv && inv.id && !deletedSet.has(inv.id)) {
+      if (inv && inv.id && !isInvitationDeleted(inv, deletedSet)) {
         const prev = map.get(inv.id);
         if (prev && prev.accepted && !inv.accepted) {
           map.set(inv.id, { ...inv, accepted: true });
@@ -815,23 +839,12 @@ export function saveStoredInvitations(invites: any[]): void {
         }
       }
     }
-    const merged = Array.from(map.values()).filter((i: any) => !deletedSet.has(i.id));
+    const merged = Array.from(map.values()).filter((i: any) => !isInvitationDeleted(i, deletedSet));
 
+    // Exact-match only: see the note in `getStoredInvitations`.
     const isMemberMatch = (targetMail: string) => {
       if (!targetMail) return false;
-      const cleanTarget = targetMail.toLowerCase().trim();
-      if (activeMemberEmails.has(cleanTarget)) return true;
-      const targetPrefix = cleanTarget.split("@")[0];
-      for (const actMail of Array.from(activeMemberEmails)) {
-        const actPrefix = String(actMail).split("@")[0];
-        if (
-          (actPrefix.length >= 6 && targetPrefix.startsWith(actPrefix)) ||
-          (targetPrefix.length >= 6 && actPrefix.startsWith(targetPrefix))
-        ) {
-          return true;
-        }
-      }
-      return false;
+      return activeMemberEmails.has(targetMail.toLowerCase().trim());
     };
 
     // Auto-mark invites as accepted if user is already an active member of that workspace
@@ -1263,17 +1276,10 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
     const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
 
     // Track deleted invitations and purge them from localDB.invitations
-    let deletedInvSet = new Set<string>();
-    const deletedInvRaw = localStorage.getItem("plane_dapp_deleted_invitations");
-    if (deletedInvRaw) {
-      try {
-        const parsed = JSON.parse(deletedInvRaw);
-        if (Array.isArray(parsed)) deletedInvSet = new Set(parsed);
-      } catch { }
-    }
+    const deletedInvSet = readInvitationTombstones();
     if (localDB.invitations && Array.isArray(localDB.invitations) && deletedInvSet.size > 0) {
       const origLen = localDB.invitations.length;
-      localDB.invitations = localDB.invitations.filter((i: any) => !deletedInvSet.has(i.id));
+      localDB.invitations = localDB.invitations.filter((i: any) => !isInvitationDeleted(i, deletedInvSet));
       if (localDB.invitations.length !== origLen) hasChanges = true;
     }
 
@@ -1337,6 +1343,31 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
                 const sMail = (sm.email || "").toLowerCase().trim();
                 const sMem = sm.member;
                 const sWs = sm.workspace || sm.workspace_id;
+                const sWallet = String(
+                  sm.wallet_address || (typeof sMem === "string" && sMem.startsWith("0x") ? sMem : "")
+                )
+                  .toLowerCase()
+                  .trim();
+
+                // A member removed by an admin must never be re-added by a stale
+                // cross-port cookie. The tombstone in `removed_members` wins.
+                const removedIds = new Set<string>();
+                [sWs, sm.workspace_slug, sm.workspace_id]
+                  .filter(Boolean)
+                  .forEach((k: string) => {
+                    (localDB.removed_members?.[String(k).toLowerCase().trim()] || []).forEach((r: string) => {
+                      if (r) removedIds.add(String(r).toLowerCase().trim());
+                    });
+                  });
+                const isTombstoned =
+                  Boolean(sMail && removedIds.has(sMail)) ||
+                  Boolean(sWallet && removedIds.has(sWallet)) ||
+                  Boolean(typeof sMem === "string" && removedIds.has(sMem.toLowerCase().trim()));
+                if (isTombstoned) {
+                  console.log(`[DApp DB] Bỏ qua member từ cookie vì đã bị Admin xóa: ${sMail || sMem}`);
+                  continue;
+                }
+
                 const existingIdx = localDB.workspace_members.findIndex((m: any) => {
                   const mWs = m.workspace || m.workspace_id;
                   const mMail = (m.email || "").toLowerCase().trim();
@@ -1384,7 +1415,8 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
         }
       }
 
-      // Auto-resolve invitations for active workspace members (including prefix/alias matches)
+      // Auto-resolve invitations for active workspace members.
+      // Exact email / wallet match only - no email-prefix aliasing.
       if (localDB.workspace_members && localDB.invitations) {
         const activeMails = new Set(
           localDB.workspace_members
@@ -1402,19 +1434,10 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
           const invMail = (inv.email || "").toLowerCase().trim();
           const invWallet = (inv.wallet_address || "").toLowerCase().trim();
           const mappedWallet = (localDB._email_wallet_map?.[invMail] || "").toLowerCase().trim();
-          let isMember = (invMail && activeMails.has(invMail)) ||
-                         (invWallet && activeWallets.has(invWallet)) ||
-                         (mappedWallet && activeWallets.has(mappedWallet));
-          if (!isMember && invMail) {
-            for (const actMail of Array.from(activeMails)) {
-              const actPrefix = String(actMail).split("@")[0];
-              const invPrefix = invMail.split("@")[0];
-              if ((actPrefix.length >= 6 && invPrefix.startsWith(actPrefix)) || (invPrefix.length >= 6 && actPrefix.startsWith(invPrefix))) {
-                isMember = true;
-                break;
-              }
-            }
-          }
+          const isMember =
+            Boolean(invMail && activeMails.has(invMail)) ||
+            Boolean(invWallet && activeWallets.has(invWallet)) ||
+            Boolean(mappedWallet && activeWallets.has(mappedWallet));
           if (isMember) {
             if (!inv.accepted) {
               inv.accepted = true;
@@ -1462,7 +1485,12 @@ export function syncCrossPortWorkspaces(onNewCIDDetected?: (cid: string) => void
             if (Array.isArray(syncedInvList)) {
               if (!localDB.invitations) localDB.invitations = [];
               for (const sInv of syncedInvList) {
-                if (sInv && sInv.id && !deletedInvSet.has(sInv.id) && !localDB.invitations.some((i: any) => i.id === sInv.id)) {
+                if (
+                  sInv &&
+                  sInv.id &&
+                  !isInvitationDeleted(sInv, deletedInvSet) &&
+                  !localDB.invitations.some((i: any) => i.id === sInv.id)
+                ) {
                   localDB.invitations.push(sInv);
                   hasChanges = true;
                   console.log(`[DApp DB] Auto-synced invitation from cross-port cookie: ${sInv.email}`);
