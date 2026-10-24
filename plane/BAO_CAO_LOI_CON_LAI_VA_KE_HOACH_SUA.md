@@ -1212,7 +1212,7 @@ Nguyên tắc xếp thứ tự: (1) chỉ làm phần **chỉ cần sửa mã**,
 
 - **15 mã đã sửa trong mã** và có kiểm chứng tĩnh (`BUILD-01`, `CHAIN-09`, `CHAIN-02`, `CHAIN-03`, `CHAIN-06`, `CHAIN-07`, `WALLET-03`, `WALLET-04`, `WALLET-05`, `BA-32`, `WALLET-02`, `CHAIN-05`, `BA-21`, `WALLET-06`, `CHAIN-08`) — nhưng **chưa có mã nào được kiểm chứng trên chain thật**; `CHAIN-09` còn phải qua QA Q1–Q8, `BA-32` cần thử lại thao tác đính kèm tệp, `WALLET-02` + `CHAIN-05` cần thử với ứng dụng ví thật (rỗng ví / đổi ví), `BA-21` cần mở link bằng tài khoản thứ hai, `WALLET-06` cần thử với 2 ví thật, `CHAIN-08` cần nhìn nhãn trên giao diện.
 - **5 mã mới giảm thiểu, chưa đóng** (`SEC-01`, `SEC-02`, `SEC-03`, `CHAIN-04`, `SEC-05`) — cần rotate khoá, backend, hoặc chuyển ký sang server.
-- **11 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 7 case BA).
+- **11 mã chưa chạm** (`CHAIN-01`, `WALLET-01`, `SEC-06`, `ARCH-01`, `ARCH-02`, và 6 case BA).
 
 
 Riêng `CHAIN-09`: 4/5 nguyên nhân gốc (RC-2…RC-5) đã xử lý; **RC-1 (mỗi lần lưu = một giao dịch) chỉ được gộp trong cửa sổ 90–120 giây, chưa bị loại bỏ về mặt thiết kế** — người dùng thao tác cách nhau hơn 2 phút vẫn sinh giao dịch mới cho mỗi thao tác. Không có mục nào được ghi "đã xong" mà thiếu bằng chứng.
