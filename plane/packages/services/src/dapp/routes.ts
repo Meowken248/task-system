@@ -187,6 +187,75 @@ export function addWorkspaceRemovedIdentifiers(slugOrId: string | undefined | nu
 }
 
 
+// ── Work item assignee validation (D-B) ────────────────────────────────
+/**
+ * Returns the assignee ids that are NOT members of the given project.
+ *
+ * Business rule: a work item assignee must belong to the project, and the
+ * project member must already belong to the workspace. Only ids that are being
+ * newly assigned are validated (`alreadyAssigned` is skipped) so that editing an
+ * existing work item whose assignee later left the project still saves.
+ *
+ * An empty array means "valid" (or not verifiable, e.g. empty project_members).
+ */
+export function findNonProjectAssignees(
+  projectId: string | undefined | null,
+  assigneeIds: any[],
+  alreadyAssigned: any[] = []
+): string[] {
+  if (!projectId || !Array.isArray(assigneeIds) || assigneeIds.length === 0) return [];
+  const project = (localDB.projects || []).find(
+    (p: any) =>
+      p.id === projectId ||
+      (p.identifier && String(p.identifier).toLowerCase() === String(projectId).toLowerCase())
+  );
+  const canonicalProjectId = project?.id || projectId;
+
+  const allowed = new Set<string>();
+  (localDB.project_members || [])
+    .filter((pm: any) => pm.project === canonicalProjectId || pm.project_id === canonicalProjectId)
+    .forEach((pm: any) => {
+      const member = typeof pm.member === "object" && pm.member?.id ? pm.member.id : pm.member;
+      if (member) allowed.add(String(member).toLowerCase().trim());
+      [pm.member?.email, pm.member_detail?.id, pm.member_detail?.email]
+        .filter(Boolean)
+        .forEach((k: any) => allowed.add(String(k).toLowerCase().trim()));
+    });
+  if (project?.created_by) allowed.add(String(project.created_by).toLowerCase().trim());
+
+  // No membership data (legacy project) - nothing to validate against.
+  if (allowed.size === 0) return [];
+
+  const already = new Set(alreadyAssigned.map((x) => String(x || "").toLowerCase().trim()));
+  return assigneeIds
+    .map((x) => String(typeof x === "object" && x?.id ? x.id : x))
+    .filter((id) => {
+      const key = id.toLowerCase().trim();
+      if (!key || already.has(key)) return false;
+      if (allowed.has(key)) return false;
+      const user = (localDB.users || []).find((u: any) => String(u.id || "").toLowerCase().trim() === key);
+      if (user?.email && allowed.has(String(user.email).toLowerCase().trim())) return false;
+      return true;
+    });
+}
+
+export function buildAssigneeValidationError(projectId: string, invalidIds: string[]) {
+  const labels = invalidIds.map((id) => {
+    const user = (localDB.users || []).find(
+      (u: any) =>
+        String(u.id || "").toLowerCase().trim() === id.toLowerCase().trim() ||
+        String(u.email || "").toLowerCase().trim() === id.toLowerCase().trim()
+    );
+    return user?.display_name || user?.email || id;
+  });
+  return {
+    error: `Chưa thể gán công việc: ${labels.join(", ")} chưa thuộc dự án này. Vui lòng thêm vào dự án trước khi giao việc.`,
+    code: "ASSIGNEE_NOT_IN_PROJECT",
+    project: projectId,
+    invalid_assignees: invalidIds,
+  };
+}
+
 // ── Work item activity helpers ────────────────────────────────────────
 // Every mutation of a work item records an entry in `localDB.issue_activities`.
 // That single collection feeds both `/issues/:id/history/` (activity tab) and
@@ -1525,7 +1594,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           email: cleanMail,
           role: inv.role || 15,
           is_active: true,
-          verified_on_chain: true,
+          // Verification happens only when the chain confirms the role.
+          verified_on_chain: false,
+          chain_sync_pending: true,
           created_at: new Date().toISOString(),
         });
       }
@@ -1639,7 +1710,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           email: cleanMail,
           role: inv.role || 15,
           is_active: true,
-          verified_on_chain: true,
+          // Verification happens only when the chain confirms the role.
+          verified_on_chain: false,
+          chain_sync_pending: true,
           created_at: new Date().toISOString(),
         });
       }
@@ -5186,6 +5259,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           is_active: true,
         },
         role: 20,
+        original_role: 20,
         project: targetProjId,
         workspace: ws?.id || wsSlug,
       });
@@ -5223,6 +5297,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
               member: memberKey,
               member_detail: userDetail,
               role: Number(pm.role) || 15,
+              // `original_role` is what the UI uses to render the role select and to
+              // decide whether a person still has to be invited. Without it the
+              // "add member" modal re-offered existing members (RC-12).
+              original_role: Number(pm.role) || 15,
               project: targetProjId,
               workspace: ws?.id || wsSlug,
             });
@@ -5239,10 +5317,76 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     if (method === "post") {
       if (!localDB.project_members) localDB.project_members = [];
       const membersToAdd = Array.isArray(body?.members) ? body.members : [body];
+
+      // D-B (server enforcement): a project member must already be an active
+      // member of this workspace. Adding a stranger to a project would otherwise
+      // let them be assigned work items without ever joining the workspace.
+      const wsScopeKeys = new Set(
+        [wsSlug, ws?.id, ws?.slug].filter(Boolean).map((x: any) => String(x).toLowerCase().trim())
+      );
+      const wsMemberKeys = new Set<string>();
+      (localDB.workspace_members || []).forEach((wm: any) => {
+        const wmWs = String(wm.workspace || wm.workspace_id || "").toLowerCase().trim();
+        if (wmWs && !wsScopeKeys.has(wmWs)) return;
+        if (wm.is_active === false) return;
+        [wm.member, wm.email, wm.wallet_address, wm.member_detail?.id]
+          .filter(Boolean)
+          .forEach((k: any) => wsMemberKeys.add(String(k).toLowerCase().trim()));
+      });
+      const creatorKeyForValidation = String(
+        targetProj?.created_by || ws?.created_by || ws?.owner?.id || ""
+      ).toLowerCase().trim();
+      const creatorMailForValidation = (targetProj?.owner?.email || ws?.owner?.email || "").toLowerCase().trim();
+      const enforceWorkspaceMembership = wsMemberKeys.size > 0 || Boolean(creatorKeyForValidation);
+
+      const rejected: { member_id: string; error: string }[] = [];
       const createdList: any[] = [];
+
+      // Pass 1 - validate the whole batch before mutating anything (all-or-nothing).
+      if (enforceWorkspaceMembership) {
+        membersToAdd.forEach((m: any) => {
+          const memberId = m.member_id || (typeof m.member === "object" ? m.member?.id : m.member) || m.id;
+          if (!memberId) return;
+          const cleanMemberKey = String(memberId).toLowerCase().trim();
+          const isCreator =
+            (creatorKeyForValidation && cleanMemberKey === creatorKeyForValidation) ||
+            (creatorMailForValidation && cleanMemberKey === creatorMailForValidation);
+          const linkedEmail = String(
+            (localDB.users || []).find((u: any) => String(u.id || "").toLowerCase().trim() === cleanMemberKey)?.email || ""
+          )
+            .toLowerCase()
+            .trim();
+          const isWsMember =
+            wsMemberKeys.has(cleanMemberKey) || Boolean(linkedEmail && wsMemberKeys.has(linkedEmail));
+          if (!isWsMember && !isCreator) {
+            rejected.push({
+              member_id: String(memberId),
+              error: "Người dùng chưa phải là thành viên của không gian làm việc. Vui lòng thêm vào workspace trước.",
+            });
+          }
+        });
+      }
+
+      if (rejected.length > 0) {
+        return {
+          data: {
+            error:
+              "Không thể thêm thành viên vào dự án: có người chưa thuộc không gian làm việc này. Vui lòng thêm họ vào workspace trước.",
+            code: "PROJECT_MEMBER_NOT_IN_WORKSPACE",
+            added_count: 0,
+            rejected,
+          },
+          status: 400,
+        };
+      }
+
+      // Pass 2 - apply.
       membersToAdd.forEach((m: any) => {
         const memberId = m.member_id || (typeof m.member === "object" ? m.member?.id : m.member) || m.id;
         if (!memberId) return;
+        const cleanMemberKey = String(memberId).toLowerCase().trim();
+        const requestedRole = Number(m.role) || 15;
+        const memberMailKey = String(m.email || "").toLowerCase().trim();
 
         let existing = localDB.project_members.find(
           (pm: any) =>
@@ -5251,11 +5395,24 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         );
 
         if (existing) {
-          existing.role = Number(m.role) || existing.role || 15;
+          existing.role = requestedRole;
+          existing.original_role = requestedRole;
           createdList.push(existing);
         } else {
-          const user = (localDB.users || []).find((u: any) => u.id === memberId || u.email === memberId);
-          const wsMem = (localDB.workspace_members || []).find((wm: any) => wm.member === memberId || wm.email === memberId);
+          const user =
+            (localDB.users || []).find((u: any) => u.id === memberId || (memberMailKey && u.email === memberMailKey)) ||
+            (localDB.users || []).find(
+              (u: any) =>
+                cleanMemberKey &&
+                (String(u.id || "").toLowerCase().trim() === cleanMemberKey ||
+                  String(u.email || "").toLowerCase().trim() === cleanMemberKey)
+            );
+          const wsMem = (localDB.workspace_members || []).find(
+            (wm: any) =>
+              wm.member === memberId ||
+              (cleanMemberKey && String(wm.email || "").toLowerCase().trim() === cleanMemberKey) ||
+              (user?.email && String(wm.email || "").toLowerCase().trim() === String(user.email).toLowerCase().trim())
+          );
           const userDetail = user || (typeof wsMem?.member === "object" ? wsMem.member : wsMem) || {
             id: memberId,
             email: memberId,
@@ -5271,13 +5428,15 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             project_id: targetProjId,
             member: memberId,
             member_detail: userDetail,
-            role: Number(m.role) || 15,
+            role: requestedRole,
+            original_role: requestedRole,
             created_at: new Date().toISOString(),
           };
           localDB.project_members.push(pmRecord);
           createdList.push(pmRecord);
         }
       });
+
       saveDB();
       return ok(createdList);
     }
@@ -9925,6 +10084,21 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         }
       }
 
+      // D-B: reject assignees that are not members of this project.
+      const requestedAssignees = Array.isArray(newRecord.assignees)
+        ? newRecord.assignees
+        : newRecord.assignee_ids || [];
+      if (Array.isArray(requestedAssignees) && requestedAssignees.length > 0) {
+        const targetProjectId = newRecord.project_id || newRecord.project;
+        const invalidAssignees = findNonProjectAssignees(targetProjectId, requestedAssignees);
+        if (invalidAssignees.length > 0) {
+          return {
+            data: buildAssigneeValidationError(String(targetProjectId || ""), invalidAssignees),
+            status: 400,
+          };
+        }
+      }
+
       if (newRecord.parent_id === "" || newRecord.parent_id === "null" || newRecord.parent_id === "undefined") {
         newRecord.parent_id = null;
       }
@@ -10142,6 +10316,24 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     }
     if (idx > -1) {
       const previousRecord = { ...localDB[collection][idx] };
+
+      // D-B: an assignee must already be a member of the project.
+      if (collection === "issues") {
+        const nextAssignees = Array.isArray(body?.assignees) ? body.assignees : body?.assignee_ids;
+        if (Array.isArray(nextAssignees)) {
+          const targetProjectId =
+            body?.project_id || body?.project || previousRecord.project_id || previousRecord.project;
+          const previousAssignees = previousRecord.assignee_ids || previousRecord.assignees || [];
+          const invalidAssignees = findNonProjectAssignees(targetProjectId, nextAssignees, previousAssignees);
+          if (invalidAssignees.length > 0) {
+            return {
+              data: buildAssigneeValidationError(String(targetProjectId || ""), invalidAssignees),
+              status: 400,
+            };
+          }
+        }
+      }
+
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
       if (collection === "issues") {
         if (body.state_id) localDB[collection][idx].state = body.state_id;

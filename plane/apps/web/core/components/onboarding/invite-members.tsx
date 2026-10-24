@@ -297,12 +297,32 @@ export function InviteMembers(props: Props) {
           role: email.role,
         })),
       })
-      .then(async () => {
-        setToast({
-          type: TOAST_TYPE.SUCCESS,
-          title: "Success!",
-          message: "Invitations sent successfully.",
-        });
+      .then(async (result: any) => {
+        // The API now reports real delivery results. Never claim "sent" when no
+        // email went out (previously it always said success - RC-1).
+        const emailFailures: { email: string; error: string }[] = result?.email_failures || [];
+        const chainFailures: { email: string; error: string }[] = result?.chain_failures || [];
+        if (emailFailures.length > 0) {
+          const failedList = emailFailures.map((f) => f.email).join(", ");
+          setToast({
+            type: TOAST_TYPE.ERROR,
+            title: "Invitation emails not delivered",
+            message: `The invitation was created but the email could not be sent to: ${failedList}. Share the invite link manually or check the email configuration.`,
+          });
+        } else if (chainFailures.length > 0) {
+          setToast({
+            type: TOAST_TYPE.WARNING,
+            title: "Invitation created with warnings",
+            message:
+              "Invitations were created but on-chain provisioning failed for some wallet invites. You can retry by inviting them again.",
+          });
+        } else {
+          setToast({
+            type: TOAST_TYPE.SUCCESS,
+            title: "Success!",
+            message: "Invitations sent successfully.",
+          });
+        }
         await nextStep();
       })
       .catch((err) => {

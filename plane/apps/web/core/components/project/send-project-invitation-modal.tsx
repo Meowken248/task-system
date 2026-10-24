@@ -40,7 +40,7 @@ type FormValues = {
 const defaultValues: FormValues = {
   members: [
     {
-      role: 5,
+      role: EUserPermissions.MEMBER,
       member_id: "",
     },
   ],
@@ -94,6 +94,18 @@ export const SendProjectInvitationModal = observer(function SendProjectInvitatio
       })
       .catch((error) => {
         console.error(error);
+        // Surface the server-side rejection (e.g. the person is not a workspace
+        // member yet) instead of failing silently.
+        const message =
+          error?.error ||
+          error?.data?.error ||
+          error?.response?.data?.error ||
+          "Could not add the selected members. Please check that they belong to this workspace.";
+        setToast({
+          title: "Unable to add members",
+          type: TOAST_TYPE.ERROR,
+          message: String(message),
+        });
       })
       .finally(() => {
         reset(defaultValues);
@@ -111,7 +123,7 @@ export const SendProjectInvitationModal = observer(function SendProjectInvitatio
 
   const appendField = () => {
     append({
-      role: 5,
+      role: EUserPermissions.MEMBER,
       member_id: "",
     });
   };
@@ -120,7 +132,7 @@ export const SendProjectInvitationModal = observer(function SendProjectInvitatio
     if (fields.length === 0) {
       append([
         {
-          role: 5,
+          role: EUserPermissions.MEMBER,
           member_id: "",
         },
       ]);
@@ -215,7 +227,7 @@ export const SendProjectInvitationModal = observer(function SendProjectInvitatio
                             onChange(val);
                             // Update the role to the workspace role when member ID changes
                             const workspaceMemberDetails = getWorkspaceMemberDetails(val);
-                            const workspaceRole = workspaceMemberDetails?.role ?? 5;
+                            const workspaceRole = workspaceMemberDetails?.role ?? EUserPermissions.MEMBER;
                             const newValue = ROLE[workspaceRole].toUpperCase();
                             setValue(
                               `members.${index}.role`,

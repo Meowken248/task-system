@@ -14,6 +14,7 @@ import {
   DEFAULT_WORKSPACE,
   getStoredInvitations,
   saveStoredInvitations,
+  isInvitationDeleted,
 } from "./store";
 import { setStoredCredential } from "./auth";
 import { saveSnapshotToIDB, loadSnapshotFromIDB, saveCidToIDB, getCidFromIDB } from "./indexed-db";
@@ -2530,9 +2531,38 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       localDB.project_members[existingIdx] = { ...localDB.project_members[existingIdx], ...pm };
     }
   }
-  localDB.project_members = localDB.project_members.filter(
-    (pm: any) => !mergedDeletedProjects.has(pm.project) && !mergedDeletedProjects.has(pm.project_id)
-  );
+  // Drop project memberships of people who were removed from the workspace.
+  // project_members has no workspace column, so resolve it through the project.
+  const projectWsById = new Map<string, string>();
+  (localDB.projects || []).forEach((p: any) => {
+    const wsKey = String(p.workspace || p.workspace_id || "").toLowerCase().trim();
+    if (p?.id && wsKey) projectWsById.set(String(p.id), wsKey);
+  });
+  localDB.project_members = localDB.project_members.filter((pm: any) => {
+    if (mergedDeletedProjects.has(pm.project) || mergedDeletedProjects.has(pm.project_id)) return false;
+    const projectId = String(pm.project || pm.project_id || "");
+    const wsKey = projectWsById.get(projectId) || "";
+    const mapped1 = wsSlugToId[wsKey] || "";
+    const mapped2 = wsIdToSlug[wsKey] || "";
+    const rSet = new Set(
+      [
+        ...(mergedRemovedMembers[wsKey] || []),
+        ...(mapped1 ? mergedRemovedMembers[mapped1] || [] : []),
+        ...(mapped2 ? mergedRemovedMembers[mapped2] || [] : []),
+      ].map((x: string) => String(x).toLowerCase().trim())
+    );
+    if (rSet.size === 0) return true;
+    const pmMember = String(
+      typeof pm.member === "object" && pm.member?.id ? pm.member.id : pm.member || pm.id || ""
+    )
+      .toLowerCase()
+      .trim();
+    const pmMail = (pm.email || pm.member_detail?.email || pm.member?.email || "").toLowerCase().trim();
+    const pmEth = String(pm.wallet_address || "")
+      .toLowerCase()
+      .trim();
+    return !rSet.has(pmMember) && !(pmMail && rSet.has(pmMail)) && !(pmEth && rSet.has(pmEth));
+  });
 
   let deletedInvSet = new Set<string>(mergedDeletedInvitations);
   if (typeof window !== "undefined") {
@@ -2547,7 +2577,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
 
   if (!localDB.invitations) localDB.invitations = [];
   for (const inv of currentInvitations) {
-    if (deletedInvSet.has(inv.id) || (inv.email && deletedInvSet.has(inv.email.toLowerCase().trim()))) continue;
+    if (isInvitationDeleted(inv, deletedInvSet)) continue;
     const invWs = String(inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "")
       .toLowerCase()
       .trim();
@@ -2576,7 +2606,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     }
   }
   localDB.invitations = localDB.invitations.filter((i: any) => {
-    if (deletedInvSet.has(i.id) || (i.email && deletedInvSet.has(i.email.toLowerCase().trim()))) return false;
+    if (isInvitationDeleted(i, deletedInvSet)) return false;
     const invWs = String(i.workspace?.slug || i.workspace_slug || i.workspace?.id || i.workspace || "")
       .toLowerCase()
       .trim();

@@ -53,7 +53,7 @@ export interface IWorkspaceMemberStore {
   updateMember: (workspaceSlug: string, userId: string, data: { role: EUserPermissions }) => Promise<void>;
   removeMemberFromWorkspace: (workspaceSlug: string, userId: string, adminWallet?: string) => Promise<void>;
   // invite actions
-  inviteMembersToWorkspace: (workspaceSlug: string, data: IWorkspaceBulkInviteFormData) => Promise<void>;
+  inviteMembersToWorkspace: (workspaceSlug: string, data: IWorkspaceBulkInviteFormData) => Promise<any>;
   updateMemberInvitation: (
     workspaceSlug: string,
     invitationId: string,

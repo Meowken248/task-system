@@ -10,6 +10,7 @@ import { AlertTriangle } from "lucide-react";
 // ui
 import { useTranslation } from "@plane/i18n";
 import { Button } from "@plane/propel/button";
+import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 import { EModalPosition, EModalWidth, ModalCore } from "@plane/ui";
 // hooks
 import { useUser } from "@/hooks/store/user";
@@ -28,6 +29,7 @@ export const ConfirmWorkspaceMemberRemove = observer(function ConfirmWorkspaceMe
   const { isOpen, onClose, onSubmit, userDetails } = props;
   // states
   const [isRemoving, setIsRemoving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // store hooks
   const { data: currentUser } = useUser();
   const { t } = useTranslation();
@@ -35,15 +37,31 @@ export const ConfirmWorkspaceMemberRemove = observer(function ConfirmWorkspaceMe
   const handleClose = () => {
     onClose();
     setIsRemoving(false);
+    setErrorMessage(null);
   };
 
   const handleDeletion = async () => {
     setIsRemoving(true);
+    setErrorMessage(null);
     try {
       await onSubmit();
       handleClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error("[ConfirmWorkspaceMemberRemove] Deletion error:", err);
+      // Never fail silently: the member is intentionally kept when the on-chain
+      // revocation fails, and the admin must know why (previous behaviour left
+      // the row "pending removal" with no explanation).
+      const message =
+        err?.error ||
+        err?.data?.error ||
+        err?.response?.data?.error ||
+        "Could not remove this member. Please try again.";
+      setErrorMessage(String(message));
+      setToast({
+        type: TOAST_TYPE.ERROR,
+        title: "Remove failed",
+        message: String(message),
+      });
     } finally {
       setIsRemoving(false);
     }
@@ -76,19 +94,26 @@ export const ConfirmWorkspaceMemberRemove = observer(function ConfirmWorkspaceMe
           </div>
         </div>
       </div>
-      <div className="flex justify-end gap-2 p-4 sm:px-6">
-        <Button variant="secondary" size="lg" onClick={handleClose}>
-          {t("cancel")}
-        </Button>
-        <Button variant="error-fill" size="lg" tabIndex={1} onClick={handleDeletion} loading={isRemoving}>
-          {currentUser?.id === userDetails.id
-            ? isRemoving
-              ? t("leaving")
-              : t("leave")
-            : isRemoving
-              ? t("removing")
-              : t("remove")}
-        </Button>
+      <div className="flex flex-col gap-2 p-4 sm:px-6">
+        {errorMessage && (
+          <p className="text-13 text-danger-primary" role="alert">
+            {errorMessage}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="lg" onClick={handleClose}>
+            {t("cancel")}
+          </Button>
+          <Button variant="error-fill" size="lg" tabIndex={1} onClick={handleDeletion} loading={isRemoving}>
+            {currentUser?.id === userDetails.id
+              ? isRemoving
+                ? t("leaving")
+                : t("leave")
+              : isRemoving
+                ? t("removing")
+                : t("remove")}
+          </Button>
+        </div>
       </div>
     </ModalCore>
   );

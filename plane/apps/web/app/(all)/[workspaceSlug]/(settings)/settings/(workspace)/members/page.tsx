@@ -55,15 +55,34 @@ const WorkspaceMembersSettingsPage = observer(function WorkspaceMembersSettingsP
 
   const handleWorkspaceInvite = async (data: IWorkspaceBulkInviteFormData) => {
     try {
-      await inviteMembersToWorkspace(workspaceSlug, data);
+      const result = await inviteMembersToWorkspace(workspaceSlug, data);
 
       setInviteModal(false);
 
-      setToast({
-        type: TOAST_TYPE.SUCCESS,
-        title: "Success!",
-        message: t("workspace_settings.settings.members.invitations_sent_successfully"),
-      });
+      const emailFailures: { email: string; error: string }[] = result?.email_failures ?? [];
+      const chainFailures: { email: string; error: string }[] = result?.chain_failures ?? [];
+
+      if (emailFailures.length > 0) {
+        // The invitation exists, but the email never left the building. Say so
+        // instead of reporting a fake success (RC-1).
+        setToast({
+          type: TOAST_TYPE.ERROR,
+          title: "Invitation emails not delivered",
+          message: `${emailFailures.map((failure) => failure.email).join(", ")} - the invitation was created but the email could not be sent. Copy the invite link from the pending invitations list and share it manually.`,
+        });
+      } else if (chainFailures.length > 0) {
+        setToast({
+          type: TOAST_TYPE.WARNING,
+          title: "Invitation created with warnings",
+          message: "On-chain provisioning failed for some wallet invitations. Invite them again to retry.",
+        });
+      } else {
+        setToast({
+          type: TOAST_TYPE.SUCCESS,
+          title: "Success!",
+          message: t("workspace_settings.settings.members.invitations_sent_successfully"),
+        });
+      }
     } catch (error: unknown) {
       let message = undefined;
       if (error instanceof Error) {
