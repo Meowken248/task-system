@@ -53,6 +53,10 @@ import {
   invalidateWorkspaceMembersOnChainCache,
 } from "./chain";
 import { sendWorkspaceInviteEmail, sendOtpEmail } from "./mail";
+import {
+  findNonProjectAssignees as findNonProjectAssigneesPure,
+  describeInvalidAssignees,
+} from "./assignee-validation";
 
 export { ok, parseApiUrl };
 
@@ -188,66 +192,22 @@ export function addWorkspaceRemovedIdentifiers(slugOrId: string | undefined | nu
 
 
 // ── Work item assignee validation (D-B) ────────────────────────────────
-/**
- * Returns the assignee ids that are NOT members of the given project.
- *
- * Business rule: a work item assignee must belong to the project, and the
- * project member must already belong to the workspace. Only ids that are being
- * newly assigned are validated (`alreadyAssigned` is skipped) so that editing an
- * existing work item whose assignee later left the project still saves.
- *
- * An empty array means "valid" (or not verifiable, e.g. empty project_members).
- */
+// The pure rules live in `./assignee-validation`; these wrappers bind them to
+// the local database.
 export function findNonProjectAssignees(
   projectId: string | undefined | null,
   assigneeIds: any[],
   alreadyAssigned: any[] = []
 ): string[] {
-  if (!projectId || !Array.isArray(assigneeIds) || assigneeIds.length === 0) return [];
-  const project = (localDB.projects || []).find(
-    (p: any) =>
-      p.id === projectId ||
-      (p.identifier && String(p.identifier).toLowerCase() === String(projectId).toLowerCase())
-  );
-  const canonicalProjectId = project?.id || projectId;
-
-  const allowed = new Set<string>();
-  (localDB.project_members || [])
-    .filter((pm: any) => pm.project === canonicalProjectId || pm.project_id === canonicalProjectId)
-    .forEach((pm: any) => {
-      const member = typeof pm.member === "object" && pm.member?.id ? pm.member.id : pm.member;
-      if (member) allowed.add(String(member).toLowerCase().trim());
-      [pm.member?.email, pm.member_detail?.id, pm.member_detail?.email]
-        .filter(Boolean)
-        .forEach((k: any) => allowed.add(String(k).toLowerCase().trim()));
-    });
-  if (project?.created_by) allowed.add(String(project.created_by).toLowerCase().trim());
-
-  // No membership data (legacy project) - nothing to validate against.
-  if (allowed.size === 0) return [];
-
-  const already = new Set(alreadyAssigned.map((x) => String(x || "").toLowerCase().trim()));
-  return assigneeIds
-    .map((x) => String(typeof x === "object" && x?.id ? x.id : x))
-    .filter((id) => {
-      const key = id.toLowerCase().trim();
-      if (!key || already.has(key)) return false;
-      if (allowed.has(key)) return false;
-      const user = (localDB.users || []).find((u: any) => String(u.id || "").toLowerCase().trim() === key);
-      if (user?.email && allowed.has(String(user.email).toLowerCase().trim())) return false;
-      return true;
-    });
+  return findNonProjectAssigneesPure(projectId, assigneeIds, alreadyAssigned, {
+    projects: localDB.projects,
+    projectMembers: localDB.project_members,
+    users: localDB.users,
+  });
 }
 
 export function buildAssigneeValidationError(projectId: string, invalidIds: string[]) {
-  const labels = invalidIds.map((id) => {
-    const user = (localDB.users || []).find(
-      (u: any) =>
-        String(u.id || "").toLowerCase().trim() === id.toLowerCase().trim() ||
-        String(u.email || "").toLowerCase().trim() === id.toLowerCase().trim()
-    );
-    return user?.display_name || user?.email || id;
-  });
+  const labels = describeInvalidAssignees(invalidIds, { users: localDB.users });
   return {
     error: `Chưa thể gán công việc: ${labels.join(", ")} chưa thuộc dự án này. Vui lòng thêm vào dự án trước khi giao việc.`,
     code: "ASSIGNEE_NOT_IN_PROJECT",
