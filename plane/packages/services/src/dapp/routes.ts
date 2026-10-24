@@ -256,6 +256,47 @@ export function buildAssigneeValidationError(projectId: string, invalidIds: stri
   };
 }
 
+/**
+ * Recover an invitation from the authoritative workspace snapshot pinned on-chain.
+ *
+ * Invitation links are opened on the invitee's browser, which has no local copy
+ * of the admin's database. Instead of synthesising an invitation from the token
+ * claims (which allowed forging/deleted-invite resurrection), we read the
+ * workspace CID from the registry and look the invitation up in that snapshot.
+ * If it is not there, the link is simply invalid.
+ */
+export async function recoverInvitationFromChainSnapshot(
+  wsSlug: string,
+  invitationId: string,
+  token: string
+): Promise<any | null> {
+  try {
+    if (!wsSlug || (!invitationId && !token)) return null;
+    const registryAddress = getWorkspaceRegistryAddress();
+    if (!registryAddress) return null;
+    const raw = await directRpcRead(registryAddress, abiEncodeGetWorkspace(wsSlug), 5000);
+    const info = decodeAbiWorkspace(raw);
+    const cid = String(info?.ipfsCID || "").trim();
+    if (!cid) return null;
+
+    const snapshot = await fetchFromIPFS(cid);
+    const invitations: any[] = Array.isArray(snapshot?.invitations) ? snapshot.invitations : [];
+    const wsKey = String(wsSlug).toLowerCase().trim();
+    return (
+      invitations.find((inv: any) => {
+        const invWsKeys = getInvitationWorkspaceKeys(inv);
+        if (invWsKeys.length > 0 && !invWsKeys.includes(wsKey)) return false;
+        const idHit = Boolean(invitationId) && String(inv.id) === String(invitationId);
+        const tokenHit = Boolean(token) && String(inv.token) === String(token);
+        return idHit || tokenHit;
+      }) || null
+    );
+  } catch (err) {
+    console.warn("[DApp Routes] Unable to recover invitation from the on-chain snapshot:", err);
+    return null;
+  }
+}
+
 // ── Work item activity helpers ────────────────────────────────────────
 // Every mutation of a work item records an entry in `localDB.issue_activities`.
 // That single collection feeds both `/issues/:id/history/` (activity tab) and
@@ -2740,6 +2781,38 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
     }
 
+    // 3.1 Authoritative recovery: the invitee's browser has no copy of the admin
+    //     database, so resolve the record from the workspace snapshot pinned on
+    //     chain. This replaces the old "synthesise from token" behaviour while
+    //     keeping cross-browser invitations working.
+    if (!inv) {
+      const recovered = await recoverInvitationFromChainSnapshot(wsSlug, invitationId, currentToken);
+      if (recovered) {
+        console.log(`[DApp Routes] Recovered invitation ${recovered.id} from the on-chain snapshot of "${wsSlug}"`);
+        inv = recovered;
+        if (!localDB.invitations.some((x: any) => x.id === recovered.id)) {
+          localDB.invitations.push(recovered);
+        }
+      }
+    }
+
+    // 3.2 Legacy links: the token payload may reference the invitation id. It is
+    //     used ONLY to look up an existing record, never to create one.
+    if (!inv && decoded?.id) {
+      const legacyWs = String(decoded.ws || "").toLowerCase().trim();
+      const wsMatches = !legacyWs || legacyWs === wsSlug.toLowerCase() || legacyWs === String(ws?.id || "").toLowerCase();
+      if (wsMatches) {
+        const legacyId = String(decoded.id);
+        const findLegacy = (i: any) =>
+          String(i.id) === legacyId &&
+          (!i.workspace_slug || i.workspace_slug === wsSlug || i.workspace?.slug === wsSlug || i.workspace?.id === ws?.id);
+        inv = (localDB.invitations || []).find(findLegacy) || getStoredInvitations().find(findLegacy);
+        if (inv && !localDB.invitations.some((x: any) => x.id === inv.id)) {
+          localDB.invitations.push(inv);
+        }
+      }
+    }
+
     const invMail = (inv?.email || decoded?.email || "").toLowerCase().trim();
     const invIdClean = invitationId.toLowerCase().trim();
     const invWallet = (inv?.wallet_address || decoded?.wallet || "").toLowerCase().trim();
@@ -2804,24 +2877,6 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         (invWallet && (mWall === invWallet || mId === invWallet))
       );
     });
-
-    // 6. Legacy links (already delivered by email) carry a self-describing
-    //    `inv_<base64>` token. Its payload is used ONLY to locate an existing
-    //    invitation record - never to synthesise a new one.
-    if (!inv && decoded?.id) {
-      const legacyWs = String(decoded.ws || "").toLowerCase().trim();
-      const wsMatches = !legacyWs || legacyWs === wsSlug.toLowerCase() || legacyWs === String(ws?.id || "").toLowerCase();
-      if (wsMatches) {
-        const legacyId = String(decoded.id);
-        const findLegacy = (i: any) =>
-          String(i.id) === legacyId &&
-          (!i.workspace_slug || i.workspace_slug === wsSlug || i.workspace?.slug === wsSlug || i.workspace?.id === ws?.id);
-        inv = (localDB.invitations || []).find(findLegacy) || getStoredInvitations().find(findLegacy);
-        if (inv && !localDB.invitations.some((x: any) => x.id === inv.id)) {
-          localDB.invitations.push(inv);
-        }
-      }
-    }
 
     // 7. If still not found: DO NOT invent a fake invitation! Return 404
     if (!inv) {
