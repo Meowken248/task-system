@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Wallet } from "lucide-react";
 import {
   getDAppSyncStatus,
@@ -12,6 +12,8 @@ import {
   localDB,
   syncDAppDBToChain,
   VaultSigningError,
+  SnapshotUploadError,
+  subscribeSnapshotUploadState,
   type DAppSyncStatus,
 } from "@plane/services";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
@@ -42,6 +44,22 @@ function errorMessage(error: unknown): string {
  */
 function presentSyncError(error: unknown): { title: string; message: string } {
   const message = errorMessage(error);
+
+  if (error instanceof SnapshotUploadError) {
+    const titles = {
+      OFFLINE: "Đang mất kết nối mạng",
+      TIMEOUT: "Kết nối lưu trữ chậm",
+      NETWORK: "Chưa kết nối được nơi lưu trữ",
+      RATE_LIMIT: "Dịch vụ lưu trữ đang bận",
+      CONFIGURATION: "Cần kiểm tra dịch vụ lưu trữ",
+      TOO_LARGE: "Dữ liệu vượt giới hạn lưu trữ",
+      CONTEXT_CHANGED: "Phiên làm việc đã thay đổi",
+      LOCAL_STORAGE: "Chưa lưu được trên thiết bị",
+      INVALID_RESPONSE: "Chưa xác nhận được kết quả lưu",
+      SERVICE: "Dịch vụ lưu trữ chưa sẵn sàng",
+    };
+    return { title: titles[error.code], message: error.message };
+  }
 
   if (isVaultSigningError(error)) {
     if (error.code === "VAULT_EMPTY") {
@@ -101,9 +119,21 @@ function presentSyncError(error: unknown): { title: string; message: string } {
 export function SyncToChainButton() {
   const { data: currentUser } = useUser();
   const [isSyncing, setIsSyncing] = useState(false);
+  const syncingRef = useRef(false);
   const [syncStage, setSyncStage] = useState<string>("Đang xử lý…");
   const [walletState, setWalletState] = useState<SigningWalletState | null>(null);
   const [syncStatus, setSyncStatus] = useState<DAppSyncStatus | null>(null);
+
+  useEffect(
+    () =>
+      subscribeSnapshotUploadState((state) => {
+        if (!syncingRef.current) return;
+        if (state.phase === "uploading") setSyncStage(`Đang lưu dữ liệu… (${state.attempt}/${state.maxAttempts})`);
+        if (state.phase === "retrying") setSyncStage("Kết nối chậm, đang thử lại…");
+        if (state.phase === "complete") setSyncStage("Đang chờ xác nhận ví…");
+      }),
+    []
+  );
 
   const refreshWalletState = useCallback(async (options?: { refresh?: boolean }) => {
     try {
@@ -155,8 +185,16 @@ export function SyncToChainButton() {
   }, [currentUser?.id]);
 
   const handleSync = async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
     setIsSyncing(true);
     try {
+      if (navigator.onLine === false) {
+        throw new SnapshotUploadError(
+          "OFFLINE",
+          "Máy đang mất kết nối mạng. Thay đổi vẫn được giữ trên máy; hãy thử lại khi có mạng."
+        );
+      }
       setSyncStage("Đang kiểm tra ví…");
       await ensureFiaiFramesReady();
 
@@ -245,6 +283,7 @@ export function SyncToChainButton() {
         }
       }
     } finally {
+      syncingRef.current = false;
       setIsSyncing(false);
       // Đọc lại trạng thái lưu trữ để nhãn ở góc màn hình phản ánh kết quả vừa xong.
       setSyncStatus(getDAppSyncStatus());

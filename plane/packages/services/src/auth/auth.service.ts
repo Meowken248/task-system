@@ -126,6 +126,7 @@ export class AuthService extends APIService {
       document.body.appendChild(form);
 
       form.submit();
+      return undefined;
     });
   }
 }

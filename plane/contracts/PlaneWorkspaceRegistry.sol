@@ -35,6 +35,14 @@ contract PlaneWorkspaceRegistry {
 
     // Mapping: workspaceSlug => array of member addresses
     mapping(string => address[]) private _workspaceMemberList;
+    mapping(string => mapping(address => bool)) private _listedMembers;
+    mapping(address => mapping(string => bool)) private _listedWorkspaces;
+
+    struct Invitation {
+        Role role;
+        uint256 expiresAt;
+    }
+    mapping(string => mapping(address => Invitation)) private _invitations;
 
     event WorkspaceCreated(
         string indexed slug,
@@ -70,12 +78,19 @@ contract PlaneWorkspaceRegistry {
     error InvalidAddress();
     error InvalidSlug();
     error CIDConflict();
+    error InvitationRequired();
+    error InvalidExpiry();
+
+    event MemberInvited(string slug, address indexed member, Role role, uint256 expiresAt);
+    event InvitationRevoked(string slug, address indexed member);
 
     address public operator;
 
     constructor() {
         operator = msg.sender;
     }
+
+    function workspacePolicyVersion() external pure returns (uint256) { return 2; }
 
     function setOperator(address newOperator) external {
         if (msg.sender != operator) revert Unauthorized();
@@ -129,12 +144,7 @@ contract PlaneWorkspaceRegistry {
         });
 
         _workspaceMembers[slug][msg.sender] = Role.Owner;
-        _workspaceMemberList[slug].push(msg.sender);
-
-        if (!_userHasWorkspace[msg.sender][slug]) {
-            _userHasWorkspace[msg.sender][slug] = true;
-            _userWorkspaces[msg.sender].push(slug);
-        }
+        _trackMembership(slug, msg.sender);
 
         emit WorkspaceCreated(slug, name, msg.sender, initialCid, block.timestamp);
     }
@@ -146,14 +156,45 @@ contract PlaneWorkspaceRegistry {
 
         bool isNew = _workspaceMembers[slug][msg.sender] == Role.None;
         if (isNew) {
-            _workspaceMembers[slug][msg.sender] = Role.Member;
-            _workspaceMemberList[slug].push(msg.sender);
-            if (!_userHasWorkspace[msg.sender][slug]) {
-                _userHasWorkspace[msg.sender][slug] = true;
-                _userWorkspaces[msg.sender].push(slug);
-            }
-            emit MemberAdded(slug, msg.sender, Role.Member, msg.sender);
+            Invitation memory invitation = _invitations[slug][msg.sender];
+            if (invitation.role == Role.None || invitation.expiresAt <= block.timestamp) revert InvitationRequired();
+            delete _invitations[slug][msg.sender];
+            _workspaceMembers[slug][msg.sender] = invitation.role;
+            _trackMembership(slug, msg.sender);
+            emit MemberAdded(slug, msg.sender, invitation.role, msg.sender);
         }
+    }
+
+    /// @notice Authorize a specific wallet before it can join. Email alone is not wallet ownership.
+    function inviteMember(string calldata slug, address member, Role role, uint256 expiresAt) external onlyWorkspaceAdmin(slug) {
+        if (member == address(0)) revert InvalidAddress();
+        if (role != Role.Member && role != Role.Admin) revert Unauthorized();
+        if (member == _workspaces[slug].owner || _workspaceMembers[slug][member] != Role.None) revert Unauthorized();
+        if (expiresAt <= block.timestamp) revert InvalidExpiry();
+        _invitations[slug][member] = Invitation(role, expiresAt);
+        emit MemberInvited(slug, member, role, expiresAt);
+    }
+
+    function revokeInvitation(string calldata slug, address member) external onlyWorkspaceAdmin(slug) {
+        delete _invitations[slug][member];
+        emit InvitationRevoked(slug, member);
+    }
+
+    function getInvitation(string calldata slug, address member) external view returns (Role role, uint256 expiresAt) {
+        Invitation storage invitation = _invitations[slug][member];
+        return (invitation.role, invitation.expiresAt);
+    }
+
+    function _trackMembership(string calldata slug, address member) private {
+        if (!_listedMembers[slug][member]) {
+            _listedMembers[slug][member] = true;
+            _workspaceMemberList[slug].push(member);
+        }
+        if (!_listedWorkspaces[member][slug]) {
+            _listedWorkspaces[member][slug] = true;
+            _userWorkspaces[member].push(slug);
+        }
+        _userHasWorkspace[member][slug] = true;
     }
 
     /// @notice Update the workspace IPFS CID (Any workspace member)
@@ -196,17 +237,15 @@ contract PlaneWorkspaceRegistry {
     ) external onlyWorkspaceAdmin(slug) {
         if (member == address(0)) revert InvalidAddress();
         if (role == Role.None || role == Role.Owner) revert Unauthorized();
+        if (member == _workspaces[slug].owner) revert Unauthorized();
+        // An admin cannot demote a peer first to bypass removeMember's guard.
+        if (msg.sender != operator && msg.sender != _workspaces[slug].owner && _workspaceMembers[slug][member] == Role.Admin) revert Unauthorized();
 
         bool isNew = _workspaceMembers[slug][member] == Role.None;
         _workspaceMembers[slug][member] = role;
 
-        if (isNew) {
-            _workspaceMemberList[slug].push(member);
-            if (!_userHasWorkspace[member][slug]) {
-                _userHasWorkspace[member][slug] = true;
-                _userWorkspaces[member].push(slug);
-            }
-        }
+        if (isNew) _trackMembership(slug, member);
+        delete _invitations[slug][member];
 
         emit MemberAdded(slug, member, role, msg.sender);
     }
@@ -220,12 +259,13 @@ contract PlaneWorkspaceRegistry {
     ) external onlyWorkspaceAdmin(slug) {
         if (member == address(0)) revert InvalidAddress();
         if (member == _workspaces[slug].owner) revert Unauthorized(); // Cannot remove workspace owner
-        if (msg.sender != _workspaces[slug].owner && _workspaceMembers[slug][member] == Role.Admin) {
+        if (msg.sender != operator && msg.sender != _workspaces[slug].owner && _workspaceMembers[slug][member] == Role.Admin) {
             revert Unauthorized(); // Admin cannot remove another admin
         }
 
         _workspaceMembers[slug][member] = Role.None;
         _userHasWorkspace[member][slug] = false;
+        delete _invitations[slug][member];
 
         emit MemberRemoved(slug, member, msg.sender);
     }
@@ -240,8 +280,12 @@ contract PlaneWorkspaceRegistry {
         if (!_workspaces[slug].exists) revert WorkspaceNotFound();
         if (msg.sender != operator && _workspaces[slug].owner != msg.sender) revert Unauthorized();
         if (newOwner == address(0)) revert InvalidAddress();
+        address previousOwner = _workspaces[slug].owner;
+        if (previousOwner != newOwner) _workspaceMembers[slug][previousOwner] = Role.Admin;
         _workspaces[slug].owner = newOwner;
         _workspaceMembers[slug][newOwner] = Role.Owner;
+        delete _invitations[slug][newOwner];
+        _trackMembership(slug, newOwner);
     }
 
     /// @notice Get workspace summary and latest IPFS CID

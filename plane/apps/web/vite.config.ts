@@ -85,6 +85,8 @@ export default defineConfig(() => ({
       "next/link": path.resolve(__dirname, "app/compat/next/link.tsx"),
       "next/navigation": path.resolve(__dirname, "app/compat/next/navigation.ts"),
       "next/script": path.resolve(__dirname, "app/compat/next/script.tsx"),
+      // Runtime enums must remain available while workspace builds regenerate dist.
+      "@plane/types": path.resolve(__dirname, "../../packages/types/src/index.ts"),
       "@plane/services": path.resolve(__dirname, "../../packages/services/src/index.ts"),
       "@plane/constants": path.resolve(__dirname, "../../packages/constants/src/index.ts"),
       "@plane/utils": path.resolve(__dirname, "../../packages/utils/src/index.ts"),

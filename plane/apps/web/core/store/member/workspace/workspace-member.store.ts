@@ -136,7 +136,9 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
       (m) => this.memberRoot?.memberMap?.[m.member]?.display_name?.toLowerCase(),
     ]);
     //filter out bots
-    const memberIds = members.filter((m) => !this.memberRoot?.memberMap?.[m.member]?.is_bot).map((m) => m.member);
+    const memberIds = members
+      .filter((m) => m.is_active !== false && Boolean(this.memberRoot?.memberMap?.[m.member]) && !this.memberRoot.memberMap[m.member].is_bot)
+      .map((m) => m.member);
     return memberIds;
   });
 
@@ -147,7 +149,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   getFilteredWorkspaceMemberIds = computedFn((workspaceSlug: string) => {
     let members = Object.values(this.workspaceMemberMap?.[workspaceSlug] ?? {});
     //filter out bots and inactive members
-    members = members.filter((m) => !this.memberRoot?.memberMap?.[m.member]?.is_bot && m.is_active !== false);
+    members = members.filter((m) => m.is_active !== false && Boolean(this.memberRoot?.memberMap?.[m.member]) && !this.memberRoot.memberMap[m.member].is_bot);
 
     // Use filters store to get filtered member ids
     const memberIds = this.filtersStore.getFilteredMemberIds(
@@ -239,6 +241,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   fetchWorkspaceMembers = async (workspaceSlug: string) =>
     await this.workspaceService.fetchWorkspaceMembers(workspaceSlug).then((response) => {
       runInAction(() => {
+        if (!this.workspaceMemberMap[workspaceSlug]) set(this.workspaceMemberMap, workspaceSlug, {});
         const activeUserIds = new Set(response.map((m) => m.member.id));
         if (this.workspaceMemberMap[workspaceSlug]) {
           Object.keys(this.workspaceMemberMap[workspaceSlug]).forEach((userId) => {
@@ -260,7 +263,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
           (w) => w.slug === workspaceSlug || w.id === workspaceSlug
         );
         if (targetWs) {
-          set(targetWs, "total_members", response.length);
+          set(targetWs, "total_members", this.getWorkspaceMemberIds(workspaceSlug).length);
         }
       });
       return response;
@@ -314,7 +317,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
             (w) => w.slug === workspaceSlug || w.id === workspaceSlug
           );
           if (targetWs) {
-            set(targetWs, "total_members", Math.max(remainingCount, 1));
+            set(targetWs, "total_members", remainingCount);
           }
         }
       });

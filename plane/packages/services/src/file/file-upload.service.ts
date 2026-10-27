@@ -15,15 +15,15 @@ function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.readAsDataURL(file);
-    reader.onload = () => {
+    reader.addEventListener("load", () => {
       let encoded = reader.result?.toString() || "";
       const commaIdx = encoded.indexOf(",");
       if (commaIdx !== -1) {
         encoded = encoded.substring(commaIdx + 1);
       }
       resolve(encoded);
-    };
-    reader.onerror = (error) => reject(error);
+    });
+    reader.addEventListener("error", (error) => reject(error));
   });
 }
 
@@ -66,6 +66,7 @@ export class FileUploadService extends APIService {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async uploadFile(_url: string, data: FormData): Promise<any> {
     if (typeof window === "undefined") return;
+    // oxlint-disable-next-line import/no-named-as-default-member -- Axios exposes this factory on its default value; its named CancelToken declaration is type-only.
     this.cancelSource = axios.CancelToken.source();
 
     // 1. Extract file from FormData

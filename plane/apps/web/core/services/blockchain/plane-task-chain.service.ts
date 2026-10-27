@@ -3,6 +3,7 @@ import { assertVaultSigningAddress, isVaultSigningError, runExclusiveChainTx } f
 import type { TIssue, TIssuePriorities } from "@plane/types";
 import { planeTaskManagerAbi } from "@/contracts/plane-task-manager.abi";
 import { getFiaiSDK, getLatestCapturedWalletTxHash, initFiaiSDK, resetFiaiSDK } from "./fiai-sdk.service";
+import { isMissingTaskContractError } from "./contract-errors";
 import {
   isMetanodeWalletRuntimeSupported,
   isWalletAddress,
@@ -732,9 +733,7 @@ export async function getIssueTaskId(issueId: string): Promise<number> {
 }
 
 export function isMissingOnChainRecordError(error: unknown): boolean {
-  return /execution reverted|invalid task|invalid subtask|could not read the on-chain task id|0x0531bbb1|0x464522a9|call_exception/i.test(
-    blockchainErrorMessage(error)
-  );
+  return isMissingTaskContractError(error);
 }
 
 /**

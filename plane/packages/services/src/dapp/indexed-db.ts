@@ -21,11 +21,11 @@ export async function openDAppIDB(): Promise<IDBDatabase | null> {
   if (dbInstance) return dbInstance;
   if (dbOpenPromise) return dbOpenPromise;
 
-  dbOpenPromise = new Promise((resolve) => {
+  const opening = new Promise<IDBDatabase | null>((resolve) => {
     try {
       const request = indexedDB.open(IDB_NAME, IDB_VERSION);
 
-      request.onupgradeneeded = (event) => {
+      request.addEventListener("upgradeneeded", (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (!db.objectStoreNames.contains(SNAPSHOT_STORE)) {
           db.createObjectStore(SNAPSHOT_STORE, { keyPath: "key" });
@@ -33,28 +33,35 @@ export async function openDAppIDB(): Promise<IDBDatabase | null> {
         if (!db.objectStoreNames.contains(METADATA_STORE)) {
           db.createObjectStore(METADATA_STORE, { keyPath: "key" });
         }
-      };
+      });
 
-      request.onsuccess = () => {
-        dbInstance = request.result;
-        dbInstance.onversionchange = () => {
-          dbInstance?.close();
-          dbInstance = null;
-        };
-        resolve(dbInstance);
-      };
+      request.addEventListener("success", () => {
+        const openedDB = request.result;
+        dbInstance = openedDB;
+        openedDB.addEventListener("versionchange", () => {
+          openedDB.close();
+          if (dbInstance === openedDB) dbInstance = null;
+        });
+        openedDB.addEventListener("close", () => {
+          if (dbInstance === openedDB) dbInstance = null;
+        });
+        resolve(openedDB);
+      });
 
-      request.onerror = (err) => {
+      request.addEventListener("error", (err) => {
         console.warn("[DApp IDB] Không thể mở IndexedDB:", err);
         resolve(null);
-      };
+      });
     } catch (err) {
       console.warn("[DApp IDB] Lỗi khởi tạo IndexedDB:", err);
       resolve(null);
     }
   });
-
-  return dbOpenPromise;
+  dbOpenPromise = opening;
+  void opening.finally(() => {
+    if (dbOpenPromise === opening) dbOpenPromise = null;
+  });
+  return opening;
 }
 
 export async function saveSnapshotToIDB(data: Record<string, any>, cid?: string): Promise<boolean> {
@@ -90,9 +97,9 @@ export async function saveSnapshotToIDB(data: Record<string, any>, cid?: string)
           value: Date.now(),
         });
 
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
-        tx.onabort = () => resolve(false);
+        tx.addEventListener("complete", () => resolve(true));
+        tx.addEventListener("error", () => resolve(false));
+        tx.addEventListener("abort", () => resolve(false));
       } catch {
         resolve(false);
       }
@@ -119,28 +126,28 @@ export async function loadSnapshotFromIDB(): Promise<{ data: Record<string, any>
         let metaCid: string | null = null;
 
         const snapReq = snapStore.get("latest");
-        snapReq.onsuccess = () => {
+        snapReq.addEventListener("success", () => {
           if (snapReq.result?.data) {
             snapshotData = snapReq.result.data;
             snapshotCid = snapReq.result.cid || null;
           }
-        };
+        });
 
         const metaReq = metaStore.get("last_valid_cid");
-        metaReq.onsuccess = () => {
+        metaReq.addEventListener("success", () => {
           if (metaReq.result?.value) {
             metaCid = metaReq.result.value;
           }
-        };
+        });
 
-        tx.oncomplete = () => {
+        tx.addEventListener("complete", () => {
           resolve({
             data: snapshotData,
             cid: metaCid || snapshotCid,
           });
-        };
-        tx.onerror = () => resolve({ data: null, cid: null });
-        tx.onabort = () => resolve({ data: null, cid: null });
+        });
+        tx.addEventListener("error", () => resolve({ data: null, cid: null }));
+        tx.addEventListener("abort", () => resolve({ data: null, cid: null }));
       } catch {
         resolve({ data: null, cid: null });
       }
@@ -165,8 +172,8 @@ export async function saveCidToIDB(cid: string): Promise<boolean> {
           value: cid,
           updatedAt: Date.now(),
         });
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
+        tx.addEventListener("complete", () => resolve(true));
+        tx.addEventListener("error", () => resolve(false));
       } catch {
         resolve(false);
       }
@@ -187,10 +194,10 @@ export async function getCidFromIDB(): Promise<string | null> {
         const tx = db.transaction(METADATA_STORE, "readonly");
         const metaStore = tx.objectStore(METADATA_STORE);
         const req = metaStore.get("last_valid_cid");
-        req.onsuccess = () => {
+        req.addEventListener("success", () => {
           resolve(req.result?.value || null);
-        };
-        req.onerror = () => resolve(null);
+        });
+        req.addEventListener("error", () => resolve(null));
       } catch {
         resolve(null);
       }
@@ -199,4 +206,3 @@ export async function getCidFromIDB(): Promise<string | null> {
     return null;
   }
 }
-

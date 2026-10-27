@@ -20,11 +20,6 @@ export type AssigneeValidationSource = {
 
 const normalize = (value: any): string => String(value ?? "").toLowerCase().trim();
 
-const memberKeyOf = (pm: any): string => {
-  const member = typeof pm?.member === "object" && pm?.member?.id ? pm.member.id : pm?.member;
-  return normalize(member || pm?.member_detail?.id || pm?.id);
-};
-
 /**
  * Returns the assignee ids that are NOT members of the given project.
  *

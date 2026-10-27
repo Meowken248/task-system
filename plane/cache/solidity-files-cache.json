@@ -74,8 +74,8 @@
       ]
     },
     "C:\\task-system\\plane\\contracts\\PlaneWorkspaceRegistry.sol": {
-      "lastModificationDate": 1792485671611,
-      "contentHash": "b47d5fcf107489316cf68da645822971",
+      "lastModificationDate": 1793066559268,
+      "contentHash": "5a0c177288abb34b40c5b84cc363b8ea",
       "sourceName": "contracts/PlaneWorkspaceRegistry.sol",
       "solcConfig": {
         "version": "0.8.20",

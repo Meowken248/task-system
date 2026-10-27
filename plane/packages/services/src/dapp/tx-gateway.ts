@@ -113,6 +113,7 @@ export function runExclusiveChainTx<T>(label: string, task: () => Promise<T>): P
  */
 export async function waitForChainTxIdle(timeoutMs = 30_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
+  // oxlint-disable-next-line no-unmodified-loop-condition -- The queued promise callbacks update queuedCount while this loop awaits.
   while (isChainTxInFlight() || queuedCount > 0) {
     if (Date.now() >= deadline) return false;
     // oxlint-disable-next-line no-await-in-loop -- phải chờ tuần tự cho tới khi hàng đợi rảnh.

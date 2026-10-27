@@ -19,6 +19,7 @@ import {
 import { setStoredCredential } from "./auth";
 import { saveSnapshotToIDB, loadSnapshotFromIDB, saveCidToIDB, getCidFromIDB } from "./indexed-db";
 import { registerSigningSessionInvalidator, runExclusiveChainTx } from "./tx-gateway";
+import { publishSnapshot, snapshotUploadPolicy, isPublishedCID, notifySnapshotUploadReuse, SnapshotUploadError } from "./snapshot-upload";
 
 /**
  * Generic on-chain sync (fire-and-forget, never blocks UI)
@@ -114,6 +115,16 @@ export const UPDATE_WORKSPACE_CID_ABI = {
   ],
   outputs: [],
   stateMutability: "nonpayable",
+};
+
+export const UPDATE_WORKSPACE_CID_IF_MATCHES_ABI = {
+  ...UPDATE_WORKSPACE_CID_ABI,
+  name: "updateWorkspaceCIDIfMatches",
+  inputs: [
+    { internalType: "string", name: "slug", type: "string" },
+    { internalType: "string", name: "expectedOldCid", type: "string" },
+    { internalType: "string", name: "newCid", type: "string" },
+  ],
 };
 
 export const CREATE_WORKSPACE_ABI = {
@@ -339,7 +350,10 @@ export async function fetchMemberRoleOnChain(slug: string, memberAddress: string
   try {
     const roleCalldata = abiEncodeGetMemberRole(slug, memberAddress);
     const roleHex = await directRpcRead(wsRegistryAddr, roleCalldata, 4000);
-    return decodeAbiUint8(roleHex);
+    if (!/^0x[0-9a-f]{64}$/i.test(roleHex)) throw new Error("Invalid membership response");
+    const role = decodeAbiUint8(roleHex);
+    if (![0, 1, 2, 3].includes(role)) throw new Error("Invalid membership role");
+    return role;
   } catch (err) {
     console.warn(`[DApp Chain] fetchMemberRoleOnChain("${slug}", "${memberAddress}") error:`, err);
     return -1;
@@ -602,8 +616,7 @@ let ipfsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let lastUploadedCID: string | null = null;
 let lastUploadedDataHash: string | null = null;
 let isUploadingIPFS = false;
-let isDirtyState = false;
-let isDAppDBInitialized = false;
+let isDirtyState = (() => { try { return typeof localStorage !== "undefined" && localStorage.getItem("plane_dapp_dirty") === "true"; } catch { return false; } })();
 
 // ── Auto commit CID on-chain ─────────────────────────────────────────────
 // Việc ghi CID on-chain là *bản sao lưu con trỏ dữ liệu*, không phải dữ liệu
@@ -1081,6 +1094,9 @@ export function getIsDirtyState(): boolean {
 
 export function setDirtyState(val: boolean): void {
   isDirtyState = val;
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem("plane_dapp_dirty", String(val));
+  } catch {}
   if (typeof window !== "undefined") {
     (window as any).__isDAppDirty = val;
   }
@@ -1189,122 +1205,154 @@ function getDBStorageKey(): string {
 }
 
 // ── IPFS Upload & Fetch ──────────────────────────────────────────────────
-export async function uploadToIPFS(force = false): Promise<string | null> {
-  if (typeof window === "undefined") return null;
-  const dbToSave = getDBSnapshot();
+let ipfsUploadTail: Promise<unknown> = Promise.resolve();
+const ipfsUploadFlights = new Map<string, { promise: Promise<string | null>; requestManual: () => void }>();
+let backgroundUploadCooldown: { context: string; until: number } | null = null;
 
-  const hasData = Object.keys(dbToSave).some((key) => {
-    const val = dbToSave[key];
-    if (Array.isArray(val)) return val.length > 0;
-    if (val && typeof val === "object") return Object.keys(val).length > 0;
-    return Boolean(val);
-  });
-  if (!hasData) {
-    console.log("[DApp DB] Bỏ qua IPFS upload — chưa có dữ liệu off-chain.");
-    return null;
+function uploadContext(): string {
+  let sessionWallet = "";
+  let localWallet = "";
+  let workspace = "";
+  try {
+    sessionWallet = sessionStorage.getItem("plane_active_wallet_address") || "";
+    localWallet = localStorage.getItem("plane_active_wallet_address") || "";
+    workspace = localStorage.getItem("last_workspace_slug") || "";
+  } catch {
+    /* The local checkpoint reports unavailable storage explicitly. */
   }
+  return JSON.stringify([
+    getLoggedInUserId(),
+    sessionWallet.toLowerCase(),
+    localWallet.toLowerCase(),
+    currentUserAddress,
+    getStoredWalletAddress(),
+    getRegistryContractAddress(),
+    getWorkspaceRegistryAddress(),
+    getProxyUrl(),
+    workspace,
+  ]);
+}
 
-  const hasRealContent = checkHasRealContent();
+function queueIPFSUpload(force: boolean): Promise<string | null> {
+  if (typeof window === "undefined") return Promise.resolve(null);
+  const serialized = JSON.stringify(getDBSnapshot());
+  const context = uploadContext();
+  if (!force && backgroundUploadCooldown?.context === context && Date.now() < backgroundUploadCooldown.until)
+    return Promise.resolve(null);
+  const key = context + String(force && !checkHasRealContent()) + serialized;
+  const existing = ipfsUploadFlights.get(key);
+  if (existing) {
+    if (force) existing.requestManual();
+    return existing.promise;
+  }
+  let requestedForce = force;
+  const run = ipfsUploadTail.catch(() => undefined).then(() => uploadSnapshotToIPFS(requestedForce, context));
+  const tracked = run
+    .catch((error: unknown) => {
+      backgroundUploadCooldown = {
+        context,
+        until: Date.now() + readPositiveIntEnv("VITE_IPFS_BACKGROUND_RETRY_MS", 30_000, 1_000, 300_000),
+      };
+      throw error;
+    })
+    .finally(() => {
+      ipfsUploadFlights.delete(key);
+    });
+  ipfsUploadFlights.set(key, { promise: tracked, requestManual: () => { requestedForce = true; } });
+  ipfsUploadTail = tracked.catch(() => undefined);
+  return tracked;
+}
 
-  const existingCID =
-    lastUploadedCID ||
-    localStorage.getItem(`plane_dapp_ipfs_cid_${getDBStorageKey()}`) ||
-    localStorage.getItem("plane_dapp_ipfs_cid_local") ||
-    localStorage.getItem("plane_dapp_ipfs_cid_last_valid");
-
-  if (!force && !hasRealContent) {
+/** Compatibility for background callers: failures keep local data and return no CID. */
+export function uploadToIPFS(force = false): Promise<string | null> {
+  return queueIPFSUpload(force).catch((error: unknown) => {
     console.warn(
-      "[DApp DB] Chặn upload IPFS rỗng: Cơ sở dữ liệu chưa có dự án hoặc công việc hợp lệ. Tránh ghi đè làm mất dữ liệu trên IPFS/Chain."
+      "[DApp DB] Chưa công bố snapshot; giữ dữ liệu local.",
+      error instanceof SnapshotUploadError ? error.code : "STORAGE_ERROR"
     );
-    return existingCID || null;
-  }
+    return null;
+  });
+}
 
-  const serialized = JSON.stringify(dbToSave);
-  if (serialized === lastUploadedDataHash && lastUploadedCID && !lastUploadedCID.startsWith("bafkrei")) {
+async function uploadSnapshotToIPFS(force: boolean, context: string): Promise<string | null> {
+  const serialized = JSON.stringify(getDBSnapshot());
+  const dbToSave = JSON.parse(serialized);
+  const isCurrent = () => context === uploadContext();
+  if (!isCurrent()) throw new SnapshotUploadError("CONTEXT_CHANGED", "Phiên làm việc đã thay đổi. Hãy đồng bộ lại.");
+  if (!force && backgroundUploadCooldown?.context === context && Date.now() < backgroundUploadCooldown.until) return null;
+  const hasData = Object.values(dbToSave).some((value) =>
+    Array.isArray(value)
+      ? value.length > 0
+      : value && typeof value === "object"
+        ? Object.keys(value).length > 0
+        : Boolean(value)
+  );
+  if (!hasData) return null;
+  const existingCID = getLastUploadedCID();
+  if (!force && !checkHasRealContent()) return existingCID;
+  if (serialized === lastUploadedDataHash && isPublishedCID(lastUploadedCID)) {
+    setDirtyState(false);
+    notifySnapshotUploadReuse();
     return lastUploadedCID;
   }
 
+  let localSaved = false;
+  try {
+    localStorage.setItem("plane_dapp_local_db", serialized);
+    localSaved = true;
+  } catch {}
+  const idbWrite = saveSnapshotToIDB(dbToSave, existingCID || undefined);
+  let idbSaved = false;
+  if (!localSaved) {
+    let checkpointTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      idbSaved = await Promise.race([
+        idbWrite,
+        new Promise<boolean>((resolve) => {
+          checkpointTimer = setTimeout(() => resolve(false), 3000);
+        }),
+      ]);
+    } finally {
+      if (checkpointTimer) clearTimeout(checkpointTimer);
+    }
+  }
+  if (!localSaved && !idbSaved)
+    throw new SnapshotUploadError(
+      "LOCAL_STORAGE",
+      "Chưa lưu được bản sao trên thiết bị. Hãy kiểm tra dung lượng hoặc quyền lưu trữ của trình duyệt rồi thử lại."
+    );
   try {
     isUploadingIPFS = true;
-    console.log("[DApp DB] Đang tự động upload dữ liệu off-chain lên IPFS Pinata (timeout 8s)...");
-    let cid: string | null = null;
-    const proxyUrl = getProxyUrl();
-    if (proxyUrl) {
-      try {
-        const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-        const timer = controller ? setTimeout(() => controller.abort(), 8000) : null;
-        const response = await fetch(proxyUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: serialized,
-          signal: controller?.signal,
-        });
-        if (timer) clearTimeout(timer);
-        if (response.ok) {
-          const resJson = await response.json();
-          cid = resJson?.cid || null;
-          console.log(`[DApp DB] ✅ Upload thành công lên Pinata IPFS! CID: ${cid}`);
-        } else {
-          const errText = await response.text().catch(() => "");
-          console.warn(`[DApp DB] Pinata proxy trả về mã lỗi ${response.status}:`, errText);
-        }
-      } catch (proxyErr) {
-        console.warn(
-          "[DApp DB] Không thể kết nối tới Pinata proxy hoặc quá 8s (tự động chuyển sang CID nội bộ để tiếp tục on-chain):",
-          proxyErr
-        );
-      }
-    }
-
-    if (!cid) {
-      let hash = 0;
-      for (let i = 0; i < serialized.length; i++) {
-        hash = (hash << 5) - hash + serialized.charCodeAt(i);
-        hash |= 0;
-      }
-      cid = `bafkrei${Math.abs(hash).toString(36)}${Date.now().toString(36)}`;
-    }
-
+    const cid = await publishSnapshot(getProxyUrl(), serialized, snapshotUploadPolicy(getEnvVar), isCurrent);
+    if (!isCurrent()) throw new SnapshotUploadError("CONTEXT_CHANGED", "Phiên làm việc đã thay đổi. Hãy đồng bộ lại.");
+    backgroundUploadCooldown = null;
+    const unchanged = serialized === JSON.stringify(getDBSnapshot());
     try {
-      sessionStorage.setItem(`ipfs_${cid}`, serialized);
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(`ipfs_${cid}`, serialized);
-      }
+      sessionStorage.setItem("ipfs_" + cid, serialized);
+      localStorage.setItem("ipfs_" + cid, serialized);
     } catch {}
-
     lastUploadedCID = cid;
     lastUploadedDataHash = serialized;
-    setDirtyState(false);
-    const storageKey = getDBStorageKey();
-    localStorage.setItem(`plane_dapp_ipfs_cid_${storageKey}`, cid);
-    localStorage.setItem("plane_dapp_ipfs_cid_local", cid);
-    localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cid);
-    // Đánh dấu "CID mới nhất chỉ có ở local, chưa ghi on-chain". Khi contract vẫn còn CID cũ,
-    // routes sẽ KHÔNG ghi đè dữ liệu local bằng snapshot cũ trên IPFS (xem CID check ở routes.ts).
-    if (!cid.startsWith("bafkrei")) {
+    setDirtyState(!unchanged);
+    try {
+      localStorage.setItem("plane_dapp_ipfs_cid_" + getDBStorageKey(), cid);
+      localStorage.setItem("plane_dapp_ipfs_cid_local", cid);
+      localStorage.setItem("plane_dapp_ipfs_cid_last_valid", cid);
       localStorage.setItem("plane_dapp_pending_onchain_cid", cid);
-    }
+    } catch {}
     syncWorkspacesToCookie(cid);
     void saveCidToIDB(cid);
-    void saveSnapshotToIDB(dbToSave, cid);
-    console.log(`[DApp DB] ✅ Auto-save IPFS thành công: ${cid}`);
-
-    if (isAutoCommitOnChainEnabled()) {
-      const wsRegistryAddr = getWorkspaceRegistryAddress();
-      if (wsRegistryAddr) {
-        const defaultSlug = getDefaultWorkspaceSlug();
-        const activeSlug =
-          (typeof localStorage !== "undefined" && localStorage.getItem("last_workspace_slug")) ||
-          localDB.workspaces?.[0]?.slug ||
-          defaultSlug;
-        scheduleWorkspaceCIDCommit(activeSlug, cid);
-      }
+    // Do not replace a newer local edit with the older snapshot that just finished uploading.
+    void saveSnapshotToIDB(
+      unchanged ? dbToSave : JSON.parse(JSON.stringify(getDBSnapshot())),
+      unchanged ? cid : undefined
+    );
+    if (unchanged && isAutoCommitOnChainEnabled()) {
+      const activeSlug =
+        localStorage.getItem("last_workspace_slug") || localDB.workspaces?.[0]?.slug || getDefaultWorkspaceSlug();
+      if (getWorkspaceRegistryAddress()) scheduleWorkspaceCIDCommit(activeSlug, cid);
     }
-
     return cid;
-  } catch (err) {
-    console.error("[DApp DB] IPFS upload lỗi:", err);
-    return null;
   } finally {
     isUploadingIPFS = false;
   }
@@ -1722,7 +1770,10 @@ export function commitWorkspaceCID(
   const key = `${slug}::${newCid}`;
   if (inFlightCommitPromise && inFlightCommitKey === key) return inFlightCommitPromise;
 
-  const run = commitWorkspaceCIDOnce(slug, newCid, options);
+  const run = commitWorkspaceCIDOnce(slug, newCid, options).catch((error) => {
+    console.warn("[DApp Chain] Workspace publication was not confirmed:", error);
+    return false;
+  });
   inFlightCommitKey = key;
   inFlightCommitPromise = run;
   void run
@@ -1746,10 +1797,17 @@ async function commitWorkspaceCIDOnce(
 
   // CID này đã nằm on-chain ⇒ không gửi lại. Đây là lớp chặn cuối cùng cho các
   // luồng gọi trực tiếp (ví dụ đoạn tự đồng bộ trong routes.ts).
-  if (!options?.force && readCommittedWorkspaceCid(slug) === newCid) {
+  const current = decodeAbiWorkspace(await directRpcRead(wsRegistryAddr, abiEncodeGetWorkspace(slug), 5000));
+  if (!current) return false;
+  const expectedCid = readCommittedWorkspaceCid(slug);
+  if (current.ipfsCID === newCid) {
+    storeCommittedWorkspaceCid(slug, newCid);
     console.log(`[DApp Chain] Bỏ qua updateWorkspaceCID("${slug}") — CID "${newCid}" đã có trên chain.`);
     return true;
   }
+  // A cached base different from the shared base means another device wrote.
+  // Force opens signing again; it never authorises overwriting a conflict.
+  if (expectedCid !== null && current.ipfsCID !== expectedCid) return false;
 
   const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
   const preferredAddr = currentUserAddress || getStoredWalletAddress();
@@ -1763,7 +1821,8 @@ async function commitWorkspaceCIDOnce(
 
   // Chỉ ví thật sự có trong Crypto Vault mới ký được. Nếu địa chỉ đang lưu không còn trong Vault
   // (ví bị xoá/đổi) thì tự chuyển sang ví có trong Vault, tránh lỗi "Wallet not found".
-  const userAddr = (await resolveVaultSigningAddress(preferredAddr)) || preferredAddr;
+  const userAddr = await assertVaultSigningAddress(preferredAddr);
+  if (userAddr.toLowerCase() !== preferredAddr.toLowerCase()) return false;
 
   const signingSessionReady = isSigningSessionReady(userAddr);
   if (options?.force) userDeclinedVaultUnlock = false;
@@ -1800,8 +1859,8 @@ async function commitWorkspaceCIDOnce(
       {
         from: userAddr,
         to: wsRegistryAddr,
-        abiData: [UPDATE_WORKSPACE_CID_ABI],
-        functionName: "updateWorkspaceCID",
+        abiData: [UPDATE_WORKSPACE_CID_IF_MATCHES_ABI],
+        functionName: "updateWorkspaceCIDIfMatches",
         feeType: "sc",
         amount: "0",
         value: "0",
@@ -1809,6 +1868,7 @@ async function commitWorkspaceCIDOnce(
         type: "transaction",
         inputArray: [
           { name: "slug", type: "string", value: slug },
+          { name: "expectedOldCid", type: "string", value: current.ipfsCID },
           { name: "newCid", type: "string", value: newCid },
         ],
         isReadOnly: false,
@@ -1819,8 +1879,10 @@ async function commitWorkspaceCIDOnce(
       // Chưa có phiên ký → phải chờ người dùng nhập mật khẩu; SDK chỉ chờ Vault 30s/request nên
       // lần đầu thường timeout trong khi hộp thoại vẫn mở, ta chờ Vault mở khoá rồi ký lại.
       // Đã có phiên ký → bridge ký bằng private key đã cache trong RAM nên chỉ cần 1 lần.
-      { maxAttempts: signingSessionReady ? 1 : 2 }
+      { maxAttempts: 1 }
     );
+    const confirmed = decodeAbiWorkspace(await directRpcRead(wsRegistryAddr, abiEncodeGetWorkspace(slug), 5000));
+    if (confirmed?.ipfsCID !== newCid) return false;
     console.log(`[DApp Chain] ✅ updateWorkspaceCID thành công qua ví người dùng!`);
     userDeclinedVaultUnlock = false;
 
@@ -1834,24 +1896,6 @@ async function commitWorkspaceCIDOnce(
     } catch {}
 
     // Đồng bộ dọn dẹp on-chain cho các thành viên trong removed_members nếu role on-chain vẫn > 0
-    if (localDB.removed_members?.[slug] && Array.isArray(localDB.removed_members[slug])) {
-      void (async () => {
-        for (const rawIdent of localDB.removed_members[slug]) {
-          const targetEth = extractEthAddress(rawIdent);
-          if (targetEth && targetEth.toLowerCase() !== userAddr.toLowerCase()) {
-            try {
-              const role = await fetchMemberRoleOnChain(slug, targetEth);
-              if (role > 0) {
-                console.log(`[DApp Chain] Tự động đồng bộ xóa on-chain cho thành viên tồn đọng: ${targetEth}`);
-                await removeWorkspaceMemberOnChain(slug, targetEth, userAddr);
-              }
-            } catch (syncErr) {
-              console.warn(`[DApp Chain] Không thể đồng bộ xóa on-chain cho ${targetEth}:`, syncErr);
-            }
-          }
-        }
-      })();
-    }
 
     return true;
   } catch (bridgeErr) {
@@ -1873,194 +1917,106 @@ async function commitWorkspaceCIDOnce(
   }
 }
 
-export async function joinWorkspaceOnChain(slug: string, memberWallet?: string): Promise<boolean> {
-  const wsRegistryAddr = getWorkspaceRegistryAddress();
-  if (!wsRegistryAddr || !slug) return false;
-
-  const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
-  const preferredAddr = memberWallet || currentUserAddress || getStoredWalletAddress();
-  // Chỉ ví thật sự có trong Crypto Vault mới ký được → nếu địa chỉ đang lưu không còn trong
-  // Vault thì tự chuyển sang ví có trong Vault (tránh lỗi "Wallet not found" khi join).
-  const userAddr = (await resolveVaultSigningAddress(preferredAddr)) || preferredAddr;
-
-  if (!bridge || !userAddr) {
-    console.log(`[DApp Chain] Chưa kết nối ví. Bỏ qua ghi on-chain joinWorkspace.`);
-    return false;
-  }
-
-  const cleanAddr = userAddr.toLowerCase();
-  // Ghi nhớ ví ĐANG KÝ THỰC TẾ (đã đối chiếu Crypto Vault) — không dùng lại địa chỉ cũ
-  // trong `memberWallet` vì địa chỉ đó có thể không còn trong Vault nên không ký được.
-  currentUserAddress = userAddr;
-  // If the user is actively joining on-chain, un-stale their address from removed_members!
-  const ws = (localDB.workspaces || []).find((w: any) => w.slug === slug || w.id === slug);
-  const targetKeys = Array.from(new Set([slug, ws?.slug, ws?.id].filter(Boolean)));
-  for (const k of targetKeys) {
-    if (localDB.removed_members?.[k]) {
-      localDB.removed_members[k] = localDB.removed_members[k].filter(
-        (x: string) => String(x).toLowerCase().trim() !== cleanAddr
-      );
-    }
-  }
+/** Only a verified postcondition counts as a completed membership write. */
+async function writeWorkspaceMembership(slug: string, member: string, desiredRole: number | null, signer?: string): Promise<boolean> {
+  const registry = getWorkspaceRegistryAddress();
+  const bridge = getFiaiSDK();
+  if (!registry || !bridge || !slug || !/^0x[a-f0-9]{40}$/i.test(member)) return false;
+  const from = await assertVaultSigningAddress(signer || member);
+  if (signer && from.toLowerCase() !== signer.toLowerCase()) throw new Error("Signing wallet changed. Select the intended wallet again.");
+  const before = await fetchMemberRoleOnChain(slug, member);
+  if (before < 0) throw new Error("Unable to verify the current membership. Try again later.");
+  const matches = (role: number) => desiredRole === null ? [1, 2, 3].includes(role) : role === desiredRole;
+  if (matches(before)) return true;
+  const fn = desiredRole === null ? "joinWorkspace" : desiredRole === 0 ? "removeMember" : "addMember";
+  const abi = desiredRole === null ? JOIN_WORKSPACE_ABI : desiredRole === 0 ? REMOVE_MEMBER_ABI : ADD_MEMBER_ABI;
+  let sendError: unknown = null;
   try {
-    localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-  } catch {}
-
-  const baseTxParams: any = {
-    from: userAddr,
-    to: wsRegistryAddr,
-    abiData: [JOIN_WORKSPACE_ABI],
-    functionName: "joinWorkspace",
-    feeType: "sc",
-    amount: "0",
-    value: "0",
-    gas: getContractGas(),
-    type: "transaction",
-    inputArray: [{ name: "slug", type: "string", value: slug }],
-    isReadOnly: false,
-    bundleId: "",
-  };
-
-  const blsKey = getBlsPrivateKey();
-  let firstErr: any = null;
-
-  // Try 1: with blsPrivateKey if configured
-  if (blsKey) {
-    try {
-      console.log(
-        `[DApp Chain] Đang gửi transaction joinWorkspace("${slug}") qua ví (${userAddr}) kèm blsPrivateKey...`
-      );
-      await signTransactionWithUnlockRetry(bridge, { ...baseTxParams, blsPrivateKey: blsKey }, "joinWorkspace");
-      console.log(`[DApp Chain] ✅ joinWorkspace thành công qua ví người dùng: ${slug} (${userAddr})`);
-      invalidateWorkspaceMembersOnChainCache(slug);
-      return true;
-    } catch (err: any) {
-      firstErr = err;
-      const errMsg = String(err?.message || err);
-      if (/already/i.test(errMsg) || /member/i.test(errMsg)) {
-        console.log(`[DApp Chain] Đã là thành viên on-chain: ${slug} (${userAddr})`);
-        invalidateWorkspaceMembersOnChainCache(slug);
-        return true;
-      }
-      console.warn(`[DApp Chain] joinWorkspace với blsPrivateKey thất bại, thử lại dùng khóa riêng của ví:`, err);
-    }
-  }
-
-  // Try 2: directly with wallet's own private key from vault (no blsPrivateKey override)
-  try {
-    console.log(
-      `[DApp Chain] Đang gửi transaction joinWorkspace("${slug}") qua ví (${userAddr}) dùng khóa riêng của ví...`
-    );
-    await signTransactionWithUnlockRetry(bridge, baseTxParams, "joinWorkspace");
-    console.log(`[DApp Chain] ✅ joinWorkspace thành công qua ví người dùng: ${slug} (${userAddr})`);
-    invalidateWorkspaceMembersOnChainCache(slug);
-    return true;
-  } catch (err: any) {
-    const errMsg = String(err?.message || err);
-    if (/already/i.test(errMsg) || /member/i.test(errMsg)) {
-      console.log(`[DApp Chain] Đã là thành viên on-chain: ${slug} (${userAddr})`);
-      invalidateWorkspaceMembersOnChainCache(slug);
-      return true;
-    }
-    console.warn(`[DApp Chain] joinWorkspace on-chain thất bại:`, err || firstErr);
-    return false;
-  }
+    await signTransactionWithUnlockRetry(bridge, {
+      from, to: registry, abiData: [abi], functionName: fn, feeType: "sc", amount: "0", value: "0", gas: getContractGas(), type: "transaction",
+      inputArray: [
+        { name: "slug", type: "string", value: slug },
+        ...(desiredRole === null ? [] : [{ name: "member", type: "address", value: member }]),
+        ...(desiredRole !== null && desiredRole > 0 ? [{ name: "role", type: "uint8", value: String(desiredRole) }] : []),
+      ], isReadOnly: false, bundleId: "", ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
+    }, fn, { maxAttempts: 1 });
+  } catch (error) { sendError = error; }
+  // Account lastHash or an error containing "member" is not proof of success.
+  const after = await fetchMemberRoleOnChain(slug, member);
+  if (matches(after)) { invalidateWorkspaceMembersOnChainCache(slug); return true; }
+  if (sendError) throw sendError;
+  throw new Error("The requested membership change has not been confirmed. Check the wallet history before retrying.");
 }
 
-export async function removeWorkspaceMemberOnChain(
-  slug: string,
-  memberAddress: string,
-  adminWallet?: string
-): Promise<boolean> {
-  const wsRegistryAddr = getWorkspaceRegistryAddress();
-  if (!wsRegistryAddr || !slug || !memberAddress) return false;
+export async function canManageWorkspaceOnChain(slug: string, signer: string): Promise<boolean> {
+  const role = await fetchMemberRoleOnChain(slug, signer);
+  if (role < 0) throw new Error("Unable to verify workspace permissions.");
+  if (role === 2 || role === 3) return true;
+  const registry = getWorkspaceRegistryAddress();
+  if (!registry) throw new Error("Workspace registry is not configured.");
+  // Selector verified with ethers.id("operator()").slice(0, 10).
+  const raw = await directRpcRead(registry, "0x570ca735", 4000);
+  if (!/^0x[0-9a-f]{64}$/i.test(raw)) throw new Error("Invalid workspace operator response.");
+  return ("0x" + raw.slice(-40)).toLowerCase() === signer.toLowerCase();
+}
 
-  const bridge = typeof window !== "undefined" ? (window as any).fiaiSDK : null;
-  const preferredAddr = adminWallet || currentUserAddress || getStoredWalletAddress();
-  // Tương tự join: địa chỉ ký phải tồn tại trong Crypto Vault, nếu không sẽ lỗi "Wallet not found".
-  const userAddr = (await resolveVaultSigningAddress(preferredAddr)) || preferredAddr;
+export async function joinWorkspaceOnChain(slug: string, memberWallet?: string): Promise<boolean> {
+  const member = memberWallet || currentUserAddress || getStoredWalletAddress();
+  if (!member) return false;
+  return writeWorkspaceMembership(slug, member, null, member);
+}
 
-  if (!bridge || !userAddr) {
-    console.log(`[DApp Chain] Chưa kết nối ví. Bỏ qua ghi on-chain removeMember.`);
-    return false;
-  }
+export async function removeWorkspaceMemberOnChain(slug: string, memberAddress: string, adminWallet?: string): Promise<boolean> {
+  const admin = adminWallet || currentUserAddress || getStoredWalletAddress();
+  if (!admin) return false;
+  if (!await canManageWorkspaceOnChain(slug, admin)) throw new Error("Only a workspace administrator can remove a member.");
+  return writeWorkspaceMembership(slug, memberAddress, 0, admin);
+}
 
-  // Pre-check: if member is already Role.None (0) on-chain, treat as success
+export async function setWorkspaceMemberRoleOnChain(slug: string, memberAddress: string, planeRole: number, adminWallet: string): Promise<boolean> {
+  if (![5, 10, 15, 20].includes(planeRole)) throw new Error("Invalid workspace role.");
+  if (!await canManageWorkspaceOnChain(slug, adminWallet)) throw new Error("Only a workspace administrator can change member roles.");
+  return writeWorkspaceMembership(slug, memberAddress, mapPlaneRoleToContractRole(planeRole), adminWallet);
+}
+
+export async function readWorkspaceWalletInvitation(slug: string, wallet: string): Promise<{ role: number; expiresAt: number }> {
+  const calldata = "0xd1ab7cb1" + abiEncodeGetMemberRole(slug, wallet).slice(10);
+  const raw = await directRpcRead(getWorkspaceRegistryAddress(), calldata, 5000);
+  if (!/^0x[0-9a-f]{128}$/i.test(raw)) throw new Error("Chưa đọc được trạng thái lời mời của ví.");
+  return { role: Number(BigInt("0x" + raw.slice(2, 66))), expiresAt: Number(BigInt("0x" + raw.slice(66, 130))) };
+}
+
+export async function writeWorkspaceWalletInvitation(slug: string, wallet: string, planeRole: number, expiresAt: number, adminWallet: string, revoke = false): Promise<boolean> {
+  if (!/^0x[a-f0-9]{40}$/i.test(wallet) || /^0x0{40}$/i.test(wallet)) throw new Error("Ví người nhận không hợp lệ.");
+  if (![5, 10, 15, 20].includes(planeRole) || (!revoke && (!Number.isSafeInteger(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)))) throw new Error("Quyền hoặc hạn dùng của lời mời không hợp lệ.");
+  const signer = await assertVaultSigningAddress(adminWallet);
+  if (signer.toLowerCase() !== adminWallet.toLowerCase()) throw new Error("Ví ký đã thay đổi. Hãy chọn lại ví.");
+  if (!await canManageWorkspaceOnChain(slug, signer)) throw new Error("Bạn chưa có quyền quản lý lời mời.");
+  const version = await directRpcRead(getWorkspaceRegistryAddress(), "0x7a64d5e0", 5000).catch(() => null);
+  if (!version || !/^0x[0-9a-f]{64}$/i.test(version) || BigInt(version) < 2n) throw new Error("Contract hiện tại chưa hỗ trợ lời mời ràng buộc ví. Cần triển khai bản contract đã kiểm thử trước khi cấp lời mời này.");
+  const role = mapPlaneRoleToContractRole(planeRole);
+  const current = await readWorkspaceWalletInvitation(slug, wallet);
+  if (revoke ? current.role === 0 : current.role === role && current.expiresAt === expiresAt) return true;
+  const fn = revoke ? "revokeInvitation" : "inviteMember";
+  const inputs = [
+    { internalType: "string", name: "slug", type: "string" },
+    { internalType: "address", name: "member", type: "address" },
+    ...(!revoke ? [{ internalType: "uint8", name: "role", type: "uint8" }, { internalType: "uint256", name: "expiresAt", type: "uint256" }] : []),
+  ];
+  let sendError: unknown;
   try {
-    const roleCalldata = abiEncodeGetMemberRole(slug, memberAddress);
-    const roleHex = await directRpcRead(wsRegistryAddr, roleCalldata, 3000);
-    const currentRole = decodeAbiUint8(roleHex);
-    if (currentRole === 0) {
-      console.log(`[DApp Chain] Thành viên ${memberAddress} đã có role = 0 (Role.None) trên contract của ${slug}.`);
-      invalidateWorkspaceMembersOnChainCache(slug);
-      return true;
-    }
-  } catch {
-    // continue to attempt transaction
-  }
-
-  const baseTxParams: any = {
-    from: userAddr,
-    to: wsRegistryAddr,
-    abiData: [REMOVE_MEMBER_ABI],
-    functionName: "removeMember",
-    feeType: "sc",
-    amount: "0",
-    value: "0",
-    gas: getContractGas(),
-    type: "transaction",
-    inputArray: [
-      { name: "slug", type: "string", value: slug },
-      { name: "member", type: "address", value: memberAddress },
-    ],
-    isReadOnly: false,
-    bundleId: "",
-  };
-
-  const blsKey = getBlsPrivateKey();
-  let firstErr: any = null;
-
-  // Try 1: with blsPrivateKey if configured
-  if (blsKey) {
-    try {
-      console.log(
-        `[DApp Chain] Đang gửi transaction removeMember("${slug}", "${memberAddress}") qua ví Admin (${userAddr}) kèm blsPrivateKey...`
-      );
-      await signTransactionWithUnlockRetry(bridge, { ...baseTxParams, blsPrivateKey: blsKey }, "removeMember");
-      console.log(`[DApp Chain] ✅ removeMember thành công qua ví Admin: ${memberAddress} khỏi ${slug}`);
-      invalidateWorkspaceMembersOnChainCache(slug);
-      return true;
-    } catch (err: any) {
-      firstErr = err;
-      const errMsg = String(err?.message || err);
-      if (/not\s*member/i.test(errMsg) || /already/i.test(errMsg) || /none/i.test(errMsg)) {
-        console.log(`[DApp Chain] Đã không còn là thành viên on-chain: ${slug} (${memberAddress})`);
-        invalidateWorkspaceMembersOnChainCache(slug);
-        return true;
-      }
-      console.warn(`[DApp Chain] removeMember với blsPrivateKey thất bại, thử lại dùng khóa riêng của ví Admin:`, err);
-    }
-  }
-
-  // Try 2: directly with wallet's own private key from vault (no blsPrivateKey override)
-  try {
-    console.log(
-      `[DApp Chain] Đang gửi transaction removeMember("${slug}", "${memberAddress}") qua ví Admin (${userAddr}) dùng khóa riêng của ví...`
-    );
-    await signTransactionWithUnlockRetry(bridge, baseTxParams, "removeMember");
-    console.log(`[DApp Chain] ✅ removeMember thành công qua ví Admin: ${memberAddress} khỏi ${slug}`);
-    invalidateWorkspaceMembersOnChainCache(slug);
-    return true;
-  } catch (err: any) {
-    const errMsg = String(err?.message || err);
-    if (/not\s*member/i.test(errMsg) || /already/i.test(errMsg) || /none/i.test(errMsg)) {
-      console.log(`[DApp Chain] Đã không còn là thành viên on-chain: ${slug} (${memberAddress})`);
-      invalidateWorkspaceMembersOnChainCache(slug);
-      return true;
-    }
-    console.warn(`[DApp Chain] removeMember on-chain thất bại:`, err || firstErr);
-    return false;
-  }
+    await signTransactionWithUnlockRetry(getFiaiSDK(), {
+      from: signer, to: getWorkspaceRegistryAddress(), abiData: [{ type: "function", name: fn, inputs, outputs: [], stateMutability: "nonpayable" }],
+      functionName: fn, feeType: "sc", amount: "0", value: "0", gas: getContractGas(), type: "transaction",
+      // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
+      inputArray: inputs.map((input) => ({ ...input, value: ({ slug, member: wallet, role: String(role), expiresAt: String(expiresAt) } as Record<string, string>)[input.name] })),
+      isReadOnly: false, bundleId: "", ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
+    }, fn, { maxAttempts: 1 });
+  } catch (error) { sendError = error; }
+  const confirmed = await readWorkspaceWalletInvitation(slug, wallet);
+  if (revoke ? confirmed.role === 0 : confirmed.role === role && confirmed.expiresAt === expiresAt) return true;
+  if (sendError) throw sendError;
+  throw new Error("Chưa xác nhận được thay đổi lời mời. Hãy kiểm tra lịch sử ví rồi thử lại.");
 }
 
 export function scheduleIPFSUpload(): void {
@@ -2114,12 +2070,14 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000);
+      // oxlint-disable-next-line no-await-in-loop -- Try gateways in configured priority order and stop at the first valid response.
       const res = await fetch(gw, {
         signal: controller.signal,
         headers: { Accept: "application/json" },
       });
       clearTimeout(timeoutId);
       if (res.ok) {
+        // oxlint-disable-next-line no-await-in-loop -- Try gateways in configured priority order and stop at the first valid response.
         const text = await res.text();
         if (text && text.trim().startsWith("{")) {
           const json = JSON.parse(text);
@@ -2274,7 +2232,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     } else {
       if (u.theme) {
         localDB.users[existingIndex].theme = {
-          ...(localDB.users[existingIndex].theme || {}),
+          ...localDB.users[existingIndex].theme,
           ...u.theme,
         };
       }
@@ -2774,7 +2732,6 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     localDB.instance.instance_name = "Plane Instance";
   }
 
-  isDAppDBInitialized = true;
   try {
     const snapshot = JSON.stringify(localDB);
     localStorage.setItem("plane_dapp_local_db", snapshot);
@@ -2880,7 +2837,6 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
         if (parsed && typeof parsed === "object" && (parsed.workspaces?.length > 0 || parsed.users?.length > 0)) {
           applyOffchainDB(parsed);
           hadCachedDB = true;
-          isDAppDBInitialized = true;
           console.log("[DApp DB] Nạp DB tức thì từ cache cục bộ thành công (0ms).");
         }
       }
@@ -2892,7 +2848,6 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
         if (idbBackup?.data && (idbBackup.data.workspaces?.length > 0 || idbBackup.data.users?.length > 0)) {
           applyOffchainDB(idbBackup.data);
           hadCachedDB = true;
-          isDAppDBInitialized = true;
           if (idbBackup.cid) lastUploadedCID = idbBackup.cid;
           console.log("[DApp DB] Nạp DB tức thì từ IndexedDB thành công.");
         }
@@ -2945,7 +2900,6 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
         localStorage.setItem("plane_dapp_ipfs_cid_last_valid", candidateCid);
         void saveCidToIDB(candidateCid);
         void saveSnapshotToIDB(ipfsDB, candidateCid);
-        isDAppDBInitialized = true;
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("plane_dapp_db_reloaded", { detail: { cid: candidateCid } }));
         }
@@ -2954,11 +2908,9 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
     }
 
     if (hadCachedDB) {
-      isDAppDBInitialized = true;
       return { status: "OK", cid: curCid || candidateCid || undefined };
     }
 
-    isDAppDBInitialized = true;
     return { status: "OK" };
   }
 
@@ -2986,7 +2938,6 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
   try {
     const isMock = getEnvVar("VITE_MOCK_FIAI") === "true";
     if (isMock) {
-      isDAppDBInitialized = true;
       return { status: "OK" };
     }
 
@@ -3011,7 +2962,7 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
         const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
         const urlSlug = urlParams?.get("slug") || "";
         const pathnameSlug =
-          typeof window !== "undefined" ? window.location.pathname.split("/").filter(Boolean)[0] : "";
+          typeof window !== "undefined" ? window.location.pathname.split("/").find(Boolean) : "";
         const cleanPathSlug =
           pathnameSlug &&
           !["workspace-invitations", "profile", "create-workspace", "onboarding", "invitations"].includes(pathnameSlug)
@@ -3026,6 +2977,7 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
         for (const slug of slugsToCheck) {
           try {
             const wsInfoCalldata = abiEncodeGetWorkspace(slug);
+            // oxlint-disable-next-line no-await-in-loop -- Hydrate workspace records in order so each merge observes the preceding state.
             const wsInfoRaw = await directRpcRead(wsRegistryAddr, wsInfoCalldata, 5000);
             const wsInfo = decodeAbiWorkspace(wsInfoRaw);
             if (wsInfo && wsInfo.name) {
@@ -3138,18 +3090,15 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
         void saveCidToIDB(loadedCID);
         void saveSnapshotToIDB(loadedDB, loadedCID);
       }
-      isDAppDBInitialized = true;
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("plane_dapp_db_reloaded", { detail: { cid: loadedCID } }));
       }
       return { status: "OK", cid: loadedCID };
     }
 
-    isDAppDBInitialized = true;
     return { status: "OK" };
   } catch (err) {
     console.error("Failed to load DApp DB from chain / IPFS:", err);
-    isDAppDBInitialized = true;
     return { status: "OK" };
   }
 }
@@ -3162,7 +3111,6 @@ export async function initDAppDB(): Promise<{ status: string; cid?: string; ipfs
         console.warn(
           `[DApp DB] Quá thời gian kết nối (${timeoutMs / 1000}s) khi đồng bộ online, tự động dùng dữ liệu offline cục bộ.`
         );
-        isDAppDBInitialized = true;
         resolve({ status: "OK" });
       } else {
         reject(
@@ -3178,7 +3126,8 @@ export async function initDAppDB(): Promise<{ status: string; cid?: string; ipfs
 export type DAppSyncWarningCode =
   | "WORKSPACE_REGISTRY"
   | "WORKSPACE_NOT_MEMBER"
-  | "WORKSPACE_NOT_OWNER";
+  | "WORKSPACE_NOT_OWNER"
+  | "LOCAL_CHANGES_PENDING";
 
 export type DAppSyncWarning = {
   code: DAppSyncWarningCode;
@@ -3197,7 +3146,24 @@ export type DAppSyncResult = {
   warnings: DAppSyncWarning[];
 };
 
-export async function syncDAppDBToChain(forcedWallet?: string): Promise<DAppSyncResult> {
+let manualSyncFlight: { context: string; promise: Promise<DAppSyncResult> } | null = null;
+
+export function syncDAppDBToChain(forcedWallet?: string): Promise<DAppSyncResult> {
+  const context = uploadContext() + String(forcedWallet || "").toLowerCase();
+  if (manualSyncFlight) {
+    if (manualSyncFlight.context === context) return manualSyncFlight.promise;
+    return Promise.reject(
+      new SnapshotUploadError("CONTEXT_CHANGED", "Một lượt đồng bộ khác đang xử lý. Hãy chờ hoàn tất rồi thử lại.")
+    );
+  }
+  const promise = runManualDAppSync(forcedWallet).finally(() => {
+    if (manualSyncFlight?.promise === promise) manualSyncFlight = null;
+  });
+  manualSyncFlight = { context, promise };
+  return promise;
+}
+
+async function runManualDAppSync(forcedWallet?: string): Promise<DAppSyncResult> {
   const requestedWallet = forcedWallet || getStoredWalletAddress();
   if (!requestedWallet) throw new Error("Chưa có ví. Hãy mở “Trung tâm ví” để thêm ví rồi thử lại.");
   // PREFLIGHT BẮT BUỘC: chỉ ký bằng ví thật sự có trong Crypto Vault. Nếu Vault rỗng / không đọc
@@ -3226,15 +3192,12 @@ export async function syncDAppDBToChain(forcedWallet?: string): Promise<DAppSync
   // còn phần dữ liệu chưa lên chain (lỗi CHAIN-02/CHAIN-03).
   const syncWarnings: DAppSyncWarning[] = [];
 
-  let cid = isDirtyState ? null : getLastUploadedCID();
-  if (!cid) {
-    if (ipfsDebounceTimer) {
-      clearTimeout(ipfsDebounceTimer);
-      ipfsDebounceTimer = null;
-    }
-    cid = await uploadToIPFS(true);
-  }
-  if (!cid) throw new Error("Không lưu được dữ liệu lên kho lưu trữ. Vui lòng thử lại.");
+  if (ipfsDebounceTimer) { clearTimeout(ipfsDebounceTimer); ipfsDebounceTimer = null; }
+  const syncContext = uploadContext();
+  const cid = await queueIPFSUpload(true);
+  if (!cid) throw new SnapshotUploadError("SERVICE", "Chưa lưu được dữ liệu. Hãy thử lại.");
+  const syncedSnapshot = lastUploadedDataHash;
+  if (syncContext !== uploadContext()) throw new SnapshotUploadError("CONTEXT_CHANGED", "Phiên làm việc đã thay đổi. Hãy đồng bộ lại.");
 
   // `uploadToIPFS` ở trên đã hẹn ghi ngầm CID này on-chain. Ta đang ghi trực tiếp ngay bây giờ
   // nên huỷ lịch hẹn để không gửi trùng 1 giao dịch (mỗi giao dịch là 1 lần xác nhận ký ví).
@@ -3398,41 +3361,10 @@ export async function syncDAppDBToChain(forcedWallet?: string): Promise<DAppSync
 
       if (wsExistsOnChain) {
         if (canUpdateWorkspace) {
-          await signTransactionWithUnlockRetry(
-            bridge,
-            {
-              from: currentUserAddress as string,
-              to: wsRegistryAddr,
-              abiData: [UPDATE_WORKSPACE_CID_ABI],
-              functionName: "updateWorkspaceCID",
-              feeType: "sc",
-              amount: "0",
-              value: "0",
-              gas: contractGas,
-              type: "transaction",
-              inputArray: [
-                { name: "slug", type: "string", value: targetSlug },
-                { name: "newCid", type: "string", value: cid },
-              ],
-              isReadOnly: false,
-              bundleId: "",
-              ...(blsPrivateKey ? { blsPrivateKey } : {}),
-            },
-            "updateWorkspaceCID"
-          )
-            .then(() => {
-              syncedWorkspaceSlug = targetSlug;
-              return targetSlug;
-            })
-            .catch((updateErr: any) => {
-              console.warn("[DApp Sync] updateWorkspaceCID failed:", updateErr);
-              syncWarnings.push({
-                code: "WORKSPACE_REGISTRY",
-                message:
-                  "Chưa cập nhật được thông tin workspace trên hệ thống lưu trữ. " +
-                  "Dữ liệu công việc vẫn an toàn trên máy bạn và sẽ được gửi lại ở lần đồng bộ sau.",
-              });
-            });
+          const committed = await commitWorkspaceCID(targetSlug, cid, { force: true });
+          if (committed) syncedWorkspaceSlug = targetSlug;
+          else syncWarnings.push({ code: "WORKSPACE_REGISTRY", message: "Workspace publication was not confirmed or conflicts with another device. Local data was retained." });
+
         } else {
           console.info(
             `[DApp Sync] Bỏ qua updateWorkspaceCID("${targetSlug}") vì ví ${currentUserAddress} không phải Member/Admin/Owner của workspace trên contract.`
@@ -3540,7 +3472,9 @@ export async function syncDAppDBToChain(forcedWallet?: string): Promise<DAppSync
   }
 
   baseCID = cid;
-  isDirtyState = false;
+  const hasNewEdits = syncedSnapshot !== JSON.stringify(getDBSnapshot());
+  setDirtyState(hasNewEdits);
+  if (hasNewEdits) syncWarnings.push({ code: "LOCAL_CHANGES_PENDING", message: "Bản đã xác nhận đã được lưu. Có thay đổi mới trên máy đang chờ đồng bộ tiếp." });
 
   return {
     ok: syncWarnings.length === 0,

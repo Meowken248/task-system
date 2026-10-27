@@ -44,9 +44,9 @@ function WorkspaceInvitationPage() {
   const { data: currentUser } = useUser();
 
   const { data: invitationDetail, error } = useSWR(
-    invitation_id && slug && WORKSPACE_INVITATION(invitation_id.toString()),
+    invitation_id && slug && [WORKSPACE_INVITATION(invitation_id.toString()), slug, token],
     invitation_id && slug
-      ? () => workspaceService.getWorkspaceInvitation(slug.toString(), invitation_id.toString())
+      ? () => workspaceService.getWorkspaceInvitation(slug.toString(), invitation_id.toString(), token || undefined)
       : null
   );
 
@@ -71,7 +71,7 @@ function WorkspaceInvitationPage() {
   }, [invitationDetail?.accepted, isAccepting, isJoining, invitationDetail?.workspace?.slug, slug, currentUser?.id, isEmailMismatch]);
 
   const handleAccept = async () => {
-    if (!invitationDetail || isAccepting || isJoining) return;
+    if (!invitationDetail || isAccepting || isJoining || isEmailMismatch) return;
     setIsAccepting(true);
     try {
       setToast({

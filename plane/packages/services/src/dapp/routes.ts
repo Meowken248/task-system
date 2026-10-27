@@ -39,101 +39,75 @@ import {
   getWorkspaceRegistryAddress,
   WORKSPACE_REGISTRY_ADDRESS,
   CREATE_WORKSPACE_ABI,
-  ADD_MEMBER_ABI,
-  REMOVE_MEMBER_ABI,
-  mapPlaneRoleToContractRole,
   extractEthAddress,
   syncDAppRecord,
   getLastUploadedCID,
-  joinWorkspaceOnChain,
   removeWorkspaceMemberOnChain,
   scheduleWorkspaceCIDCommit,
   fetchWorkspaceMembersOnChain,
   fetchMemberRoleOnChain,
-  invalidateWorkspaceMembersOnChainCache,
+  assertVaultSigningAddress,
+  canManageWorkspaceOnChain,
+  setWorkspaceMemberRoleOnChain,
+  commitWorkspaceCID,
+  writeWorkspaceWalletInvitation,
 } from "./chain";
 import { sendWorkspaceInviteEmail, sendOtpEmail } from "./mail";
 import {
   findNonProjectAssignees as findNonProjectAssigneesPure,
   describeInvalidAssignees,
 } from "./assignee-validation";
+import {
+  INVITE_TOKEN_TTL_MS as INVITE_TOKEN_TTL_MS_SOURCE,
+  createInvitationToken,
+  decodeInvitationToken,
+  isInvitationTokenExpired,
+  type InvitationTokenClaims,
+} from "./invitation-tokens";
+
+import { respondToWorkspaceInvitation } from "./workspace-invitations";
+import { invitationLink, withInvitationLock } from "./invitation-policy";
+import { listWorkspaceMembers } from "./workspace-members";
+export { readWorkspaceSnapshotFromChain, recoverInvitationFromChainSnapshot, findLocalWorkspace, buildWorkspaceFromChainSnapshot, upsertWorkspaceMemberRecord } from "./workspace-invitations";
+const escapeCsv = (val: any): string => {
+          if (val === null || val === undefined) return '""';
+          const str = String(val).replace(/"/g, '""');
+          return `"${str}"`;
+        };
+
+const describeRelatedIssue = (relatedIssue: any) =>
+      relatedIssue?.project_detail?.identifier && relatedIssue?.sequence_id
+        ? `${relatedIssue.project_detail.identifier}-${relatedIssue.sequence_id}`
+        : relatedIssue?.name || "";
 
 export { ok, parseApiUrl };
 
+/** Re-exported for legacy callers — see `./invitation-tokens`. */
+export const INVITE_TOKEN_TTL_MS = INVITE_TOKEN_TTL_MS_SOURCE;
+
+/** Legacy helper (claims-shaped payload → token). Prefer `createInvitationToken`. */
 export function encodeInviteToken(data: any): string {
   try {
-    const json = JSON.stringify(data);
-    if (typeof Buffer !== "undefined") {
-      return `inv_${Buffer.from(json).toString("base64url")}`;
-    }
-    const b64 = btoa(unescape(encodeURIComponent(json)))
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
-    return `inv_${b64}`;
-  } catch {
-    return `tok-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  }
-}
-
-export function decodeInviteToken(token: string): any {
-  if (!token || !token.startsWith("inv_")) return null;
-  try {
-    const raw = token.slice(4).replace(/-/g, "+").replace(/_/g, "/");
-    const pad = raw.length % 4 === 0 ? "" : "=".repeat(4 - (raw.length % 4));
-    let json = "";
-    if (typeof Buffer !== "undefined") {
-      json = Buffer.from(raw + pad, "base64").toString("utf-8");
-    } else {
-      json = decodeURIComponent(escape(atob(raw + pad)));
-    }
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-/** Invitation links stay valid for 14 days (enterprise default, rotate by re-inviting). */
-export const INVITE_TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-
-/**
- * Creates an opaque, unguessable invitation token.
- *
- * This is a capability URL (industry standard for invite links): the token is
- * random, carries no claims, and is only accepted when it matches the stored
- * invitation record. It therefore cannot be forged into a new invitation, and
- * it cannot be used to "un-delete" an invitation (see RC-3/SEC-A).
- *
- * NOTE: `encodeInviteToken`/`decodeInviteToken` are kept only to resolve
- * legacy links that were already delivered by email.
- */
-export function generateInviteToken(): string {
-  const bytes = new Uint8Array(32);
-  const webCrypto = typeof crypto !== "undefined" ? crypto : undefined;
-  if (webCrypto?.getRandomValues) {
-    webCrypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  let b64 = "";
-  if (typeof Buffer !== "undefined") {
-    b64 = Buffer.from(bytes).toString("base64url");
-  } else {
-    let binary = "";
-    bytes.forEach((b) => {
-      binary += String.fromCharCode(b);
+    return createInvitationToken({
+      id: String(data?.id ?? ""),
+      workspaceSlug: String(data?.ws ?? data?.workspaceSlug ?? ""),
+      email: data?.email,
+      role: typeof data?.role === "number" ? data.role : null,
+      wallet: data?.wallet,
+      expiresAt: data?.exp ?? null,
     });
-    b64 = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  } catch {
+    return "";
   }
-  return `inv_${b64}`;
+}
+
+/** Decode the claims of an invitation link token (`null` for legacy opaque tokens). */
+export function decodeInviteToken(token: string): InvitationTokenClaims | null {
+  return decodeInvitationToken(token);
 }
 
 export function isInviteTokenExpired(inv: any): boolean {
-  const raw = inv?.token_expires_at || inv?.invite_expires_at;
-  if (!raw) return false; // legacy invitations predate expiry
-  const ts = new Date(raw).getTime();
-  if (Number.isNaN(ts)) return false;
-  return ts < Date.now();
+  return isInvitationTokenExpired(inv);
 }
 
 let lastLoadedPublicCid: string | null = null;
@@ -214,47 +188,6 @@ export function buildAssigneeValidationError(projectId: string, invalidIds: stri
     project: projectId,
     invalid_assignees: invalidIds,
   };
-}
-
-/**
- * Recover an invitation from the authoritative workspace snapshot pinned on-chain.
- *
- * Invitation links are opened on the invitee's browser, which has no local copy
- * of the admin's database. Instead of synthesising an invitation from the token
- * claims (which allowed forging/deleted-invite resurrection), we read the
- * workspace CID from the registry and look the invitation up in that snapshot.
- * If it is not there, the link is simply invalid.
- */
-export async function recoverInvitationFromChainSnapshot(
-  wsSlug: string,
-  invitationId: string,
-  token: string
-): Promise<any | null> {
-  try {
-    if (!wsSlug || (!invitationId && !token)) return null;
-    const registryAddress = getWorkspaceRegistryAddress();
-    if (!registryAddress) return null;
-    const raw = await directRpcRead(registryAddress, abiEncodeGetWorkspace(wsSlug), 5000);
-    const info = decodeAbiWorkspace(raw);
-    const cid = String(info?.ipfsCID || "").trim();
-    if (!cid) return null;
-
-    const snapshot = await fetchFromIPFS(cid);
-    const invitations: any[] = Array.isArray(snapshot?.invitations) ? snapshot.invitations : [];
-    const wsKey = String(wsSlug).toLowerCase().trim();
-    return (
-      invitations.find((inv: any) => {
-        const invWsKeys = getInvitationWorkspaceKeys(inv);
-        if (invWsKeys.length > 0 && !invWsKeys.includes(wsKey)) return false;
-        const idHit = Boolean(invitationId) && String(inv.id) === String(invitationId);
-        const tokenHit = Boolean(token) && String(inv.token) === String(token);
-        return idHit || tokenHit;
-      }) || null
-    );
-  } catch (err) {
-    console.warn("[DApp Routes] Unable to recover invitation from the on-chain snapshot:", err);
-    return null;
-  }
 }
 
 // ── Work item activity helpers ────────────────────────────────────────
@@ -591,10 +524,10 @@ const matchesCsvFilter = (rawValues: any, filterValue: string | null): boolean =
     .map((value) => decodeURIComponent(value).trim().toLowerCase())
     .filter(Boolean);
   if (expected.length === 0) return true;
-  const actualValues = (Array.isArray(rawValues) ? rawValues : [rawValues])
+  const actualValues = new Set((Array.isArray(rawValues) ? rawValues : [rawValues])
     .filter((value: any) => value !== null && value !== undefined)
-    .map((value) => String(value).toLowerCase().trim());
-  return expected.some((value) => actualValues.includes(value));
+    .map((value) => String(value).toLowerCase().trim()));
+  return expected.some((value) => actualValues.has(value));
 };
 
 /**
@@ -629,28 +562,36 @@ async function projectExistsInWorkspaceSnapshot(wsSlug: string, projectId: strin
 }
 
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
+  const management = url.match(/\/api\/workspaces\/([^/?#]+)\/(?:invitations|members)(?:\/|\?|$)/);
+  if (management && !/\/join\/?(?:\?|$)/.test(url) && ["post", "put", "patch", "delete"].includes(method)) {
+    return withInvitationLock(`management:${management[1]}`, () => handleRouteUnlocked(method, url, body));
+  }
+  return handleRouteUnlocked(method, url, body);
+}
+
+async function handleRouteUnlocked(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   syncCrossPortWorkspaces();
-  const activeUserId = getLoggedInUserId();
+  const routeSessionUserId = getLoggedInUserId();
   const loggedInEmail = typeof window !== "undefined"
     ? (sessionStorage.getItem("plane_dapp_auth_email") || localStorage.getItem("plane_dapp_auth_email"))
     : null;
-  const activeWallet = typeof window !== "undefined"
+  const routeSessionWallet = typeof window !== "undefined"
     ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))?.toLowerCase().trim()
     : null;
-  let activeUser: any = null;
+  let routeSessionUser: any = null;
   if (loggedInEmail) {
-    activeUser = (localDB.users || []).find((u: any) =>
+    routeSessionUser = (localDB.users || []).find((u: any) =>
       u.email?.toLowerCase().trim() === loggedInEmail.toLowerCase().trim()
     );
   }
-  if (!activeUser && activeUserId) {
-    activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId);
+  if (!routeSessionUser && routeSessionUserId) {
+    routeSessionUser = (localDB.users || []).find((u: any) => u.id === routeSessionUserId);
   }
-  if (!activeUser && (currentUserAddress || activeWallet)) {
-    const targetWallet = (currentUserAddress || activeWallet || "").toLowerCase().trim();
+  if (!routeSessionUser && (currentUserAddress || routeSessionWallet)) {
+    const targetWallet = (currentUserAddress || routeSessionWallet || "").toLowerCase().trim();
     if (targetWallet) {
-      activeUser = (localDB.users || []).find((u: any) =>
+      routeSessionUser = (localDB.users || []).find((u: any) =>
         u.id?.toLowerCase() === targetWallet ||
         u.metanode_wallet_address?.toLowerCase() === targetWallet ||
         u.wallet_address?.toLowerCase() === targetWallet ||
@@ -659,14 +600,29 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       );
     }
   }
-  if (!activeUser && activeUserId && loggedInEmail) {
-    activeUser = createUserObject(activeUserId, loggedInEmail);
+  if (!routeSessionUser && routeSessionUserId && loggedInEmail) {
+    routeSessionUser = createUserObject(routeSessionUserId, loggedInEmail);
     if (!localDB.users) localDB.users = [];
-    localDB.users.push(activeUser);
+    localDB.users.push(routeSessionUser);
     saveDB();
   }
-  if (!activeUser && (localDB.users || []).length === 1 && !loggedInEmail && !currentUserAddress && !activeWallet) {
-    activeUser = localDB.users[0];
+  if (!routeSessionUser && (localDB.users || []).length === 1 && !loggedInEmail && !currentUserAddress && !routeSessionWallet) {
+    routeSessionUser = localDB.users[0];
+  }
+
+  // Workspace management is authorised by the signing wallet's contract role,
+  // never an email, a local role, or a role supplied in the request body.
+  const managementRoute = url.match(/\/api\/workspaces\/([^/?#]+)\/(?:invitations|members)(?:\/|\?|$)/);
+  if (managementRoute && !/\/join\/?(?:\?|$)/.test(url) && ["post", "put", "patch", "delete"].includes(method)) {
+    if (!getLoggedInUserId()) return { status: 401, data: { code: "AUTH_REQUIRED", error: "Vui lòng đăng nhập." } };
+    try {
+      const requested = getStoredWalletAddress() || currentUserAddress;
+      const signer = await assertVaultSigningAddress(requested);
+      if (requested && signer.toLowerCase() !== requested.toLowerCase()) return { status: 409, data: { code: "SIGNING_WALLET_CHANGED", error: "Ví ký đã thay đổi. Hãy chọn lại ví rồi thực hiện lại." } };
+      if (!await canManageWorkspaceOnChain(decodeURIComponent(managementRoute[1]), signer)) return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Chỉ quản trị viên của không gian làm việc mới được thực hiện thao tác này." } };
+    } catch (error) {
+      return { status: 503, data: { code: "PERMISSION_UNAVAILABLE", error: error instanceof Error ? error.message : "Chưa kiểm tra được quyền quản trị. Hãy thử lại sau." } };
+    }
   }
 
 
@@ -681,11 +637,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const targetWsSlug = wsGuardMatch[1];
     const removedSet = getWorkspaceRemovedSet(targetWsSlug);
     if (removedSet.size > 0) {
-      const activeMail = (loggedInEmail || activeUser?.email || "").toLowerCase().trim();
-      const activeId = String(activeUserId || activeUser?.id || "").toLowerCase().trim();
+      const activeMail = (loggedInEmail || routeSessionUser?.email || "").toLowerCase().trim();
+      const activeId = String(routeSessionUserId || routeSessionUser?.id || "").toLowerCase().trim();
       const activeWallet = (
-        (activeUser as any)?.metanode_wallet_address ||
-        (activeUser as any)?.wallet_address ||
+        (routeSessionUser as any)?.metanode_wallet_address ||
+        (routeSessionUser as any)?.wallet_address ||
         (typeof window !== "undefined"
           ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))
           : null) ||
@@ -789,7 +745,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           if (rDate) resolvedMap[rDate] = (resolvedMap[rDate] || 0) + 1;
         }
       });
-      const allDates = Array.from(new Set([...Object.keys(createdMap), ...Object.keys(resolvedMap)])).sort();
+      const allDates = Array.from(new Set([...Object.keys(createdMap), ...Object.keys(resolvedMap)])).toSorted();
       const data = allDates.map((date) => ({
         key: date,
         name: date,
@@ -1134,6 +1090,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         const members = (localDB.members || []).filter(
           (m: any) => m.workspace === wsId || m.workspace_id === wsId
         );
+        // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
         return ok(members.map((m: any) => ({
           ...m,
           member: (localDB.users || []).find((u: any) => u.id === (m.member || m.member_id)) || m,
@@ -1206,6 +1163,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         const cancelledState = projectStates.find((s: any) => s.group === "cancelled") || projectStates[4] || backlogState;
 
         // Add state / created_at backfill and ensure valid state_id matching projectStates
+        // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
         const enrichedIssues = allIssues.map((issue: any, idx: number) => {
           let matchedState = projectStates.find(
             (s: any) => s.id === issue.state_id || s.id === issue.state || String(s.id) === String(issue.state_id) || String(s.id) === String(issue.state)
@@ -1403,8 +1361,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             : undefined,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          created_by: activeUserId || "user-1",
-          updated_by: activeUserId || "user-1",
+          created_by: routeSessionUserId || "user-1",
+          updated_by: routeSessionUserId || "user-1",
           inbox: null,
         };
         localDB["project-deploy-boards"].push(board);
@@ -1569,43 +1527,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       saveDB();
     }
 
-    // Auto-accept any pending invitations for this verified email
-    const cleanMail = email.toLowerCase().trim();
-    const pendingInvs = (localDB.invitations || []).filter(
-      (inv: any) => (inv.email || "").toLowerCase().trim() === cleanMail && !inv.accepted
-    );
-    for (const inv of pendingInvs) {
-      inv.accepted = true;
-      inv.responded_at = new Date().toISOString();
-      inv.updated_at = new Date().toISOString();
-      const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "fiai";
-      const ws = (localDB.workspaces || []).find((w: any) => w.slug === invWs || w.id === invWs);
-      const targetWsId = ws?.id || invWs;
-      if (!localDB.workspace_members) localDB.workspace_members = [];
-      const isAlready = localDB.workspace_members.some(
-        (m: any) => (m.workspace === invWs || m.workspace === targetWsId || m.workspace_id === invWs || m.workspace_id === targetWsId) &&
-          ((m.email || "").toLowerCase().trim() === cleanMail || m.member === user.id)
-      );
-      if (!isAlready) {
-        localDB.workspace_members.push({
-          id: `ws-member-${inv.id || Date.now()}`,
-          workspace: targetWsId,
-          workspace_id: targetWsId,
-          member: user.id,
-          email: cleanMail,
-          role: inv.role || 15,
-          is_active: true,
-          // Verification happens only when the chain confirms the role.
-          verified_on_chain: false,
-          chain_sync_pending: true,
-          created_at: new Date().toISOString(),
-        });
-      }
-    }
-    if (pendingInvs.length > 0) {
-      saveStoredInvitations(localDB.invitations);
-      saveDB();
-    }
+    // Membership requires explicit, confirmed acceptance.
 
     // Validate user's workspace access
     const myWorkspaces = getUserWorkspaces(user.id, user.email);
@@ -1685,43 +1607,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       saveDB();
     }
 
-    // Auto-accept any pending invitations for this verified email
-    const cleanMail = email.toLowerCase().trim();
-    const pendingInvs = (localDB.invitations || []).filter(
-      (inv: any) => (inv.email || "").toLowerCase().trim() === cleanMail && !inv.accepted
-    );
-    for (const inv of pendingInvs) {
-      inv.accepted = true;
-      inv.responded_at = new Date().toISOString();
-      inv.updated_at = new Date().toISOString();
-      const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "fiai";
-      const ws = (localDB.workspaces || []).find((w: any) => w.slug === invWs || w.id === invWs);
-      const targetWsId = ws?.id || invWs;
-      if (!localDB.workspace_members) localDB.workspace_members = [];
-      const isAlready = localDB.workspace_members.some(
-        (m: any) => (m.workspace === invWs || m.workspace === targetWsId || m.workspace_id === invWs || m.workspace_id === targetWsId) &&
-          ((m.email || "").toLowerCase().trim() === cleanMail || m.member === user.id)
-      );
-      if (!isAlready) {
-        localDB.workspace_members.push({
-          id: `ws-member-${inv.id || Date.now()}`,
-          workspace: targetWsId,
-          workspace_id: targetWsId,
-          member: user.id,
-          email: cleanMail,
-          role: inv.role || 15,
-          is_active: true,
-          // Verification happens only when the chain confirms the role.
-          verified_on_chain: false,
-          chain_sync_pending: true,
-          created_at: new Date().toISOString(),
-        });
-      }
-    }
-    if (pendingInvs.length > 0) {
-      saveStoredInvitations(localDB.invitations);
-      saveDB();
-    }
+    // Membership requires explicit, confirmed acceptance.
 
     // Validate user's workspace access
     const myWorkspaces = getUserWorkspaces(user.id, user.email);
@@ -1814,7 +1700,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   if (url.includes("/auth/forgot-password") || url.includes("/auth/set-password")) {
     const newPwd = body?.password || body?.new_password || "";
     const email = (body?.email || loggedInEmail || "").trim().toLowerCase();
-    const user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email) || activeUser;
+    const user = (localDB.users || []).find((u: any) => u.email?.toLowerCase() === email) || routeSessionUser;
     if (newPwd && email) {
       const newHash = await hashPassword(newPwd);
       setStoredCredential(email, newHash);
@@ -1860,6 +1746,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   if (url.includes("/api/instances/configurations")) return ok([]);
 
   if (url.includes("/api/instances/workspaces") && method === "get") {
+    // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
     const wsResults = (localDB.workspaces || []).map((w: any) => ({
       ...w,
       total_members: getWorkspaceMemberCount(w.slug, w.id),
@@ -1961,20 +1848,20 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
   if (url.includes("/api/instances/admins/me")) {
-    if (!isLoggedIn() || !activeUser) {
+    if (!isLoggedIn() || !routeSessionUser) {
       return { data: { error: "not authenticated" }, status: 401 };
     }
     if (method === "patch" || method === "put" || method === "post") {
-      Object.assign(activeUser, body);
+      Object.assign(routeSessionUser, body);
       saveDB();
     }
-    return ok(activeUser);
+    return ok(routeSessionUser);
   }
 
   if (url.match(/\/api\/instances\/admins\/?$/) || url.match(/\/api\/instances\/admins\/\?/)) {
     let users = localDB.users || [];
-    if (users.length === 0 && (loggedInEmail || activeUserId)) {
-      const fallbackUser = createUserObject(activeUserId || `admin-${Date.now().toString(36)}`, loggedInEmail || "");
+    if (users.length === 0 && (loggedInEmail || routeSessionUserId)) {
+      const fallbackUser = createUserObject(routeSessionUserId || `admin-${Date.now().toString(36)}`, loggedInEmail || "");
       users = [fallbackUser];
     }
     const adminList = users.map((u: any) => ({
@@ -2011,13 +1898,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       total_members: 1,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      created_by: activeUser?.id || "admin",
+      created_by: routeSessionUser?.id || "admin",
       owner: {
-        id: activeUser?.id || "admin",
-        email: activeUser?.email || loggedInEmail || "",
-        first_name: activeUser?.first_name || "Admin",
-        last_name: activeUser?.last_name || "",
-        avatar: activeUser?.avatar_url || "",
+        id: routeSessionUser?.id || "admin",
+        email: routeSessionUser?.email || loggedInEmail || "",
+        first_name: routeSessionUser?.first_name || "Admin",
+        last_name: routeSessionUser?.last_name || "",
+        avatar: routeSessionUser?.avatar_url || "",
       },
       role: 20,
       ...body,
@@ -2043,21 +1930,21 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       id: `ws-member-${Date.now()}`,
       workspace: wsId,
       workspace_id: wsId,
-      member: activeUser?.id || "me",
+      member: routeSessionUser?.id || "me",
       role: 20,
       is_active: true,
       created_at: new Date().toISOString(),
     });
 
-    if (activeUser) {
-      activeUser.last_workspace_id = wsId;
-      activeUser.last_workspace_slug = slug;
-      activeUser.is_onboarded = true;
-      if (!activeUser.onboarding_step) activeUser.onboarding_step = {};
-      activeUser.onboarding_step.workspace_create = true;
-      activeUser.onboarding_step.profile_complete = true;
-      activeUser.onboarding_step.workspace_join = true;
-      activeUser.onboarding_step.workspace_invite = true;
+    if (routeSessionUser) {
+      routeSessionUser.last_workspace_id = wsId;
+      routeSessionUser.last_workspace_slug = slug;
+      routeSessionUser.is_onboarded = true;
+      if (!routeSessionUser.onboarding_step) routeSessionUser.onboarding_step = {};
+      routeSessionUser.onboarding_step.workspace_create = true;
+      routeSessionUser.onboarding_step.profile_complete = true;
+      routeSessionUser.onboarding_step.workspace_join = true;
+      routeSessionUser.onboarding_step.workspace_invite = true;
     }
 
     if (typeof window !== "undefined") {
@@ -2183,10 +2070,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     // 5. Update activeUser
     const remainingWs = (localDB.workspaces && localDB.workspaces.length > 0) ? localDB.workspaces[0] : null;
-    if (activeUser) {
-      if (activeUser.last_workspace_slug === targetSlug || activeUser.last_workspace_id === targetId) {
-        activeUser.last_workspace_slug = remainingWs ? remainingWs.slug : null;
-        activeUser.last_workspace_id = remainingWs ? remainingWs.id : null;
+    if (routeSessionUser) {
+      if (routeSessionUser.last_workspace_slug === targetSlug || routeSessionUser.last_workspace_id === targetId) {
+        routeSessionUser.last_workspace_slug = remainingWs ? remainingWs.slug : null;
+        routeSessionUser.last_workspace_id = remainingWs ? remainingWs.id : null;
       }
     }
 
@@ -2221,17 +2108,17 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (url.includes("/api/users/me/profile")) {
       if (method === "patch" || method === "put" || method === "post") {
-        if (!activeUser) {
-          if ((localDB.users || []).length === 1 && !loggedInEmail && !activeWallet) {
-            activeUser = (localDB.users || [])[0];
+        if (!routeSessionUser) {
+          if ((localDB.users || []).length === 1 && !loggedInEmail && !routeSessionWallet) {
+            routeSessionUser = (localDB.users || [])[0];
           } else {
-            activeUser = createUserObject(activeUserId || activeWallet || "user-default", loggedInEmail || (activeWallet ? `${activeWallet}@metanode.wallet` : "member@plane.local"));
+            routeSessionUser = createUserObject(routeSessionUserId || routeSessionWallet || "user-default", loggedInEmail || (routeSessionWallet ? `${routeSessionWallet}@metanode.wallet` : "member@plane.local"));
             if (!localDB.users) localDB.users = [];
-            localDB.users.push(activeUser);
+            localDB.users.push(routeSessionUser);
           }
         }
         if (body?.theme) {
-          activeUser.theme = { ...(activeUser.theme || {}), ...body.theme };
+          routeSessionUser.theme = { ...routeSessionUser.theme, ...body.theme };
           if (typeof window !== "undefined") {
             if (body.theme.theme) {
               localStorage.setItem("theme", body.theme.theme);
@@ -2239,7 +2126,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
             }
           }
         }
-        Object.assign(activeUser, body);
+        Object.assign(routeSessionUser, body);
         saveDB();
       }
       return ok(getUserProfile());
@@ -2247,13 +2134,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     // Handle /api/users/me/onboard/ — marks user onboarding as complete
     if (url.includes("/api/users/me/onboard")) {
-      if (activeUser) {
-        activeUser.is_onboarded = true;
-        if (!activeUser.onboarding_step) activeUser.onboarding_step = {};
-        activeUser.onboarding_step.profile_complete = true;
-        activeUser.onboarding_step.workspace_create = true;
-        activeUser.onboarding_step.workspace_join = true;
-        activeUser.onboarding_step.workspace_invite = true;
+      if (routeSessionUser) {
+        routeSessionUser.is_onboarded = true;
+        if (!routeSessionUser.onboarding_step) routeSessionUser.onboarding_step = {};
+        routeSessionUser.onboarding_step.profile_complete = true;
+        routeSessionUser.onboarding_step.workspace_create = true;
+        routeSessionUser.onboarding_step.workspace_join = true;
+        routeSessionUser.onboarding_step.workspace_invite = true;
         saveDB();
       }
       return ok({ is_onboarded: true });
@@ -2261,15 +2148,15 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (url.includes("/api/users/me/settings")) {
       if ((method === "patch" || method === "put" || method === "post") && body?.workspace) {
-        if (body.workspace.last_workspace_slug && activeUser) {
-          activeUser.last_workspace_slug = body.workspace.last_workspace_slug;
+        if (body.workspace.last_workspace_slug && routeSessionUser) {
+          routeSessionUser.last_workspace_slug = body.workspace.last_workspace_slug;
           if (typeof window !== "undefined") {
             localStorage.setItem("last_workspace_slug", body.workspace.last_workspace_slug);
             document.cookie = `last_workspace_slug=${body.workspace.last_workspace_slug}; path=/; max-age=31536000; SameSite=Lax`;
           }
         }
-        if (body.workspace.last_workspace_id && activeUser) {
-          activeUser.last_workspace_id = body.workspace.last_workspace_id;
+        if (body.workspace.last_workspace_id && routeSessionUser) {
+          routeSessionUser.last_workspace_id = body.workspace.last_workspace_id;
         }
         saveDB();
       }
@@ -2311,8 +2198,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const ws = targetSlug ? (localDB.workspaces || []).find((w: any) => w.slug === targetSlug || w.id === targetSlug) : null;
       const wsKeys = new Set([targetSlug, ws?.id, ws?.slug].filter(Boolean));
 
-      const activeId = activeUser?.id || activeUserId;
-      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+      const activeId = routeSessionUser?.id || routeSessionUserId;
+      const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
       const activeWallet = (
         sessionStorage.getItem("plane_active_wallet_address") ||
         localStorage.getItem("plane_active_wallet_address") ||
@@ -2397,8 +2284,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       if (method === "post") {
         if (!localDB.project_members) localDB.project_members = [];
         const projectIds: string[] = Array.isArray(body?.project_ids) ? body.project_ids : [];
-        const activeId = activeUser?.id || activeUserId || "user-default";
-        const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+        const activeId = routeSessionUser?.id || routeSessionUserId || "user-default";
+        const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
         const activeWallet = (
           sessionStorage.getItem("plane_active_wallet_address") ||
           localStorage.getItem("plane_active_wallet_address") ||
@@ -2442,8 +2329,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (url.includes("/api/users/me/workspaces") && !url.includes("/project-roles") && !url.includes("/invitations")) {
       syncCrossPortWorkspaces();
-      const activeId = activeUser?.id || activeUserId;
-      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+      const activeId = routeSessionUser?.id || routeSessionUserId;
+      const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
       const activeWallet = (
         sessionStorage.getItem("plane_active_wallet_address") ||
         localStorage.getItem("plane_active_wallet_address") ||
@@ -2451,42 +2338,6 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         ""
       ).toLowerCase().trim();
 
-      // Auto-accept any pending invitations for this verified email
-      if (activeMail) {
-        const pendingInvs = (localDB.invitations || []).filter(
-          (inv: any) => (inv.email || "").toLowerCase().trim() === activeMail && !inv.accepted
-        );
-        if (pendingInvs.length > 0) {
-          for (const inv of pendingInvs) {
-            inv.accepted = true;
-            inv.responded_at = new Date().toISOString();
-            inv.updated_at = new Date().toISOString();
-            const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace || "fiai";
-            const ws = (localDB.workspaces || []).find((w: any) => w.slug === invWs || w.id === invWs);
-            const targetWsId = ws?.id || invWs;
-            if (!localDB.workspace_members) localDB.workspace_members = [];
-            const isAlready = localDB.workspace_members.some(
-              (m: any) => (m.workspace === invWs || m.workspace === targetWsId || m.workspace_id === invWs || m.workspace_id === targetWsId) &&
-                ((m.email || "").toLowerCase().trim() === activeMail || m.member === activeId)
-            );
-            if (!isAlready) {
-              localDB.workspace_members.push({
-                id: `ws-member-${inv.id || Date.now()}`,
-                workspace: targetWsId,
-                workspace_id: targetWsId,
-                member: activeId,
-                email: activeMail,
-                role: inv.role || 15,
-                is_active: true,
-                verified_on_chain: true,
-                created_at: new Date().toISOString(),
-              });
-            }
-          }
-          saveStoredInvitations(localDB.invitations);
-          saveDB();
-        }
-      }
       let myWorkspaces = getUserWorkspaces(activeId, activeMail);
       const enriched = myWorkspaces.map((ws: any) => {
         const isOwner =
@@ -2524,8 +2375,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         }
         saveStoredInvitations(localDB.invitations);
 
-        const userEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
-        const userId = activeUser?.id || activeUserId;
+        const userEmail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
+        const userId = routeSessionUser?.id || routeSessionUserId;
         const allInvites = localDB.invitations || [];
         console.log(`[DApp Invitations] GET invitations — userEmail=${userEmail}, userId=${userId}, allInvites count=${allInvites.length}`);
         console.log(`[DApp Invitations] All invites:`, JSON.stringify(allInvites.map((i: any) => ({ id: i.id, email: i.email, accepted: i.accepted }))));
@@ -2551,596 +2402,45 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         return ok(myInvites);
       }
       if (method === "post") {
-        const acceptedIds: string[] = Array.isArray(body?.invitations) ? body.invitations : [];
-        if (!localDB.invitations) localDB.invitations = [];
-        if (!localDB.workspace_members) localDB.workspace_members = [];
-
-        for (const invId of acceptedIds) {
-          const inv = localDB.invitations.find((i: any) => i.id === invId);
-          if (inv) {
-            inv.accepted = true;
-            inv.updated_at = new Date().toISOString();
-
-            const wsSlug = inv.workspace?.slug || inv.workspace?.id || inv.workspace || inv.workspace_slug;
-            const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-            const activeId = activeUser?.id || activeUserId || "user-default";
-            const activeMail = (activeUser?.email || loggedInEmail || inv.email || "").toLowerCase().trim();
-
-            // Mark ALL duplicate invitations for this email and workspace as accepted
-            (localDB.invitations || []).forEach((otherInv: any) => {
-              const otherWs = otherInv.workspace?.slug || otherInv.workspace?.id || otherInv.workspace || otherInv.workspace_slug;
-              const otherMail = (otherInv.email || "").toLowerCase().trim();
-              if (otherMail === activeMail && (otherWs === wsSlug || otherWs === ws?.id)) {
-                otherInv.accepted = true;
-                otherInv.responded_at = new Date().toISOString();
-                otherInv.updated_at = new Date().toISOString();
-              }
-            });
-
-            const memberWallet = (body?.wallet_address || "").trim().toLowerCase();
-            const existingIdx = localDB.workspace_members.findIndex(
-              (m: any) =>
-                (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id) &&
-                (m.member === activeId || (activeMail && m.email?.toLowerCase() === activeMail) ||
-                  (memberWallet && (m.wallet_address?.toLowerCase() === memberWallet || m.member?.toLowerCase() === memberWallet)))
-            );
-            const memberRecord = {
-              id: existingIdx >= 0 ? localDB.workspace_members[existingIdx].id : `ws-member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-              workspace: ws?.id || wsSlug,
-              workspace_id: ws?.id || wsSlug,
-              member: activeId,
-              email: activeMail,
-              wallet_address: memberWallet || undefined,
-              role: inv.role || 15,
-              is_active: true,
-              verified_on_chain: false,
-              created_at: new Date().toISOString(),
-            };
-            if (existingIdx >= 0) {
-              localDB.workspace_members[existingIdx] = { ...localDB.workspace_members[existingIdx], ...memberRecord, is_active: true };
-            } else {
-              localDB.workspace_members.push(memberRecord);
-            }
-
-            // Un-stale from removed_members
-            const targetWsKeys = Array.from(new Set([wsSlug, ws?.slug, ws?.id].filter(Boolean)));
-            for (const k of targetWsKeys) {
-              if (localDB.removed_members?.[k]) {
-                localDB.removed_members[k] = localDB.removed_members[k].filter((r: string) => {
-                  const cleanR = r.toLowerCase().trim();
-                  return cleanR !== activeMail && cleanR !== memberWallet && cleanR !== activeId;
-                });
-              }
-            }
-            try {
-              localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-            } catch { }
-
-            if (activeUser) {
-              activeUser.last_workspace_id = ws?.id || wsSlug;
-              activeUser.last_workspace_slug = ws?.slug || wsSlug;
-              activeUser.is_onboarded = true;
-              if (memberWallet) activeUser.metanode_wallet_address = memberWallet;
-              if (!activeUser.onboarding_step) activeUser.onboarding_step = {};
-              activeUser.onboarding_step.workspace_join = true;
-              activeUser.onboarding_step.profile_complete = true;
-              activeUser.onboarding_step.workspace_invite = true;
-            }
-            if (typeof window !== "undefined") {
-              if (memberWallet) {
-                sessionStorage.setItem("plane_active_wallet_address", memberWallet);
-                localStorage.setItem("plane_active_wallet_address", memberWallet);
-              }
-              localStorage.setItem("last_workspace_slug", ws?.slug || wsSlug);
-              document.cookie = `last_workspace_slug=${ws?.slug || wsSlug}; path=/; max-age=31536000; SameSite=Lax`;
-            }
-
-            if (wsSlug) {
-              try {
-                const joined = await joinWorkspaceOnChain(wsSlug, memberWallet || undefined);
-                if (joined) {
-                  memberRecord.verified_on_chain = true;
-                }
-              } catch (chainErr) {
-                console.warn("[DApp Routes] Bulk joinWorkspaceOnChain error:", chainErr);
-              }
-            }
+        const ids = Array.isArray(body?.invitations) ? [...new Set(body.invitations)] : [];
+        if (!ids.length) return { data: { error: "Please select an invitation." }, status: 400 };
+        const results: any[] = [];
+        for (const id of ids) {
+          const inv = [...(localDB.invitations || []), ...getStoredInvitations()].find((item: any) => item.id === id);
+          const slug = inv?.workspace_slug || inv?.workspace?.slug;
+          if (!slug) {
+            results.push({ id, status: 404, error: "Invitation not found." });
+            continue;
           }
+          // oxlint-disable-next-line no-await-in-loop -- Serialize invitation responses and wallet prompts.
+          const result = await respondToWorkspaceInvitation("post", slug, String(id), { ...body, accepted: true });
+          results.push({ id, status: result.status, ...result.data });
         }
-
-        saveStoredInvitations(localDB.invitations);
-        saveDB();
-        void uploadToIPFS(true);
-        return ok({ message: "Invitations accepted successfully" });
+        const failed = results.filter((result) => result.status >= 400);
+        return { data: { results, accepted_count: results.length - failed.length, error: failed.length ? "Some invitations were not accepted. Check individual results." : undefined }, status: failed.length ? (failed.length === results.length ? failed[0].status : 207) : 200 };
       }
     }
 
     if (method === "patch" || method === "put" || method === "post") {
-      if (!activeUser) {
-        if ((localDB.users || []).length === 1 && !loggedInEmail && !activeWallet) {
-          activeUser = (localDB.users || [])[0];
+      if (!routeSessionUser) {
+        if ((localDB.users || []).length === 1 && !loggedInEmail && !routeSessionWallet) {
+          routeSessionUser = (localDB.users || [])[0];
         } else {
-          activeUser = createUserObject(activeUserId || activeWallet || "user-default", loggedInEmail || (activeWallet ? `${activeWallet}@metanode.wallet` : "member@plane.local"));
+          routeSessionUser = createUserObject(routeSessionUserId || routeSessionWallet || "user-default", loggedInEmail || (routeSessionWallet ? `${routeSessionWallet}@metanode.wallet` : "member@plane.local"));
           if (!localDB.users) localDB.users = [];
-          localDB.users.push(activeUser);
+          localDB.users.push(routeSessionUser);
         }
       }
-      Object.assign(activeUser, body);
+      Object.assign(routeSessionUser, body);
       saveDB();
     }
-    return ok(activeUser);
+    return ok(routeSessionUser);
   }
 
   // ── Workspace Invitation Join / Retrieve ─────────────────────────────
   const wsInvJoinMatch = url.match(/\/api\/workspaces\/([^/]+)\/invitations\/([^/]+)\/join\/?(?:\?.*)?$/);
   if (wsInvJoinMatch) {
-    const wsSlug = wsInvJoinMatch[1];
-    const invitationId = wsInvJoinMatch[2];
-    syncCrossPortWorkspaces();
-
-    // 1. Extract token from body or window query params first
-    let currentToken = body?.token || "";
-    if (!currentToken && typeof window !== "undefined" && window.location?.search) {
-      try {
-        const sp = new URLSearchParams(window.location.search);
-        currentToken = sp.get("token") || "";
-      } catch { }
-    }
-
-    // 2. Decode token if present
-    let decoded: any = null;
-    if (currentToken && currentToken.startsWith("inv_")) {
-      decoded = decodeInviteToken(currentToken);
-    }
-
-    let ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-    if (!ws && (decoded?.ws === wsSlug || !wsSlug || wsSlug === "fiai")) {
-      // Reconstruct workspace on secondary browser if missing
-      ws = {
-        id: `workspace-${wsSlug || "fiai"}`,
-        name: wsSlug ? (wsSlug.charAt(0).toUpperCase() + wsSlug.slice(1)) : "Workspace",
-        slug: wsSlug || "fiai",
-        organization_size: "5-10",
-        owner: { id: "admin", email: "admin@plane.local", first_name: "Admin", last_name: "" },
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      if (!localDB.workspaces) localDB.workspaces = [];
-      localDB.workspaces.push(ws);
-      saveDB();
-    }
-
-    if (!ws) {
-      return { data: { error: "Không tìm thấy không gian làm việc." }, status: 404 };
-    }
-
-    if (!localDB.invitations) localDB.invitations = [];
-    const removedList = (localDB.removed_members?.[wsSlug] || []).map((x: string) => String(x).toLowerCase().trim());
-    const activeMail = (loggedInEmail || activeUser?.email || "").toLowerCase().trim();
-    const activeWallet = (
-      sessionStorage.getItem("plane_active_wallet_address") ||
-      localStorage.getItem("plane_active_wallet_address") ||
-      currentUserAddress ||
-      ""
-    ).toLowerCase().trim();
-
-    // 3. Look for existing invitation in memory and persistent storage
-    let inv = localDB.invitations.find((i: any) => {
-      const matchWs = !i.workspace_slug || i.workspace_slug === wsSlug || i.workspace?.slug === wsSlug;
-      return matchWs && (i.id === invitationId || (currentToken && i.token === currentToken));
-    });
-
-    if (!inv) {
-      const stored = getStoredInvitations();
-      inv = stored.find((i: any) => {
-        const matchWs = !i.workspace_slug || i.workspace_slug === wsSlug || i.workspace?.slug === wsSlug;
-        return matchWs && (i.id === invitationId || (currentToken && i.token === currentToken));
-      });
-      if (inv && !localDB.invitations.some((x: any) => x.id === inv.id)) {
-        localDB.invitations.push(inv);
-      }
-    }
-
-    // 3.1 Authoritative recovery: the invitee's browser has no copy of the admin
-    //     database, so resolve the record from the workspace snapshot pinned on
-    //     chain. This replaces the old "synthesise from token" behaviour while
-    //     keeping cross-browser invitations working.
-    if (!inv) {
-      const recovered = await recoverInvitationFromChainSnapshot(wsSlug, invitationId, currentToken);
-      if (recovered) {
-        console.log(`[DApp Routes] Recovered invitation ${recovered.id} from the on-chain snapshot of "${wsSlug}"`);
-        inv = recovered;
-        if (!localDB.invitations.some((x: any) => x.id === recovered.id)) {
-          localDB.invitations.push(recovered);
-        }
-      }
-    }
-
-    // 3.2 Legacy links: the token payload may reference the invitation id. It is
-    //     used ONLY to look up an existing record, never to create one.
-    if (!inv && decoded?.id) {
-      const legacyWs = String(decoded.ws || "").toLowerCase().trim();
-      const wsMatches = !legacyWs || legacyWs === wsSlug.toLowerCase() || legacyWs === String(ws?.id || "").toLowerCase();
-      if (wsMatches) {
-        const legacyId = String(decoded.id);
-        const findLegacy = (i: any) =>
-          String(i.id) === legacyId &&
-          (!i.workspace_slug || i.workspace_slug === wsSlug || i.workspace?.slug === wsSlug || i.workspace?.id === ws?.id);
-        inv = (localDB.invitations || []).find(findLegacy) || getStoredInvitations().find(findLegacy);
-        if (inv && !localDB.invitations.some((x: any) => x.id === inv.id)) {
-          localDB.invitations.push(inv);
-        }
-      }
-    }
-
-    const invMail = (inv?.email || decoded?.email || "").toLowerCase().trim();
-    const invIdClean = invitationId.toLowerCase().trim();
-    const invWallet = (inv?.wallet_address || decoded?.wallet || "").toLowerCase().trim();
-
-    // 4. Tombstones are final for JOIN requests.
-    //    An invitation token is a capability URL: it identifies an invitation
-    //    that already exists. It is NOT authority to re-create one, so it can
-    //    never clear a deletion tombstone (previously it could - RC-3/SEC-A).
-    const deletedSet = readInvitationTombstones();
-    const isDeletedInvitation =
-      deletedSet.has(invitationId) ||
-      (currentToken && deletedSet.has(currentToken)) ||
-      (inv
-        ? isInvitationDeleted(inv, deletedSet)
-        : Boolean(decoded?.id && deletedSet.has(String(decoded.id))));
-
-    if (isDeletedInvitation) {
-      console.warn(`[DApp Routes] Blocked deleted invitation (${invitationId || invMail}) on workspace "${wsSlug}"`);
-      return {
-        data: {
-          error: "Lời mời này đã bị hủy hoặc không còn hiệu lực.",
-          is_deleted: true,
-          responded_at: new Date().toISOString(),
-          accepted: false,
-        },
-        status: 400,
-      };
-    }
-
-    const isTargetRemoved =
-      (invMail && removedList.includes(invMail)) ||
-      (invWallet && removedList.includes(invWallet)) ||
-      removedList.includes(invIdClean) ||
-      (activeMail && activeMail !== "admin@plane.local" && removedList.includes(activeMail)) ||
-      (activeWallet && removedList.includes(activeWallet));
-
-    if (isTargetRemoved) {
-      console.warn(`[DApp Routes] Blocked old/revoked invitation for removed member (${invMail || invIdClean || activeMail}) on workspace "${wsSlug}"`);
-      return {
-        data: {
-          error: "Lời mời này đã bị thu hồi hoặc bạn đã bị xóa khỏi không gian làm việc này.",
-          is_removed: true,
-          responded_at: new Date().toISOString(),
-          accepted: false,
-        },
-        status: 400,
-      };
-    }
-
-    // 5. Check if the user is ALREADY an active member of this workspace
-    const activeWsMembers = (localDB.workspace_members || []).filter(
-      (m: any) =>
-        m.is_active !== false &&
-        (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id || m.workspace_id === ws?.id)
-    );
-    const isAlreadyMember = activeWsMembers.some((m: any) => {
-      const mMail = (m.email || "").toLowerCase().trim();
-      const mId = String(m.member || "").toLowerCase().trim();
-      const mWall = (m.wallet_address || "").toLowerCase().trim();
-      return (
-        (invMail && mMail === invMail) ||
-        (invWallet && (mWall === invWallet || mId === invWallet))
-      );
-    });
-
-    // 7. If still not found: DO NOT invent a fake invitation! Return 404
-    if (!inv) {
-      console.warn(`[DApp Routes] Invitation "${invitationId}" not found for workspace "${wsSlug}"`);
-      return {
-        data: {
-          error: "Không tìm thấy lời mời hoặc lời mời đã hết hạn.",
-          responded_at: new Date().toISOString(),
-          accepted: false,
-        },
-        status: 404,
-      };
-    }
-
-    // 8. Token integrity + expiry.
-    //    The request token must match the token stored on the invitation record
-    //    (when both exist), otherwise a link could be reused/redirected to a
-    //    different invitation id.
-    if (inv.token && currentToken && String(inv.token) !== String(currentToken)) {
-      console.warn(`[DApp Routes] Token/record mismatch for invitation ${invitationId} on "${wsSlug}"`);
-      return {
-        data: {
-          error: "Liên kết mời không hợp lệ. Vui lòng dùng đúng liên kết trong email mời.",
-          responded_at: new Date().toISOString(),
-          accepted: false,
-        },
-        status: 400,
-      };
-    }
-
-    if (isInviteTokenExpired(inv)) {
-      return {
-        data: {
-          error: "Lời mời đã hết hạn. Vui lòng liên hệ quản trị viên để được mời lại.",
-          is_expired: true,
-          responded_at: new Date().toISOString(),
-          accepted: false,
-        },
-        status: 410,
-      };
-    }
-
-    // If already a member, mark invitation as accepted
-    if (isAlreadyMember && !inv.accepted) {
-      inv.accepted = true;
-      inv.responded_at = inv.responded_at || new Date().toISOString();
-      saveStoredInvitations(localDB.invitations);
-      saveDB();
-    }
-
-    if (method === "get") {
-      const isAcceptedOrMember = inv.accepted === true || isAlreadyMember;
-      return ok({
-        id: inv.id,
-        email: inv.email || activeMail,
-        role: inv.role || 15,
-        token: inv.token || inv.id,
-        accepted: isAcceptedOrMember,
-        responded_at: isAcceptedOrMember ? (inv.responded_at || new Date().toISOString()) : (inv.responded_at || null),
-        workspace: {
-          id: ws?.id || wsSlug,
-          name: ws?.name || wsSlug,
-          slug: ws?.slug || wsSlug,
-          logo_url: ws?.logo_url || "",
-        },
-      });
-    }
-
-    if (method === "post") {
-      const isAccepted = body?.accepted === true || body?.accepted === "true";
-      const memberWallet = (body?.wallet_address || "").trim().toLowerCase();
-      const ownerEth = (getWorkspaceOwnerEth(ws, wsSlug) || "").toLowerCase();
-      const currentAddr = (currentUserAddress || getStoredWalletAddress() || "").toLowerCase();
-
-      if (isAccepted) {
-        // Block Workspace Owner/Admin from accepting an invitation to become a Member
-        if (
-          (memberWallet && ownerEth && memberWallet === ownerEth) ||
-          (!memberWallet && currentAddr && ownerEth && currentAddr === ownerEth)
-        ) {
-          return {
-            data: {
-              error: `Ví ${memberWallet ? `${memberWallet.slice(0, 6)}...${memberWallet.slice(-4)}` : "này"} là Chủ sở hữu (Owner/Admin) của workspace này. Vui lòng chuyển sang ví khác trong tiện ích ví để tham gia với tư cách Thành viên.`,
-            },
-            status: 400,
-          };
-        }
-
-        if (memberWallet && wsSlug) {
-          try {
-            const onChainRole = await fetchMemberRoleOnChain(wsSlug, memberWallet);
-            if (onChainRole === 3 /* Role.Owner */) {
-              return {
-                data: {
-                  error: `Ví ${memberWallet.slice(0, 6)}...${memberWallet.slice(-4)} là Chủ sở hữu (Owner) của workspace này trên Blockchain. Vui lòng đổi sang ví thành viên để tham gia.`,
-                },
-                status: 400,
-              };
-            }
-          } catch { }
-        }
-      }
-
-      if (isAlreadyMember || inv.accepted) {
-        return ok({ message: "You are already a member of this workspace" });
-      }
-
-      let memberRecord: any = null;
-      inv.responded_at = new Date().toISOString();
-      if (isAccepted) {
-        // Determine invited email - prioritize invitation's own email!
-        const targetEmail = (inv.email || decoded?.email || loggedInEmail || "").toLowerCase().trim();
-
-        // Trigger on-chain joinWorkspace first if wallet provided
-        inv.accepted = true;
-        inv.responded_at = new Date().toISOString();
-        inv.updated_at = new Date().toISOString();
-
-        // Mark ALL duplicate invitations for this email and workspace as accepted (with prefix match)
-        (localDB.invitations || []).forEach((otherInv: any) => {
-          const otherWs = otherInv.workspace?.slug || otherInv.workspace?.id || otherInv.workspace || otherInv.workspace_slug;
-          const otherMail = (otherInv.email || "").toLowerCase().trim();
-          const isTargetWs = !otherWs || otherWs === wsSlug || otherWs === ws?.id;
-          const mailMatched = targetEmail && otherMail === targetEmail;
-          if (mailMatched && isTargetWs) {
-            otherInv.accepted = true;
-            otherInv.responded_at = new Date().toISOString();
-            otherInv.updated_at = new Date().toISOString();
-          }
-        });
-
-        // Resolve or dynamically create the member user object - DO NOT fall back to Admin!
-        let targetUser = (localDB.users || []).find((u: any) =>
-          (targetEmail && (u.email || "").toLowerCase().trim() === targetEmail) ||
-          (memberWallet && (u.metanode_wallet_address || "").toLowerCase() === memberWallet)
-        );
-        if (!targetUser) {
-          const newUserId = `user-${targetEmail ? targetEmail.split("@")[0] : (memberWallet ? memberWallet.slice(2, 10) : Date.now())}`;
-          targetUser = createUserObject(newUserId, targetEmail || `${memberWallet}@metanode.wallet`);
-          if (!localDB.users) localDB.users = [];
-          localDB.users.push(targetUser);
-        }
-
-        if (memberWallet) {
-          inv.wallet_address = memberWallet;
-          if (targetEmail) {
-            if (!localDB._email_wallet_map) localDB._email_wallet_map = {};
-            localDB._email_wallet_map[targetEmail] = memberWallet;
-            try {
-              const rawMap = localStorage.getItem("plane_dapp_email_wallet_map");
-              const parsedMap = rawMap ? JSON.parse(rawMap) : {};
-              parsedMap[targetEmail] = memberWallet;
-              localStorage.setItem("plane_dapp_email_wallet_map", JSON.stringify(parsedMap));
-              document.cookie = `plane_dapp_sync_email_wallet_map=${encodeURIComponent(JSON.stringify(parsedMap))}; path=/; max-age=31536000; SameSite=Lax`;
-            } catch { }
-          }
-          (localDB.invitations || []).forEach((otherInv: any) => {
-            const otherWs = otherInv.workspace?.slug || otherInv.workspace?.id || otherInv.workspace || otherInv.workspace_slug;
-            const otherMail = (otherInv.email || "").toLowerCase().trim();
-            if (otherMail === targetEmail && (!otherWs || otherWs === wsSlug || otherWs === ws?.id)) {
-              otherInv.wallet_address = memberWallet;
-            }
-          });
-          if (targetUser) {
-            targetUser.metanode_wallet_address = memberWallet;
-          }
-        }
-
-        const resolvedMemberId = targetUser.id;
-        if (!localDB.workspace_members) localDB.workspace_members = [];
-        const existingIdx = localDB.workspace_members.findIndex(
-          (m: any) =>
-            (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id) &&
-            (m.member === resolvedMemberId ||
-              (targetEmail && (m.email || "").toLowerCase().trim() === targetEmail) ||
-              (memberWallet && (m.wallet_address?.toLowerCase() === memberWallet || m.member?.toLowerCase() === memberWallet)))
-        );
-        memberRecord = {
-          id: existingIdx >= 0 ? localDB.workspace_members[existingIdx].id : `ws-member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          workspace: ws?.id || wsSlug,
-          workspace_id: ws?.id || wsSlug,
-          member: resolvedMemberId,
-          email: targetEmail,
-          wallet_address: memberWallet || undefined,
-          role: inv.role || 15,
-          is_active: true,
-          verified_on_chain: false,
-          created_at: new Date().toISOString(),
-        };
-        if (existingIdx >= 0) {
-          localDB.workspace_members[existingIdx] = { ...localDB.workspace_members[existingIdx], ...memberRecord, is_active: true };
-        } else {
-          localDB.workspace_members.push(memberRecord);
-        }
-
-        if (targetUser) {
-          targetUser.last_workspace_id = ws?.id || wsSlug;
-          targetUser.last_workspace_slug = ws?.slug || wsSlug;
-          targetUser.is_onboarded = true;
-          targetUser.is_tour_completed = true;
-          if (!targetUser.onboarding_step) targetUser.onboarding_step = {};
-          targetUser.onboarding_step.workspace_join = true;
-          targetUser.onboarding_step.profile_complete = true;
-          targetUser.onboarding_step.workspace_invite = true;
-          targetUser.onboarding_step.workspace_create = true;
-        }
-
-        if (typeof window !== "undefined") {
-          try {
-            const finalSlug = ws?.slug || wsSlug;
-            localStorage.setItem("last_workspace_slug", finalSlug);
-            sessionStorage.setItem("last_workspace_slug", finalSlug);
-            document.cookie = `last_workspace_slug=${finalSlug}; path=/; max-age=31536000; SameSite=Lax`;
-          } catch { }
-        }
-
-        // Clean removed_members BEFORE triggering on-chain join
-        if (wsSlug && localDB.removed_members?.[wsSlug]) {
-          localDB.removed_members[wsSlug] = localDB.removed_members[wsSlug].filter((r: string) => {
-            const cleanR = r.toLowerCase().trim();
-            return cleanR !== targetEmail && cleanR !== memberWallet && cleanR !== resolvedMemberId;
-          });
-          try {
-            localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-          } catch { }
-        }
-
-        // Clean deleted_invitations list for this email
-        try {
-          const rawDel = localStorage.getItem("plane_dapp_deleted_invitations");
-          if (rawDel) {
-            let delList = JSON.parse(rawDel);
-            if (Array.isArray(delList)) {
-              delList = delList.filter((d: string) => d !== targetEmail && !d.includes(targetEmail));
-              localStorage.setItem("plane_dapp_deleted_invitations", JSON.stringify(delList));
-            }
-          }
-        } catch { }
-        if (localDB._deleted_invitation_ids && Array.isArray(localDB._deleted_invitation_ids)) {
-          localDB._deleted_invitation_ids = localDB._deleted_invitation_ids.filter(
-            (d: string) => d !== targetEmail && !d.includes(targetEmail)
-          );
-        }
-
-        if (typeof window !== "undefined") {
-          if (targetEmail) {
-            sessionStorage.setItem("plane_dapp_auth_email", targetEmail);
-            localStorage.setItem("plane_dapp_auth_email", targetEmail);
-          }
-          if (targetUser?.id) {
-            sessionStorage.setItem("plane_dapp_auth_user", targetUser.id);
-            localStorage.setItem("plane_dapp_auth_user", targetUser.id);
-          }
-          if (memberWallet) {
-            sessionStorage.setItem("plane_active_wallet_address", memberWallet);
-            localStorage.setItem("plane_active_wallet_address", memberWallet);
-          }
-          localStorage.setItem("last_workspace_slug", ws?.slug || wsSlug);
-          sessionStorage.setItem("last_workspace_slug", ws?.slug || wsSlug);
-          document.cookie = `last_workspace_slug=${ws?.slug || wsSlug}; path=/; max-age=31536000; SameSite=Lax`;
-        }
-
-        // Trigger on-chain joinWorkspace and wait for transaction confirmation on Sequoia chain
-        if (wsSlug && memberWallet) {
-          try {
-            console.log(`[DApp Routes] ⏳ Đang thực hiện joinWorkspaceOnChain cho ${memberWallet} trên ${wsSlug}...`);
-            const joined = await joinWorkspaceOnChain(wsSlug, memberWallet);
-            if (joined) {
-              const mRec = (localDB.workspace_members || []).find(
-                (m: any) =>
-                  (m.workspace === wsSlug || m.workspace_id === wsSlug || m.workspace === ws?.id) &&
-                  (m.member === resolvedMemberId || m.wallet_address?.toLowerCase() === memberWallet)
-              );
-              if (mRec) mRec.verified_on_chain = true;
-              console.log(`[DApp Routes] ✅ On-chain joinWorkspace hoàn thành cho ${memberWallet} trên ${wsSlug}`);
-            } else {
-              console.warn(`[DApp Routes] ⚠️ joinWorkspaceOnChain chưa ghi nhận on-chain cho ${memberWallet}. Lưu trạng thái off-chain để người dùng tiếp tục.`);
-            }
-          } catch (chainErr: any) {
-            console.warn(`[DApp Routes] ⚠️ Lỗi on-chain joinWorkspace cho ${memberWallet}:`, chainErr);
-          }
-        }
-      } else {
-        inv.accepted = false;
-        inv.responded_at = new Date().toISOString();
-        inv.updated_at = new Date().toISOString();
-      }
-
-      saveStoredInvitations(localDB.invitations);
-      saveDB();
-      syncCrossPortWorkspaces();
-      syncDAppRecord("invitations", inv.id, inv);
-      if (isAccepted && memberRecord) {
-        syncDAppRecord("workspace_members", memberRecord.id, memberRecord);
-      }
-      dappSyncChannel?.postMessage({
-        type: "SYNC_STATE",
-        members: localDB.workspace_members || [],
-        invitations: localDB.invitations || [],
-        removed_members: localDB.removed_members || {},
-      });
-      void uploadToIPFS(true);
-      return ok({ message: isAccepted ? "Workspace joined successfully" : "Invitation rejected" });
-    }
+    return respondToWorkspaceInvitation(method, decodeURIComponent(wsInvJoinMatch[1]), decodeURIComponent(wsInvJoinMatch[2]), body, new URL(url, "http://localhost").searchParams.get("token") || "");
   }
 
   // ── Projects & Workspace Members ────────────────────────────────────
@@ -3151,16 +2451,16 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       return { data: { error: "Workspace not found" }, status: 404 };
     }
 
-    const activeId = activeUser?.id || activeUserId || "user-default";
-    const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+    const activeId = routeSessionUser?.id || routeSessionUserId || "user-default";
+    const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
     const activeWallet = (
       currentUserAddress ||
       getStoredWalletAddress() ||
       (typeof window !== "undefined"
         ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))
         : null) ||
-      (activeUser as any)?.metanode_wallet_address ||
-      (activeUser as any)?.wallet_address ||
+      (routeSessionUser as any)?.metanode_wallet_address ||
+      (routeSessionUser as any)?.wallet_address ||
       ""
     ).toLowerCase().trim();
 
@@ -3389,10 +2689,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const ws = (localDB.workspaces || []).find((w: any) => !wsSlug || w.slug === wsSlug || w.id === wsSlug);
 
     const userDetail = {
-      id: activeUser?.id || "user-default",
-      display_name: activeUser?.display_name || activeUser?.first_name || activeUser?.email || "User",
-      email: activeUser?.email || "",
-      avatar_url: activeUser?.avatar_url || activeUser?.avatar || "",
+      id: routeSessionUser?.id || "user-default",
+      display_name: routeSessionUser?.display_name || routeSessionUser?.first_name || routeSessionUser?.email || "User",
+      email: routeSessionUser?.email || "",
+      avatar_url: routeSessionUser?.avatar_url || routeSessionUser?.avatar || "",
     };
 
     if (method === "get") {
@@ -3525,11 +2825,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       } else {
         // CSV & Excel RFC 4180 with UTF-8 BOM
         mimeType = "text/csv;charset=utf-8;";
-        const escapeCsv = (val: any): string => {
-          if (val === null || val === undefined) return '""';
-          const str = String(val).replace(/"/g, '""');
-          return `"${str}"`;
-        };
+
 
         const headers = [
           "ID",
@@ -3663,46 +2959,6 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
     if (method === "get") {
       syncCrossPortWorkspaces();
-      const membersList: any[] = [];
-      const addedMemberKeys = new Set<string>();
-
-      // 1. Workspace Owner / Creator
-      const ownerId = ws?.created_by || ws?.owner?.id;
-      const ownerEmail = (ws?.owner?.email || "").toLowerCase().trim();
-      const ownerUser = (localDB.users || []).find(
-        (u: any) => (ownerId && ownerId !== "user-default" && u.id === ownerId) || (ownerEmail && (u.email || "").toLowerCase().trim() === ownerEmail)
-      ) || ws?.owner || {
-        id: ownerId || "owner-default",
-        email: ownerEmail,
-        first_name: ws?.owner?.first_name || "Owner",
-        last_name: ws?.owner?.last_name || "",
-        display_name: ws?.owner?.display_name || ws?.owner?.first_name || "Owner",
-        avatar_url: "",
-        is_active: true,
-      };
-
-      const ownerKey = ownerUser.id || ownerId || "owner-default";
-      membersList.push({
-        id: `ws-member-${ownerKey}`,
-        member: {
-          id: ownerKey,
-          email: ownerUser.email || ownerEmail,
-          first_name: ownerUser.first_name || "Owner",
-          last_name: ownerUser.last_name || "",
-          display_name: ownerUser.display_name || ownerUser.first_name || "Owner",
-          avatar_url: ownerUser.avatar_url || "",
-          is_active: true,
-        },
-        role: 20,
-        workspace: ws?.id || wsSlug,
-        is_active: true,
-        created_at: ws?.created_at || new Date().toISOString(),
-      });
-      if (ownerKey !== "user-default" && ownerKey !== "owner-default") {
-        addedMemberKeys.add(ownerKey);
-      }
-      if (ownerEmail) addedMemberKeys.add(ownerEmail);
-
       // 2. Pending invites set (to avoid listing unaccepted invites as members)
       // On-Chain Membership Sync: fetch verified member wallets from smart contract
       const shouldSyncOnChain = getEnvVar("VITE_ONCHAIN_MEMBERSHIP_SYNC") !== "false";
@@ -3710,6 +2966,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         try {
           const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug, true);
           if (onChainMembers && onChainMembers.length > 0) {
+            const beforeOnChainSync = JSON.stringify(localDB);
             if (!localDB.workspace_members) localDB.workspace_members = [];
             const ownerEth = getWorkspaceOwnerEth(ws, wsSlug);
 
@@ -3808,6 +3065,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
               }
 
               // Verify on-chain role: Role.None (0) means removed or non-member
+              // oxlint-disable-next-line no-await-in-loop -- Resolve and merge membership records in deterministic order.
               const onChainRole = await fetchMemberRoleOnChain(wsSlug, cleanAddr);
               if (onChainRole <= 0) {
                 console.log(`[DApp Routes] Bỏ qua ví ${cleanAddr} vì on-chain role = ${onChainRole} (None)`);
@@ -3896,10 +3154,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
                   console.log(`[DApp Routes] Bỏ qua matchedInv đã bị Admin xóa (removed_members): ${invMail || cleanAddr}`);
                   continue;
                 }
-                matchedInv.accepted = true;
-                matchedInv.wallet_address = cleanAddr;
-                matchedInv.responded_at = matchedInv.responded_at || new Date().toISOString();
-                matchedInv.updated_at = new Date().toISOString();
+                if (matchedInv.accepted !== true || matchedInv.wallet_address?.toLowerCase() !== cleanAddr || !matchedInv.responded_at) {
+                  matchedInv.accepted = true;
+                  matchedInv.wallet_address = cleanAddr;
+                  matchedInv.responded_at = matchedInv.responded_at || new Date().toISOString();
+                  matchedInv.updated_at = new Date().toISOString();
+                }
               }
 
               const memberEmail = matchedInv?.email || `${cleanAddr.slice(0, 6)}...${cleanAddr.slice(-4)}@metanode.chain`;
@@ -3919,7 +3179,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
                   member: resolvedMemberId,
                   email: memberEmail,
                   wallet_address: cleanAddr,
-                  role: matchedInv?.role || 15,
+                  role: onChainRole >= 2 ? 20 : 15,
+                  on_chain_role: onChainRole,
                   is_active: true,
                   verified_on_chain: true,
                   created_at: new Date().toISOString(),
@@ -3927,6 +3188,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
               } else {
                 localDB.workspace_members[existingIdx].wallet_address = cleanAddr;
                 localDB.workspace_members[existingIdx].verified_on_chain = true;
+                localDB.workspace_members[existingIdx].role = onChainRole >= 2 ? 20 : 15;
+                localDB.workspace_members[existingIdx].on_chain_role = onChainRole;
                 localDB.workspace_members[existingIdx].is_active = true;
                 if (matchedInv?.email) {
                   localDB.workspace_members[existingIdx].email = matchedInv.email;
@@ -3953,171 +3216,19 @@ export async function handleRoute(method: string, url: string, body: Record<stri
                 } catch { }
               }
             }
-            saveStoredInvitations(localDB.invitations);
-            saveDB();
+            if (beforeOnChainSync !== JSON.stringify(localDB)) {
+              saveStoredInvitations(localDB.invitations);
+              saveDB();
+            }
           }
         } catch (chainErr) {
           console.warn("[DApp Routes] Failed to sync on-chain members:", chainErr);
         }
       }
 
-      // 3. Accepted Workspace Members from localDB.workspace_members
-      const removedSet = getWorkspaceRemovedSet(wsSlug);
-      if (localDB.workspace_members && Array.isArray(localDB.workspace_members)) {
-        localDB.workspace_members = localDB.workspace_members.filter((m: any) => {
-          const isWs = (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id);
-          if (!isWs) return true;
-          const mMail = (m.email || m.member_email || m.member_detail?.email || "").toLowerCase().trim();
-          const mMem = String(m.member || "").toLowerCase().trim();
-          const mId = String(m.id || "").toLowerCase().trim();
-          const mWallet = (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim();
-          return !removedSet.has(mMail) && !removedSet.has(mMem) && !removedSet.has(mId) && (!mWallet || !removedSet.has(mWallet));
-        });
-      }
-      if (localDB.invitations && Array.isArray(localDB.invitations)) {
-        localDB.invitations = localDB.invitations.filter((i: any) => {
-          const invWs = i.workspace?.slug || i.workspace_slug || i.workspace?.id || i.workspace;
-          const isTarget = !invWs || invWs === wsSlug || invWs === ws?.id;
-          if (!isTarget) return true;
-          const iMail = (i.email || "").toLowerCase().trim();
-          const iWallet = (i.wallet_address || "").toLowerCase().trim();
-          const iId = String(i.id || "").toLowerCase().trim();
-          return !removedSet.has(iMail) && !removedSet.has(iWallet) && !removedSet.has(iId) && !removedSet.has(`ws-member-${iId}`);
-        });
-      }
-      const workspaceMembers = (localDB.workspace_members || []).filter(
-        (m: any) => (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id)
-      );
-
-      // Auto-resolve pending invitations for confirmed active members.
-      // Exact email / wallet match only: the former email-prefix (">= 6 chars")
-      // heuristic marked other people's invitations as accepted.
-      const activeWsMemberMails = new Set(
-        workspaceMembers.map((m: any) => (m.email || "").toLowerCase().trim()).filter(Boolean)
-      );
-      const activeWsMemberWallets = new Set(
-        workspaceMembers
-          .map((m: any) => (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim())
-          .filter(Boolean)
-      );
-
-      if (localDB.invitations && Array.isArray(localDB.invitations)) {
-        let invChanged = false;
-        localDB.invitations.forEach((inv: any) => {
-          const invMail = (inv.email || "").toLowerCase().trim();
-          const invWallet = (inv.wallet_address || "").toLowerCase().trim();
-          const invWs = inv.workspace?.slug || inv.workspace?.id || inv.workspace || inv.workspace_slug;
-          const isTargetWs = !invWs || invWs === wsSlug || invWs === ws?.id;
-          if (isTargetWs) {
-            const mappedWallet = (
-              localDB._email_wallet_map?.[invMail] ||
-              (typeof window !== "undefined"
-                ? (JSON.parse(localStorage.getItem("plane_dapp_email_wallet_map") || "{}"))[invMail]
-                : "") ||
-              ""
-            ).toLowerCase().trim();
-
-            const matched =
-              Boolean(invMail && activeWsMemberMails.has(invMail)) ||
-              Boolean(invWallet && activeWsMemberWallets.has(invWallet)) ||
-              Boolean(mappedWallet && activeWsMemberWallets.has(mappedWallet));
-            if (matched && !inv.accepted) {
-              inv.accepted = true;
-              if (mappedWallet && !inv.wallet_address) {
-                inv.wallet_address = mappedWallet;
-              }
-              invChanged = true;
-            }
-          }
-        });
-        if (invChanged) {
-          saveStoredInvitations(localDB.invitations);
-        }
-      }
-
-      workspaceMembers.forEach((wm: any) => {
-        let memberKey = typeof wm.member === "string" ? wm.member : (wm.member?.id || wm.email || wm.id || "");
-        const memberMail = (wm.email || (memberKey.includes("@") ? memberKey : "")).toLowerCase().trim();
-        if (memberKey === "user-default" || !memberKey) {
-          memberKey = memberMail ? `user-${memberMail.split("@")[0]}` : wm.id || `member-${Date.now()}`;
-        }
-        if ((memberMail && addedMemberKeys.has(memberMail)) || (memberKey !== "user-default" && addedMemberKeys.has(memberKey))) {
-          return;
-        }
-
-        const user = (localDB.users || []).find(
-          (u: any) =>
-            (memberMail && (u.email || "").toLowerCase().trim() === memberMail) ||
-            (!memberMail && (
-              u.id === memberKey ||
-              u.username === memberKey ||
-              (wm.wallet_address && (
-                (u.metanode_wallet_address && u.metanode_wallet_address.toLowerCase() === wm.wallet_address.toLowerCase()) ||
-                (typeof u.id === "string" && u.id.toLowerCase() === wm.wallet_address.toLowerCase())
-              ))
-            ))
-        );
-        const matchingInv = (localDB.invitations || []).find((inv: any) =>
-          (memberMail && (inv.email || "").toLowerCase().trim() === memberMail) ||
-          (!memberMail && wm.wallet_address && inv.wallet_address?.toLowerCase() === wm.wallet_address.toLowerCase())
-        );
-        const isEth = memberKey.startsWith("0x");
-        const resolvedEmail = memberMail || (user && (!memberMail || (user.email || "").toLowerCase().trim() === memberMail) ? user.email : null) || wm.email || matchingInv?.email || (isEth ? `${memberKey}@fiai.network` : memberKey);
-        const shortAddr = isEth ? `${memberKey.slice(0, 6)}...${memberKey.slice(-4)}` : "Member";
-        const namePart = resolvedEmail.includes("@") ? resolvedEmail.split("@")[0] : shortAddr;
-        const isUserMatch = Boolean(user && (!memberMail || (user.email || "").toLowerCase().trim() === memberMail));
-        const memberObj = isUserMatch ? user : {
-          id: memberKey || wm.id || `member-${namePart}`,
-          email: resolvedEmail,
-          first_name: wm.first_name || namePart,
-          last_name: wm.last_name || "",
-          display_name: wm.display_name || wm.first_name || namePart,
-          avatar_url: "",
-          is_active: true,
-        };
-
-        membersList.push({
-          id: wm.id || `ws-member-${memberObj.id}`,
-          member: memberObj,
-          role: wm.role || 15,
-          workspace: ws?.id || wsSlug,
-          is_active: wm.is_active !== false,
-          created_at: wm.created_at || new Date().toISOString(),
-        });
-        if (memberObj.id && memberObj.id !== "user-default") addedMemberKeys.add(memberObj.id);
-        if (memberObj.email) addedMemberKeys.add(memberObj.email.toLowerCase().trim());
-      });
-
-      // 3.5. Accepted invitations are NOT members.
-      //     Membership is derived exclusively from `workspace_members` rows, which
-      //     are written by the join flow (accept invitation) or by on-chain sync.
-      //     Fabricating member rows from accepted invitations produced "phantom"
-      //     members (RC-7) and made admin deletion impossible: the row was
-      //     re-created on every GET /members/.
-
-      // 4. Fallback for single-user initial installation
-      const activeId = activeUser?.id || activeUserId;
-      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
-      if (activeId && !addedMemberKeys.has(activeId) && (!activeMail || !addedMemberKeys.has(activeMail))) {
-        if ((!ws?.created_by || ws?.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
-          membersList.push({
-            id: `ws-member-${activeId}`,
-            member: activeUser || { id: activeId, email: activeMail, first_name: "User", last_name: "", display_name: "User" },
-            role: 20,
-            workspace: ws?.id || wsSlug,
-            is_active: true,
-            created_at: new Date().toISOString(),
-          });
-          addedMemberKeys.add(activeId);
-        }
-      }
-
-      if (ws) {
-        ws.total_members = membersList.length;
-        saveDB();
-      }
-
-      return ok(membersList);
+      const canonicalMembers = listWorkspaceMembers(localDB, wsSlug, ws?.id);
+      if (ws) ws.total_members = canonicalMembers.length;
+      return ok(canonicalMembers);
     }
   }
 
@@ -4126,16 +3237,16 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   if (wsMemberLeaveMatch && method === "post") {
     const wsSlug = wsMemberLeaveMatch[1];
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-    const activeId = activeUser?.id || activeUserId || "user-default";
-    const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+    const activeId = routeSessionUser?.id || routeSessionUserId || "user-default";
+    const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
     const activeWallet = (
       currentUserAddress ||
       getStoredWalletAddress() ||
       (typeof window !== "undefined"
         ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))
         : null) ||
-      (activeUser as any)?.metanode_wallet_address ||
-      (activeUser as any)?.wallet_address ||
+      (routeSessionUser as any)?.metanode_wallet_address ||
+      (routeSessionUser as any)?.wallet_address ||
       ""
     ).toLowerCase().trim();
 
@@ -4234,10 +3345,10 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 
       const matchedInvs = (localDB.invitations || []).filter((i: any) => {
         const iWsKeys = getInvitationWorkspaceKeys(i);
-        const allowedInvWs = [wsSlug, ws?.id, ws?.slug]
+        const allowedInvWs = new Set([wsSlug, ws?.id, ws?.slug]
           .filter(Boolean)
-          .map((x: any) => String(x).toLowerCase().trim());
-        if (iWsKeys.length > 0 && !iWsKeys.some((k: string) => allowedInvWs.includes(k))) return false;
+          .map((x: any) => String(x).toLowerCase().trim()));
+        if (iWsKeys.length > 0 && !iWsKeys.some((k: string) => allowedInvWs.has(k))) return false;
         const iId = String(i.id || "").toLowerCase().trim();
         const iMail = (i.email || "").toLowerCase().trim();
         const iWallet = (i.wallet_address || "").toLowerCase().trim();
@@ -4419,6 +3530,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         for (const wallet of Array.from(resolvedWallets)) {
           try {
             console.log(`[DApp Routes] Removing member on-chain: wallet=${wallet}, admin=${actingAdminWallet}`);
+            // oxlint-disable-next-line no-await-in-loop -- Revoke each wallet on chain before deleting local membership.
             const removed = await removeWorkspaceMemberOnChain(wsSlug, wallet, actingAdminWallet || undefined);
             if (!removed) {
               chainFailures.push({
@@ -4565,48 +3677,28 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
 
     if (method === "patch" || method === "put") {
-      let updatedMember: any = null;
-      if (localDB.workspace_members) {
-        const idx = localDB.workspace_members.findIndex((m: any) => m.id === memberId || m.member === memberId);
-        if (idx >= 0) {
-          localDB.workspace_members[idx] = { ...localDB.workspace_members[idx], ...body };
-          updatedMember = localDB.workspace_members[idx];
-          saveDB();
-        }
+      const ws = (localDB.workspaces || []).find((entry: any) => entry.slug === wsSlug || entry.id === wsSlug);
+      const keys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
+      const idx = (localDB.workspace_members || []).findIndex((entry: any) =>
+        (entry.id === memberId || entry.member === memberId) && [entry.workspace, entry.workspace_id, entry.workspace_slug].some((key) => keys.has(key)));
+      if (idx < 0) return { status: 404, data: { error: "Member not found in this workspace." } };
+      if (Object.keys(body).some((key) => key !== "role") || ![5, 10, 15, 20].includes(Number(body.role))) return { status: 400, data: { error: "Only a valid member role may be updated here." } };
+      const previous = localDB.workspace_members[idx];
+      const targetUser = (localDB.users || []).find((entry: any) => entry.id === previous.member);
+      const wallet = extractEthAddress(previous.wallet_address || previous.member || targetUser?.metanode_wallet_address);
+      if (!wallet) return { status: 409, data: { error: "The member has no verified wallet. Link the wallet before changing permissions." } };
+      try {
+        const signer = await assertVaultSigningAddress(getStoredWalletAddress() || currentUserAddress);
+        if (!await setWorkspaceMemberRoleOnChain(wsSlug, wallet, Number(body.role), signer)) throw new Error("Role was not confirmed.");
+      } catch (error) {
+        return { status: 503, data: { error: error instanceof Error ? error.message : "Role update was not confirmed." } };
       }
-
-      if (updatedMember && body.role !== undefined) {
-        const memberAddr = extractEthAddress(updatedMember.address || updatedMember.member || updatedMember.email);
-        const bridge = getFiaiSDK();
-        const wsRegistryAddr = getWorkspaceRegistryAddress();
-        if (memberAddr && wsRegistryAddr && bridge && currentUserAddress) {
-          const contractRole = mapPlaneRoleToContractRole(body.role);
-          bridge
-            .request("sendTransaction", {
-              from: currentUserAddress,
-              to: wsRegistryAddr,
-              abiData: [ADD_MEMBER_ABI],
-              functionName: "addMember",
-              feeType: "sc",
-              amount: "0",
-              value: "0",
-              gas: getContractGas(),
-              type: "transaction",
-              inputArray: [
-                { name: "slug", type: "string", value: wsSlug },
-                { name: "member", type: "address", value: memberAddr },
-                { name: "role", type: "uint8", value: String(contractRole) },
-              ],
-              isReadOnly: false,
-              bundleId: "",
-            })
-            .catch((err: any) => {
-              console.warn(`[DApp Interceptor] Cập nhật role on-chain thất bại:`, err);
-            });
-        }
-      }
-
-      return ok(updatedMember || { id: memberId, ...body });
+      const role = await fetchMemberRoleOnChain(wsSlug, wallet);
+      if (role < 1) return { status: 503, data: { error: "Unable to read the confirmed member role." } };
+      const updated = { ...previous, role: role === 1 ? Math.min(Number(body.role), 15) : 20, requested_role: Number(body.role), wallet_address: wallet, verified_on_chain: true, updated_at: new Date().toISOString() };
+      localDB.workspace_members[idx] = updated;
+      saveDB();
+      return ok(updated);
     }
   }
 
@@ -4743,8 +3835,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const canonicalWsId = ws?.id || wsSlug;
     const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
 
-    const currentUserId = activeUser?.id || activeUserId;
-    const currentUserEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+    const currentUserId = routeSessionUser?.id || routeSessionUserId;
+    const currentUserEmail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
     const activeWallet = (
       sessionStorage.getItem("plane_active_wallet_address") ||
       localStorage.getItem("plane_active_wallet_address") ||
@@ -4892,8 +3984,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
           const canonicalWsId = ws?.id || wsSlug;
 
-          const currentUserId = activeUser?.id || activeUserId;
-          const currentUserEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+          const currentUserId = routeSessionUser?.id || routeSessionUserId;
+          const currentUserEmail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
           const activeWallet = (
             sessionStorage.getItem("plane_active_wallet_address") ||
             localStorage.getItem("plane_active_wallet_address") ||
@@ -5082,8 +4174,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     }
     const targetProjId = targetProj.id || projectId;
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-    const activeId = activeUser?.id || activeUserId || "user-default";
-    const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+    const activeId = routeSessionUser?.id || routeSessionUserId || "user-default";
+    const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
     const activeWallet = (
       sessionStorage.getItem("plane_active_wallet_address") ||
       localStorage.getItem("plane_active_wallet_address") ||
@@ -5160,7 +4252,6 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   // ── Project Member Detail & Leave ──────────────────────────────────────
   const projMemberActionMatch = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/members\/([^/]+)\/?(?:\?.*)?$/);
   if (projMemberActionMatch) {
-    const wsSlug = projMemberActionMatch[1];
     const projectId = projMemberActionMatch[2];
     const targetMemberId = projMemberActionMatch[3];
     const targetProj = (localDB.projects || []).find(
@@ -5169,8 +4260,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const targetProjId = targetProj?.id || projectId;
 
     if (method === "post" && targetMemberId === "leave") {
-      const activeId = activeUser?.id || activeUserId || "user-default";
-      const activeMail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
+      const activeId = routeSessionUser?.id || routeSessionUserId || "user-default";
+      const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
       const activeWallet = (
         sessionStorage.getItem("plane_active_wallet_address") ||
         localStorage.getItem("plane_active_wallet_address") ||
@@ -5458,9 +4549,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
 
   // ── Project Archive / Restore ────────────────────────────────────────
-  const archiveMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/archive\/?$/);
-  if (archiveMatch) {
-    const projectId = archiveMatch[1];
+  const archivedIssueListMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/archive\/?$/);
+  if (archivedIssueListMatch) {
+    const projectId = archivedIssueListMatch[1];
     const project = localDB.projects?.find((p: any) => p.id === projectId);
     if (project) {
       if (method === "post") {
@@ -5485,7 +4576,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     return ok(localDB.favorites || []);
   }
 
-  // ── Notifications ─────────────────────────────────────────────────── 
+  // ── Notifications ───────────────────────────────────────────────────
   if (url.includes("/notifications")) {
     const notifWsMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
     const notifWsSlug = notifWsMatch ? notifWsMatch[1] : null;
@@ -5495,9 +4586,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const canonicalNotifWsId = notifWs?.id || notifWsSlug || "workspace-fiai";
     const validNotifWsKeys = new Set([notifWsSlug, notifWs?.id, notifWs?.slug, canonicalNotifWsId].filter(Boolean));
 
-    const userEmail = (activeUser?.email || loggedInEmail || "").toLowerCase().trim();
-    const userId = activeUser?.id || activeUserId;
-    const userWallet = (getStoredWalletAddress() || (activeUser as any)?.wallet_address || "").toLowerCase().trim();
+    const userEmail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
+    const userId = routeSessionUser?.id || routeSessionUserId;
+    const userWallet = (getStoredWalletAddress() || (routeSessionUser as any)?.wallet_address || "").toLowerCase().trim();
 
     if (!localDB.notifications) localDB.notifications = [];
 
@@ -5617,7 +4708,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         const repProj = (localDB.projects || []).find((p: any) => p.id === rep.project || p.id === repIssue?.project);
         const repWs = notifWs;
         const repWsId = repWs?.id || canonicalNotifWsId;
-        const repUser = (localDB.users || []).find((u: any) => u.id === rep.reporter_id) || activeUser;
+        const repUser = (localDB.users || []).find((u: any) => u.id === rep.reporter_id) || routeSessionUser;
         localDB.notifications.push({
           id: `notif-rep-${repKey}`,
           workspace: repWsId,
@@ -5767,6 +4858,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
           seenResultKeys.add(rKey);
           return true;
         })
+        // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
         .map((n: any) => ({
           ...n,
           workspace: canonicalNotifWsId,
@@ -5885,14 +4977,14 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         comment_html: c.comment_html || c.body || "",
         comment_stripped: c.comment_stripped || "",
         comment_json: c.comment_json || null,
-        actor: c.actor || activeUser?.id || "me",
+        actor: c.actor || routeSessionUser?.id || "me",
         actor_detail: c.actor_detail || {
-          id: c.actor || activeUser?.id || "me",
-          first_name: activeUser?.first_name || "Plane",
-          last_name: activeUser?.last_name || "Admin",
+          id: c.actor || routeSessionUser?.id || "me",
+          first_name: routeSessionUser?.first_name || "Plane",
+          last_name: routeSessionUser?.last_name || "Admin",
           is_bot: false,
-          display_name: activeUser?.display_name || activeUser?.first_name || "Plane Admin",
-          avatar: activeUser?.avatar_url || "",
+          display_name: routeSessionUser?.display_name || routeSessionUser?.first_name || "Plane Admin",
+          avatar: routeSessionUser?.avatar_url || "",
         },
         created_at: c.created_at,
         updated_at: c.updated_at || c.created_at,
@@ -5915,8 +5007,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     const activities = (Array.isArray(localDB.issue_activities) ? localDB.issue_activities : [])
       .filter((activity: any) => activity.issue === issueId || activity.issue_id === issueId)
       .filter((activity: any) => !createdAfter || new Date(activity.created_at) > new Date(createdAfter))
-      .slice()
-      .sort((first: any, second: any) => new Date(first.created_at).getTime() - new Date(second.created_at).getTime());
+
+      .toSorted((first: any, second: any) => new Date(first.created_at).getTime() - new Date(second.created_at).getTime());
     return ok(activities);
   }
 
@@ -5924,12 +5016,12 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   const commentMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/comments(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
   if (commentMatch) {
     const issueId = commentMatch[2];
-    const commentId = commentMatch[3];
+    const targetIssueCommentId = commentMatch[3];
 
-    if (commentId) {
+    if (targetIssueCommentId) {
       if (method === "patch" || method === "put") {
         if (!localDB.comments) localDB.comments = [];
-        const cIdx = localDB.comments.findIndex((c: any) => c.id === commentId);
+        const cIdx = localDB.comments.findIndex((c: any) => c.id === targetIssueCommentId);
         if (cIdx > -1) {
           localDB.comments[cIdx] = {
             ...localDB.comments[cIdx],
@@ -5944,13 +5036,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
       if (method === "delete") {
         if (localDB.comments) {
-          localDB.comments = localDB.comments.filter((c: any) => c.id !== commentId);
+          localDB.comments = localDB.comments.filter((c: any) => c.id !== targetIssueCommentId);
           saveDB();
         }
         return ok({});
       }
       if (method === "get") {
-        const found = (localDB.comments || []).find((c: any) => c.id === commentId);
+        const found = (localDB.comments || []).find((c: any) => c.id === targetIssueCommentId);
         return found ? ok(found) : { data: null, status: 404 };
       }
     }
@@ -5958,19 +5050,20 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     if (method === "get") {
       const comments = (localDB.comments || []).filter((c: any) => c.issue === issueId || c.issue_id === issueId);
       const issue = localDB.issues?.find((i: any) => i.id === issueId);
+      // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
       const enrichedComments = comments.map((c: any) => ({
         ...c,
         issue_id: issueId,
         project_id: c.project_id || c.project || issue?.project,
         workspace_id: c.workspace_id || c.workspace || issue?.workspace,
-        actor: c.actor || activeUser?.id || "me",
+        actor: c.actor || routeSessionUser?.id || "me",
         actor_detail: c.actor_detail || {
-          id: c.actor || activeUser?.id || "me",
-          first_name: activeUser?.first_name || "Plane",
-          last_name: activeUser?.last_name || "Admin",
+          id: c.actor || routeSessionUser?.id || "me",
+          first_name: routeSessionUser?.first_name || "Plane",
+          last_name: routeSessionUser?.last_name || "Admin",
           is_bot: false,
-          display_name: activeUser?.display_name || activeUser?.first_name || "Plane Admin",
-          avatar: activeUser?.avatar_url || "",
+          display_name: routeSessionUser?.display_name || routeSessionUser?.first_name || "Plane Admin",
+          avatar: routeSessionUser?.avatar_url || "",
         },
         access: c.access || "INTERNAL",
       }));
@@ -5982,7 +5075,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const urlProjMatch = url.match(/\/projects\/([^/]+)\//);
       const wsSlug = urlWsMatch ? urlWsMatch[1] : issue?.workspace || localDB.workspaces?.[0]?.slug || "";
       const projId = urlProjMatch ? urlProjMatch[1] : issue?.project || "mock-project";
-      const authorId = activeUser?.id || "me";
+      const authorId = routeSessionUser?.id || "me";
 
       const newComment = {
         id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
@@ -5995,11 +5088,11 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         actor: authorId,
         actor_detail: {
           id: authorId,
-          first_name: activeUser?.first_name || "Plane",
-          last_name: activeUser?.last_name || "Admin",
+          first_name: routeSessionUser?.first_name || "Plane",
+          last_name: routeSessionUser?.last_name || "Admin",
           is_bot: false,
-          display_name: activeUser?.display_name || activeUser?.first_name || "Plane Admin",
-          avatar: activeUser?.avatar_url || "",
+          display_name: routeSessionUser?.display_name || routeSessionUser?.first_name || "Plane Admin",
+          avatar: routeSessionUser?.avatar_url || "",
         },
         access: body.access || "INTERNAL",
         reaction_groups: {},
@@ -6137,6 +5230,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     if (method === "get") {
       const subIssues = (localDB.issues || []).filter((i: any) => i.parent_id === parentId || i.parent === parentId);
 
+      // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
       const enrichedSubIssues = subIssues.map((item: any) => {
         const children = (localDB.issues || []).filter((i: any) => i.parent_id === item.id || i.parent === item.id);
         const stateDetail = item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
@@ -6792,6 +5886,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       }
       let list = localDB.inbox_issues
         .filter((i: any) => i.project_id === projectId || i.project === projectId)
+        // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
         .map((item: any) => {
           const matchedIssue = (localDB.issues || []).find((iss: any) => iss.id === (item.issue_id || item.issue?.id));
           return {
@@ -6805,8 +5900,8 @@ export async function handleRoute(method: string, url: string, body: Record<stri
       const queryParams = new URLSearchParams(urlParts[1] || "");
       const statusParam = queryParams.get("status");
       if (statusParam) {
-        const statuses = statusParam.split(",").map((s) => Number(s.trim()));
-        list = list.filter((item: any) => statuses.includes(Number(item.status)));
+        const statuses = new Set(statusParam.split(",").map((s) => Number(s.trim())));
+        list = list.filter((item: any) => statuses.has(Number(item.status)));
       }
 
       return ok({
@@ -6841,7 +5936,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         priority: issueData.priority || "none",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        created_by: activeUserId || "user-1",
+        created_by: routeSessionUserId || "user-1",
         ...issueData,
       };
       if (!localDB.issues) localDB.issues = [];
@@ -6859,7 +5954,7 @@ export async function handleRoute(method: string, url: string, body: Record<stri
         project_id: projectId,
         workspace: wsId,
         workspace_id: wsId,
-        created_by: activeUserId || "user-1",
+        created_by: routeSessionUserId || "user-1",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -7221,48 +6316,7 @@ function getWorkspaceOwnerEth(ws: any, wsSlug: string): string {
                  extractEthAddress(ws.owner.id);
     if (wObj) return wObj.toLowerCase();
   }
-  // 4. Look up in localDB.workspace_members for member with role >= 20 (Owner / Admin)
-  const ownerMember = (localDB.workspace_members || []).find((m: any) => {
-    const isThisWs = !m.workspace || m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id;
-    return isThisWs && Number(m.role) >= 20 && (
-      (m.wallet_address && /^0x[a-f0-9]{40}$/i.test(m.wallet_address)) ||
-      (typeof m.member === "string" && /^0x[a-f0-9]{40}$/i.test(m.member))
-    );
-  });
-  if (ownerMember) {
-    const wMem = extractEthAddress(ownerMember.wallet_address) || extractEthAddress(ownerMember.member);
-    if (wMem) return wMem.toLowerCase();
-  }
-  // 5. Look up in localDB.users for owner user
-  const ownerUser = (localDB.users || []).find((u: any) => {
-    const matchId = u.id && (u.id === ws?.owner?.id || u.id === ws?.created_by || u.id === "admin");
-    const matchEmail = u.email && (u.email === ws?.owner?.email || u.email === "admin@plane.local" || u.email === "anh2482006@gmail.com");
-    return (matchId || matchEmail) && (u.metanode_wallet_address || u.wallet_address);
-  });
-  if (ownerUser) {
-    const wUser = extractEthAddress(ownerUser.metanode_wallet_address || ownerUser.wallet_address);
-    if (wUser) return wUser.toLowerCase();
-  }
-  // 6. Active logged-in user if admin/owner
-  const currentAddr = (currentUserAddress || getStoredWalletAddress() || "").toLowerCase();
-  const currentEmail = (getLoggedInEmail() || "").toLowerCase().trim();
-  const currentUid = getLoggedInUserId() || "";
-  const isAdminUser = Boolean(
-    currentEmail === "anh2482006@gmail.com" ||
-    currentEmail === "admin@plane.local" ||
-    currentUid === "admin" ||
-    (ws?.owner?.id && ws.owner.id === currentUid)
-  );
-  if (isAdminUser && currentAddr) {
-    const isMemberOnly = (localDB.workspace_members || []).some(
-      (m: any) =>
-        (m.wallet_address?.toLowerCase() === currentAddr || m.member?.toLowerCase() === currentAddr) &&
-        Number(m.role) < 20
-    );
-    if (!isMemberOnly) {
-      return currentAddr;
-    }
-  }
+
   return "";
 }
 
@@ -7467,7 +6521,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       const isDescending = orderBy.startsWith("-");
       const sortKey = isDescending ? orderBy.slice(1) : orderBy;
       const priorityRank: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
-      archivedIssues = archivedIssues.slice().sort((first: any, second: any) => {
+      archivedIssues = archivedIssues.toSorted((first: any, second: any) => {
         let firstValue: any;
         let secondValue: any;
         switch (sortKey) {
@@ -7492,8 +6546,8 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       });
     } else {
       archivedIssues = archivedIssues
-        .slice()
-        .sort((first: any, second: any) => Number(first.sort_order || 0) - Number(second.sort_order || 0));
+
+        .toSorted((first: any, second: any) => Number(first.sort_order || 0) - Number(second.sort_order || 0));
     }
 
     return ok(buildIssueResponseEnvelope(archivedIssues, query.get("group_by")));
@@ -7720,15 +6774,15 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         ...body,
         display_filters: {
           ...current.display_filters,
-          ...(body?.display_filters || {}),
+          ...body?.display_filters,
         },
         display_properties: {
           ...current.display_properties,
-          ...(body?.display_properties || {}),
+          ...body?.display_properties,
         },
         preferences: {
           ...current.preferences,
-          ...(body?.preferences || {}),
+          ...body?.preferences,
         },
       };
       localDB.user_properties[key] = updated;
@@ -7776,7 +6830,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
 
     if (!Array.isArray(localDB.issue_relations)) localDB.issue_relations = [];
 
-    const relationTypes = ["blocking", "blocked_by", "duplicate", "relates_to"];
+    const relationTypes = new Set(["blocking", "blocked_by", "duplicate", "relates_to"]);
     const reverseRelationType: Record<string, string> = {
       blocking: "blocked_by",
       blocked_by: "blocking",
@@ -7785,10 +6839,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     };
     const findRelatedIssue = (relatedIssueId: string) =>
       (localDB.issues || []).find((item: any) => item.id === relatedIssueId);
-    const describeRelatedIssue = (relatedIssue: any) =>
-      relatedIssue?.project_detail?.identifier && relatedIssue?.sequence_id
-        ? `${relatedIssue.project_detail.identifier}-${relatedIssue.sequence_id}`
-        : relatedIssue?.name || "";
+
 
     if (relationAction === "issue-relation" && method === "get") {
       const groupedRelations: Record<string, any[]> = {
@@ -7809,7 +6860,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     }
 
     if (relationAction === "issue-relation" && method === "post") {
-      const relationType = relationTypes.includes(body?.relation_type) ? body.relation_type : null;
+      const relationType = relationTypes.has(body?.relation_type) ? body.relation_type : null;
       const relatedIssueIds = Array.isArray(body?.issues) ? body.issues : [];
       if (!relationType || relatedIssueIds.length === 0) {
         return { data: { error: "relation_type and issues are required." }, status: 400 };
@@ -7864,7 +6915,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     }
 
     if (relationAction === "remove-relation" && method === "post") {
-      const relationType = relationTypes.includes(body?.relation_type) ? body.relation_type : null;
+      const relationType = relationTypes.has(body?.relation_type) ? body.relation_type : null;
       const relatedIssueId = body?.related_issue as string | undefined;
       if (!relationType || !relatedIssueId) {
         return { data: { error: "relation_type and related_issue are required." }, status: 400 };
@@ -8251,7 +7302,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         }
       });
 
-      const mockData = Object.keys(dateMap).sort().map(dateStr => {
+      const mockData = Object.keys(dateMap).toSorted().map(dateStr => {
         return {
           key: dateStr,
           name: dateStr,
@@ -8465,9 +7516,6 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         const resolvedUserId = activeUser?.id || currentUserId;
         const resolvedEmail = (activeUser?.email || currentUserEmail || "").toLowerCase().trim();
 
-        const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
-        const wsSlug = wsMatch ? wsMatch[1] : (proj.workspace_detail?.slug || proj.workspace);
-        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug || w.id === proj.workspace);
 
         const pm = (localDB.project_members || []).find((pMember: any) => {
           const pId = pMember.project || pMember.project_id;
@@ -8895,6 +7943,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
           const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug, true);
           if (onChainMembers && onChainMembers.length > 0) {
             syncedOnChainWallets = onChainMembers;
+            const beforeOnChainSync = JSON.stringify(localDB);
             if (!localDB.workspace_members) localDB.workspace_members = [];
             const ownerEth = getWorkspaceOwnerEth(ws, wsSlug);
 
@@ -8961,6 +8010,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
               }
 
               // Verify on-chain role: Role.None (0) means removed or non-member
+              // oxlint-disable-next-line no-await-in-loop -- Resolve and merge membership records in deterministic order.
               const onChainRole = await fetchMemberRoleOnChain(wsSlug, cleanAddr);
               if (onChainRole <= 0) {
                 console.log(`[DApp Routes] Bỏ qua ví ${cleanAddr} vì on-chain role = ${onChainRole} (None)`);
@@ -9049,10 +8099,12 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
                   console.log(`[DApp Routes] Bỏ qua matchedInv đã bị Admin xóa (removed_members): ${invMail || cleanAddr}`);
                   continue;
                 }
-                matchedInv.accepted = true;
-                matchedInv.wallet_address = cleanAddr;
-                matchedInv.responded_at = matchedInv.responded_at || new Date().toISOString();
-                matchedInv.updated_at = new Date().toISOString();
+                if (matchedInv.accepted !== true || matchedInv.wallet_address?.toLowerCase() !== cleanAddr || !matchedInv.responded_at) {
+                  matchedInv.accepted = true;
+                  matchedInv.wallet_address = cleanAddr;
+                  matchedInv.responded_at = matchedInv.responded_at || new Date().toISOString();
+                  matchedInv.updated_at = new Date().toISOString();
+                }
               }
 
               const memberEmail = matchedInv?.email || `${cleanAddr.slice(0, 6)}...${cleanAddr.slice(-4)}@metanode.chain`;
@@ -9072,7 +8124,8 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
                   member: resolvedMemberId,
                   email: memberEmail,
                   wallet_address: cleanAddr,
-                  role: matchedInv?.role || 15,
+                  role: onChainRole >= 2 ? 20 : 15,
+                  on_chain_role: onChainRole,
                   is_active: true,
                   verified_on_chain: true,
                   created_at: new Date().toISOString(),
@@ -9080,6 +8133,8 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
               } else {
                 localDB.workspace_members[existingIdx].wallet_address = cleanAddr;
                 localDB.workspace_members[existingIdx].verified_on_chain = true;
+                localDB.workspace_members[existingIdx].role = onChainRole >= 2 ? 20 : 15;
+                localDB.workspace_members[existingIdx].on_chain_role = onChainRole;
                 localDB.workspace_members[existingIdx].is_active = true;
                 if (matchedInv?.email) {
                   localDB.workspace_members[existingIdx].email = matchedInv.email;
@@ -9106,8 +8161,10 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
                 } catch { }
               }
             }
-            saveStoredInvitations(localDB.invitations);
-            saveDB();
+            if (beforeOnChainSync !== JSON.stringify(localDB)) {
+              saveStoredInvitations(localDB.invitations);
+              saveDB();
+            }
           }
         } catch (chainErr) {
           console.warn("[DApp Invitations] Failed to sync on-chain members:", chainErr);
@@ -9503,6 +8560,13 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       const wsSlug = match ? match[1] : (localDB.workspaces?.[0]?.slug || "fiai");
       const currentWs = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
 
+      if (!currentWs) return { status: 404, data: { error: "Không tìm thấy không gian làm việc." } };
+      if (!body.emails.length || body.emails.some((entry: any) => !entry || typeof entry.email !== "string" || !(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(entry.email.trim()) || /^0x[a-f0-9]{40}$/i.test(entry.email.trim())) || ![5, 10, 15, 20].includes(Number(entry.role ?? 15)))) {
+        return { status: 400, data: { error: "Email, địa chỉ ví hoặc quyền trong danh sách mời không hợp lệ." } };
+      }
+      if (body.emails.some((entry: any) => entry.wallet_address && (typeof entry.wallet_address !== "string" || !/^0x[a-f0-9]{40}$/i.test(entry.wallet_address.trim()) || /^0x0{40}$/i.test(entry.wallet_address.trim())))) return { status: 400, data: { error: "Ví người nhận không hợp lệ." } };
+      body = { ...body, emails: Array.from(new Map(body.emails.map((entry: any) => [entry.email.trim().toLowerCase(), { email: entry.email.trim().toLowerCase(), role: Number(entry.role ?? 15), wallet_address: entry.wallet_address?.trim().toLowerCase() || extractEthAddress(entry.email) || "" }])).values()) };
+
       if (!localDB[collection]) localDB[collection] = [];
       const newInvites: any[] = [];
 
@@ -9580,24 +8644,34 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
           (inv: any) =>
             (inv.email || "").toLowerCase().trim() === rawEmail &&
             !inv.accepted &&
+            !isInvitationDeleted(inv, readInvitationTombstones()) &&
             (inv.workspace_slug === wsSlug || inv.workspace?.slug === wsSlug || inv.workspace_id === currentWs?.id || inv.workspace?.id === currentWs?.id)
         );
 
         if (existingInv) {
           existingInv.role = e.role || existingInv.role || 15;
           existingInv.updated_at = new Date().toISOString();
-          // Rotate the capability token only when the record has none; renew the
-          // expiry so the freshly sent email link stays usable.
-          existingInv.token = existingInv.token || generateInviteToken();
+          // Reissuing always rotates the token; old links must stop working
+          // after the replacement snapshot is published.
+          existingInv.token = createInvitationToken();
+          existingInv.token_version = 2;
+          existingInv.status = "pending";
+          existingInv.responded_at = null;
+          existingInv.publication_status = "pending";
+          existingInv.wallet_address = e.wallet_address || existingInv.wallet_address || "";
           existingInv.token_expires_at = new Date(Date.now() + INVITE_TOKEN_TTL_MS).toISOString();
-          existingInv.invite_link = `/workspace-invitations?invitation_id=${existingInv.id}&slug=${wsSlug}&token=${existingInv.token}`;
+          existingInv.invite_link = invitationLink(wsSlug, existingInv.id, existingInv.token);
           newInvites.push(existingInv);
           console.log(`[DApp Interceptor] Updated existing pending invite for ${rawEmail} (${existingInv.id})`);
         } else {
           const invId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
-          const token = generateInviteToken();
+          const token = createInvitationToken();
           const createdInv = {
             id: invId,
+            token_version: 2,
+            status: "pending",
+            publication_status: "pending",
+            wallet_address: e.wallet_address || "",
             token: token,
             token_expires_at: new Date(Date.now() + INVITE_TOKEN_TTL_MS).toISOString(),
             created_at: new Date().toISOString(),
@@ -9607,7 +8681,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
             accepted: false,
             responded_at: null,
             message: "You have been invited.",
-            invite_link: `/workspace-invitations?invitation_id=${invId}&slug=${wsSlug}&token=${token}`,
+            invite_link: invitationLink(wsSlug, invId, token),
             workspace: {
               id: currentWs?.id || wsSlug,
               name: currentWs?.name || wsSlug,
@@ -9675,42 +8749,36 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       // real outcome instead of an unconditional success (RC-4). Only wallet
       // invitations can be provisioned on-chain; email invitees join by link.
       const chainErrors: { email: string; error: string }[] = [];
-      for (const e of body.emails) {
-        const memberAddress = extractEthAddress(e.email);
-        const bridge = getFiaiSDK();
-        const wsRegistryAddr = getWorkspaceRegistryAddress();
-        if (!memberAddress || !wsRegistryAddr || !bridge || !currentUserAddress) continue;
+      for (const inv of newInvites) {
+        const memberAddress = extractEthAddress(inv.wallet_address || inv.email);
+        if (!memberAddress) {
+          inv.wallet_approval_required = true;
+          chainErrors.push({ email: inv.email, error: "Đang chờ quản trị viên xác nhận ví người nhận; lời mời chưa cấp quyền tham gia." });
+          continue;
+        }
         try {
-          const contractRole = mapPlaneRoleToContractRole(e.role);
-          await bridge.request("sendTransaction", {
-            from: currentUserAddress,
-            to: wsRegistryAddr,
-            abiData: [ADD_MEMBER_ABI],
-            functionName: "addMember",
-            feeType: "sc",
-            amount: "0",
-            value: "0",
-            gas: getContractGas(),
-            type: "transaction",
-            inputArray: [
-              { name: "slug", type: "string", value: wsSlug },
-              { name: "member", type: "address", value: memberAddress },
-              { name: "role", type: "uint8", value: String(contractRole) },
-            ],
-            isReadOnly: false,
-            bundleId: "",
-          });
-          console.log(`[DApp Interceptor] ✅ Đã thêm thành viên on-chain: ${memberAddress} vào workspace: ${wsSlug}`);
-        } catch (chainErr: any) {
-          const message = String(chainErr?.message || chainErr || "Unknown error");
-          console.warn(`[DApp Interceptor] addMember on-chain thất bại (${memberAddress}):`, chainErr);
-          chainErrors.push({ email: (e.email || "").toLowerCase().trim(), error: message });
+          // oxlint-disable-next-line no-await-in-loop -- Serialize recipient authorization, transactions and delivery outcomes.
+          const signer = await assertVaultSigningAddress(getStoredWalletAddress() || currentUserAddress);
+          // oxlint-disable-next-line no-await-in-loop -- Serialize recipient authorization, transactions and delivery outcomes.
+          await writeWorkspaceWalletInvitation(wsSlug, memberAddress, Number(inv.role), Math.floor(Date.parse(inv.token_expires_at) / 1000), signer);
+          inv.wallet_approval_required = false;
+          inv.chain_approval_failed = false;
+        } catch (error) {
+          inv.chain_approval_failed = true;
+          chainErrors.push({ email: inv.email, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       saveDB();
       newInvites.forEach((inv) => syncDAppRecord(collection, inv.id, inv));
-      void uploadToIPFS(true);
+      // The recipient must be able to resolve the record before receiving mail.
+      const publishedCid = await uploadToIPFS(true);
+      let published = false;
+      if (publishedCid) published = await commitWorkspaceCID(wsSlug, publishedCid, { force: true });
+      if (!published) return { status: 503, data: { code: "INVITATION_PUBLICATION_PENDING", error: "Đã lưu lời mời trên máy nhưng chưa công bố được. Chưa gửi email; hãy thử lại sau khi xác nhận ví và kết nối lưu trữ.", invitations: newInvites, email_sent_count: 0, chain_failures: chainErrors } };
+      newInvites.forEach((inv) => { inv.publication_status = "published"; inv.published_cid = publishedCid; });
+      saveStoredInvitations(localDB[collection]);
+      saveDB();
 
       // Send invitation emails and report the REAL delivery result back to the
       // admin. Previously this was fire-and-forget, so the UI always claimed
@@ -9724,11 +8792,16 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         if (extractEthAddress(rawEmail)) continue;
 
         const inv = newInvites.find((i: any) => (i.email || "").toLowerCase().trim() === rawEmail);
+        if (inv?.chain_approval_failed) {
+          mailFailed.push({ email: rawEmail, error: "Chưa gửi email vì quyền nhận lời mời chưa được xác nhận." });
+          continue;
+        }
         const inviteLink =
           inv?.invite_link ||
           `/workspace-invitations?invitation_id=${inv?.id || "inv"}&slug=${wsSlug}&token=${inv?.token || "tok"}`;
 
         try {
+          // oxlint-disable-next-line no-await-in-loop -- Serialize recipient authorization, transactions and delivery outcomes.
           const delivered = await sendWorkspaceInviteEmail({
             recipientEmail: rawEmail,
             workspaceName: currentWs?.name || wsSlug,
@@ -9766,6 +8839,8 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         chain_failures: chainErrors,
       });
     }
+
+    if (collection === "invitations") return { status: 400, data: { error: "Vui lòng tạo lời mời bằng danh sách người nhận hợp lệ." } };
 
     let newRecord: any = {
       id: body.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
@@ -10304,6 +9379,17 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
   }
 
   if (method === "patch" || method === "put") {
+    if (collection === "invitations") {
+      const slug = url.match(/\/api\/workspaces\/([^/]+)\//)?.[1];
+      const workspace = (localDB.workspaces || []).find((entry: any) => entry.slug === slug || entry.id === slug);
+      const keys = new Set([slug, workspace?.id, workspace?.slug].filter(Boolean));
+      const invitation = (localDB.invitations || []).find((entry: any) => entry.id === id && getInvitationWorkspaceKeys(entry).some((key) => keys.has(key)));
+      if (!invitation) return { status: 404, data: { error: "Không tìm thấy lời mời trong không gian làm việc này." } };
+      if (invitation.accepted) return { status: 409, data: { error: "Hãy thay đổi quyền trong danh sách thành viên đã tham gia." } };
+      if (Object.keys(body).some((key) => key !== "role") || ![5, 10, 15, 20].includes(Number(body.role))) return { status: 400, data: { error: "Chỉ được cập nhật quyền hợp lệ của lời mời." } };
+      const result = await handleRouteUnlocked("post", `/api/workspaces/${slug}/invitations/`, { emails: [{ email: invitation.email, role: Number(body.role), wallet_address: invitation.wallet_address }] });
+      return result.status >= 400 ? result : ok(result.data.invitations.find((entry: any) => entry.id === id));
+    }
     if (!localDB[collection]) localDB[collection] = [];
     let idx = localDB[collection].findIndex((r: any) => r.id === id || r.slug === id);
     if (idx === -1 && collection === "issues" && id) {
@@ -10605,6 +9691,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       const wsMatchDel = url.match(/\/api\/workspaces\/([^/]+)\/invitations\//);
       const wsSlugDel = wsMatchDel ? decodeURIComponent(wsMatchDel[1]).toLowerCase().trim() : "";
       const targetInv = (localDB.invitations || []).find((i: any) => i.id === id);
+      if (!targetInv) return { status: 404, data: { error: "Không tìm thấy lời mời." } };
       const invWsKeys = targetInv ? getInvitationWorkspaceKeys(targetInv) : [];
 
       // An invitation belongs to exactly one workspace. Refuse a cross-workspace
@@ -10613,12 +9700,27 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         return { data: { error: "Invitation does not belong to this workspace" }, status: 404 };
       }
 
+      const invitedWallet = extractEthAddress(targetInv.wallet_address || targetInv.email);
+      if (invitedWallet && !targetInv.chain_approval_failed) {
+        try {
+          const signer = await assertVaultSigningAddress(getStoredWalletAddress() || currentUserAddress);
+          if (await fetchMemberRoleOnChain(wsSlugDel, invitedWallet) > 0) return { status: 409, data: { error: "Người nhận đã có quyền thành viên. Hãy quản lý quyền trong danh sách thành viên." } };
+          await writeWorkspaceWalletInvitation(wsSlugDel, invitedWallet, Number(targetInv.role), 0, signer, true);
+        } catch (error) {
+          return { status: 503, data: { error: error instanceof Error ? error.message : "Chưa xác nhận được việc thu hồi lời mời." } };
+        }
+      }
+
       removeStoredInvitation(
         id,
         targetInv?.email,
         wsSlugDel || invWsKeys[0] || undefined
       );
       localDB.invitations = (localDB.invitations || []).filter((i: any) => i.id !== id);
+      saveDB();
+      const revokedCid = await uploadToIPFS(true);
+      if (!revokedCid || !await commitWorkspaceCID(wsSlugDel, revokedCid, { force: true })) return { status: 503, data: { code: "INVITATION_REVOCATION_PENDING", error: "Đã thu hồi lời mời trên máy nhưng chưa đồng bộ được trạng thái chung. Hãy đồng bộ lại trước khi báo hoàn tất." } };
+      return ok({ revoked: true });
     } else {
       localDB[collection] = (localDB[collection] || []).filter((r: any) => r.id !== id);
     }
@@ -10741,4 +9843,3 @@ function parseApiUrl(url: string): { collection: string; id: string | null; isPa
 
   return { collection: "general", id: null, isPaginated: false };
 }
-

@@ -1,6 +1,7 @@
 import type { DAppDatabase, DAppWorkspace } from "./types";
 import { getStoredCredentials, setStoredCredential, createUserObject } from "./auth";
 import { saveSnapshotToIDB } from "./indexed-db";
+import { listWorkspaceMembers } from "./workspace-members";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -921,7 +922,7 @@ export const dappSyncChannel = typeof window !== "undefined" && typeof Broadcast
   : null;
 
 if (dappSyncChannel) {
-  dappSyncChannel.onmessage = (event) => {
+  dappSyncChannel.addEventListener("message", (event) => {
     try {
       const { type, cid, members, invitations, removed_members } = event.data || {};
       if (type === "SYNC_STATE") {
@@ -1119,7 +1120,7 @@ if (dappSyncChannel) {
     } catch (err) {
       console.warn("[DApp DB] BroadcastChannel message error:", err);
     }
-  };
+  });
 }
 
 export function getDBSnapshot(): Record<string, any> {
@@ -1589,69 +1590,7 @@ export function getInstanceInfo() {
 }
 
 export function getWorkspaceMemberCount(wsSlug: string, wsId?: string): number {
-  const wsKeys = new Set([wsSlug, wsId].filter(Boolean));
-  const ws = (localDB.workspaces || []).find((w: any) => wsKeys.has(w.slug) || wsKeys.has(w.id));
-  const targetSlug = ws?.slug || wsSlug;
-  const targetId = ws?.id || wsId || "";
-  const removedSet = new Set(
-    (localDB.removed_members?.[targetSlug] || [])
-      .concat(targetId ? (localDB.removed_members?.[targetId] || []) : [])
-      .map((a: string) => String(a).toLowerCase().trim())
-  );
-
-  const memberKeys = new Set<string>();
-
-  // 1. Workspace Owner / Creator
-  const ownerId = ws?.created_by || ws?.owner?.id;
-  const ownerEmail = (ws?.owner?.email || "").toLowerCase().trim();
-  if (ownerEmail && !removedSet.has(ownerEmail)) {
-    memberKeys.add(ownerEmail);
-  } else if (ownerId && ownerId !== "user-default" && !removedSet.has(String(ownerId).toLowerCase())) {
-    memberKeys.add(String(ownerId).toLowerCase());
-  } else if (!ownerEmail && !ownerId) {
-    memberKeys.add("owner-default");
-  }
-
-  // 2. Workspace Members from localDB.workspace_members
-  (localDB.workspace_members || []).forEach((m: any) => {
-    const isWs =
-      wsKeys.has(m.workspace) ||
-      wsKeys.has(m.workspace_id) ||
-      (ws && (m.workspace === ws.slug || m.workspace === ws.id || m.workspace_id === ws.slug || m.workspace_id === ws.id));
-    if (!isWs || m.is_active === false) return;
-
-    const mMail = (m.email || "").toLowerCase().trim();
-    const mMem = String(m.member || "").toLowerCase().trim();
-    const mId = String(m.id || "").toLowerCase().trim();
-    const mWallet = (m.wallet_address || (typeof m.member === "string" && m.member.startsWith("0x") ? m.member : "")).toLowerCase().trim();
-
-    if (removedSet.has(mMail) || removedSet.has(mMem) || removedSet.has(mId) || (mWallet && removedSet.has(mWallet))) {
-      return;
-    }
-
-    const key = mMail || mWallet || (mMem !== "user-default" ? mMem : mId);
-    if (key) memberKeys.add(key);
-  });
-
-  // 3. Accepted invitations from localDB.invitations
-  (localDB.invitations || []).forEach((inv: any) => {
-    const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-    const isWs = !invWs || wsKeys.has(invWs) || (ws && (invWs === ws.slug || invWs === ws.id));
-    if (!isWs || !inv.accepted) return;
-
-    const invMail = (inv.email || "").toLowerCase().trim();
-    const invWallet = (inv.wallet_address || "").toLowerCase().trim();
-    const invId = String(inv.id || "").toLowerCase().trim();
-
-    if (removedSet.has(invMail) || (invWallet && removedSet.has(invWallet)) || removedSet.has(invId)) {
-      return;
-    }
-
-    const key = invMail || invWallet || invId;
-    if (key) memberKeys.add(key);
-  });
-
-  return Math.max(memberKeys.size, 1);
+  return listWorkspaceMembers(localDB, wsSlug, wsId).length;
 }
 
 export function getUserWorkspaces(userId?: string | null, email?: string | null): any[] {
@@ -1693,6 +1632,7 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
           const matchWs = (m.workspace === w.slug || m.workspace === w.id || m.workspace_id === w.slug || m.workspace_id === w.id);
           if (!matchWs) return false;
           if (m.is_active === false) return false;
+          if (m.verified_on_chain === false || m.chain_sync_pending === true) return false;
           if (activeId && (m.member === activeId || m.id === activeId)) return true;
           if (activeMail && m.email && m.email.toLowerCase().trim() === activeMail) return true;
           if (activeWallet) {
@@ -1704,14 +1644,8 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
       );
       if (isMember) return true;
 
-      // 2.5 Has pending or accepted invitation for this workspace
-      if (activeMail) {
-        const hasInv = (localDB.invitations || []).some((inv: any) => {
-          const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
-          return (!invWs || invWs === w.slug || invWs === w.id) && (inv.email || "").toLowerCase().trim() === activeMail;
-        });
-        if (hasInv) return true;
-      }
+      // An invitation is not a membership. Pending invites remain on the
+      // invitation screen until the explicit wallet confirmation completes.
 
       // 3. Fallback for unowned default workspace (when system has only 1 initial user)
       if ((!w.created_by || w.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
@@ -1720,6 +1654,7 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
 
       return false;
     })
+    // oxlint-disable-next-line oxc/no-map-spread -- Copy-on-write response enrichment must not mutate shared persisted records.
     .map((w: any) => ({
       ...w,
       total_members: getWorkspaceMemberCount(w.slug, w.id),
@@ -1830,7 +1765,7 @@ export function getUserProfile() {
     : (activeUser.theme?.theme || "dark");
 
   const userTheme = {
-    ...(activeUser.theme || {}),
+    ...activeUser.theme,
     theme: effectiveTheme,
     primary: activeUser.theme?.primary || null,
     background: activeUser.theme?.background || null,

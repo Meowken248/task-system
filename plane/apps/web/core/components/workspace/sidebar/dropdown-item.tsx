@@ -35,13 +35,10 @@ const SidebarDropdownItem = observer(function SidebarDropdownItem(props: TProps)
   const memberStore = useMember();
   const slug = workspace?.slug;
   const loadedMemberCount =
-    slug && memberStore?.workspace?.getWorkspaceMemberIds
+    slug && memberStore?.workspace?.workspaceMemberMap?.[slug]
       ? memberStore.workspace.getWorkspaceMemberIds(slug)?.length
       : undefined;
-  const memberCount =
-    loadedMemberCount && loadedMemberCount > 0
-      ? loadedMemberCount
-      : (workspace?.total_members && workspace.total_members > 0 ? workspace.total_members : 1);
+  const memberCount = loadedMemberCount ?? workspace?.total_members ?? 0;
 
   return (
     <Link

@@ -28,24 +28,30 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     nameOrSignature:
       | "addMember"
       | "createWorkspace"
+      | "getInvitation"
       | "getMemberRole"
       | "getUserWorkspaces"
       | "getWorkspace"
       | "getWorkspaceCID"
       | "getWorkspaceMembers"
+      | "inviteMember"
       | "joinWorkspace"
       | "operator"
       | "removeMember"
+      | "revokeInvitation"
       | "setOperator"
       | "setWorkspaceOwner"
       | "updateWorkspaceCID"
       | "updateWorkspaceCIDIfMatches"
       | "workspaceExists"
+      | "workspacePolicyVersion"
   ): FunctionFragment;
 
   getEvent(
     nameOrSignatureOrTopic:
+      | "InvitationRevoked"
       | "MemberAdded"
+      | "MemberInvited"
       | "MemberRemoved"
       | "WorkspaceCIDUpdated"
       | "WorkspaceCreated"
@@ -58,6 +64,10 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
   encodeFunctionData(
     functionFragment: "createWorkspace",
     values: [string, string, string]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "getInvitation",
+    values: [string, AddressLike]
   ): string;
   encodeFunctionData(
     functionFragment: "getMemberRole",
@@ -80,12 +90,20 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     values: [string]
   ): string;
   encodeFunctionData(
+    functionFragment: "inviteMember",
+    values: [string, AddressLike, BigNumberish, BigNumberish]
+  ): string;
+  encodeFunctionData(
     functionFragment: "joinWorkspace",
     values: [string]
   ): string;
   encodeFunctionData(functionFragment: "operator", values?: undefined): string;
   encodeFunctionData(
     functionFragment: "removeMember",
+    values: [string, AddressLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "revokeInvitation",
     values: [string, AddressLike]
   ): string;
   encodeFunctionData(
@@ -108,10 +126,18 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     functionFragment: "workspaceExists",
     values: [string]
   ): string;
+  encodeFunctionData(
+    functionFragment: "workspacePolicyVersion",
+    values?: undefined
+  ): string;
 
   decodeFunctionResult(functionFragment: "addMember", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "createWorkspace",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "getInvitation",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -135,12 +161,20 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(
+    functionFragment: "inviteMember",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
     functionFragment: "joinWorkspace",
     data: BytesLike
   ): Result;
   decodeFunctionResult(functionFragment: "operator", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "removeMember",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "revokeInvitation",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -163,6 +197,23 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     functionFragment: "workspaceExists",
     data: BytesLike
   ): Result;
+  decodeFunctionResult(
+    functionFragment: "workspacePolicyVersion",
+    data: BytesLike
+  ): Result;
+}
+
+export namespace InvitationRevokedEvent {
+  export type InputTuple = [slug: string, member: AddressLike];
+  export type OutputTuple = [slug: string, member: string];
+  export interface OutputObject {
+    slug: string;
+    member: string;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
 }
 
 export namespace MemberAddedEvent {
@@ -183,6 +234,31 @@ export namespace MemberAddedEvent {
     member: string;
     role: bigint;
     addedBy: string;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace MemberInvitedEvent {
+  export type InputTuple = [
+    slug: string,
+    member: AddressLike,
+    role: BigNumberish,
+    expiresAt: BigNumberish
+  ];
+  export type OutputTuple = [
+    slug: string,
+    member: string,
+    role: bigint,
+    expiresAt: bigint
+  ];
+  export interface OutputObject {
+    slug: string;
+    member: string;
+    role: bigint;
+    expiresAt: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -316,6 +392,12 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     "nonpayable"
   >;
 
+  getInvitation: TypedContractMethod<
+    [slug: string, member: AddressLike],
+    [[bigint, bigint] & { role: bigint; expiresAt: bigint }],
+    "view"
+  >;
+
   getMemberRole: TypedContractMethod<
     [slug: string, member: AddressLike],
     [bigint],
@@ -345,11 +427,28 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
 
   getWorkspaceMembers: TypedContractMethod<[slug: string], [string[]], "view">;
 
+  inviteMember: TypedContractMethod<
+    [
+      slug: string,
+      member: AddressLike,
+      role: BigNumberish,
+      expiresAt: BigNumberish
+    ],
+    [void],
+    "nonpayable"
+  >;
+
   joinWorkspace: TypedContractMethod<[slug: string], [void], "nonpayable">;
 
   operator: TypedContractMethod<[], [string], "view">;
 
   removeMember: TypedContractMethod<
+    [slug: string, member: AddressLike],
+    [void],
+    "nonpayable"
+  >;
+
+  revokeInvitation: TypedContractMethod<
     [slug: string, member: AddressLike],
     [void],
     "nonpayable"
@@ -381,6 +480,8 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
 
   workspaceExists: TypedContractMethod<[slug: string], [boolean], "view">;
 
+  workspacePolicyVersion: TypedContractMethod<[], [bigint], "view">;
+
   getFunction<T extends ContractMethod = ContractMethod>(
     key: string | FunctionFragment
   ): T;
@@ -398,6 +499,13 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     [slug: string, name: string, initialCid: string],
     [void],
     "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "getInvitation"
+  ): TypedContractMethod<
+    [slug: string, member: AddressLike],
+    [[bigint, bigint] & { role: bigint; expiresAt: bigint }],
+    "view"
   >;
   getFunction(
     nameOrSignature: "getMemberRole"
@@ -426,6 +534,18 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     nameOrSignature: "getWorkspaceMembers"
   ): TypedContractMethod<[slug: string], [string[]], "view">;
   getFunction(
+    nameOrSignature: "inviteMember"
+  ): TypedContractMethod<
+    [
+      slug: string,
+      member: AddressLike,
+      role: BigNumberish,
+      expiresAt: BigNumberish
+    ],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
     nameOrSignature: "joinWorkspace"
   ): TypedContractMethod<[slug: string], [void], "nonpayable">;
   getFunction(
@@ -433,6 +553,13 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
   ): TypedContractMethod<[], [string], "view">;
   getFunction(
     nameOrSignature: "removeMember"
+  ): TypedContractMethod<
+    [slug: string, member: AddressLike],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "revokeInvitation"
   ): TypedContractMethod<
     [slug: string, member: AddressLike],
     [void],
@@ -461,13 +588,30 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
   getFunction(
     nameOrSignature: "workspaceExists"
   ): TypedContractMethod<[slug: string], [boolean], "view">;
+  getFunction(
+    nameOrSignature: "workspacePolicyVersion"
+  ): TypedContractMethod<[], [bigint], "view">;
 
+  getEvent(
+    key: "InvitationRevoked"
+  ): TypedContractEvent<
+    InvitationRevokedEvent.InputTuple,
+    InvitationRevokedEvent.OutputTuple,
+    InvitationRevokedEvent.OutputObject
+  >;
   getEvent(
     key: "MemberAdded"
   ): TypedContractEvent<
     MemberAddedEvent.InputTuple,
     MemberAddedEvent.OutputTuple,
     MemberAddedEvent.OutputObject
+  >;
+  getEvent(
+    key: "MemberInvited"
+  ): TypedContractEvent<
+    MemberInvitedEvent.InputTuple,
+    MemberInvitedEvent.OutputTuple,
+    MemberInvitedEvent.OutputObject
   >;
   getEvent(
     key: "MemberRemoved"
@@ -492,6 +636,17 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
   >;
 
   filters: {
+    "InvitationRevoked(string,address)": TypedContractEvent<
+      InvitationRevokedEvent.InputTuple,
+      InvitationRevokedEvent.OutputTuple,
+      InvitationRevokedEvent.OutputObject
+    >;
+    InvitationRevoked: TypedContractEvent<
+      InvitationRevokedEvent.InputTuple,
+      InvitationRevokedEvent.OutputTuple,
+      InvitationRevokedEvent.OutputObject
+    >;
+
     "MemberAdded(string,address,uint8,address)": TypedContractEvent<
       MemberAddedEvent.InputTuple,
       MemberAddedEvent.OutputTuple,
@@ -501,6 +656,17 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
       MemberAddedEvent.InputTuple,
       MemberAddedEvent.OutputTuple,
       MemberAddedEvent.OutputObject
+    >;
+
+    "MemberInvited(string,address,uint8,uint256)": TypedContractEvent<
+      MemberInvitedEvent.InputTuple,
+      MemberInvitedEvent.OutputTuple,
+      MemberInvitedEvent.OutputObject
+    >;
+    MemberInvited: TypedContractEvent<
+      MemberInvitedEvent.InputTuple,
+      MemberInvitedEvent.OutputTuple,
+      MemberInvitedEvent.OutputObject
     >;
 
     "MemberRemoved(string,address,address)": TypedContractEvent<
