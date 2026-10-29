@@ -50,6 +50,7 @@ export const IssueAttachmentActionButton = observer(function IssueAttachmentActi
 
   const onDrop = useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
+      console.log("[AttachmentAction] onDrop received:", { count: acceptedFiles.length, rejected: rejectedFiles.length });
       const totalAttachedFiles = acceptedFiles.length + rejectedFiles.length;
 
       if (rejectedFiles.length === 0) {
@@ -59,7 +60,8 @@ export const IssueAttachmentActionButton = observer(function IssueAttachmentActi
         setIsLoading(true);
         attachmentOperations
           .create(currentFile)
-          .catch(() => {
+          .catch((err) => {
+            console.error("[AttachmentAction] createAttachment error:", err);
             setToast({
               type: TOAST_TYPE.ERROR,
               title: "Error!",
@@ -74,6 +76,7 @@ export const IssueAttachmentActionButton = observer(function IssueAttachmentActi
         return;
       }
 
+      console.warn("[AttachmentAction] File rejected:", rejectedFiles);
       setToast({
         type: TOAST_TYPE.ERROR,
         title: "Error!",
@@ -97,14 +100,20 @@ export const IssueAttachmentActionButton = observer(function IssueAttachmentActi
   return (
     <div
       onClick={(e) => {
-        // TODO: Remove extra div and move event propagation to button
         e.stopPropagation();
       }}
+      className="inline-flex"
     >
-      <button {...getRootProps()} type="button" disabled={disabled}>
+      <div
+        {...getRootProps()}
+        role="button"
+        tabIndex={disabled || isLoading ? -1 : 0}
+        aria-disabled={disabled || isLoading}
+        className={`inline-flex ${disabled || isLoading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+      >
         <input {...getInputProps()} />
         {customButton ? customButton : <PlusIcon className="h-4 w-4" />}
-      </button>
+      </div>
     </div>
   );
 });

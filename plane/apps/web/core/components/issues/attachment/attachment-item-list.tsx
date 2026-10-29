@@ -68,6 +68,7 @@ export const IssueAttachmentItemList = observer(function IssueAttachmentItemList
 
   const onDrop = useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
+      console.log("[AttachmentList] onDrop received:", { count: acceptedFiles.length, rejected: rejectedFiles.length });
       const totalAttachedFiles = acceptedFiles.length + rejectedFiles.length;
 
       if (rejectedFiles.length === 0) {
@@ -76,7 +77,8 @@ export const IssueAttachmentItemList = observer(function IssueAttachmentItemList
 
         setIsUploading(true);
         createAttachment(currentFile)
-          .catch(() => {
+          .catch((err) => {
+            console.error("[AttachmentList] createAttachment error:", err);
             setToast({
               type: TOAST_TYPE.ERROR,
               title: t("toast.error"),
@@ -90,6 +92,7 @@ export const IssueAttachmentItemList = observer(function IssueAttachmentItemList
         return;
       }
 
+      console.warn("[AttachmentList] File rejected:", rejectedFiles);
       setToast({
         type: TOAST_TYPE.ERROR,
         title: t("toast.error"),

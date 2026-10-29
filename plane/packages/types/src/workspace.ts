@@ -34,6 +34,7 @@ export interface IWorkspace {
   total_projects?: number;
   role: number;
   timezone: string;
+  is_snapshot_available?: boolean;
 }
 
 export interface IWorkspaceLite {
@@ -64,6 +65,21 @@ export interface IWorkspaceMemberInvitation {
 
 export interface IWorkspaceBulkInviteFormData {
   emails: { email: string; role: TUserPermissions; wallet_address?: string }[];
+}
+
+export interface IWorkspaceWalletMemberInput {
+  wallet_address: string;
+  role: 15 | 20;
+  retry_after_review?: boolean;
+}
+
+export interface IWorkspaceWalletMemberResult {
+  member: IWorkspaceMember;
+  wallet_address: string;
+  role: number;
+  already_member: boolean;
+  chain_confirmed: true;
+  workspace_slug: string;
 }
 
 export type Properties = {

@@ -9,7 +9,13 @@ import { action, computed, makeObservable, observable, runInAction } from "mobx"
 import { computedFn } from "mobx-utils";
 // types
 import type { EUserPermissions } from "@plane/constants";
-import type { IWorkspaceBulkInviteFormData, IWorkspaceMember, IWorkspaceMemberInvitation } from "@plane/types";
+import type {
+  IWorkspaceBulkInviteFormData,
+  IWorkspaceMember,
+  IWorkspaceMemberInvitation,
+  IWorkspaceWalletMemberInput,
+  IWorkspaceWalletMemberResult,
+} from "@plane/types";
 // plane-web constants
 // services
 import { WorkspaceService } from "@/services/workspace.service";
@@ -54,6 +60,7 @@ export interface IWorkspaceMemberStore {
   removeMemberFromWorkspace: (workspaceSlug: string, userId: string, adminWallet?: string) => Promise<void>;
   // invite actions
   inviteMembersToWorkspace: (workspaceSlug: string, data: IWorkspaceBulkInviteFormData) => Promise<any>;
+  addWalletMember: (workspaceSlug: string, data: IWorkspaceWalletMemberInput) => Promise<IWorkspaceWalletMemberResult>;
   updateMemberInvitation: (
     workspaceSlug: string,
     invitationId: string,
@@ -137,7 +144,12 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
     ]);
     //filter out bots
     const memberIds = members
-      .filter((m) => m.is_active !== false && Boolean(this.memberRoot?.memberMap?.[m.member]) && !this.memberRoot.memberMap[m.member].is_bot)
+      .filter(
+        (m) =>
+          m.is_active !== false &&
+          Boolean(this.memberRoot?.memberMap?.[m.member]) &&
+          !this.memberRoot.memberMap[m.member].is_bot
+      )
       .map((m) => m.member);
     return memberIds;
   });
@@ -149,7 +161,12 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   getFilteredWorkspaceMemberIds = computedFn((workspaceSlug: string) => {
     let members = Object.values(this.workspaceMemberMap?.[workspaceSlug] ?? {});
     //filter out bots and inactive members
-    members = members.filter((m) => m.is_active !== false && Boolean(this.memberRoot?.memberMap?.[m.member]) && !this.memberRoot.memberMap[m.member].is_bot);
+    members = members.filter(
+      (m) =>
+        m.is_active !== false &&
+        Boolean(this.memberRoot?.memberMap?.[m.member]) &&
+        !this.memberRoot.memberMap[m.member].is_bot
+    );
 
     // Use filters store to get filtered member ids
     const memberIds = this.filtersStore.getFilteredMemberIds(
@@ -349,6 +366,29 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
     return response;
   };
 
+  addWalletMember = async (workspaceSlug: string, data: IWorkspaceWalletMemberInput) => {
+    const result = await this.workspaceService.addWalletMember(workspaceSlug, data);
+    if (result?.chain_confirmed && result.member?.member?.id) {
+      const member = result.member;
+      runInAction(() => {
+        set(this.memberRoot.memberMap, member.member.id, { ...member.member, joining_date: member.created_at });
+        set(this.workspaceMemberMap, [workspaceSlug, member.member.id], {
+          id: member.id,
+          member: member.member.id,
+          role: member.role,
+          is_active: true,
+        });
+      });
+    }
+    // A failed list refresh must not turn an already confirmed grant into a
+    // reported transaction failure or cause another signature on retry.
+    void Promise.allSettled([
+      this.fetchWorkspaceMembers(workspaceSlug),
+      this.fetchWorkspaceMemberInvitations(workspaceSlug),
+    ]);
+    return result;
+  };
+
   /**
    * @description update the role of a member invitation
    * @param workspaceSlug
@@ -372,9 +412,13 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
       });
       const updated = await this.workspaceService.updateWorkspaceInvitation(workspaceSlug, invitationId, data);
       runInAction(() => {
-        set(this.workspaceMemberInvitations, workspaceSlug, memberInvitations.map((invitation) =>
-          invitation.id === invitationId ? { ...invitation, ...updated } : invitation
-        ));
+        set(
+          this.workspaceMemberInvitations,
+          workspaceSlug,
+          memberInvitations.map((invitation) =>
+            invitation.id === invitationId ? { ...invitation, ...updated } : invitation
+          )
+        );
       });
     } catch (error) {
       // revert back to original members in case of error

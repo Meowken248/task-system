@@ -43,6 +43,8 @@ import {
   syncDAppRecord,
   getLastUploadedCID,
   removeWorkspaceMemberOnChain,
+  leaveWorkspaceOnChain,
+  MembershipOperationError,
   scheduleWorkspaceCIDCommit,
   fetchWorkspaceMembersOnChain,
   fetchMemberRoleOnChain,
@@ -68,6 +70,8 @@ import {
 import { respondToWorkspaceInvitation, findLocalWorkspace } from "./workspace-invitations";
 import { invitationLink, withInvitationLock } from "./invitation-policy";
 import { listWorkspaceMembers } from "./workspace-members";
+import { addWorkspaceWalletMember, discoverWalletWorkspaces, cacheVerifiedWalletMember } from "./workspace-wallet-members";
+import { getAttachment, saveAttachment, deleteAttachment } from "../file/attachment-storage";
 export { readWorkspaceSnapshotFromChain, recoverInvitationFromChainSnapshot, findLocalWorkspace, buildWorkspaceFromChainSnapshot, upsertWorkspaceMemberRecord } from "./workspace-invitations";
 const escapeCsv = (val: any): string => {
   if (val === null || val === undefined) return '""';
@@ -615,7 +619,8 @@ async function handleRouteUnlocked(
   // Workspace management is authorised by the signing wallet's contract role,
   // never an email, a local role, or a role supplied in the request body.
   const managementRoute = url.match(/\/api\/workspaces\/([^/?#]+)\/(?:invitations|members)(?:\/|\?|$)/);
-  if (managementRoute && !/\/join\/?(?:\?|$)/.test(url) && ["post", "put", "patch", "delete"].includes(method)) {
+  const selfLeaveRequest = method === "post" && /\/api\/workspaces\/[^/?#]+\/(?:workspace-members|members)\/leave\/?(?:\?.*)?$/.test(url);
+  if (managementRoute && !selfLeaveRequest && !/\/join\/?(?:\?|$)/.test(url) && ["post", "put", "patch", "delete"].includes(method)) {
     if (!getLoggedInUserId()) return { status: 401, data: { code: "AUTH_REQUIRED", error: "Vui lòng đăng nhập." } };
     try {
       const requested = getStoredWalletAddress() || currentUserAddress;
@@ -628,10 +633,14 @@ async function handleRouteUnlocked(
   }
 
 
+  const addWalletMemberRoute = url.match(/\/api\/workspaces\/([^/?#]+)\/members\/?(?:\?.*)?$/);
+  if (addWalletMemberRoute && method === "post") return addWorkspaceWalletMember(decodeURIComponent(addWalletMemberRoute[1]), body);
+
   // ── Workspace Membership Route Guard (block removed members from workspace APIs) ──
   const wsGuardMatch = url.match(/\/api\/workspaces\/([^/?#]+)/);
   if (
     wsGuardMatch &&
+    !selfLeaveRequest &&
     !url.includes("/workspace-slug-check") &&
     !url.includes("/invitations") &&
     !url.includes("/workspace-members/me")
@@ -2108,6 +2117,12 @@ async function handleRouteUnlocked(
   if (url.match(/\/api\/users\/me/)) {
     if (!isLoggedIn()) return { data: { error: "not authenticated" }, status: 401 };
 
+    if (method === "get" && /\/api\/users\/me\/?(?:\?.*)?$/.test(url)) {
+      await discoverWalletWorkspaces(getStoredWalletAddress() || currentUserAddress || "");
+      routeSessionUser = (localDB.users || []).find((user: any) => user.id === getLoggedInUserId()) || routeSessionUser;
+      return ok(routeSessionUser);
+    }
+
     if (url.includes("/api/users/me/profile")) {
       if (method === "patch" || method === "put" || method === "post") {
         if (!routeSessionUser) {
@@ -2212,7 +2227,7 @@ async function handleRouteUnlocked(
       const wsMember = (localDB.workspace_members || []).find(
         (wm: any) =>
           (wsKeys.has(wm.workspace) || wsKeys.has(wm.workspace_id)) &&
-          (wm.member === activeId || (activeMail && (wm.email || "").toLowerCase().trim() === activeMail))
+          (activeWallet ? (wm.wallet_address?.toLowerCase() === activeWallet || (typeof wm.member === "string" && wm.member.toLowerCase() === activeWallet)) : (wm.member === activeId || (activeMail && (wm.email || "").toLowerCase().trim() === activeMail)))
       );
       const isWsAdmin =
         Boolean(
@@ -2229,7 +2244,6 @@ async function handleRouteUnlocked(
             ))
           )
         ) ||
-        (activeMail === "anh2482006@gmail.com") ||
         Boolean(wsMember && Number(wsMember.role) >= 20);
 
       const rolesMap: Record<string, number> = {};
@@ -2243,8 +2257,7 @@ async function handleRouteUnlocked(
           (activeId && activeId !== "user-default" && (p.created_by === activeId || p.owner === activeId || p.owner?.id === activeId)) ||
           (activeMail && (
             (p.created_by && p.created_by.toLowerCase().trim() === activeMail) ||
-            (p.owner?.email && p.owner.email.toLowerCase().trim() === activeMail) ||
-            (activeMail === "anh2482006@gmail.com" && (!p.created_by || p.created_by === "user-default"))
+            (p.owner?.email && p.owner.email.toLowerCase().trim() === activeMail)
           )) ||
           (activeWallet && (
             (p.created_by && p.created_by.toLowerCase() === activeWallet) ||
@@ -2274,8 +2287,7 @@ async function handleRouteUnlocked(
           return;
         }
 
-        // In DApp local/decentralized mode: default to workspace role if member, or 20 (Admin) so user is never locked out
-        rolesMap[p.id] = wsMember?.role ? Number(wsMember.role) : 20;
+        rolesMap[p.id] = wsMember?.role ? Number(wsMember.role) : 15;
       });
 
       return ok(rolesMap);
@@ -2340,7 +2352,9 @@ async function handleRouteUnlocked(
         ""
       ).toLowerCase().trim();
 
+      const discovered = await discoverWalletWorkspaces(activeWallet);
       let myWorkspaces = getUserWorkspaces(activeId, activeMail);
+      if (discovered.available) myWorkspaces = myWorkspaces.filter((workspace: any) => discovered.slugs.has(workspace.slug));
       const enriched = myWorkspaces.map((ws: any) => {
         const isOwner =
           ws.created_by === activeId ||
@@ -2358,7 +2372,7 @@ async function handleRouteUnlocked(
                 (typeof m.member === "string" && m.member.toLowerCase() === activeWallet)
               )))
         );
-        const resolvedRole = isOwner ? 20 : (memberRecord?.role || 15);
+        const resolvedRole = discovered.available ? (discovered.roles.get(ws.slug) ?? 15) : isOwner ? 20 : (memberRecord?.role || 15);
         const total_members = getWorkspaceMemberCount(ws.slug, ws.id);
         return Object.assign({}, ws, { role: resolvedRole, total_members });
       });
@@ -2456,8 +2470,8 @@ async function handleRouteUnlocked(
     const activeId = routeSessionUser?.id || routeSessionUserId || "user-default";
     const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
     const activeWallet = (
-      currentUserAddress ||
       getStoredWalletAddress() ||
+      currentUserAddress ||
       (typeof window !== "undefined"
         ? (sessionStorage.getItem("plane_active_wallet_address") || localStorage.getItem("plane_active_wallet_address"))
         : null) ||
@@ -2467,6 +2481,14 @@ async function handleRouteUnlocked(
     ).toLowerCase().trim();
 
     // Check if user is owner / creator of workspace
+    if (activeWallet && getWorkspaceRegistryAddress() && getEnvVar("VITE_ONCHAIN_MEMBERSHIP_SYNC") !== "false") {
+      const role = await fetchMemberRoleOnChain(wsSlug, activeWallet);
+      if (role < 0) return { status: 503, data: { code: "PERMISSION_UNAVAILABLE", error: "Chưa kiểm tra được quyền workspace. Hãy thử lại khi kết nối phục hồi." } };
+      if (![1, 2, 3].includes(role)) return { status: 403, data: { code: "NOT_MEMBER", error: "Ví đang chọn chưa có quyền trong workspace này." } };
+      const verified = cacheVerifiedWalletMember(ws, activeWallet, role);
+      saveDB({ localOnly: true });
+      return ok({ id: verified.id, member: activeId, role: role >= 2 ? 20 : 15, workspace: ws.id, is_active: true, created_at: verified.created_at });
+    }
     const isOwner =
       ws.created_by === activeId ||
       ws.owner?.id === activeId ||
@@ -3077,7 +3099,7 @@ async function handleRouteUnlocked(
               const existingIdx = localDB.workspace_members.findIndex(
                 (m: any) =>
                   (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id) &&
-                  (m.member?.toLowerCase() === cleanAddr || m.wallet_address?.toLowerCase() === cleanAddr)
+                  ((typeof m.member === "string" && m.member.toLowerCase() === cleanAddr) || m.wallet_address?.toLowerCase() === cleanAddr)
               );
 
               // 1. Match with an existing invitation for this workspace
@@ -3220,7 +3242,7 @@ async function handleRouteUnlocked(
             }
             if (beforeOnChainSync !== JSON.stringify(localDB)) {
               saveStoredInvitations(localDB.invitations);
-              saveDB();
+              saveDB({ localOnly: true });
             }
           }
         } catch (chainErr) {
@@ -3237,9 +3259,11 @@ async function handleRouteUnlocked(
   // ── Workspace Member Leave (POST) ──────────────────────────────────
   const wsMemberLeaveMatch = url.match(/\/api\/workspaces\/([^/]+)\/(?:workspace-members|members)\/leave\/?(?:\?.*)?$/);
   if (wsMemberLeaveMatch && method === "post") {
+    if (!getLoggedInUserId()) return { status: 401, data: { code: "AUTH_REQUIRED", error: "Vui lòng đăng nhập." } };
     const wsSlug = wsMemberLeaveMatch[1];
     const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-    const activeId = routeSessionUser?.id || routeSessionUserId || "user-default";
+    if (!ws) return { status: 404, data: { code: "WORKSPACE_NOT_FOUND", error: "Không tìm thấy workspace để rời." } };
+    const activeId = routeSessionUser?.id || routeSessionUserId || "";
     const activeMail = (routeSessionUser?.email || loggedInEmail || "").toLowerCase().trim();
     const activeWallet = (
       currentUserAddress ||
@@ -3252,14 +3276,29 @@ async function handleRouteUnlocked(
       ""
     ).toLowerCase().trim();
 
+    try {
+      if (!await leaveWorkspaceOnChain(ws?.slug || wsSlug, activeWallet)) {
+        return { status: 503, data: { code: "LEAVE_UNCONFIRMED", error: "Chưa xác nhận được thao tác rời workspace. Dữ liệu thành viên vẫn được giữ nguyên." } };
+      }
+    } catch (error) {
+      const code = error instanceof MembershipOperationError ? error.code : "LEAVE_UNCONFIRMED";
+      return {
+        status: code === "OWNER_CANNOT_LEAVE" ? 403 : ["CONTRACT_UPGRADE_REQUIRED", "SIGNING_WALLET_CHANGED", "WALLET_REQUIRED"].includes(code) ? 409 : 503,
+        data: { code, error: error instanceof Error ? error.message : "Chưa xác nhận được thao tác rời workspace. Dữ liệu thành viên vẫn được giữ nguyên." },
+      };
+    }
+
     if (localDB.workspace_members) {
+      const workspaceKeys = new Set([wsSlug, ws.id, ws.slug].filter(Boolean));
       localDB.workspace_members = localDB.workspace_members.filter((m: any) => {
-        const isWs = (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id);
+        const isWs = workspaceKeys.has(m.workspace) || workspaceKeys.has(m.workspace_id);
         if (!isWs) return true;
         const mMail = (m.email || "").toLowerCase().trim();
         const mMem = String(m.member || "").toLowerCase().trim();
         const mId = String(m.id || "").toLowerCase().trim();
         const mWall = (m.wallet_address || "").toLowerCase().trim();
+        const rowWallet = extractEthAddress(mWall || mMem);
+        if (rowWallet && rowWallet !== activeWallet) return true;
         return (
           (!activeId || (mMem !== activeId && mId !== activeId)) &&
           (!activeMail || mMail !== activeMail) &&
@@ -3268,17 +3307,9 @@ async function handleRouteUnlocked(
       });
     }
 
-    if (activeWallet) {
-      try {
-        await removeWorkspaceMemberOnChain(wsSlug, activeWallet, activeWallet);
-      } catch (err) {
-        console.warn("[DApp Routes] leaveWorkspace on-chain error:", err);
-      }
-    }
-
     saveDB();
-    void uploadToIPFS(true);
-    return ok({ message: "Left workspace successfully" });
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("plane_dapp_members_synced"));
+    return ok({ message: "Left workspace successfully", chain_confirmed: true });
   }
 
   // ── Workspace Member Detail (DELETE, PATCH) ─────────────────────────
@@ -3684,7 +3715,7 @@ async function handleRouteUnlocked(
       const idx = (localDB.workspace_members || []).findIndex((entry: any) =>
         (entry.id === memberId || entry.member === memberId) && [entry.workspace, entry.workspace_id, entry.workspace_slug].some((key) => keys.has(key)));
       if (idx < 0) return { status: 404, data: { error: "Member not found in this workspace." } };
-      if (Object.keys(body).some((key) => key !== "role") || ![5, 10, 15, 20].includes(Number(body.role))) return { status: 400, data: { error: "Only a valid member role may be updated here." } };
+      if (Object.keys(body).some((key) => key !== "role") || ![15, 20].includes(Number(body.role))) return { status: 400, data: { code: "UNSUPPORTED_ROLE", error: "Chỉ hỗ trợ quyền Admin và Member trên contract hiện tại." } };
       const previous = localDB.workspace_members[idx];
       const targetUser = (localDB.users || []).find((entry: any) => entry.id === previous.member);
       const wallet = extractEthAddress(previous.wallet_address || previous.member || targetUser?.metanode_wallet_address);
@@ -3697,7 +3728,7 @@ async function handleRouteUnlocked(
       }
       const role = await fetchMemberRoleOnChain(wsSlug, wallet);
       if (role < 1) return { status: 503, data: { error: "Unable to read the confirmed member role." } };
-      const updated = { ...previous, role: role === 1 ? Math.min(Number(body.role), 15) : 20, requested_role: Number(body.role), wallet_address: wallet, verified_on_chain: true, updated_at: new Date().toISOString() };
+      const updated = { ...previous, role: role === 1 ? 15 : 20, requested_role: Number(body.role), wallet_address: wallet, verified_on_chain: true, updated_at: new Date().toISOString() };
       localDB.workspace_members[idx] = updated;
       saveDB();
       return ok(updated);
@@ -3850,7 +3881,7 @@ async function handleRouteUnlocked(
     const wsMember = (localDB.workspace_members || []).find(
       (wm: any) =>
         (wm.workspace === ws?.id || wm.workspace === ws?.slug || wm.workspace === wsSlug) &&
-        (wm.member === currentUserId || (currentUserEmail && (wm.email || "").toLowerCase().trim() === currentUserEmail))
+        (activeWallet ? (wm.wallet_address?.toLowerCase() === activeWallet || (typeof wm.member === "string" && wm.member.toLowerCase() === activeWallet)) : (wm.member === currentUserId || (currentUserEmail && (wm.email || "").toLowerCase().trim() === currentUserEmail)))
     );
     const isWsAdmin =
       Boolean(
@@ -3867,7 +3898,6 @@ async function handleRouteUnlocked(
           ))
         )
       ) ||
-      (currentUserEmail === "anh2482006@gmail.com") ||
       Boolean(wsMember && Number(wsMember.role) >= 20);
 
     const deletedSet = new Set(localDB._deleted_project_ids || []);
@@ -3931,8 +3961,7 @@ async function handleRouteUnlocked(
           (currentUserId && currentUserId !== "user-default" && (p.created_by === currentUserId || p.owner === currentUserId || p.owner?.id === currentUserId)) ||
           (currentUserEmail && (
             (p.created_by && p.created_by.toLowerCase().trim() === currentUserEmail) ||
-            (p.owner?.email && p.owner.email.toLowerCase().trim() === currentUserEmail) ||
-            (currentUserEmail === "anh2482006@gmail.com" && (!p.created_by || p.created_by === "user-default"))
+            (p.owner?.email && p.owner.email.toLowerCase().trim() === currentUserEmail)
           )) ||
           (activeWallet && (
             (p.created_by && p.created_by.toLowerCase() === activeWallet) ||
@@ -4902,54 +4931,204 @@ async function handleRouteUnlocked(
     return ok({ success: true, asset_ids: body?.asset_ids || [] });
   }
 
-  // Assets v2
+  // Assets v2 upload ingestion endpoint
+  if (url.match(/\/api\/assets\/v2\/upload\/?/) && method === "post") {
+    const assetId = body?.asset_id || body?.id || body?.key;
+    if (assetId && body?.base64) {
+      await saveAttachment(assetId, {
+        name: body?.name || "uploaded_file",
+        base64: body.base64,
+        type: body?.type || "application/octet-stream",
+        size: body?.size || body.base64.length,
+      });
+    }
+    const dataUrl = body?.base64
+      ? (body.base64.startsWith("data:") ? body.base64 : `data:${body?.type || "application/octet-stream"};base64,${body.base64}`)
+      : `/api/assets/v2/display/${assetId || ""}/`;
+    return ok({
+      asset_id: assetId,
+      id: assetId,
+      asset_url: dataUrl,
+      file_url: dataUrl,
+      success: true,
+    });
+  }
+
+  // Assets v2 metadata initialization & signed URL response
   if (url.match(/\/api\/assets\/v2\//) && method === "post") {
-    const assetId = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const assetId = body?.id || body?.asset_id || body?.key || `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const assetUrl = `/api/assets/v2/display/${assetId}/`;
     const issueMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/attachments/);
     const issueId = issueMatch ? issueMatch[2] : null;
+
     if (issueId) {
       if (!localDB["attachments"]) localDB["attachments"] = [];
       localDB["attachments"].push({
         id: assetId,
         asset_id: assetId,
+        asset: assetId,
+        asset_url: assetUrl,
         issue: issueId,
+        issue_id: issueId,
         is_uploaded: false,
-        attributes: { name: body?.name || "mock_file.png", size: body?.size || 1024 }
+        attributes: {
+          name: body?.name || "attachment",
+          size: body?.size || 1024,
+          type: body?.type || "application/octet-stream",
+        },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
       saveDB();
     }
+
+    if (!localDB["assets"]) localDB["assets"] = [];
+    localDB["assets"].push({
+      id: assetId,
+      asset_id: assetId,
+      entity_type: body?.entity_type,
+      entity_identifier: body?.entity_identifier,
+      name: body?.name || "asset",
+      size: body?.size || 0,
+      type: body?.type || "application/octet-stream",
+      asset_url: assetUrl,
+      is_uploaded: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    saveDB();
+
     return ok({
       asset_id: assetId,
-      asset_url: `mock_asset_url_${assetId}`,
+      id: assetId,
+      asset_url: assetUrl,
       upload_data: {
-        url: "mock_upload_url",
+        url: "/api/assets/v2/upload/",
         fields: {
-          "Content-Type": "image/jpeg",
-          key: "mock_key",
-          "x-amz-algorithm": "mock_algo",
-          "x-amz-credential": "mock_cred",
-          "x-amz-date": "mock_date",
-          policy: "mock_policy",
-          "x-amz-signature": "mock_sig",
+          asset_id: assetId,
+          key: assetId,
+          "Content-Type": body?.type || "application/octet-stream",
         },
       },
     });
   }
 
+  // Assets v2 confirmation & binding to target entities
   if (url.match(/\/api\/assets\/v2\//) && method === "patch") {
-    // Plane gọi PATCH `/api/assets/v2/workspaces/{slug}/{assetId}/` (và biến thể có
-    // `projects/{projectId}`), KHÔNG có đoạn `/attachments/`. Trước đây chỉ tìm theo
-    // `/attachments/{id}` nên không bao giờ tìm ra bản ghi → tệp treo ở "Pending" mãi.
     const segmentMatch = url.match(/\/attachments\/([^/]+)\/?/);
     const trailingId = (url.split("?")[0] || "").replace(/\/+$/, "").split("/").pop() || null;
     const assetId = segmentMatch ? segmentMatch[1] : trailingId;
-    const attachment = (localDB["attachments"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
-    if (attachment) {
-      attachment.is_uploaded = true;
-      saveDB();
-      return ok(attachment);
+
+    let targetAttachment = (localDB["attachments"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
+    let targetAsset = (localDB["assets"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
+
+    if (targetAttachment) targetAttachment.is_uploaded = true;
+    if (targetAsset) targetAsset.is_uploaded = true;
+
+    // Check if image data exists in local storage
+    const stored = assetId ? await getAttachment(assetId) : null;
+    const resolvedUrl = stored?.base64
+      ? (stored.base64.startsWith("data:") ? stored.base64 : `data:${stored.type || "image/png"};base64,${stored.base64}`)
+      : `/api/assets/v2/display/${assetId}/`;
+
+    if (targetAttachment) targetAttachment.asset_url = resolvedUrl;
+    if (targetAsset) targetAsset.asset_url = resolvedUrl;
+
+    // Bind User Avatar / User Cover
+    if (url.includes("user-assets") || targetAsset?.entity_type === "USER_AVATAR") {
+      if (routeSessionUser) {
+        routeSessionUser.avatar_url = resolvedUrl;
+        routeSessionUser.avatar = resolvedUrl;
+      }
+      if (localDB.users) {
+        const u = localDB.users.find((entry: any) => (routeSessionUserId && entry.id === routeSessionUserId) || (loggedInEmail && entry.email === loggedInEmail));
+        if (u) {
+          u.avatar_url = resolvedUrl;
+          u.avatar = resolvedUrl;
+        }
+      }
+    } else if (targetAsset?.entity_type === "USER_COVER") {
+      if (routeSessionUser) routeSessionUser.cover_image = resolvedUrl;
+      if (localDB.users) {
+        const u = localDB.users.find((entry: any) => (routeSessionUserId && entry.id === routeSessionUserId) || (loggedInEmail && entry.email === loggedInEmail));
+        if (u) u.cover_image = resolvedUrl;
+      }
+    } else if (targetAsset?.entity_type === "PROJECT_COVER") {
+      const proj = (localDB.projects || []).find((p: any) => p.id === targetAsset.entity_identifier || p.identifier === targetAsset.entity_identifier);
+      if (proj) proj.cover_image = resolvedUrl;
+    } else if (targetAsset?.entity_type === "WORKSPACE_LOGO") {
+      const ws = (localDB.workspaces || []).find((w: any) => w.id === targetAsset.entity_identifier || w.slug === targetAsset.entity_identifier);
+      if (ws) ws.logo_url = resolvedUrl;
     }
-    return ok({ success: true });
+
+    saveDB();
+    return ok(targetAttachment || targetAsset || { id: assetId, asset_id: assetId, is_uploaded: true, asset_url: resolvedUrl });
+  }
+
+  // Assets v2 retrieval & download
+  if (url.match(/\/api\/assets\/v2\//) && method === "get") {
+    const trailingId = (url.split("?")[0] || "").replace(/\/+$/, "").split("/").pop() || null;
+    const assetId = trailingId && trailingId !== "v2" && trailingId !== "user-assets" ? trailingId : null;
+
+    if (!assetId) return { data: { error: "Asset ID required" }, status: 400 };
+
+    const stored = await getAttachment(assetId);
+    const attachment = (localDB["attachments"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
+    const asset = (localDB["assets"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
+
+    if (url.includes("/download/")) {
+      if (stored) {
+        const dataUrl = stored.base64.startsWith("data:") ? stored.base64 : `data:${stored.type || "application/octet-stream"};base64,${stored.base64}`;
+        return ok({
+          id: assetId,
+          asset_id: assetId,
+          name: stored.name,
+          type: stored.type,
+          size: stored.size,
+          base64: stored.base64,
+          asset_url: dataUrl,
+          file_url: dataUrl,
+        });
+      }
+      if (attachment) return ok(attachment);
+      return { data: { error: "Download file not found" }, status: 404 };
+    }
+
+    if (stored) {
+      const dataUrl = stored.base64.startsWith("data:") ? stored.base64 : `data:${stored.type || "image/png"};base64,${stored.base64}`;
+      return ok({
+        id: assetId,
+        asset_id: assetId,
+        name: stored.name,
+        type: stored.type,
+        size: stored.size,
+        asset_url: dataUrl,
+        file_url: dataUrl,
+        is_uploaded: true,
+      });
+    }
+
+    if (attachment) return ok(attachment);
+    if (asset) return ok(asset);
+    return { data: { error: "Asset not found" }, status: 404 };
+  }
+
+  // Assets v2 deletion
+  if (url.match(/\/api\/assets\/v2\//) && method === "delete") {
+    const trailingId = (url.split("?")[0] || "").replace(/\/+$/, "").split("/").pop() || null;
+    const assetId = trailingId && trailingId !== "v2" ? trailingId : null;
+
+    if (assetId) {
+      if (localDB["attachments"]) {
+        localDB["attachments"] = localDB["attachments"].filter((a: any) => a.id !== assetId && a.asset_id !== assetId);
+      }
+      if (localDB["assets"]) {
+        localDB["assets"] = localDB["assets"].filter((a: any) => a.id !== assetId && a.asset_id !== assetId);
+      }
+      await deleteAttachment(assetId);
+      saveDB();
+    }
+    return ok({ success: true, deleted: assetId });
   }
 
   // ── Issue sub-resource endpoints ─────────────────────────────────────
@@ -5486,6 +5665,7 @@ async function handleRouteUnlocked(
         localDB["attachments"] = localDB["attachments"].filter((a: any) => a.id !== attachmentId && a.asset !== attachmentId);
         saveDB();
       }
+      void deleteAttachment(attachmentId);
       return ok({});
     }
   }
@@ -7496,6 +7676,7 @@ async function handleCRUD(
           parent: null,
           ...item,
           issue_attachments: issueAttachments.length > 0 ? issueAttachments : (item.issue_attachments || []),
+          attachment_count: issueAttachments.length > 0 ? issueAttachments.length : (item.attachment_count || 0),
           project_id: item.project_id || item.project,
           workspace_id: item.workspace_id || item.workspace || item.project_detail?.workspace || "mock-workspace",
           state_id: item.state_id || item.state,
@@ -7939,7 +8120,7 @@ async function handleCRUD(
                     // Dữ liệu remote đã thay thế local → cờ "chờ ghi on-chain" không còn ý nghĩa.
                     localStorage.removeItem("plane_dapp_pending_onchain_cid");
                   }
-                  saveDB();
+                  saveDB({ localOnly: true });
                 }
               }
             } catch (cidErr) {
@@ -8027,7 +8208,7 @@ async function handleCRUD(
               const existingIdx = localDB.workspace_members.findIndex(
                 (m: any) =>
                   (m.workspace === wsSlug || m.workspace === ws?.id || m.workspace_id === wsSlug || m.workspace_id === ws?.id) &&
-                  (m.member?.toLowerCase() === cleanAddr || m.wallet_address?.toLowerCase() === cleanAddr)
+                  ((typeof m.member === "string" && m.member.toLowerCase() === cleanAddr) || m.wallet_address?.toLowerCase() === cleanAddr)
               );
 
               // 1. Match with an existing invitation for this workspace
@@ -8170,7 +8351,7 @@ async function handleCRUD(
             }
             if (beforeOnChainSync !== JSON.stringify(localDB)) {
               saveStoredInvitations(localDB.invitations);
-              saveDB();
+              saveDB({ localOnly: true });
             }
           }
         } catch (chainErr) {
@@ -8303,6 +8484,10 @@ async function handleCRUD(
           state_detail: stateDetail,
           project_detail: projectDetail,
           sub_issues_count: children.length,
+          attachment_count:
+            (localDB["attachments"] || []).filter((a: any) => a.issue === item.id || a.issue_id === item.id).length ||
+            item.attachment_count ||
+            0,
         };
       });
 
@@ -8568,7 +8753,7 @@ async function handleCRUD(
       const currentWs = findLocalWorkspace(wsSlug);
 
       if (!currentWs) return { status: 404, data: { error: "Không tìm thấy không gian làm việc." } };
-      if (!body.emails.length || body.emails.some((entry: any) => !entry || typeof entry.email !== "string" || !(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(entry.email.trim()) || /^0x[a-f0-9]{40}$/i.test(entry.email.trim())) || ![5, 10, 15, 20].includes(Number(entry.role ?? 15)))) {
+      if (!body.emails.length || body.emails.some((entry: any) => !entry || typeof entry.email !== "string" || !(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(entry.email.trim()) || /^0x[a-f0-9]{40}$/i.test(entry.email.trim())) || ![15, 20].includes(Number(entry.role ?? 15)))) {
         return { status: 400, data: { error: "Email, địa chỉ ví hoặc quyền trong danh sách mời không hợp lệ." } };
       }
       if (body.emails.some((entry: any) => entry.wallet_address && (typeof entry.wallet_address !== "string" || !/^0x[a-f0-9]{40}$/i.test(entry.wallet_address.trim()) || /^0x0{40}$/i.test(entry.wallet_address.trim())))) return { status: 400, data: { error: "Ví người nhận không hợp lệ." } };
@@ -9406,7 +9591,7 @@ async function handleCRUD(
       if (invitation.accepted) return { status: 409, data: { error: "Hãy thay đổi quyền trong danh sách thành viên đã tham gia." } };
       const nextRole = Number(body.role ?? invitation.role);
       const nextWallet = body.wallet_address ?? invitation.wallet_address;
-      if (!Object.keys(body).length || Object.keys(body).some((key) => !["role", "wallet_address"].includes(key)) || ![5, 10, 15, 20].includes(nextRole))
+      if (!Object.keys(body).length || Object.keys(body).some((key) => !["role", "wallet_address"].includes(key)) || ![15, 20].includes(nextRole))
         return { status: 400, data: { error: "Chỉ được cập nhật quyền và ví nhận lời mời hợp lệ." } };
       if (body.wallet_address !== undefined && (typeof body.wallet_address !== "string" || !/^0x[a-f0-9]{40}$/i.test(body.wallet_address.trim()) || /^0x0{40}$/i.test(body.wallet_address.trim())))
         return { status: 400, data: { error: "Ví người nhận không hợp lệ." } };

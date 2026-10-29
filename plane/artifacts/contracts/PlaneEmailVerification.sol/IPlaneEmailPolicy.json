@@ -1,0 +1,120 @@
+{
+  "_format": "hh-sol-artifact-1",
+  "contractName": "IPlaneEmailPolicy",
+  "sourceName": "contracts/PlaneEmailVerification.sol",
+  "abi": [
+    {
+      "inputs": [
+        {
+          "internalType": "string",
+          "name": "slug",
+          "type": "string"
+        }
+      ],
+      "name": "emailVerifier",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "string",
+          "name": "slug",
+          "type": "string"
+        }
+      ],
+      "name": "emailVerifierEpoch",
+      "outputs": [
+        {
+          "internalType": "uint64",
+          "name": "",
+          "type": "uint64"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "invitationId",
+          "type": "bytes32"
+        }
+      ],
+      "name": "getEmailInvitation",
+      "outputs": [
+        {
+          "components": [
+            {
+              "internalType": "string",
+              "name": "slug",
+              "type": "string"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "recipientCommitment",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint8",
+              "name": "role",
+              "type": "uint8"
+            },
+            {
+              "internalType": "uint64",
+              "name": "expiresAt",
+              "type": "uint64"
+            },
+            {
+              "internalType": "uint64",
+              "name": "version",
+              "type": "uint64"
+            },
+            {
+              "internalType": "address",
+              "name": "invitedBy",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "claimedBy",
+              "type": "address"
+            },
+            {
+              "internalType": "bool",
+              "name": "revoked",
+              "type": "bool"
+            },
+            {
+              "internalType": "string",
+              "name": "metadataCID",
+              "type": "string"
+            },
+            {
+              "internalType": "bool",
+              "name": "declined",
+              "type": "bool"
+            }
+          ],
+          "internalType": "struct IPlaneEmailPolicy.EmailInvitation",
+          "name": "",
+          "type": "tuple"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x",
+  "deployedBytecode": "0x",
+  "linkReferences": {},
+  "deployedLinkReferences": {}
+}

@@ -39,9 +39,25 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
   const { children, pageType = EPageTypes.AUTHENTICATED } = props;
   // hooks
   const { isLoading: isUserLoading, data: currentUser, fetchCurrentUser } = useUser();
-  const { data: currentUserProfile } = useUserProfile();
+  const { data: currentUserProfile, fetchUserProfile } = useUserProfile();
   const { data: currentUserSettings } = useUserSettings();
-  const { loader: workspacesLoader, workspaces } = useWorkspace();
+  const { loader: workspacesLoader, workspaces, fetchWorkspaces } = useWorkspace();
+
+  useSWR(
+    currentUser?.id ? `WALLET_WORKSPACES_${currentUser.id}` : null,
+    async () => {
+      const list = await fetchWorkspaces();
+      if (list.length && !currentUserProfile?.is_onboarded) await fetchUserProfile();
+      return list;
+    },
+    {
+      refreshInterval: 15000,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      revalidateOnFocus: false,
+      dedupingInterval: 10000,
+    }
+  );
 
   const { isLoading: isUserSWRLoading } = useSWR("USER_INFORMATION", async () => await fetchCurrentUser(), {
     revalidateOnFocus: false,
@@ -71,9 +87,7 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
 
     // validate the current workspace_slug is available in the user's workspace list
     const workspacesList = Object.values(workspaces || {});
-    const isCurrentWorkspaceValid = workspacesList.findIndex(
-      (workspace) => workspace.slug === currentWorkspaceSlug
-    );
+    const isCurrentWorkspaceValid = workspacesList.findIndex((workspace) => workspace.slug === currentWorkspaceSlug);
 
     if (isCurrentWorkspaceValid >= 0) {
       redirectionRoute = `/${currentWorkspaceSlug}`;

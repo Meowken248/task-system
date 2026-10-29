@@ -22,6 +22,14 @@ declare module "hardhat/types/runtime" {
       signerOrOptions?: ethers.Signer | FactoryOptions
     ): Promise<Contracts.PlaneTaskManager__factory>;
     getContractFactory(
+      name: "PlaneEmailVerification",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.PlaneEmailVerification__factory>;
+    getContractFactory(
+      name: "IPlaneEmailPolicy",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IPlaneEmailPolicy__factory>;
+    getContractFactory(
       name: "OffchainDataRegistry",
       signerOrOptions?: ethers.Signer | FactoryOptions
     ): Promise<Contracts.OffchainDataRegistry__factory>;
@@ -37,6 +45,16 @@ declare module "hardhat/types/runtime" {
       signer?: ethers.Signer
     ): Promise<Contracts.PlaneTaskManager>;
     getContractAt(
+      name: "PlaneEmailVerification",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.PlaneEmailVerification>;
+    getContractAt(
+      name: "IPlaneEmailPolicy",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IPlaneEmailPolicy>;
+    getContractAt(
       name: "OffchainDataRegistry",
       address: string | ethers.Addressable,
       signer?: ethers.Signer
@@ -51,6 +69,14 @@ declare module "hardhat/types/runtime" {
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.PlaneTaskManager>;
     deployContract(
+      name: "PlaneEmailVerification",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.PlaneEmailVerification>;
+    deployContract(
+      name: "IPlaneEmailPolicy",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IPlaneEmailPolicy>;
+    deployContract(
       name: "OffchainDataRegistry",
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.OffchainDataRegistry>;
@@ -65,6 +91,16 @@ declare module "hardhat/types/runtime" {
       args: any[],
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.PlaneTaskManager>;
+    deployContract(
+      name: "PlaneEmailVerification",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.PlaneEmailVerification>;
+    deployContract(
+      name: "IPlaneEmailPolicy",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IPlaneEmailPolicy>;
     deployContract(
       name: "OffchainDataRegistry",
       args: any[],

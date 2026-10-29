@@ -16,12 +16,13 @@ import {
   saveStoredInvitations,
   isInvitationDeleted,
 } from "./store";
-import { setStoredCredential } from "./auth";
+import { preserveLocalUserAuth, sanitizeSharedSnapshot } from "./shared-snapshot";
 import { readIPFSSnapshot } from "./ipfs-snapshot";
 import { resolveInvitationWorkspace } from "./invitation-workspace";
 import { saveSnapshotToIDB, loadSnapshotFromIDB, saveCidToIDB, getCidFromIDB } from "./indexed-db";
 import { registerSigningSessionInvalidator, runExclusiveChainTx } from "./tx-gateway";
 import { publishSnapshot, snapshotUploadPolicy, isPublishedCID, notifySnapshotUploadReuse, SnapshotUploadError } from "./snapshot-upload";
+import { walletMemberOperationPending, setWalletMemberOperationPending, clearWalletMemberOperationPending } from "./wallet-member-operation";
 
 /**
  * Generic on-chain sync (fire-and-forget, never blocks UI)
@@ -172,6 +173,17 @@ export const JOIN_WORKSPACE_ABI = {
   stateMutability: "nonpayable",
 };
 
+export const LEAVE_WORKSPACE_ABI = { ...JOIN_WORKSPACE_ABI, name: "leaveWorkspace" };
+
+export class MembershipOperationError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "MembershipOperationError";
+    this.code = code;
+  }
+}
+
 export function extractEthAddress(input: string | undefined | null): string | null {
   if (!input) return null;
   const clean = input.trim().toLowerCase();
@@ -183,9 +195,9 @@ export function extractEthAddress(input: string | undefined | null): string | nu
 
 export function mapPlaneRoleToContractRole(planeRole: number | string | undefined): number {
   const r = Number(planeRole);
-  if (r >= 20) return 2; // Admin
-  if (r >= 5) return 1; // Member / Guest
-  return 1;
+  if (r === 20) return 2;
+  if (r === 15) return 1;
+  throw new MembershipOperationError("UNSUPPORTED_ROLE", "Contract chỉ hỗ trợ quyền Admin và Member. Không tự chuyển Guest hoặc quyền khác thành Member.");
 }
 
 export function getFiaiSDK(): any {
@@ -541,6 +553,15 @@ export async function directRpcRead(contractAddr: string, calldata: string, time
 // ── Wallet Helpers ───────────────────────────────────────────────────────
 export function getStoredWalletAddress(): string | null {
   if (typeof window === "undefined") return null;
+  // An explicit selection in the current tab wins over a previous bootstrap's
+  // in-memory address. Otherwise switching accounts can rediscover the old
+  // wallet's workspaces until a full reload.
+  try {
+    for (const storage of [sessionStorage, localStorage]) {
+      const selected = storage.getItem("plane_active_wallet_address")?.trim() || "";
+      if (/^0x[a-fA-F0-9]{40}$/.test(selected)) return selected;
+    }
+  } catch { /* Fall back to the last bootstrap address if storage is blocked. */ }
   if (currentUserAddress) return currentUserAddress;
   try {
     const directKeys = [
@@ -1920,7 +1941,7 @@ async function commitWorkspaceCIDOnce(
 }
 
 /** Only a verified postcondition counts as a completed membership write. */
-async function writeWorkspaceMembership(slug: string, member: string, desiredRole: number | null, signer?: string): Promise<boolean> {
+async function writeWorkspaceMembership(slug: string, member: string, desiredRole: number | null, signer?: string, selfLeave = false): Promise<boolean> {
   const registry = getWorkspaceRegistryAddress();
   const bridge = getFiaiSDK();
   if (!registry || !bridge || !slug || !/^0x[a-f0-9]{40}$/i.test(member)) return false;
@@ -1930,15 +1951,15 @@ async function writeWorkspaceMembership(slug: string, member: string, desiredRol
   if (before < 0) throw new Error("Unable to verify the current membership. Try again later.");
   const matches = (role: number) => desiredRole === null ? [1, 2, 3].includes(role) : role === desiredRole;
   if (matches(before)) return true;
-  const fn = desiredRole === null ? "joinWorkspace" : desiredRole === 0 ? "removeMember" : "addMember";
-  const abi = desiredRole === null ? JOIN_WORKSPACE_ABI : desiredRole === 0 ? REMOVE_MEMBER_ABI : ADD_MEMBER_ABI;
+  const fn = selfLeave ? "leaveWorkspace" : desiredRole === null ? "joinWorkspace" : desiredRole === 0 ? "removeMember" : "addMember";
+  const abi = selfLeave ? LEAVE_WORKSPACE_ABI : desiredRole === null ? JOIN_WORKSPACE_ABI : desiredRole === 0 ? REMOVE_MEMBER_ABI : ADD_MEMBER_ABI;
   let sendError: unknown = null;
   try {
     await signTransactionWithUnlockRetry(bridge, {
       from, to: registry, abiData: [abi], functionName: fn, feeType: "sc", amount: "0", value: "0", gas: getContractGas(), type: "transaction",
       inputArray: [
         { name: "slug", type: "string", value: slug },
-        ...(desiredRole === null ? [] : [{ name: "member", type: "address", value: member }]),
+        ...(desiredRole === null || selfLeave ? [] : [{ name: "member", type: "address", value: member }]),
         ...(desiredRole !== null && desiredRole > 0 ? [{ name: "role", type: "uint8", value: String(desiredRole) }] : []),
       ], isReadOnly: false, bundleId: "", ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
     }, fn, { maxAttempts: 1 });
@@ -1975,10 +1996,84 @@ export async function removeWorkspaceMemberOnChain(slug: string, memberAddress: 
   return writeWorkspaceMembership(slug, memberAddress, 0, admin);
 }
 
+const selfLeaveOperations = new Map<string, Promise<boolean>>();
+export function leaveWorkspaceOnChain(slug: string, memberWallet: string): Promise<boolean> {
+  const key = `${getWorkspaceRegistryAddress().toLowerCase()}:${slug}:${memberWallet.toLowerCase()}`;
+  const existing = selfLeaveOperations.get(key);
+  if (existing) return existing;
+  const operation = leaveWorkspaceOnChainOnce(slug, memberWallet);
+  selfLeaveOperations.set(key, operation);
+  void operation.finally(() => { if (selfLeaveOperations.get(key) === operation) selfLeaveOperations.delete(key); }).catch(() => undefined);
+  return operation;
+}
+
+async function leaveWorkspaceOnChainOnce(slug: string, memberWallet: string): Promise<boolean> {
+  if (!getFiaiSDK() || !getWorkspaceRegistryAddress() || !/^0x[a-f0-9]{40}$/i.test(memberWallet)) {
+    throw new MembershipOperationError("WALLET_REQUIRED", "Hãy kết nối và chọn ví của bạn trước khi rời workspace.");
+  }
+  const signer = await assertVaultSigningAddress(memberWallet);
+  if (signer.toLowerCase() !== memberWallet.toLowerCase()) {
+    throw new MembershipOperationError("SIGNING_WALLET_CHANGED", "Ví ký đã thay đổi. Hãy chọn lại ví rồi thực hiện lại.");
+  }
+  const before = await fetchMemberRoleOnChain(slug, signer);
+  if (before < 0) throw new MembershipOperationError("PERMISSION_UNAVAILABLE", "Chưa kiểm tra được quyền trên chain. Dữ liệu thành viên vẫn được giữ nguyên.");
+  if (before === 3) throw new MembershipOperationError("OWNER_CANNOT_LEAVE", "Chủ workspace cần chuyển quyền sở hữu trước khi rời.");
+  if (before === 0) return true;
+  const rawVersion = await directRpcRead(getWorkspaceRegistryAddress(), "0x7a64d5e0", 5000);
+  if (!/^0x[0-9a-f]{64}$/i.test(rawVersion || "") || BigInt(rawVersion!) < 3n) {
+    throw new MembershipOperationError("CONTRACT_UPGRADE_REQUIRED", "Contract hiện tại chưa hỗ trợ thành viên tự rời workspace. Cần phát hành bản contract mới trước khi dùng thao tác này.");
+  }
+  return writeWorkspaceMembership(slug, signer, 0, signer, true);
+}
+
 export async function setWorkspaceMemberRoleOnChain(slug: string, memberAddress: string, planeRole: number, adminWallet: string): Promise<boolean> {
-  if (![5, 10, 15, 20].includes(planeRole)) throw new Error("Invalid workspace role.");
+  if (![15, 20].includes(planeRole)) throw new Error("Only Admin and Member roles are supported by this contract.");
   if (!await canManageWorkspaceOnChain(slug, adminWallet)) throw new Error("Only a workspace administrator can change member roles.");
   return writeWorkspaceMembership(slug, memberAddress, mapPlaneRoleToContractRole(planeRole), adminWallet);
+}
+
+/** Direct provisioning: the admin sends the transaction, never the recipient.
+ * Existing memberships retain their role; role changes use the separate action.
+ */
+export async function addWorkspaceWalletMemberOnChain(slug: string, wallet: string, planeRole: number, adminWallet: string, retryAfterReview = false): Promise<{ role: number; alreadyMember: boolean }> {
+  const desired = mapPlaneRoleToContractRole(planeRole);
+  if (!/^0x[a-f0-9]{40}$/i.test(wallet) || /^0x0{40}$/i.test(wallet)) throw new MembershipOperationError("INVALID_WALLET", "Địa chỉ ví thành viên không hợp lệ.");
+  if (!getFiaiSDK() || !getWorkspaceRegistryAddress()) throw new MembershipOperationError("WALLET_REQUIRED", "Hãy kết nối ví quản trị trước khi thêm thành viên.");
+  const signer = await assertVaultSigningAddress(adminWallet);
+  if (signer.toLowerCase() !== adminWallet.toLowerCase()) throw new MembershipOperationError("SIGNING_WALLET_CHANGED", "Ví ký đã thay đổi. Hãy chọn lại ví quản trị.");
+  if (!await canManageWorkspaceOnChain(slug, signer)) throw new MembershipOperationError("NOT_AUTHORIZED", "Chỉ quản trị viên mới được thêm thành viên.");
+  const before = await fetchMemberRoleOnChain(slug, wallet);
+  if (before < 0) throw new MembershipOperationError("PERMISSION_UNAVAILABLE", "Chưa đọc được quyền hiện tại của ví. Chưa gửi giao dịch.");
+  const operationKey = `plane_wallet_member_pending:${getEnvVar("VITE_RPC_URL")}:${getWorkspaceRegistryAddress()}:${slug}:${wallet.toLowerCase()}`;
+  if ([1, 2, 3].includes(before)) { clearWalletMemberOperationPending(operationKey); return { role: before, alreadyMember: true }; }
+  if (walletMemberOperationPending(operationKey) && !retryAfterReview) throw new MembershipOperationError("MEMBERSHIP_PENDING", "Giao dịch trước chưa rõ kết quả. Hãy kiểm tra lại quyền hoặc lịch sử ví; chưa gửi thêm giao dịch.");
+  setWalletMemberOperationPending(operationKey);
+  let sendError: unknown;
+  try {
+    await signTransactionWithUnlockRetry(getFiaiSDK(), {
+      from: signer, to: getWorkspaceRegistryAddress(), abiData: [ADD_MEMBER_ABI], functionName: "addMember", feeType: "sc", amount: "0", value: "0", gas: getContractGas(), type: "transaction",
+      inputArray: [{ name: "slug", type: "string", value: slug }, { name: "member", type: "address", value: wallet }, { name: "role", type: "uint8", value: String(desired) }],
+      isReadOnly: false, bundleId: "", ...(getBlsPrivateKey() ? { blsPrivateKey: getBlsPrivateKey() } : {}),
+    }, "addMember", { maxAttempts: 1 });
+  } catch (error) { sendError = error; }
+  let after = await fetchMemberRoleOnChain(slug, wallet);
+  const rejected = sendError instanceof Error && /reject|denied|cancel|đã đóng cửa sổ/i.test(sendError.message);
+  if (after !== desired && !rejected) {
+    for (const delay of [500, 1000]) {
+      // oxlint-disable-next-line no-await-in-loop -- Poll the postcondition in order; never rebroadcast while waiting for confirmation.
+      await new Promise<void>(resolve => { if (typeof window !== "undefined") window.setTimeout(resolve, delay); else setTimeout(resolve, delay); });
+      // oxlint-disable-next-line no-await-in-loop -- Wait for each read before deciding whether another is needed.
+      after = await fetchMemberRoleOnChain(slug, wallet);
+      if (after === desired) break;
+    }
+  }
+  if (after !== desired) {
+    if (rejected) { clearWalletMemberOperationPending(operationKey); throw sendError; }
+    throw new MembershipOperationError("MEMBERSHIP_PENDING", "Chưa xác nhận được quyền. Giao dịch có thể đang chờ; hãy kiểm tra lại trước khi gửi thêm.");
+  }
+  clearWalletMemberOperationPending(operationKey);
+  invalidateWorkspaceMembersOnChainCache(slug);
+  return { role: desired, alreadyMember: false };
 }
 
 export async function readWorkspaceWalletInvitation(slug: string, wallet: string): Promise<{ role: number; expiresAt: number }> {
@@ -1990,13 +2085,13 @@ export async function readWorkspaceWalletInvitation(slug: string, wallet: string
 
 export async function writeWorkspaceWalletInvitation(slug: string, wallet: string, planeRole: number, expiresAt: number, adminWallet: string, revoke = false): Promise<boolean> {
   if (!/^0x[a-f0-9]{40}$/i.test(wallet) || /^0x0{40}$/i.test(wallet)) throw new Error("Ví người nhận không hợp lệ.");
-  if (![5, 10, 15, 20].includes(planeRole) || (!revoke && (!Number.isSafeInteger(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)))) throw new Error("Quyền hoặc hạn dùng của lời mời không hợp lệ.");
+  if (!revoke && (![15, 20].includes(planeRole) || !Number.isSafeInteger(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000))) throw new Error("Chỉ hỗ trợ quyền Admin/Member và lời mời chưa hết hạn.");
   const signer = await assertVaultSigningAddress(adminWallet);
   if (signer.toLowerCase() !== adminWallet.toLowerCase()) throw new Error("Ví ký đã thay đổi. Hãy chọn lại ví.");
   if (!await canManageWorkspaceOnChain(slug, signer)) throw new Error("Bạn chưa có quyền quản lý lời mời.");
   const version = await directRpcRead(getWorkspaceRegistryAddress(), "0x7a64d5e0", 5000).catch(() => null);
   if (!version || !/^0x[0-9a-f]{64}$/i.test(version) || BigInt(version) < 2n) throw new Error("Contract hiện tại chưa hỗ trợ lời mời ràng buộc ví. Cần triển khai bản contract đã kiểm thử trước khi cấp lời mời này.");
-  const role = mapPlaneRoleToContractRole(planeRole);
+  const role = revoke ? 0 : mapPlaneRoleToContractRole(planeRole);
   const current = await readWorkspaceWalletInvitation(slug, wallet);
   if (revoke ? current.role === 0 : current.role === role && current.expiresAt === expiresAt) return true;
   const fn = revoke ? "revokeInvitation" : "inviteMember";
@@ -2071,13 +2166,7 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
 }
 
 export function applyOffchainDB(ipfsDB: Record<string, any>): void {
-  if (ipfsDB.credentials && typeof ipfsDB.credentials === "object") {
-    for (const [email, hash] of Object.entries(ipfsDB.credentials)) {
-      if (email && typeof hash === "string") {
-        setStoredCredential(email, hash);
-      }
-    }
-  }
+  ipfsDB = sanitizeSharedSnapshot(ipfsDB);
 
   const currentWorkspaces = [...(localDB.workspaces || [])];
   const currentUsers = [...(localDB.users || [])];
@@ -2203,6 +2292,12 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     if (existingIndex === -1) {
       localDB.users.push(u);
     } else {
+      const existing = localDB.users[existingIndex];
+      if (existing.id === u.id && String(existing.email || "").trim().toLowerCase() !== String(u.email || "").trim().toLowerCase()) {
+        localDB.users[existingIndex] = u;
+        continue;
+      }
+      preserveLocalUserAuth(u, existing);
       if (u.theme) {
         localDB.users[existingIndex].theme = {
           ...localDB.users[existingIndex].theme,

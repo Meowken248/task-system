@@ -74,8 +74,8 @@
       ]
     },
     "C:\\task-system\\plane\\contracts\\PlaneWorkspaceRegistry.sol": {
-      "lastModificationDate": 1793066559268,
-      "contentHash": "5a0c177288abb34b40c5b84cc363b8ea",
+      "lastModificationDate": 1793242644637,
+      "contentHash": "e41eeebedc90f7e8e47951273c51fd36",
       "sourceName": "contracts/PlaneWorkspaceRegistry.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -107,6 +107,43 @@
       ],
       "artifacts": [
         "PlaneWorkspaceRegistry"
+      ]
+    },
+    "C:\\task-system\\plane\\contracts\\PlaneEmailVerification.sol": {
+      "lastModificationDate": 1793242645420,
+      "contentHash": "8c4f32d64a8e6c16c90e4d75b95d59e3",
+      "sourceName": "contracts/PlaneEmailVerification.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "IPlaneEmailPolicy",
+        "PlaneEmailVerification"
       ]
     }
   }

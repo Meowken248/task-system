@@ -116,57 +116,56 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
     setIsOpen(false);
   };
 
+  const handleUploadSuccess = (url: string) => {
+    onChange(url);
+    setIsImageUploading(false);
+    setImage(null);
+    setIsOpen(false);
+  };
+
   const handleSubmit = async () => {
     if (!image) return;
     setIsImageUploading(true);
 
-    const uploadCallback = (url: string) => {
-      onChange(url);
-      setIsImageUploading(false);
-      setImage(null);
-      setIsOpen(false);
-    };
-
-    if (isProfileCover) {
-      await fileService
-        .uploadUserAsset(
+    try {
+      if (isProfileCover) {
+        const res = await fileService.uploadUserAsset(
           {
             entity_identifier: "",
             entity_type: EFileAssetType.USER_COVER,
           },
           image
-        )
-        .then((res) => uploadCallback(res.asset_url))
-        .catch((error) => {
-          console.error("Error uploading user cover image:", error);
-          setIsImageUploading(false);
-          setToast({
-            message: error?.error ?? "The image could not be uploaded",
-            type: TOAST_TYPE.ERROR,
-            title: "Image not uploaded",
-          });
-        });
-    } else {
-      if (!workspaceSlug) return;
-      await fileService
-        .uploadWorkspaceAsset(
-          workspaceSlug.toString(),
+        );
+        if (res?.asset_url) {
+          handleUploadSuccess(res.asset_url);
+        } else {
+          throw new Error("The image could not be uploaded");
+        }
+      } else {
+        const effectiveSlug = (workspaceSlug || "fiai").toString();
+        const res = await fileService.uploadWorkspaceAsset(
+          effectiveSlug,
           {
             entity_identifier: projectId?.toString() ?? "",
             entity_type: EFileAssetType.PROJECT_COVER,
           },
           image
-        )
-        .then((res) => uploadCallback(res.asset_url))
-        .catch((error) => {
-          console.error("Error uploading project cover image:", error);
-          setIsImageUploading(false);
-          setToast({
-            message: error?.error ?? "The image could not be uploaded",
-            type: TOAST_TYPE.ERROR,
-            title: "Image not uploaded",
-          });
-        });
+        );
+        if (res?.asset_url) {
+          handleUploadSuccess(res.asset_url);
+        } else {
+          throw new Error("The image could not be uploaded");
+        }
+      }
+    } catch (error: any) {
+      console.error("Error uploading image:", error);
+      setToast({
+        message: error?.error ?? error?.message ?? "The image could not be uploaded",
+        type: TOAST_TYPE.ERROR,
+        title: "Image not uploaded",
+      });
+    } finally {
+      setIsImageUploading(false);
     }
   };
 
@@ -310,54 +309,64 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                         variant="primary"
                         size="base"
                         loading={isImageUploading}
-                        onClick={async () => {
-                          try {
-                            setIsImageUploading(true);
-                            // Use browser file picker
-                            const input = document.createElement("input");
-                            input.type = "file";
-                            input.accept = "image/*";
-                            const filePromise = new Promise<File | null>((resolve) => {
-                              input.onchange = () => resolve(input.files?.[0] || null);
-                              input.oncancel = () => resolve(null);
-                            });
-                            input.click();
-                            const selectedFile = await filePromise;
+                        onClick={() => {
+                          const input = document.createElement("input");
+                          input.type = "file";
+                          input.accept = "image/*";
+                          input.style.display = "none";
+                          document.body.appendChild(input);
+
+                          input.onchange = async () => {
+                            const selectedFile = input.files?.[0] || null;
+                            if (input.parentNode) {
+                              document.body.removeChild(input);
+                            }
                             if (!selectedFile) return;
 
-                            // Convert to base64 and hash via SystemCore
-                            const base64 = await new Promise<string>((resolve, reject) => {
-                              const reader = new FileReader();
-                              reader.readAsDataURL(selectedFile);
-                              reader.onload = () => {
-                                let encoded = reader.result?.toString() || "";
-                                const idx = encoded.indexOf(",");
-                                if (idx !== -1) encoded = encoded.substring(idx + 1);
-                                resolve(encoded);
-                              };
-                              reader.onerror = reject;
-                            });
-
-                            const { createHash } = await import("@metanodejs/system-core");
-                            const hash = await createHash(base64, false);
-                            const assetId = typeof hash === "string" ? hash : (hash as any)?.hash || selectedFile.name;
-
-                            if (assetId) {
-                              onChange(assetId);
-                              setIsOpen(false);
-                            } else {
-                              throw new Error("Could not generate file hash");
+                            setIsImageUploading(true);
+                            try {
+                              if (isProfileCover) {
+                                const res = await fileService.uploadUserAsset(
+                                  {
+                                    entity_identifier: "",
+                                    entity_type: EFileAssetType.USER_COVER,
+                                  },
+                                  selectedFile
+                                );
+                                if (res?.asset_url) {
+                                  handleUploadSuccess(res.asset_url);
+                                } else {
+                                  throw new Error("Could not upload cover image");
+                                }
+                              } else {
+                                const effectiveSlug = (workspaceSlug || "fiai").toString();
+                                const res = await fileService.uploadWorkspaceAsset(
+                                  effectiveSlug,
+                                  {
+                                    entity_identifier: projectId?.toString() ?? "",
+                                    entity_type: EFileAssetType.PROJECT_COVER,
+                                  },
+                                  selectedFile
+                                );
+                                if (res?.asset_url) {
+                                  handleUploadSuccess(res.asset_url);
+                                } else {
+                                  throw new Error("Could not upload cover image");
+                                }
+                              }
+                            } catch (error: any) {
+                              console.error("Metanode upload error:", error);
+                              setToast({
+                                message: error?.message || "Failed to upload file via Metanode",
+                                type: TOAST_TYPE.ERROR,
+                                title: "Image not uploaded",
+                              });
+                            } finally {
+                              setIsImageUploading(false);
                             }
-                          } catch (error: any) {
-                            console.error("Metanode upload error:", error);
-                            setToast({
-                              message: error?.message || "Failed to upload file via Metanode",
-                              type: TOAST_TYPE.ERROR,
-                              title: "Image not uploaded",
-                            });
-                          } finally {
-                            setIsImageUploading(false);
-                          }
+                          };
+
+                          input.click();
                         }}
                       >
                         {isImageUploading ? "Uploading..." : "Upload via Metanode"}

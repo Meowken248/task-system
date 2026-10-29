@@ -3,6 +3,8 @@
 /* eslint-disable */
 import type * as offchainDataRegistrySol from "./OffchainDataRegistry.sol";
 export type { offchainDataRegistrySol };
+import type * as planeEmailVerificationSol from "./PlaneEmailVerification.sol";
+export type { planeEmailVerificationSol };
 import type * as planeTaskManagerSol from "./PlaneTaskManager.sol";
 export type { planeTaskManagerSol };
 import type * as planeWorkspaceRegistrySol from "./PlaneWorkspaceRegistry.sol";
@@ -12,5 +14,9 @@ export type { PlaneWorkspaceRegistry } from "./PlaneWorkspaceRegistry.sol/PlaneW
 export { PlaneWorkspaceRegistry__factory } from "./factories/PlaneWorkspaceRegistry.sol/PlaneWorkspaceRegistry__factory";
 export type { PlaneTaskManager } from "./PlaneTaskManager.sol/PlaneTaskManager";
 export { PlaneTaskManager__factory } from "./factories/PlaneTaskManager.sol/PlaneTaskManager__factory";
+export type { PlaneEmailVerification } from "./PlaneEmailVerification.sol/PlaneEmailVerification";
+export { PlaneEmailVerification__factory } from "./factories/PlaneEmailVerification.sol/PlaneEmailVerification__factory";
+export type { IPlaneEmailPolicy } from "./PlaneEmailVerification.sol/IPlaneEmailPolicy";
+export { IPlaneEmailPolicy__factory } from "./factories/PlaneEmailVerification.sol/IPlaneEmailPolicy__factory";
 export type { OffchainDataRegistry } from "./OffchainDataRegistry.sol/OffchainDataRegistry";
 export { OffchainDataRegistry__factory } from "./factories/OffchainDataRegistry.sol/OffchainDataRegistry__factory";

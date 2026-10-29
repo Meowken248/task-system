@@ -84,11 +84,18 @@ export const ProjectAuthWrapper = observer(function ProjectAuthWrapper(props: IP
     data: projectDetails,
     isLoading: isProjectDetailsLoading,
     error: projectDetailsError,
-  } = useSWR(PROJECT_DETAILS(workspaceSlug, projectId), () => fetchProjectDetails(workspaceSlug, projectId));
+  } = useSWR(PROJECT_DETAILS(workspaceSlug, projectId), () => fetchProjectDetails(workspaceSlug, projectId), {
+    revalidateIfStale: false,
+    revalidateOnFocus: false,
+  });
   // fetching user project member information
   const { isLoading: isProjectPermissionLoading, error: projectPermissionError } = useSWR(
     PROJECT_ME_INFORMATION(workspaceSlug, projectId),
-    () => fetchUserProjectInfo(workspaceSlug, projectId)
+    () => fetchUserProjectInfo(workspaceSlug, projectId),
+    {
+      revalidateIfStale: false,
+      revalidateOnFocus: false,
+    }
   );
   // fetching project member preferences
   useSWR(
@@ -148,8 +155,8 @@ export const ProjectAuthWrapper = observer(function ProjectAuthWrapper(props: IP
 
   const isProjectLoading =
     isParentLoading ||
-    (isProjectDetailsLoading && !projectDetailsError) ||
-    (isProjectPermissionLoading && !projectPermissionError);
+    (!projectDetails && isProjectDetailsLoading && !projectDetailsError) ||
+    (!hasPermissionToCurrentProject && !projectDetails && isProjectPermissionLoading && !projectPermissionError);
 
   // A successful project-details response is authoritative: that endpoint
   // already enforces workspace/project access on the API. Relying only on the

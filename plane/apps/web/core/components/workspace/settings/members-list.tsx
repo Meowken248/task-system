@@ -54,16 +54,25 @@ export const WorkspaceMembersList = observer(function WorkspaceMembersList(props
           await fetchWorkspaceMemberInvitations(workspaceSlug.toString());
           await fetchWorkspaceMembers(workspaceSlug.toString());
         }
-      : null
+      : null,
+    {
+      revalidateOnFocus: true,
+      refreshInterval: 15000,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      dedupingInterval: 5000,
+    }
   );
 
   useEffect(() => {
     if (!workspaceSlug) return;
-    const handleSync = async () => {
+    const handleSync = async (event: Event) => {
+      const changedWorkspace = (event as CustomEvent)?.detail?.workspaceSlug;
+      if (changedWorkspace && changedWorkspace !== workspaceSlug.toString()) return;
       try {
         await fetchWorkspaceMemberInvitations(workspaceSlug.toString());
         await fetchWorkspaceMembers(workspaceSlug.toString());
-      } catch { }
+      } catch {}
     };
     window.addEventListener("plane_dapp_members_synced", handleSync);
     return () => {

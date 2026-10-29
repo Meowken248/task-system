@@ -116,10 +116,15 @@ export class IssueStore implements IIssueStore {
   updateIssue = (issueId: string, issue: Partial<TIssue>) => {
     if (!issue || !issueId || !this.issuesMap[issueId]) return;
     runInAction(() => {
-      set(this.issuesMap, [issueId, "updated_at"], getCurrentDateTimeInISO());
-      Object.keys(issue).forEach((key) => {
-        set(this.issuesMap, [issueId, key], issue[key as keyof TIssue]);
-      });
+      const currentIssue = this.issuesMap[issueId];
+      this.issuesMap = {
+        ...this.issuesMap,
+        [issueId]: {
+          ...currentIssue,
+          ...issue,
+          updated_at: getCurrentDateTimeInISO(),
+        },
+      };
     });
   };
 
@@ -131,7 +136,9 @@ export class IssueStore implements IIssueStore {
   removeIssue = (issueId: string) => {
     if (!issueId || !this.issuesMap[issueId]) return;
     runInAction(() => {
-      delete this.issuesMap[issueId];
+      const nextMap = { ...this.issuesMap };
+      delete nextMap[issueId];
+      this.issuesMap = nextMap;
     });
   };
 

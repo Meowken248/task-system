@@ -179,11 +179,13 @@ export const AccountTypeColumn = observer(function AccountTypeColumn(props: Acco
               className="w-32 rounded-md p-0"
               input
             >
-              {Object.keys(ROLE).map((item) => (
-                <CustomSelect.Option key={item} value={item as unknown as EUserPermissions}>
-                  {ROLE[item as unknown as keyof typeof ROLE]}
-                </CustomSelect.Option>
-              ))}
+              {Object.keys(ROLE)
+                .filter((item) => [15, 20].includes(Number(item)))
+                .map((item) => (
+                  <CustomSelect.Option key={item} value={item as unknown as EUserPermissions}>
+                    {ROLE[item as unknown as keyof typeof ROLE]}
+                  </CustomSelect.Option>
+                ))}
             </CustomSelect>
           )}
         />

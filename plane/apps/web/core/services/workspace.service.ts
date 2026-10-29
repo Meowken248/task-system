@@ -14,6 +14,8 @@ import type {
   IWorkspaceSearchResults,
   IProductUpdateResponse,
   IWorkspaceBulkInviteFormData,
+  IWorkspaceWalletMemberInput,
+  IWorkspaceWalletMemberResult,
   IWorkspaceViewProps,
   IUserProjectsRole,
   IWorkspaceView,
@@ -80,6 +82,17 @@ export class WorkspaceService extends APIService {
       .then((response) => response?.data)
       .catch((error) => {
         throw error?.response?.data;
+      });
+  }
+
+  async addWalletMember(
+    workspaceSlug: string,
+    data: IWorkspaceWalletMemberInput
+  ): Promise<IWorkspaceWalletMemberResult> {
+    return this.post(`/api/workspaces/${workspaceSlug}/members/`, data)
+      .then((response) => response.data)
+      .catch((error) => {
+        throw error?.response?.data || error;
       });
   }
 
@@ -171,8 +184,14 @@ export class WorkspaceService extends APIService {
       });
   }
 
-  async getWorkspaceInvitation(workspaceSlug: string, invitationId: string, token?: string): Promise<IWorkspaceMemberInvitation> {
-    return this.get(`/api/workspaces/${workspaceSlug}/invitations/${invitationId}/join/`, { params: token ? { token } : undefined })
+  async getWorkspaceInvitation(
+    workspaceSlug: string,
+    invitationId: string,
+    token?: string
+  ): Promise<IWorkspaceMemberInvitation> {
+    return this.get(`/api/workspaces/${workspaceSlug}/invitations/${invitationId}/join/`, {
+      params: token ? { token } : undefined,
+    })
       .then((response) => response?.data)
       .catch((error) => {
         throw error?.response?.data;

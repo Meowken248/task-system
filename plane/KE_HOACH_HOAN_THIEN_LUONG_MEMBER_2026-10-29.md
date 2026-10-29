@@ -1,8 +1,12 @@
-# Kế hoạch hoàn thiện luồng member — v1.0 — CHỜ DUYỆT
+# Kế hoạch hoàn thiện luồng member — v1.1 — phạm vi mã/test đã duyệt
+
+**Quyết định mới nhất của chủ dự án:** chuyển sang thêm trực tiếp bằng địa chỉ ví. Admin chọn Member/Admin, ký một giao dịch cấp quyền; Member dùng đúng ví mở workspace, không nhận lời mời/OTP hoặc chờ duyệt lần hai. Không database, không verifier, không cần deploy v3 cho luồng này. Phạm vi tự nhận email bên dưới được giữ như lịch sử và không còn là điều kiện hoàn tất phương án đã chọn. Xem [báo cáo triển khai hiện hành](/C:/task-system/plane/BAO_CAO_THEM_MEMBER_BANG_VI_2026-10-29.md).
 
 Ngày lập: 29/10/2026. Phạm vi: Plane DApp, xác thực người nhận, quyền thành viên trên chain và trải nghiệm quản lý member.
 
-**Tài liệu để duyệt trước khi làm. Lượt lập kế hoạch chỉ đọc mã và tạo tài liệu này; chưa sửa chức năng, triển khai dịch vụ, deploy contract, sửa env hoặc gửi email/giao dịch thật.**
+**Lịch sử v1.0:** đây là tài liệu trình duyệt trước khi triển khai. Chủ dự án sau đó đồng ý làm mã và kiểm thử theo kế hoạch. Deployment, migration, env, hạ tầng, dependency mới và test mail/ví thật vẫn theo điểm duyệt D6.
+
+**Điều chỉnh v1.1 theo xác nhận mới:** chỉ local/IPFS/chain; không PostgreSQL/SQLite, không lưu OTP/session bằng tệp hoặc storage phía dịch vụ. Quyết định này thay thế đề xuất database ở phần 5.2 và D1 bên dưới. Ghi nhận chi tiết, kết quả và những phần chưa hoàn tất tại [tiến độ triển khai](/C:/task-system/plane/MEMBER_FLOW_IMPLEMENTATION.md). Phần mô tả v1.0 được giữ để đối chiếu lịch sử, không phải chấp thuận cài database.
 
 ## 1. Kết quả cần đạt
 

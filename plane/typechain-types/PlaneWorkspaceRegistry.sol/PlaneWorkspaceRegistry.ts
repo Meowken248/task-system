@@ -23,11 +23,61 @@ import type {
   TypedContractMethod,
 } from "../common";
 
+export declare namespace PlaneWorkspaceRegistry {
+  export type EmailInvitationStruct = {
+    slug: string;
+    recipientCommitment: BytesLike;
+    role: BigNumberish;
+    expiresAt: BigNumberish;
+    version: BigNumberish;
+    invitedBy: AddressLike;
+    claimedBy: AddressLike;
+    revoked: boolean;
+    metadataCID: string;
+    declined: boolean;
+  };
+
+  export type EmailInvitationStructOutput = [
+    slug: string,
+    recipientCommitment: string,
+    role: bigint,
+    expiresAt: bigint,
+    version: bigint,
+    invitedBy: string,
+    claimedBy: string,
+    revoked: boolean,
+    metadataCID: string,
+    declined: boolean
+  ] & {
+    slug: string;
+    recipientCommitment: string;
+    role: bigint;
+    expiresAt: bigint;
+    version: bigint;
+    invitedBy: string;
+    claimedBy: string;
+    revoked: boolean;
+    metadataCID: string;
+    declined: boolean;
+  };
+}
+
 export interface PlaneWorkspaceRegistryInterface extends Interface {
   getFunction(
     nameOrSignature:
+      | "MAX_EMAIL_CLAIM_LIFETIME"
       | "addMember"
+      | "authorizeWorkspaceSession"
+      | "claimEmailInvitation"
+      | "claimedEmailWallet"
       | "createWorkspace"
+      | "declineEmailInvitation"
+      | "emailClaimDigest"
+      | "emailClaimReservation"
+      | "emailVerifier"
+      | "emailVerifierEpoch"
+      | "getEmailInvitation"
+      | "getEmailInvitationIds"
       | "getInvitation"
       | "getMemberRole"
       | "getUserWorkspaces"
@@ -36,10 +86,15 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
       | "getWorkspaceMembers"
       | "inviteMember"
       | "joinWorkspace"
+      | "leaveWorkspace"
       | "operator"
+      | "registerEmailInvitation"
       | "removeMember"
+      | "reserveEmailClaim"
+      | "revokeEmailInvitation"
       | "revokeInvitation"
       | "setOperator"
+      | "setWorkspaceEmailVerifier"
       | "setWorkspaceOwner"
       | "updateWorkspaceCID"
       | "updateWorkspaceCIDIfMatches"
@@ -49,21 +104,87 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
 
   getEvent(
     nameOrSignatureOrTopic:
+      | "EmailClaimReserved"
+      | "EmailInvitationClaimed"
+      | "EmailInvitationDeclined"
+      | "EmailInvitationRegistered"
+      | "EmailInvitationRevoked"
+      | "EmailVerifierChanged"
       | "InvitationRevoked"
       | "MemberAdded"
       | "MemberInvited"
       | "MemberRemoved"
       | "WorkspaceCIDUpdated"
       | "WorkspaceCreated"
+      | "WorkspaceSessionAuthorized"
   ): EventFragment;
 
+  encodeFunctionData(
+    functionFragment: "MAX_EMAIL_CLAIM_LIFETIME",
+    values?: undefined
+  ): string;
   encodeFunctionData(
     functionFragment: "addMember",
     values: [string, AddressLike, BigNumberish]
   ): string;
   encodeFunctionData(
+    functionFragment: "authorizeWorkspaceSession",
+    values: [string, BytesLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "claimEmailInvitation",
+    values: [
+      BytesLike,
+      BigNumberish,
+      AddressLike,
+      BigNumberish,
+      BytesLike,
+      BigNumberish,
+      BytesLike
+    ]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "claimedEmailWallet",
+    values: [string, BytesLike]
+  ): string;
+  encodeFunctionData(
     functionFragment: "createWorkspace",
     values: [string, string, string]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "declineEmailInvitation",
+    values: [BytesLike, BigNumberish]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "emailClaimDigest",
+    values: [
+      BytesLike,
+      BigNumberish,
+      AddressLike,
+      BigNumberish,
+      BytesLike,
+      BigNumberish
+    ]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "emailClaimReservation",
+    values: [BytesLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "emailVerifier",
+    values: [string]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "emailVerifierEpoch",
+    values: [string]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "getEmailInvitation",
+    values: [BytesLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "getEmailInvitationIds",
+    values: [string, BigNumberish, BigNumberish]
   ): string;
   encodeFunctionData(
     functionFragment: "getInvitation",
@@ -97,10 +218,35 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     functionFragment: "joinWorkspace",
     values: [string]
   ): string;
+  encodeFunctionData(
+    functionFragment: "leaveWorkspace",
+    values: [string]
+  ): string;
   encodeFunctionData(functionFragment: "operator", values?: undefined): string;
+  encodeFunctionData(
+    functionFragment: "registerEmailInvitation",
+    values: [
+      string,
+      BytesLike,
+      BytesLike,
+      BigNumberish,
+      BigNumberish,
+      BigNumberish,
+      BytesLike,
+      string
+    ]
+  ): string;
   encodeFunctionData(
     functionFragment: "removeMember",
     values: [string, AddressLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "reserveEmailClaim",
+    values: [BytesLike, BigNumberish, AddressLike, BytesLike, BigNumberish]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "revokeEmailInvitation",
+    values: [string, BytesLike, BigNumberish]
   ): string;
   encodeFunctionData(
     functionFragment: "revokeInvitation",
@@ -109,6 +255,10 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
   encodeFunctionData(
     functionFragment: "setOperator",
     values: [AddressLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "setWorkspaceEmailVerifier",
+    values: [string, AddressLike]
   ): string;
   encodeFunctionData(
     functionFragment: "setWorkspaceOwner",
@@ -131,9 +281,53 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     values?: undefined
   ): string;
 
+  decodeFunctionResult(
+    functionFragment: "MAX_EMAIL_CLAIM_LIFETIME",
+    data: BytesLike
+  ): Result;
   decodeFunctionResult(functionFragment: "addMember", data: BytesLike): Result;
   decodeFunctionResult(
+    functionFragment: "authorizeWorkspaceSession",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "claimEmailInvitation",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "claimedEmailWallet",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
     functionFragment: "createWorkspace",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "declineEmailInvitation",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "emailClaimDigest",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "emailClaimReservation",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "emailVerifier",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "emailVerifierEpoch",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "getEmailInvitation",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "getEmailInvitationIds",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -168,9 +362,25 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     functionFragment: "joinWorkspace",
     data: BytesLike
   ): Result;
+  decodeFunctionResult(
+    functionFragment: "leaveWorkspace",
+    data: BytesLike
+  ): Result;
   decodeFunctionResult(functionFragment: "operator", data: BytesLike): Result;
   decodeFunctionResult(
+    functionFragment: "registerEmailInvitation",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
     functionFragment: "removeMember",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "reserveEmailClaim",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "revokeEmailInvitation",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -179,6 +389,10 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
   ): Result;
   decodeFunctionResult(
     functionFragment: "setOperator",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "setWorkspaceEmailVerifier",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -201,6 +415,140 @@ export interface PlaneWorkspaceRegistryInterface extends Interface {
     functionFragment: "workspacePolicyVersion",
     data: BytesLike
   ): Result;
+}
+
+export namespace EmailClaimReservedEvent {
+  export type InputTuple = [
+    invitationId: BytesLike,
+    recipient: AddressLike,
+    validUntil: BigNumberish
+  ];
+  export type OutputTuple = [
+    invitationId: string,
+    recipient: string,
+    validUntil: bigint
+  ];
+  export interface OutputObject {
+    invitationId: string;
+    recipient: string;
+    validUntil: bigint;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace EmailInvitationClaimedEvent {
+  export type InputTuple = [
+    slug: string,
+    invitationId: BytesLike,
+    version: BigNumberish,
+    member: AddressLike,
+    role: BigNumberish
+  ];
+  export type OutputTuple = [
+    slug: string,
+    invitationId: string,
+    version: bigint,
+    member: string,
+    role: bigint
+  ];
+  export interface OutputObject {
+    slug: string;
+    invitationId: string;
+    version: bigint;
+    member: string;
+    role: bigint;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace EmailInvitationDeclinedEvent {
+  export type InputTuple = [invitationId: BytesLike, version: BigNumberish];
+  export type OutputTuple = [invitationId: string, version: bigint];
+  export interface OutputObject {
+    invitationId: string;
+    version: bigint;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace EmailInvitationRegisteredEvent {
+  export type InputTuple = [
+    slug: string,
+    invitationId: BytesLike,
+    version: BigNumberish,
+    role: BigNumberish,
+    expiresAt: BigNumberish,
+    invitedBy: AddressLike
+  ];
+  export type OutputTuple = [
+    slug: string,
+    invitationId: string,
+    version: bigint,
+    role: bigint,
+    expiresAt: bigint,
+    invitedBy: string
+  ];
+  export interface OutputObject {
+    slug: string;
+    invitationId: string;
+    version: bigint;
+    role: bigint;
+    expiresAt: bigint;
+    invitedBy: string;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace EmailInvitationRevokedEvent {
+  export type InputTuple = [
+    slug: string,
+    invitationId: BytesLike,
+    version: BigNumberish
+  ];
+  export type OutputTuple = [
+    slug: string,
+    invitationId: string,
+    version: bigint
+  ];
+  export interface OutputObject {
+    slug: string;
+    invitationId: string;
+    version: bigint;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace EmailVerifierChangedEvent {
+  export type InputTuple = [
+    slug: string,
+    verifier: AddressLike,
+    epoch: BigNumberish
+  ];
+  export type OutputTuple = [slug: string, verifier: string, epoch: bigint];
+  export interface OutputObject {
+    slug: string;
+    verifier: string;
+    epoch: bigint;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
 }
 
 export namespace InvitationRevokedEvent {
@@ -337,6 +685,28 @@ export namespace WorkspaceCreatedEvent {
   export type LogDescription = TypedLogDescription<Event>;
 }
 
+export namespace WorkspaceSessionAuthorizedEvent {
+  export type InputTuple = [
+    slug: string,
+    sessionContext: BytesLike,
+    member: AddressLike
+  ];
+  export type OutputTuple = [
+    slug: string,
+    sessionContext: string,
+    member: string
+  ];
+  export interface OutputObject {
+    slug: string;
+    sessionContext: string;
+    member: string;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
 export interface PlaneWorkspaceRegistry extends BaseContract {
   connect(runner?: ContractRunner | null): PlaneWorkspaceRegistry;
   waitForDeployment(): Promise<this>;
@@ -380,16 +750,93 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     event?: TCEvent
   ): Promise<this>;
 
+  MAX_EMAIL_CLAIM_LIFETIME: TypedContractMethod<[], [bigint], "view">;
+
   addMember: TypedContractMethod<
     [slug: string, member: AddressLike, role: BigNumberish],
     [void],
     "nonpayable"
   >;
 
+  authorizeWorkspaceSession: TypedContractMethod<
+    [slug: string, sessionContext: BytesLike],
+    [void],
+    "nonpayable"
+  >;
+
+  claimEmailInvitation: TypedContractMethod<
+    [
+      invitationId: BytesLike,
+      version: BigNumberish,
+      recipient: AddressLike,
+      validUntil: BigNumberish,
+      nonce: BytesLike,
+      verifierEpoch: BigNumberish,
+      signature: BytesLike
+    ],
+    [void],
+    "nonpayable"
+  >;
+
+  claimedEmailWallet: TypedContractMethod<
+    [arg0: string, arg1: BytesLike],
+    [string],
+    "view"
+  >;
+
   createWorkspace: TypedContractMethod<
     [slug: string, name: string, initialCid: string],
     [void],
     "nonpayable"
+  >;
+
+  declineEmailInvitation: TypedContractMethod<
+    [invitationId: BytesLike, version: BigNumberish],
+    [void],
+    "nonpayable"
+  >;
+
+  emailClaimDigest: TypedContractMethod<
+    [
+      invitationId: BytesLike,
+      version: BigNumberish,
+      recipient: AddressLike,
+      validUntil: BigNumberish,
+      nonce: BytesLike,
+      verifierEpoch: BigNumberish
+    ],
+    [string],
+    "view"
+  >;
+
+  emailClaimReservation: TypedContractMethod<
+    [arg0: BytesLike],
+    [
+      [string, string, bigint, bigint, bigint] & {
+        recipient: string;
+        nonce: string;
+        version: bigint;
+        validUntil: bigint;
+        verifierEpoch: bigint;
+      }
+    ],
+    "view"
+  >;
+
+  emailVerifier: TypedContractMethod<[arg0: string], [string], "view">;
+
+  emailVerifierEpoch: TypedContractMethod<[arg0: string], [bigint], "view">;
+
+  getEmailInvitation: TypedContractMethod<
+    [invitationId: BytesLike],
+    [PlaneWorkspaceRegistry.EmailInvitationStructOutput],
+    "view"
+  >;
+
+  getEmailInvitationIds: TypedContractMethod<
+    [slug: string, offset: BigNumberish, limit: BigNumberish],
+    [string[]],
+    "view"
   >;
 
   getInvitation: TypedContractMethod<
@@ -440,10 +887,45 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
 
   joinWorkspace: TypedContractMethod<[slug: string], [void], "nonpayable">;
 
+  leaveWorkspace: TypedContractMethod<[slug: string], [void], "nonpayable">;
+
   operator: TypedContractMethod<[], [string], "view">;
+
+  registerEmailInvitation: TypedContractMethod<
+    [
+      slug: string,
+      invitationId: BytesLike,
+      recipientCommitment: BytesLike,
+      role: BigNumberish,
+      expiresAt: BigNumberish,
+      expectedVersion: BigNumberish,
+      sessionContext: BytesLike,
+      metadataCID: string
+    ],
+    [void],
+    "nonpayable"
+  >;
 
   removeMember: TypedContractMethod<
     [slug: string, member: AddressLike],
+    [void],
+    "nonpayable"
+  >;
+
+  reserveEmailClaim: TypedContractMethod<
+    [
+      invitationId: BytesLike,
+      version: BigNumberish,
+      recipient: AddressLike,
+      nonce: BytesLike,
+      validUntil: BigNumberish
+    ],
+    [void],
+    "nonpayable"
+  >;
+
+  revokeEmailInvitation: TypedContractMethod<
+    [slug: string, invitationId: BytesLike, expectedVersion: BigNumberish],
     [void],
     "nonpayable"
   >;
@@ -456,6 +938,12 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
 
   setOperator: TypedContractMethod<
     [newOperator: AddressLike],
+    [void],
+    "nonpayable"
+  >;
+
+  setWorkspaceEmailVerifier: TypedContractMethod<
+    [slug: string, verifier: AddressLike],
     [void],
     "nonpayable"
   >;
@@ -487,6 +975,9 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
   ): T;
 
   getFunction(
+    nameOrSignature: "MAX_EMAIL_CLAIM_LIFETIME"
+  ): TypedContractMethod<[], [bigint], "view">;
+  getFunction(
     nameOrSignature: "addMember"
   ): TypedContractMethod<
     [slug: string, member: AddressLike, role: BigNumberish],
@@ -494,11 +985,92 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     "nonpayable"
   >;
   getFunction(
+    nameOrSignature: "authorizeWorkspaceSession"
+  ): TypedContractMethod<
+    [slug: string, sessionContext: BytesLike],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "claimEmailInvitation"
+  ): TypedContractMethod<
+    [
+      invitationId: BytesLike,
+      version: BigNumberish,
+      recipient: AddressLike,
+      validUntil: BigNumberish,
+      nonce: BytesLike,
+      verifierEpoch: BigNumberish,
+      signature: BytesLike
+    ],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "claimedEmailWallet"
+  ): TypedContractMethod<[arg0: string, arg1: BytesLike], [string], "view">;
+  getFunction(
     nameOrSignature: "createWorkspace"
   ): TypedContractMethod<
     [slug: string, name: string, initialCid: string],
     [void],
     "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "declineEmailInvitation"
+  ): TypedContractMethod<
+    [invitationId: BytesLike, version: BigNumberish],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "emailClaimDigest"
+  ): TypedContractMethod<
+    [
+      invitationId: BytesLike,
+      version: BigNumberish,
+      recipient: AddressLike,
+      validUntil: BigNumberish,
+      nonce: BytesLike,
+      verifierEpoch: BigNumberish
+    ],
+    [string],
+    "view"
+  >;
+  getFunction(
+    nameOrSignature: "emailClaimReservation"
+  ): TypedContractMethod<
+    [arg0: BytesLike],
+    [
+      [string, string, bigint, bigint, bigint] & {
+        recipient: string;
+        nonce: string;
+        version: bigint;
+        validUntil: bigint;
+        verifierEpoch: bigint;
+      }
+    ],
+    "view"
+  >;
+  getFunction(
+    nameOrSignature: "emailVerifier"
+  ): TypedContractMethod<[arg0: string], [string], "view">;
+  getFunction(
+    nameOrSignature: "emailVerifierEpoch"
+  ): TypedContractMethod<[arg0: string], [bigint], "view">;
+  getFunction(
+    nameOrSignature: "getEmailInvitation"
+  ): TypedContractMethod<
+    [invitationId: BytesLike],
+    [PlaneWorkspaceRegistry.EmailInvitationStructOutput],
+    "view"
+  >;
+  getFunction(
+    nameOrSignature: "getEmailInvitationIds"
+  ): TypedContractMethod<
+    [slug: string, offset: BigNumberish, limit: BigNumberish],
+    [string[]],
+    "view"
   >;
   getFunction(
     nameOrSignature: "getInvitation"
@@ -549,12 +1121,51 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     nameOrSignature: "joinWorkspace"
   ): TypedContractMethod<[slug: string], [void], "nonpayable">;
   getFunction(
+    nameOrSignature: "leaveWorkspace"
+  ): TypedContractMethod<[slug: string], [void], "nonpayable">;
+  getFunction(
     nameOrSignature: "operator"
   ): TypedContractMethod<[], [string], "view">;
+  getFunction(
+    nameOrSignature: "registerEmailInvitation"
+  ): TypedContractMethod<
+    [
+      slug: string,
+      invitationId: BytesLike,
+      recipientCommitment: BytesLike,
+      role: BigNumberish,
+      expiresAt: BigNumberish,
+      expectedVersion: BigNumberish,
+      sessionContext: BytesLike,
+      metadataCID: string
+    ],
+    [void],
+    "nonpayable"
+  >;
   getFunction(
     nameOrSignature: "removeMember"
   ): TypedContractMethod<
     [slug: string, member: AddressLike],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "reserveEmailClaim"
+  ): TypedContractMethod<
+    [
+      invitationId: BytesLike,
+      version: BigNumberish,
+      recipient: AddressLike,
+      nonce: BytesLike,
+      validUntil: BigNumberish
+    ],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
+    nameOrSignature: "revokeEmailInvitation"
+  ): TypedContractMethod<
+    [slug: string, invitationId: BytesLike, expectedVersion: BigNumberish],
     [void],
     "nonpayable"
   >;
@@ -568,6 +1179,13 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
   getFunction(
     nameOrSignature: "setOperator"
   ): TypedContractMethod<[newOperator: AddressLike], [void], "nonpayable">;
+  getFunction(
+    nameOrSignature: "setWorkspaceEmailVerifier"
+  ): TypedContractMethod<
+    [slug: string, verifier: AddressLike],
+    [void],
+    "nonpayable"
+  >;
   getFunction(
     nameOrSignature: "setWorkspaceOwner"
   ): TypedContractMethod<
@@ -592,6 +1210,48 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     nameOrSignature: "workspacePolicyVersion"
   ): TypedContractMethod<[], [bigint], "view">;
 
+  getEvent(
+    key: "EmailClaimReserved"
+  ): TypedContractEvent<
+    EmailClaimReservedEvent.InputTuple,
+    EmailClaimReservedEvent.OutputTuple,
+    EmailClaimReservedEvent.OutputObject
+  >;
+  getEvent(
+    key: "EmailInvitationClaimed"
+  ): TypedContractEvent<
+    EmailInvitationClaimedEvent.InputTuple,
+    EmailInvitationClaimedEvent.OutputTuple,
+    EmailInvitationClaimedEvent.OutputObject
+  >;
+  getEvent(
+    key: "EmailInvitationDeclined"
+  ): TypedContractEvent<
+    EmailInvitationDeclinedEvent.InputTuple,
+    EmailInvitationDeclinedEvent.OutputTuple,
+    EmailInvitationDeclinedEvent.OutputObject
+  >;
+  getEvent(
+    key: "EmailInvitationRegistered"
+  ): TypedContractEvent<
+    EmailInvitationRegisteredEvent.InputTuple,
+    EmailInvitationRegisteredEvent.OutputTuple,
+    EmailInvitationRegisteredEvent.OutputObject
+  >;
+  getEvent(
+    key: "EmailInvitationRevoked"
+  ): TypedContractEvent<
+    EmailInvitationRevokedEvent.InputTuple,
+    EmailInvitationRevokedEvent.OutputTuple,
+    EmailInvitationRevokedEvent.OutputObject
+  >;
+  getEvent(
+    key: "EmailVerifierChanged"
+  ): TypedContractEvent<
+    EmailVerifierChangedEvent.InputTuple,
+    EmailVerifierChangedEvent.OutputTuple,
+    EmailVerifierChangedEvent.OutputObject
+  >;
   getEvent(
     key: "InvitationRevoked"
   ): TypedContractEvent<
@@ -634,8 +1294,81 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
     WorkspaceCreatedEvent.OutputTuple,
     WorkspaceCreatedEvent.OutputObject
   >;
+  getEvent(
+    key: "WorkspaceSessionAuthorized"
+  ): TypedContractEvent<
+    WorkspaceSessionAuthorizedEvent.InputTuple,
+    WorkspaceSessionAuthorizedEvent.OutputTuple,
+    WorkspaceSessionAuthorizedEvent.OutputObject
+  >;
 
   filters: {
+    "EmailClaimReserved(bytes32,address,uint64)": TypedContractEvent<
+      EmailClaimReservedEvent.InputTuple,
+      EmailClaimReservedEvent.OutputTuple,
+      EmailClaimReservedEvent.OutputObject
+    >;
+    EmailClaimReserved: TypedContractEvent<
+      EmailClaimReservedEvent.InputTuple,
+      EmailClaimReservedEvent.OutputTuple,
+      EmailClaimReservedEvent.OutputObject
+    >;
+
+    "EmailInvitationClaimed(string,bytes32,uint64,address,uint8)": TypedContractEvent<
+      EmailInvitationClaimedEvent.InputTuple,
+      EmailInvitationClaimedEvent.OutputTuple,
+      EmailInvitationClaimedEvent.OutputObject
+    >;
+    EmailInvitationClaimed: TypedContractEvent<
+      EmailInvitationClaimedEvent.InputTuple,
+      EmailInvitationClaimedEvent.OutputTuple,
+      EmailInvitationClaimedEvent.OutputObject
+    >;
+
+    "EmailInvitationDeclined(bytes32,uint64)": TypedContractEvent<
+      EmailInvitationDeclinedEvent.InputTuple,
+      EmailInvitationDeclinedEvent.OutputTuple,
+      EmailInvitationDeclinedEvent.OutputObject
+    >;
+    EmailInvitationDeclined: TypedContractEvent<
+      EmailInvitationDeclinedEvent.InputTuple,
+      EmailInvitationDeclinedEvent.OutputTuple,
+      EmailInvitationDeclinedEvent.OutputObject
+    >;
+
+    "EmailInvitationRegistered(string,bytes32,uint64,uint8,uint64,address)": TypedContractEvent<
+      EmailInvitationRegisteredEvent.InputTuple,
+      EmailInvitationRegisteredEvent.OutputTuple,
+      EmailInvitationRegisteredEvent.OutputObject
+    >;
+    EmailInvitationRegistered: TypedContractEvent<
+      EmailInvitationRegisteredEvent.InputTuple,
+      EmailInvitationRegisteredEvent.OutputTuple,
+      EmailInvitationRegisteredEvent.OutputObject
+    >;
+
+    "EmailInvitationRevoked(string,bytes32,uint64)": TypedContractEvent<
+      EmailInvitationRevokedEvent.InputTuple,
+      EmailInvitationRevokedEvent.OutputTuple,
+      EmailInvitationRevokedEvent.OutputObject
+    >;
+    EmailInvitationRevoked: TypedContractEvent<
+      EmailInvitationRevokedEvent.InputTuple,
+      EmailInvitationRevokedEvent.OutputTuple,
+      EmailInvitationRevokedEvent.OutputObject
+    >;
+
+    "EmailVerifierChanged(string,address,uint64)": TypedContractEvent<
+      EmailVerifierChangedEvent.InputTuple,
+      EmailVerifierChangedEvent.OutputTuple,
+      EmailVerifierChangedEvent.OutputObject
+    >;
+    EmailVerifierChanged: TypedContractEvent<
+      EmailVerifierChangedEvent.InputTuple,
+      EmailVerifierChangedEvent.OutputTuple,
+      EmailVerifierChangedEvent.OutputObject
+    >;
+
     "InvitationRevoked(string,address)": TypedContractEvent<
       InvitationRevokedEvent.InputTuple,
       InvitationRevokedEvent.OutputTuple,
@@ -700,6 +1433,17 @@ export interface PlaneWorkspaceRegistry extends BaseContract {
       WorkspaceCreatedEvent.InputTuple,
       WorkspaceCreatedEvent.OutputTuple,
       WorkspaceCreatedEvent.OutputObject
+    >;
+
+    "WorkspaceSessionAuthorized(string,bytes32,address)": TypedContractEvent<
+      WorkspaceSessionAuthorizedEvent.InputTuple,
+      WorkspaceSessionAuthorizedEvent.OutputTuple,
+      WorkspaceSessionAuthorizedEvent.OutputObject
+    >;
+    WorkspaceSessionAuthorized: TypedContractEvent<
+      WorkspaceSessionAuthorizedEvent.InputTuple,
+      WorkspaceSessionAuthorizedEvent.OutputTuple,
+      WorkspaceSessionAuthorizedEvent.OutputObject
     >;
   };
 }

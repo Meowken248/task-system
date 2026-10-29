@@ -2,6 +2,7 @@ import type { DAppDatabase, DAppWorkspace } from "./types";
 import { getStoredCredentials, setStoredCredential, createUserObject } from "./auth";
 import { saveSnapshotToIDB } from "./indexed-db";
 import { listWorkspaceMembers } from "./workspace-members";
+import { sanitizeSharedSnapshot } from "./shared-snapshot";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -859,7 +860,7 @@ export function registerSaveHook(fn: () => void) {
   onSaveHook = fn;
 }
 
-export function saveDB() {
+export function saveDB(options?: { localOnly?: boolean }) {
   if (typeof window === "undefined") return;
   syncIssueParentsToTransactions();
   if (localDB.invitations && Array.isArray(localDB.invitations)) {
@@ -908,7 +909,7 @@ export function saveDB() {
       window.location.pathname.startsWith("/spaces") ||
       window.location.pathname.startsWith("/issues/")
     );
-    if (!isSpaceViewer) {
+    if (!isSpaceViewer && !options?.localOnly) {
       const curCid = (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") : null);
       dappSyncChannel?.postMessage({
         type: "SYNC_STATE",
@@ -919,7 +920,7 @@ export function saveDB() {
       });
     }
   } catch { }
-  if (onSaveHook) {
+  if (onSaveHook && !options?.localOnly) {
     onSaveHook();
   }
 }
@@ -932,6 +933,10 @@ if (dappSyncChannel) {
   dappSyncChannel.addEventListener("message", (event) => {
     try {
       const { type, cid, members, invitations, removed_members } = event.data || {};
+      if (type === "MEMBERSHIP_HINT") {
+        window.dispatchEvent(new CustomEvent("plane_dapp_members_synced", { detail: { workspaceSlug: event.data?.workspaceSlug } }));
+        return;
+      }
       if (type === "SYNC_STATE") {
         let updated = false;
         if (removed_members && typeof removed_members === "object") {
@@ -1131,19 +1136,7 @@ if (dappSyncChannel) {
 }
 
 export function getDBSnapshot(): Record<string, any> {
-  const dbToSave: Record<string, any> = {};
-  const creds = getStoredCredentials();
-  (localDB.users || []).forEach((u: any) => {
-    const emailKey = u?.email?.toLowerCase().trim();
-    if (emailKey && !u.password_hash && creds[emailKey]) {
-      u.password_hash = creds[emailKey];
-    }
-  });
-  for (const [key, value] of Object.entries(localDB)) {
-    dbToSave[key] = value;
-  }
-  dbToSave.credentials = creds;
-  return dbToSave;
+  return sanitizeSharedSnapshot(localDB);
 }
 
 // ── Cross-Port & Cookie Sync for Workspaces ──────────────────────────────
@@ -1654,8 +1647,11 @@ export function getUserWorkspaces(userId?: string | null, email?: string | null)
       // An invitation is not a membership. Pending invites remain on the
       // invitation screen until the explicit wallet confirmation completes.
 
-      // 3. Fallback for unowned default workspace (when system has only 1 initial user)
-      if ((!w.created_by || w.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
+      // The local demo workspace is not evidence of membership when a real
+      // registry is configured. Otherwise a fresh wallet skips onboarding and
+      // is redirected into a workspace it cannot access on chain.
+      const registryConfigured = Boolean(getEnvVar("VITE_WORKSPACE_REGISTRY_ADDRESS") || getEnvVar("NEXT_PUBLIC_WORKSPACE_REGISTRY_ADDRESS"));
+      if (!registryConfigured && (!w.created_by || w.created_by === "user-default") && (!localDB.users || localDB.users.length <= 1)) {
         return true;
       }
 

@@ -198,20 +198,22 @@ export const WorkspaceInvitationsListItem = observer(function WorkspaceInvitatio
             disabled={!hasRoleChangeAccess}
             placement="bottom-end"
           >
-            {Object.keys(ROLE).map((key) => {
-              if (
-                currentWorkspaceRole &&
-                Number(currentWorkspaceRole) !== 20 &&
-                Number(currentWorkspaceRole) < parseInt(key)
-              )
-                return null;
+            {Object.keys(ROLE)
+              .filter((key) => [15, 20].includes(Number(key)))
+              .map((key) => {
+                if (
+                  currentWorkspaceRole &&
+                  Number(currentWorkspaceRole) !== 20 &&
+                  Number(currentWorkspaceRole) < parseInt(key)
+                )
+                  return null;
 
-              return (
-                <CustomSelect.Option key={key} value={parseInt(key, 10)}>
-                  <>{ROLE[parseInt(key) as keyof typeof ROLE]}</>
-                </CustomSelect.Option>
-              );
-            })}
+                return (
+                  <CustomSelect.Option key={key} value={parseInt(key, 10)}>
+                    <>{ROLE[parseInt(key) as keyof typeof ROLE]}</>
+                  </CustomSelect.Option>
+                );
+              })}
           </CustomSelect>
           {isAdmin && (
             <CustomMenu ellipsis placement="bottom-end" closeOnSelect>

@@ -57,7 +57,8 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
   const {
     workspace: { fetchWorkspaceMembers },
   } = useMember();
-  const { workspaces, fetchWorkspaces, fetchSidebarNavigationPreferences, fetchProjectNavigationPreferences } = useWorkspace();
+  const { workspaces, fetchWorkspaces, fetchSidebarNavigationPreferences, fetchProjectNavigationPreferences } =
+    useWorkspace();
   const { isMobile } = usePlatformOS();
   const { loader, workspaceInfoBySlug, fetchUserWorkspaceInfo, fetchUserProjectPermissions, allowPermissions } =
     useUserPermissions();
@@ -96,34 +97,50 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
   useEffect(() => {
     const handleDbReloaded = () => {
       console.log("[WorkspaceWrapper] Nhận tín hiệu plane_dapp_db_reloaded. Đang đồng bộ lại dữ liệu UI...");
-      fetchWorkspaces();
+      const refreshes: Promise<unknown>[] = [fetchWorkspaces()];
       if (workspaceSlug) {
         const slug = workspaceSlug.toString();
-        fetchWorkspaceMembers(slug);
-        fetchPartialProjects(slug);
-        fetchUserWorkspaceInfo(slug);
-        fetchWorkspaceStates(slug);
-        // Mutate all SWR keys associated with current workspace and general user info
-        mutate(
-          (key) =>
-            typeof key === "string" &&
-            (key.includes(slug) ||
-              key.startsWith("WORKSPACE_") ||
-              key.startsWith("PROJECT_") ||
-              key === "USER_INFORMATION"),
-          undefined,
-          { revalidate: true }
+        refreshes.push(
+          fetchWorkspaceMembers(slug),
+          fetchPartialProjects(slug),
+          fetchUserWorkspaceInfo(slug),
+          fetchWorkspaceStates(slug)
+        );
+        // Mutate all SWR keys associated with current workspace and general user info without clearing cache
+        refreshes.push(
+          mutate(
+            (key) =>
+              typeof key === "string" &&
+              (key.includes(slug) ||
+                key.startsWith("WORKSPACE_") ||
+                key.startsWith("PROJECT_") ||
+                key === "USER_INFORMATION")
+          )
         );
       }
+      // A failed background refresh must not create an unhandled rejection.
+      // SWR retains the error for the access/retry screen above.
+      void Promise.allSettled(refreshes);
     };
     window.addEventListener("plane_dapp_db_reloaded", handleDbReloaded);
     return () => {
       window.removeEventListener("plane_dapp_db_reloaded", handleDbReloaded);
     };
-  }, [workspaceSlug, fetchWorkspaces, fetchWorkspaceMembers, fetchPartialProjects, fetchUserWorkspaceInfo, fetchWorkspaceStates]);
+  }, [
+    workspaceSlug,
+    fetchWorkspaces,
+    fetchWorkspaceMembers,
+    fetchPartialProjects,
+    fetchUserWorkspaceInfo,
+    fetchWorkspaceStates,
+  ]);
 
   // fetching user workspace information
-  useSWR(
+  const {
+    error: membershipError,
+    isLoading: membershipLoading,
+    mutate: retryMembership,
+  } = useSWR(
     workspaceSlug ? WORKSPACE_MEMBER_ME_INFORMATION(workspaceSlug.toString()) : null,
     workspaceSlug ? () => fetchUserWorkspaceInfo(workspaceSlug.toString()) : null,
     { revalidateIfStale: false, revalidateOnFocus: true }
@@ -188,11 +205,27 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
   };
 
   // if list of workspaces are not there then we have to render the spinner
-  if (isParentLoading || allWorkspaces === undefined || loader) {
+  if (isParentLoading || allWorkspaces === undefined || (loader && allWorkspaces.length === 0) || (membershipLoading && !currentWorkspaceInfo)) {
     return (
       <div className="grid h-full place-items-center rounded-lg border border-subtle p-4">
         <div className="flex flex-col items-center gap-3 text-center">
           <LogoSpinner />
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentWorkspaceInfo && membershipError && ![401, 403, 404].includes(Number(membershipError.status))) {
+    return (
+      <div className="grid h-screen place-items-center bg-surface-1 p-6">
+        <div className="max-w-md space-y-4 text-center">
+          <h3 className="text-16 font-semibold text-primary">Chưa kiểm tra được quyền truy cập</h3>
+          <p className="text-13 text-secondary">
+            Kết nối tới hệ thống đang gián đoạn. Hãy thử lại; bạn chưa cần xin cấp quyền hoặc tạo workspace mới.
+          </p>
+          <Button variant="primary" onClick={() => void retryMembership().catch(() => undefined)}>
+            Kiểm tra lại
+          </Button>
         </div>
       </div>
     );
@@ -283,5 +316,37 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {currentWorkspace?.is_snapshot_available === false && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 border-b border-subtle bg-layer-1 px-4 py-2 text-body-xs-regular text-secondary"
+        >
+          <span>
+            Bạn đã có quyền vào workspace. Dữ liệu tạm thời chưa tải được; hãy thử lại, không cần xin cấp quyền thêm.
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={async () => {
+              try {
+                await fetchWorkspaces();
+                if (workspaceSlug) await fetchPartialProjects(workspaceSlug.toString());
+              } catch {
+                setToast({
+                  type: TOAST_TYPE.ERROR,
+                  title: "Chưa tải được dữ liệu",
+                  message: "Quyền thành viên vẫn được giữ. Hãy thử lại khi kết nối phục hồi.",
+                });
+              }
+            }}
+          >
+            Thử lại
+          </Button>
+        </div>
+      )}
+      {children}
+    </>
+  );
 });

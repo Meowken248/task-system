@@ -44,6 +44,36 @@ contract PlaneWorkspaceRegistry {
     }
     mapping(string => mapping(address => Invitation)) private _invitations;
 
+    struct EmailInvitation {
+        string slug;
+        bytes32 recipientCommitment;
+        Role role;
+        uint64 expiresAt;
+        uint64 version;
+        address invitedBy;
+        address claimedBy;
+        bool revoked;
+        string metadataCID;
+        bool declined;
+    }
+    mapping(bytes32 => EmailInvitation) private _emailInvitations;
+    mapping(string => bytes32[]) private _emailInvitationIds;
+    mapping(string => mapping(bytes32 => address)) public claimedEmailWallet;
+    struct EmailClaimReservation {
+        address recipient;
+        bytes32 nonce;
+        uint64 version;
+        uint64 validUntil;
+        uint64 verifierEpoch;
+    }
+    mapping(bytes32 => EmailClaimReservation) public emailClaimReservation;
+    mapping(string => address) public emailVerifier;
+    mapping(string => uint64) public emailVerifierEpoch;
+    uint64 public constant MAX_EMAIL_CLAIM_LIFETIME = 300;
+    bytes32 private constant EMAIL_CLAIM_TYPEHASH = keccak256(
+        "PlaneEmailClaim(uint256 chainId,address registry,bytes32 workspace,bytes32 invitationId,uint64 version,bytes32 recipientCommitment,uint8 role,address recipient,uint64 validUntil,bytes32 nonce,uint64 verifierEpoch)"
+    );
+
     event WorkspaceCreated(
         string indexed slug,
         string name,
@@ -80,9 +110,23 @@ contract PlaneWorkspaceRegistry {
     error CIDConflict();
     error InvitationRequired();
     error InvalidExpiry();
+    error InvalidInvitation();
+    error InvitationVersionConflict();
+    error InvitationConsumed();
+    error AlreadyMember();
+    error InvalidClaimProof();
+    error VerifierUnavailable();
+    error ClaimReserved();
 
     event MemberInvited(string slug, address indexed member, Role role, uint256 expiresAt);
     event InvitationRevoked(string slug, address indexed member);
+    event EmailVerifierChanged(string slug, address indexed verifier, uint64 epoch);
+    event EmailInvitationRegistered(string slug, bytes32 indexed invitationId, uint64 version, Role role, uint64 expiresAt, address indexed invitedBy);
+    event EmailInvitationRevoked(string slug, bytes32 indexed invitationId, uint64 version);
+    event EmailInvitationClaimed(string slug, bytes32 indexed invitationId, uint64 version, address indexed member, Role role);
+    event WorkspaceSessionAuthorized(string slug, bytes32 indexed sessionContext, address indexed member);
+    event EmailClaimReserved(bytes32 indexed invitationId, address indexed recipient, uint64 validUntil);
+    event EmailInvitationDeclined(bytes32 indexed invitationId, uint64 version);
 
     address public operator;
 
@@ -90,7 +134,188 @@ contract PlaneWorkspaceRegistry {
         operator = msg.sender;
     }
 
-    function workspacePolicyVersion() external pure returns (uint256) { return 2; }
+    function workspacePolicyVersion() external pure returns (uint256) { return 3; }
+
+    /// @notice Owner opts this workspace into a narrowly scoped email verifier.
+    /// Rotating/disabling it invalidates all previously issued claim proofs.
+    function setWorkspaceEmailVerifier(string calldata slug, address verifier) external onlyWorkspaceOwner(slug) {
+        emailVerifier[slug] = verifier;
+        emailVerifierEpoch[slug] += 1;
+        emit EmailVerifierChanged(slug, verifier, emailVerifierEpoch[slug]);
+    }
+
+    function registerEmailInvitation(
+        string calldata slug,
+        bytes32 invitationId,
+        bytes32 recipientCommitment,
+        Role role,
+        uint64 expiresAt,
+        uint64 expectedVersion,
+        bytes32 sessionContext,
+        string calldata metadataCID
+    ) external onlyWorkspaceAdmin(slug) {
+        if (invitationId == bytes32(0) || recipientCommitment == bytes32(0)) revert InvalidInvitation();
+        if (role != Role.Member && role != Role.Admin) revert Unauthorized();
+        if (expiresAt <= block.timestamp) revert InvalidExpiry();
+        if (bytes(metadataCID).length == 0 || bytes(metadataCID).length > 256) revert InvalidInvitation();
+        EmailInvitation storage invitation = _emailInvitations[invitationId];
+        if (invitation.version != expectedVersion) revert InvitationVersionConflict();
+        if (invitation.version != 0 && keccak256(bytes(invitation.slug)) != keccak256(bytes(slug))) revert InvalidInvitation();
+        if (invitation.claimedBy != address(0)) revert InvitationConsumed();
+        if (expectedVersion == 0) _emailInvitationIds[slug].push(invitationId);
+        invitation.slug = slug;
+        invitation.recipientCommitment = recipientCommitment;
+        invitation.role = role;
+        invitation.expiresAt = expiresAt;
+        invitation.version = expectedVersion + 1;
+        invitation.invitedBy = msg.sender;
+        invitation.claimedBy = address(0);
+        invitation.revoked = false;
+        invitation.metadataCID = metadataCID;
+        invitation.declined = false;
+        _emitEmailInvitationRegistered(invitationId, sessionContext);
+    }
+
+    function _emitEmailInvitationRegistered(bytes32 invitationId, bytes32 sessionContext) private {
+        EmailInvitation storage invitation = _emailInvitations[invitationId];
+        emit EmailInvitationRegistered(invitation.slug, invitationId, invitation.version, invitation.role, invitation.expiresAt, invitation.invitedBy);
+        if (sessionContext != bytes32(0)) emit WorkspaceSessionAuthorized(invitation.slug, sessionContext, msg.sender);
+    }
+
+    /// @notice Explicit wallet consent for a server session, without exporting
+    /// keys or assuming the SDK supports arbitrary personal-sign requests.
+    function authorizeWorkspaceSession(string calldata slug, bytes32 sessionContext) external onlyWorkspaceMember(slug) {
+        if (sessionContext == bytes32(0)) revert InvalidClaimProof();
+        emit WorkspaceSessionAuthorized(slug, sessionContext, msg.sender);
+    }
+
+    function revokeEmailInvitation(string calldata slug, bytes32 invitationId, uint64 expectedVersion) external onlyWorkspaceAdmin(slug) {
+        EmailInvitation storage invitation = _emailInvitations[invitationId];
+        if (invitation.version == 0 || keccak256(bytes(invitation.slug)) != keccak256(bytes(slug))) revert InvalidInvitation();
+        if (invitation.version != expectedVersion) revert InvitationVersionConflict();
+        if (invitation.claimedBy != address(0)) revert InvitationConsumed();
+        invitation.revoked = true;
+        invitation.version += 1;
+        emit EmailInvitationRevoked(slug, invitationId, invitation.version);
+    }
+
+    function getEmailInvitation(bytes32 invitationId) external view returns (EmailInvitation memory) {
+        return _emailInvitations[invitationId];
+    }
+
+    function getEmailInvitationIds(string calldata slug, uint256 offset, uint256 limit) external view returns (bytes32[] memory result) {
+        if (limit > 100) revert InvalidInvitation();
+        bytes32[] storage ids = _emailInvitationIds[slug];
+        uint256 size = offset >= ids.length ? 0 : ids.length - offset;
+        if (size > limit) size = limit;
+        result = new bytes32[](size);
+        for (uint256 i = 0; i < size; i++) result[i] = ids[offset + i];
+    }
+
+    /// @notice A short reservation prevents two devices preparing different wallets
+    /// simultaneously. It conveys no role and only the current verifier can prepare it.
+    function reserveEmailClaim(bytes32 invitationId, uint64 version, address recipient, bytes32 nonce, uint64 validUntil) external {
+        EmailInvitation storage invitation = _emailInvitations[invitationId];
+        if (version == 0 || invitation.version != version) revert InvitationVersionConflict();
+        if (msg.sender != emailVerifier[invitation.slug] || msg.sender == address(0)) revert Unauthorized();
+        if (invitation.revoked || invitation.claimedBy != address(0) || invitation.expiresAt <= block.timestamp) revert InvitationRequired();
+        if (recipient == address(0) || nonce == bytes32(0)) revert InvalidClaimProof();
+        if (validUntil <= block.timestamp || validUntil > invitation.expiresAt || validUntil > block.timestamp + MAX_EMAIL_CLAIM_LIFETIME) revert InvalidExpiry();
+        uint64 epoch = emailVerifierEpoch[invitation.slug];
+        EmailClaimReservation storage prior = emailClaimReservation[invitationId];
+        if (prior.version == version && prior.verifierEpoch == epoch && prior.validUntil > block.timestamp) {
+            if (prior.recipient != recipient || prior.nonce != nonce || prior.validUntil != validUntil) revert ClaimReserved();
+            return;
+        }
+        emailClaimReservation[invitationId] = EmailClaimReservation(recipient, nonce, version, validUntil, epoch);
+        emit EmailClaimReserved(invitationId, recipient, validUntil);
+    }
+
+    /// @notice The verifier can close an invitation after verifying its recipient,
+    /// but cannot create invitations, change roles or revoke existing members.
+    function declineEmailInvitation(bytes32 invitationId, uint64 version) external {
+        EmailInvitation storage invitation = _emailInvitations[invitationId];
+        if (version == 0 || invitation.version != version) revert InvitationVersionConflict();
+        if (msg.sender != emailVerifier[invitation.slug] || msg.sender == address(0)) revert Unauthorized();
+        if (invitation.claimedBy != address(0)) revert InvitationConsumed();
+        invitation.revoked = true;
+        invitation.declined = true;
+        invitation.version += 1;
+        emit EmailInvitationDeclined(invitationId, invitation.version);
+    }
+
+    function emailClaimDigest(
+        bytes32 invitationId, uint64 version, address recipient,
+        uint64 validUntil, bytes32 nonce, uint64 verifierEpoch
+    ) public view returns (bytes32) {
+        EmailInvitation storage invitation = _emailInvitations[invitationId];
+        return keccak256(abi.encode(
+            EMAIL_CLAIM_TYPEHASH, block.chainid, address(this), keccak256(bytes(invitation.slug)),
+            invitationId, version, invitation.recipientCommitment, uint8(invitation.role),
+            recipient, validUntil, nonce, verifierEpoch
+        ));
+    }
+
+    /// @notice A transaction from recipient is the proof of wallet control.
+    /// The verifier attests email identity, never an arbitrary membership role.
+    function claimEmailInvitation(
+        bytes32 invitationId, uint64 version, address recipient,
+        uint64 validUntil, bytes32 nonce, uint64 verifierEpoch, bytes calldata signature
+    ) external {
+        if (recipient == address(0) || msg.sender != recipient || nonce == bytes32(0)) revert InvalidClaimProof();
+        EmailInvitation storage invitation = _emailInvitations[invitationId];
+        if (invitation.version == 0) revert InvalidInvitation();
+        if (invitation.version != version) revert InvitationVersionConflict();
+        if (invitation.claimedBy != address(0)) {
+            if (invitation.claimedBy == recipient && _workspaceMembers[invitation.slug][recipient] != Role.None) return;
+            revert InvitationConsumed();
+        }
+        if (invitation.revoked || invitation.expiresAt <= block.timestamp) revert InvitationRequired();
+        if (validUntil <= block.timestamp || validUntil > invitation.expiresAt || validUntil > block.timestamp + MAX_EMAIL_CLAIM_LIFETIME) revert InvalidExpiry();
+        if (_workspaceMembers[invitation.slug][recipient] != Role.None) revert AlreadyMember();
+        {
+            Role inviterRole = _workspaceMembers[invitation.slug][invitation.invitedBy];
+            if (invitation.invitedBy != operator && inviterRole != Role.Admin && inviterRole != Role.Owner) revert Unauthorized();
+            address verifier = emailVerifier[invitation.slug];
+            if (verifier == address(0) || verifierEpoch != emailVerifierEpoch[invitation.slug]) revert VerifierUnavailable();
+            EmailClaimReservation storage reservation = emailClaimReservation[invitationId];
+            if (reservation.version != version || reservation.verifierEpoch != verifierEpoch || reservation.recipient != recipient || reservation.nonce != nonce || reservation.validUntil != validUntil) revert InvalidClaimProof();
+            address existingWallet = claimedEmailWallet[invitation.slug][invitation.recipientCommitment];
+            if (existingWallet != address(0) && _workspaceMembers[invitation.slug][existingWallet] != Role.None) revert AlreadyMember();
+            bytes32 digest = emailClaimDigest(invitationId, version, recipient, validUntil, nonce, verifierEpoch);
+            if (_recoverEmailVerifier(digest, signature) != verifier) revert InvalidClaimProof();
+        }
+        invitation.claimedBy = recipient;
+        claimedEmailWallet[invitation.slug][invitation.recipientCommitment] = recipient;
+        _workspaceMembers[invitation.slug][recipient] = invitation.role;
+        _trackMembership(invitation.slug, recipient);
+        emit MemberAdded(invitation.slug, recipient, invitation.role, invitation.invitedBy);
+        emit EmailInvitationClaimed(invitation.slug, invitationId, version, recipient, invitation.role);
+    }
+
+    function _recoverEmailVerifier(bytes32 digest, bytes calldata signature) private pure returns (address) {
+        if (signature.length != 65) revert InvalidClaimProof();
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := calldataload(signature.offset)
+            s := calldataload(add(signature.offset, 32))
+            v := byte(0, calldataload(add(signature.offset, 64)))
+        }
+        if (uint256(s) > 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0 || (v != 27 && v != 28)) revert InvalidClaimProof();
+        return ecrecover(keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest)), v, r, s);
+    }
+
+    function leaveWorkspace(string calldata slug) external {
+        if (!_workspaces[slug].exists) revert WorkspaceNotFound();
+        if (_workspaces[slug].owner == msg.sender) revert Unauthorized();
+        if (_workspaceMembers[slug][msg.sender] == Role.None) return;
+        _workspaceMembers[slug][msg.sender] = Role.None;
+        _userHasWorkspace[msg.sender][slug] = false;
+        delete _invitations[slug][msg.sender];
+        emit MemberRemoved(slug, msg.sender, msg.sender);
+    }
 
     function setOperator(address newOperator) external {
         if (msg.sender != operator) revert Unauthorized();
@@ -185,7 +410,7 @@ contract PlaneWorkspaceRegistry {
         return (invitation.role, invitation.expiresAt);
     }
 
-    function _trackMembership(string calldata slug, address member) private {
+    function _trackMembership(string memory slug, address member) private {
         if (!_listedMembers[slug][member]) {
             _listedMembers[slug][member] = true;
             _workspaceMemberList[slug].push(member);

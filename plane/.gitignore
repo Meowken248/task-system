@@ -114,9 +114,9 @@ scripts/*
 !scripts/backup-registry-snapshots.mjs
 !scripts/preview-workspace-registry-migration.mjs
 !scripts/restore-workspace-registry.mjs
+!scripts/restore-workspace-registry.d.mts
 .pnpm-store/
 docs/
-scripts/
 # Go build/test artifacts
 apps/go-api/.gocache/
 apps/go-api/bin/

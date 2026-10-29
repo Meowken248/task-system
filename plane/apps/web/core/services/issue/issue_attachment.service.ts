@@ -12,26 +12,59 @@ import { EIssueServiceType } from "@plane/types";
 // services
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
-import { isOnChainTaskSyncAvailable, recordIssueContentOnChain } from "@/services/blockchain/plane-task-chain.service";
+import {
+  isOnChainTaskSyncAvailable,
+  issueExistsOnChain,
+  recordIssueContentOnChain,
+} from "@/services/blockchain/plane-task-chain.service";
 import { notifyVaultProblem } from "@/services/blockchain/vault-notice";
 import { localDB, saveDB } from "@plane/services";
 import { getAttachmentFromStorage, saveAttachmentToStorage, deleteAttachmentFromStorage } from "@plane/utils";
 
 /**
  * Đọc tệp ngay trên máy thành base64 (bỏ tiền tố `data:*;base64,` để khớp
- * `downloadBase64File`/`base64ToBlob`).
+ * `downloadBase64File`/`base64ToBlob`). Hỗ trợ cả môi trường Browser và Node.js.
  */
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      const commaIndex = result.indexOf(",");
-      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error ?? new Error("Không đọc được tệp đã chọn."));
-    reader.readAsDataURL(file);
+    if (typeof file.arrayBuffer === "function") {
+      file
+        .arrayBuffer()
+        .then((buf) => {
+          const nodeBuffer = (globalThis as any).Buffer;
+          if (typeof nodeBuffer !== "undefined") {
+            resolve(nodeBuffer.from(buf).toString("base64"));
+            return;
+          }
+          let binary = "";
+          const bytes = new Uint8Array(buf);
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          resolve(btoa(binary));
+        })
+        .catch(() => {
+          readWithFileReader(file, resolve, reject);
+        });
+      return;
+    }
+    readWithFileReader(file, resolve, reject);
   });
+}
+
+function readWithFileReader(file: File, resolve: (val: string) => void, reject: (err: unknown) => void) {
+  if (typeof FileReader === "undefined") {
+    reject(new Error("Không đọc được tệp đã chọn."));
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = typeof reader.result === "string" ? reader.result : "";
+    const commaIndex = result.indexOf(",");
+    resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+  };
+  reader.onerror = () => reject(reader.error ?? new Error("Không đọc được tệp đã chọn."));
+  reader.readAsDataURL(file);
 }
 
 export class IssueAttachmentService extends APIService {
@@ -49,10 +82,6 @@ export class IssueAttachmentService extends APIService {
     file: File,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TIssueAttachment> {
-    if (!isOnChainTaskSyncAvailable()) {
-      throw new Error("Chưa kết nối được với hệ thống lưu dấu vết. Chưa thể thêm tệp đính kèm.");
-    }
-
     // Bước 1: đọc tệp ngay trên máy (30%).
     uploadProgressHandler?.({
       loaded: Math.floor(file.size * 0.3),
@@ -72,7 +101,7 @@ export class IssueAttachmentService extends APIService {
     const assetId = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const fileType = file.type || "application/octet-stream";
 
-    // Bước 2: lưu tệp vào máy trước khi ký (70%).
+    // Bước 2: lưu tệp vào máy trước khi đồng bộ (70%).
     uploadProgressHandler?.({
       loaded: Math.floor(file.size * 0.7),
       total: file.size,
@@ -80,38 +109,10 @@ export class IssueAttachmentService extends APIService {
     } as any);
 
     await saveAttachmentToStorage(assetId, { name: file.name, base64, type: fileType, size: file.size });
-    // Kiểm tra lại ngay: nếu trình duyệt không lưu được (hết chỗ) thì dừng TRƯỚC
-    // khi ký, để người dùng không mất một lượt ký vô ích.
+    // Kiểm tra lại ngay: nếu trình duyệt không lưu được (hết chỗ) thì dừng
     const storedFile = await getAttachmentFromStorage(assetId);
     if (!storedFile?.base64) {
       throw { error: "Máy không đủ chỗ để lưu tệp này. Hãy xoá bớt tệp đính kèm cũ rồi thử lại." };
-    }
-
-    // Bước 3: ghi dấu vết tệp lên hệ thống (một lượt ký).
-    const evidenceReference = `${assetId}:${file.name}:${file.size}:${file.lastModified}`;
-
-    try {
-      const { transactionHash, contentHash } = await recordIssueContentOnChain(issueId, 2, evidenceReference);
-      void blockchainTrackingService
-        .recordTaskContent(workspaceSlug, projectId, {
-          issueId,
-          transactionHash,
-          kind: "evidence",
-          reference: assetId,
-          contentHash,
-        })
-        .catch((trackingError) => console.warn("Audit tệp đính kèm đang chờ tự đồng bộ.", trackingError));
-    } catch (chainError) {
-      // Chưa có dấu vết trên hệ thống thì không giữ tệp lại (tránh tệp mồ côi).
-      await deleteAttachmentFromStorage(assetId).catch(() => {});
-      // Lỗi ví (chưa có ví / ví đang chọn không còn trong ứng dụng ví): mở "Trung tâm ví"
-      // để người dùng khắc phục ngay, thay vì chỉ thấy một câu lỗi rồi không biết làm gì.
-      notifyVaultProblem(chainError);
-      throw {
-        error:
-          chainError instanceof Error ? chainError.message : "Ghi bằng chứng đính kèm lên hệ thống thất bại.",
-        isChainError: true,
-      };
     }
 
     const now = new Date().toISOString();
@@ -141,7 +142,44 @@ export class IssueAttachmentService extends APIService {
     }
     localDB.attachments = localDB.attachments.filter((a: any) => a.id !== assetId);
     localDB.attachments.push(attachmentRecord);
+
+    const targetIssue = (localDB.issues || []).find((i: any) => i.id === issueId);
+    if (targetIssue) {
+      const issueAttachments = localDB.attachments.filter(
+        (a: any) => a.issue === issueId || a.issue_id === issueId
+      );
+      targetIssue.attachment_count = issueAttachments.length;
+    }
     saveDB();
+
+    // Bước 3: ghi dấu vết tệp lên hệ thống / blockchain (nếu môi trường on-chain sẵn sàng).
+    // Kiến trúc Local-First: tệp đã được lưu an toàn trên máy; đồng bộ bằng chứng chạy ngầm
+    // để UI phản hồi tức thì mà không bị chặn bởi thời gian xác nhận giao dịch blockchain.
+    if (isOnChainTaskSyncAvailable()) {
+      const evidenceReference = `${assetId}:${file.name}:${file.size}:${file.lastModified}`;
+      void (async () => {
+        try {
+          const existsOnChain = await issueExistsOnChain(issueId).catch(() => false);
+          if (existsOnChain) {
+            const { transactionHash, contentHash } = await recordIssueContentOnChain(issueId, 2, evidenceReference);
+            void blockchainTrackingService
+              .recordTaskContent(workspaceSlug, projectId, {
+                issueId,
+                transactionHash,
+                kind: "evidence",
+                reference: assetId,
+                contentHash,
+              })
+              .catch((trackingError) => console.warn("Audit tệp đính kèm đang chờ tự đồng bộ.", trackingError));
+          } else {
+            console.warn("Công việc chưa có trên blockchain; tệp đính kèm đã được lưu an toàn nội bộ.");
+          }
+        } catch (chainError) {
+          notifyVaultProblem(chainError);
+          console.warn("Đồng bộ tệp đính kèm on-chain chưa thành công; tệp đã được lưu an toàn nội bộ:", chainError);
+        }
+      })();
+    }
 
     // Bước 4: hoàn tất (100%)
     uploadProgressHandler?.({
@@ -167,6 +205,13 @@ export class IssueAttachmentService extends APIService {
     const allAttachments = localDB.attachments || [];
     const target = allAttachments.find((a: any) => a.id === assetId || a.asset === assetId);
     localDB.attachments = allAttachments.filter((a: any) => a.id !== assetId && a.asset !== assetId);
+
+    const targetIssue = (localDB.issues || []).find((i: any) => i.id === issueId);
+    if (targetIssue) {
+      targetIssue.attachment_count = localDB.attachments.filter(
+        (a: any) => a.issue === issueId || a.issue_id === issueId
+      ).length;
+    }
     saveDB();
 
     void deleteAttachmentFromStorage(assetId).catch(() => {});

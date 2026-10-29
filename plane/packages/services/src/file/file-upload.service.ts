@@ -7,12 +7,31 @@
 import axios from "axios";
 // api service
 import { APIService } from "../api.service";
+import { saveAttachment } from "./attachment-storage";
 
 /**
  * Converts a File object to a Base64 string (without the data URL prefix)
+ * Universal support for both modern browsers and Node environments
  */
-function fileToBase64(file: File): Promise<string> {
+async function fileToBase64(file: File): Promise<string> {
+  if (typeof file.arrayBuffer === "function") {
+    const rawBuffer = await file.arrayBuffer();
+    const nodeBuffer = (globalThis as any).Buffer;
+    if (typeof nodeBuffer !== "undefined") {
+      return nodeBuffer.from(rawBuffer).toString("base64");
+    }
+    const bytes = new Uint8Array(rawBuffer);
+    let binary = "";
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
   return new Promise((resolve, reject) => {
+    if (typeof FileReader === "undefined") {
+      return reject(new Error("FileReader is not available"));
+    }
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.addEventListener("load", () => {
@@ -81,59 +100,35 @@ export class FileUploadService extends APIService {
         computeSha256(file),
       ]);
       const ext = file.name.split(".").pop() || "";
+      const mimeType = file.type || "application/octet-stream";
+      const dataUrl = `data:${mimeType};base64,${base64Data}`;
+      const providedAssetId = (data.get("asset_id") || data.get("id")) as string | null;
+      const assetId = providedAssetId || hash;
 
-      console.log(`[Metanode] Processing file: ${file.name} (SHA-256: ${hash})`);
-
-      // 2. Upload to File Processor via FiaiSDK if available
-      let uploadResult: any = null;
-      const sdk = (window as any).fiaiSDK;
-      if (sdk) {
-        try {
-          const status = sdk.getStatus?.() || {};
-          if (status["file-processor"] !== "ready" && sdk.hostBridge?.waitForReady) {
-            console.log("[Metanode] Waiting for file-processor frame to be ready...");
-            await Promise.race([
-              sdk.hostBridge.waitForReady("file-processor", 10000),
-              new Promise((res) => setTimeout(res, 3000)),
-            ]);
-          }
-        } catch {
-          // ignore status read errors
-        }
-
-        if (typeof sdk.request === "function") {
-          try {
-            console.log("[Metanode] Uploading file to File Processor via FiaiSDK:", file.name);
-            uploadResult = await Promise.race([
-              sdk.request("uploadFile", {
-                filename: file.name,
-                ext: ext,
-                base64: base64Data,
-              }),
-              new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("File processor upload timeout after 15s")), 15000)
-              ),
-            ]);
-            console.log("[Metanode] File processor upload completed:", uploadResult);
-          } catch (uploadErr) {
-            console.warn(
-              "[Metanode] File processor upload failed/timeout; proceeding with local storage & on-chain hash:",
-              uploadErr
-            );
-          }
-        }
+      // 2. Persist to local IndexedDB attachment storage under both assetId and hash
+      await saveAttachment(assetId, {
+        name: file.name,
+        base64: base64Data,
+        type: mimeType,
+        size: file.size,
+      });
+      if (providedAssetId && providedAssetId !== hash) {
+        await saveAttachment(hash, {
+          name: file.name,
+          base64: base64Data,
+          type: mimeType,
+          size: file.size,
+        });
       }
-
-      const assetId = hash;
-      const dataUrl = `data:${file.type || "application/octet-stream"};base64,${base64Data}`;
 
       return {
         asset: assetId,
+        asset_id: assetId,
         id: assetId,
         asset_url: dataUrl,
+        file_url: dataUrl,
         base64: base64Data,
-        file_type: file.type || "application/octet-stream",
-        file_path: uploadResult?.path || (typeof uploadResult === "string" ? uploadResult : undefined),
+        file_type: mimeType,
         attributes: {
           name: file.name,
           size: file.size,

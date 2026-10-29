@@ -187,9 +187,12 @@ export abstract class BaseWorkspaceRootStore implements IWorkspaceRootStore {
    * fetch user workspaces from API
    */
   fetchWorkspaces = async () => {
-    runInAction(() => {
-      this.loader = true;
-    });
+    const hasExistingWorkspaces = Object.keys(this.workspaces || {}).length > 0;
+    if (!hasExistingWorkspaces) {
+      runInAction(() => {
+        this.loader = true;
+      });
+    }
     try {
       const workspaceResponse = await this.workspaceService.userWorkspaces();
       runInAction(() => {
@@ -201,9 +204,11 @@ export abstract class BaseWorkspaceRootStore implements IWorkspaceRootStore {
       });
       return workspaceResponse;
     } finally {
-      runInAction(() => {
-        this.loader = false;
-      });
+      if (!hasExistingWorkspaces) {
+        runInAction(() => {
+          this.loader = false;
+        });
+      }
     }
   };
 

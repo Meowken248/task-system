@@ -8,12 +8,23 @@ import {
   isInvitationTokenExpired,
 } from "../../packages/services/src/dapp/invitation-tokens.ts";
 import { validateInvitation, withInvitationLock } from "../../packages/services/src/dapp/invitation-policy.ts";
-import { localDB, defaultDB, getUserWorkspaces, getLoggedInUserId, getLoggedInEmail, isLoggedIn, setLoggedInUser } from "../../packages/services/src/dapp/store.ts";
+import {
+  localDB,
+  defaultDB,
+  getUserWorkspaces,
+  getLoggedInUserId,
+  getLoggedInEmail,
+  isLoggedIn,
+  setLoggedInUser,
+} from "../../packages/services/src/dapp/store.ts";
 import { handleRoute } from "../../packages/services/src/dapp/routes.ts";
 import { respondToWorkspaceInvitation } from "../../packages/services/src/dapp/workspace-invitations.ts";
 import {
   joinWorkspaceOnChain,
   removeWorkspaceMemberOnChain,
+  leaveWorkspaceOnChain,
+  mapPlaneRoleToContractRole,
+  writeWorkspaceWalletInvitation,
   fetchMemberRoleOnChain,
   invalidateVaultWalletCache,
   uploadToIPFS,
@@ -41,7 +52,8 @@ let sequence = 0,
   revokeDuringSend,
   invalidRole,
   pending,
-  legacyRegistry;
+  legacyRegistry,
+  registryVersion;
 const initialCid = "Qm" + "a".repeat(44);
 const publishedCid = "Qm" + "b".repeat(44);
 
@@ -99,6 +111,7 @@ beforeEach(() => {
   invalidRole = false;
   pending = { role: 0, expiresAt: 0 };
   legacyRegistry = false;
+  registryVersion = 2;
   invalidateVaultWalletCache();
   window.fiaiSDK = {
     request: async (action, params) => {
@@ -110,6 +123,10 @@ beforeEach(() => {
         if (failSend) throw new Error("member permission failed");
         if (params.functionName === "joinWorkspace") role = 1;
         if (params.functionName === "removeMember") role = 0;
+        if (params.functionName === "leaveWorkspace") {
+          assert.deepEqual(params.inputArray, [{ name: "slug", type: "string", value: slug }]);
+          role = 0;
+        }
         if (params.functionName === "addMember")
           role = Number(params.inputArray.find((entry) => entry.name === "role").value);
         if (params.functionName === "inviteMember")
@@ -157,7 +174,7 @@ beforeEach(() => {
       return Response.json({ result: invalidRole ? "0x" : abi.encode(["uint8"], [role]) });
     if (data === id("operator()").slice(0, 10)) return Response.json({ result: abi.encode(["address"], [owner]) });
     if (data === id("workspacePolicyVersion()").slice(0, 10))
-      return Response.json({ result: legacyRegistry ? "0x" : abi.encode(["uint256"], [2]) });
+      return Response.json({ result: legacyRegistry ? "0x" : abi.encode(["uint256"], [registryVersion]) });
     if (data.startsWith(id("getInvitation(string,address)").slice(0, 10)))
       return Response.json({ result: abi.encode(["uint8", "uint256"], [pending.role, pending.expiresAt]) });
     throw new Error(`Unexpected calldata ${data}`);
@@ -637,4 +654,171 @@ test("reinviting a tombstoned record uses a new id and preserves the old revocat
   assert.equal(result.status, 200);
   assert.notEqual(result.data.invitations[0].id, "invite");
   assert(localDB._deleted_invitation_ids.includes("invite"));
+});
+
+const seedMemberForLeave = () => {
+  role = 1;
+  registryVersion = 3;
+  localDB.workspace_members = [
+    {
+      id: "membership",
+      member: "recipient",
+      email: invitation.email,
+      wallet_address: actor,
+      workspace: `id-${slug}`,
+      workspace_id: `id-${slug}`,
+      role: 15,
+      is_active: true,
+    },
+  ];
+};
+
+test("an ordinary member can leave through the actual UI route without admin permissions", async () => {
+  seedMemberForLeave();
+  const result = await handleRoute("post", `/api/workspaces/${slug}/members/leave/`, {});
+  assert.equal(result.status, 200);
+  assert.equal(result.data.chain_confirmed, true);
+  assert.equal(role, 0);
+  assert.equal(sent, 1);
+  assert.equal(localDB.workspace_members.length, 0);
+  assert.equal(mailed, 0);
+});
+
+test("the workspace-members leave alias uses the same confirmed self-leave path", async () => {
+  seedMemberForLeave();
+  const result = await handleRoute("post", `/api/workspaces/${slug}/workspace-members/leave/`, {});
+  assert.equal(result.status, 200);
+  assert.equal(role, 0);
+  assert.equal(sent, 1);
+});
+
+test("a failed leave transaction preserves the membership and reports failure", async () => {
+  seedMemberForLeave();
+  failSend = true;
+  const before = structuredClone(localDB.workspace_members);
+  const result = await handleRoute("post", `/api/workspaces/${slug}/members/leave/`, {});
+  assert.equal(result.status, 503);
+  assert.equal(result.data.code, "LEAVE_UNCONFIRMED");
+  assert.equal(role, 1);
+  assert.deepEqual(localDB.workspace_members, before);
+});
+
+test("RPC failure during leave cannot erase local membership", async () => {
+  seedMemberForLeave();
+  failRpc = true;
+  const before = structuredClone(localDB.workspace_members);
+  const result = await handleRoute("post", `/api/workspaces/${slug}/workspace-members/leave/`, {});
+  assert.equal(result.status, 503);
+  assert.equal(sent, 0);
+  assert.deepEqual(localDB.workspace_members, before);
+});
+
+test("legacy contracts cannot report self-leave success while the wallet still has rights", async () => {
+  seedMemberForLeave();
+  registryVersion = 2;
+  const result = await handleRoute("post", `/api/workspaces/${slug}/members/leave/`, {});
+  assert.equal(result.status, 409);
+  assert.equal(result.data.code, "CONTRACT_UPGRADE_REQUIRED");
+  assert.equal(sent, 0);
+  assert.equal(localDB.workspace_members.length, 1);
+});
+
+test("the owner must transfer ownership before leaving", async () => {
+  seedMemberForLeave();
+  role = 3;
+  const result = await handleRoute("post", `/api/workspaces/${slug}/members/leave/`, {});
+  assert.equal(result.status, 403);
+  assert.equal(result.data.code, "OWNER_CANNOT_LEAVE");
+  assert.equal(sent, 0);
+  assert.equal(localDB.workspace_members.length, 1);
+});
+
+test("leave recovery needs no second transaction once the chain already shows no role", async () => {
+  seedMemberForLeave();
+  role = 0;
+  assert.equal(await leaveWorkspaceOnChain(slug, actor), true);
+  const result = await handleRoute("post", `/api/workspaces/${slug}/members/leave/`, {});
+  assert.equal(result.status, 200);
+  assert.equal(sent, 0);
+  assert.equal(localDB.workspace_members.length, 0);
+});
+
+test("self-leave does not hide another wallet that happens to share cached profile fields", async () => {
+  seedMemberForLeave();
+  localDB.workspace_members.push({ ...localDB.workspace_members[0], id: "different-wallet", wallet_address: owner });
+  const result = await handleRoute("post", `/api/workspaces/${slug}/members/leave/`, {});
+  assert.equal(result.status, 200);
+  assert.deepEqual(
+    localDB.workspace_members.map((member) => member.wallet_address),
+    [owner]
+  );
+});
+
+test("simultaneous self-leave requests share one transaction", async () => {
+  seedMemberForLeave();
+  const results = await Promise.all([
+    handleRoute("post", `/api/workspaces/${slug}/members/leave/`, {}),
+    handleRoute("post", `/api/workspaces/${slug}/workspace-members/leave/`, {}),
+  ]);
+  assert(results.every((result) => result.status === 200));
+  assert.equal(sent, 1);
+});
+
+test("self-leave for a missing workspace cannot delete unscoped membership records", async () => {
+  seedMemberForLeave();
+  localDB.workspace_members.push({ id: "unscoped", member: "recipient", email: invitation.email });
+  const before = structuredClone(localDB.workspace_members);
+  const result = await handleRoute("post", "/api/workspaces/missing-workspace/members/leave/", {});
+  assert.equal(result.status, 404);
+  assert.equal(sent, 0);
+  assert.deepEqual(localDB.workspace_members, before);
+});
+
+test("self-leave requires login even when the Vault contains a wallet", async () => {
+  seedMemberForLeave();
+  setLoggedInUser(null);
+  const result = await handleRoute("post", `/api/workspaces/${slug}/members/leave/`, {});
+  assert.equal(result.status, 401);
+  assert.equal(sent, 0);
+  assert.equal(localDB.workspace_members.length, 1);
+});
+
+test("role mapping accepts only exact Admin and Member roles", () => {
+  assert.equal(mapPlaneRoleToContractRole(15), 1);
+  assert.equal(mapPlaneRoleToContractRole("20"), 2);
+  for (const value of [undefined, "", 0, 1, 5, 10, 16, 21, 30, -1, "owner", NaN])
+    assert.throws(() => mapPlaneRoleToContractRole(value), /Admin.*Member/);
+});
+
+test("unsupported invitation roles cannot create local records or send mail", async () => {
+  role = 3;
+  for (const unsupported of [5, 10, 21]) {
+    const before = structuredClone(localDB.invitations);
+    const result = await handleRoute("post", `/api/workspaces/${slug}/invitations/`, {
+      emails: [{ email: "guest@example.invalid", role: unsupported }],
+    });
+    assert.equal(result.status, 400);
+    assert.deepEqual(localDB.invitations, before);
+  }
+  assert.equal(sent, 0);
+  assert.equal(mailed, 0);
+});
+
+test("role updates reject unsupported target roles before changing a member", async () => {
+  seedMemberForLeave();
+  role = 3;
+  const before = structuredClone(localDB.workspace_members);
+  const result = await handleRoute("patch", `/api/workspaces/${slug}/members/membership/`, { role: 5 });
+  assert.equal(result.status, 400);
+  assert.equal(result.data.code, "UNSUPPORTED_ROLE");
+  assert.deepEqual(localDB.workspace_members, before);
+  assert.equal(sent, 0);
+});
+
+test("legacy Guest invitations can still be revoked without mapping Guest to Member", async () => {
+  role = 3;
+  pending = { role: 1, expiresAt: Math.floor(Date.now() / 1000) + 1000 };
+  assert.equal(await writeWorkspaceWalletInvitation(slug, actor, 5, 1, actor, true), true);
+  assert.equal(pending.role, 0);
+  assert.equal(sent, 1);
 });

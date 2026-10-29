@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { uniq, pull, set, debounce, update, concat } from "lodash-es";
+import { uniq, debounce } from "lodash-es";
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
 import { computedFn } from "mobx-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -101,28 +101,40 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
     return attachmentsUploadStatus.filter((status) => Boolean(status && status.id && status.name));
   });
 
-  getAttachmentsByIssueId = (issueId: string) => {
+  getAttachmentsByIssueId = computedFn((issueId: string) => {
     if (!issueId) return undefined;
     return this.attachments[issueId] ?? undefined;
-  };
+  });
 
-  getAttachmentById = (attachmentId: string) => {
+  getAttachmentById = computedFn((attachmentId: string) => {
     if (!attachmentId) return undefined;
     return this.attachmentMap[attachmentId] ?? undefined;
-  };
+  });
 
-  getAttachmentsCountByIssueId = (issueId: string) => {
+  getAttachmentsCountByIssueId = computedFn((issueId: string) => {
     const attachments = this.getAttachmentsByIssueId(issueId);
     return attachments?.length ?? 0;
-  };
+  });
 
   // actions
   addAttachments = (issueId: string, attachments: TIssueAttachment[]) => {
     if (attachments && attachments.length > 0) {
       const newAttachmentIds = attachments.map((attachment) => attachment.id);
       runInAction(() => {
-        update(this.attachments, [issueId], (attachmentIds = []) => uniq(concat(attachmentIds, newAttachmentIds)));
-        attachments.forEach((attachment) => set(this.attachmentMap, attachment.id, attachment));
+        const currentIds = this.attachments[issueId] || [];
+        const nextIds = uniq([...currentIds, ...newAttachmentIds]);
+        const nextAttachmentMap = { ...this.attachmentMap };
+        attachments.forEach((attachment) => {
+          nextAttachmentMap[attachment.id] = attachment;
+        });
+        this.attachmentMap = nextAttachmentMap;
+        this.attachments = {
+          ...this.attachments,
+          [issueId]: nextIds,
+        };
+        this.rootIssueStore.issues.updateIssue(issueId, {
+          attachment_count: nextIds.length,
+        });
       });
     }
   };
@@ -130,13 +142,28 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
   fetchAttachments = async (workspaceSlug: string, projectId: string, issueId: string) => {
     const response = await this.issueAttachmentService.getIssueAttachments(workspaceSlug, projectId, issueId);
     this.addAttachments(issueId, response);
+    runInAction(() => {
+      this.rootIssueStore.issues.updateIssue(issueId, {
+        attachment_count: this.getAttachmentsCountByIssueId(issueId),
+      });
+    });
     return response;
   };
 
   private debouncedUpdateProgress = debounce((issueId: string, tempId: string, progress: number) => {
     runInAction(() => {
-      if (this.attachmentsUploadStatusMap[issueId]?.[tempId]) {
-        set(this.attachmentsUploadStatusMap, [issueId, tempId, "progress"], progress);
+      const issueStatusMap = this.attachmentsUploadStatusMap[issueId];
+      if (issueStatusMap?.[tempId]) {
+        this.attachmentsUploadStatusMap = {
+          ...this.attachmentsUploadStatusMap,
+          [issueId]: {
+            ...issueStatusMap,
+            [tempId]: {
+              ...issueStatusMap[tempId],
+              progress,
+            },
+          },
+        };
       }
     });
   }, 16);
@@ -146,13 +173,19 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
     try {
       // update attachment upload status
       runInAction(() => {
-        set(this.attachmentsUploadStatusMap, [issueId, tempId], {
-          id: tempId,
-          name: file.name,
-          progress: 0,
-          size: file.size,
-          type: file.type,
-        });
+        this.attachmentsUploadStatusMap = {
+          ...this.attachmentsUploadStatusMap,
+          [issueId]: {
+            ...(this.attachmentsUploadStatusMap[issueId] || {}),
+            [tempId]: {
+              id: tempId,
+              name: file.name,
+              progress: 0,
+              size: file.size,
+              type: file.type,
+            },
+          },
+        };
       });
       const response = await this.issueAttachmentService.uploadIssueAttachment(
         workspaceSlug,
@@ -167,10 +200,18 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
 
       if (response && response.id) {
         runInAction(() => {
-          update(this.attachments, [issueId], (attachmentIds = []) => uniq(concat(attachmentIds, [response.id])));
-          set(this.attachmentMap, response.id, response);
+          const currentIds = this.attachments[issueId] || [];
+          const nextIds = uniq([...currentIds, response.id]);
+          this.attachmentMap = {
+            ...this.attachmentMap,
+            [response.id]: response,
+          };
+          this.attachments = {
+            ...this.attachments,
+            [issueId]: nextIds,
+          };
           this.rootIssueStore.issues.updateIssue(issueId, {
-            attachment_count: this.getAttachmentsCountByIssueId(issueId),
+            attachment_count: nextIds.length,
           });
         });
       }
@@ -182,12 +223,15 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
     } finally {
       this.debouncedUpdateProgress.cancel();
       runInAction(() => {
-        if (this.attachmentsUploadStatusMap[issueId]) {
-          delete this.attachmentsUploadStatusMap[issueId][tempId];
-          if (Object.keys(this.attachmentsUploadStatusMap[issueId]).length === 0) {
-            delete this.attachmentsUploadStatusMap[issueId];
-          }
+        const issueStatusMap = { ...(this.attachmentsUploadStatusMap[issueId] || {}) };
+        delete issueStatusMap[tempId];
+        const nextMap = { ...this.attachmentsUploadStatusMap };
+        if (Object.keys(issueStatusMap).length === 0) {
+          delete nextMap[issueId];
+        } else {
+          nextMap[issueId] = issueStatusMap;
         }
+        this.attachmentsUploadStatusMap = nextMap;
       });
     }
   };
@@ -201,13 +245,17 @@ export class IssueAttachmentStore implements IIssueAttachmentStore {
     );
 
     runInAction(() => {
-      update(this.attachments, [issueId], (attachmentIds = []) => {
-        if (attachmentIds.includes(attachmentId)) pull(attachmentIds, attachmentId);
-        return attachmentIds;
-      });
-      delete this.attachmentMap[attachmentId];
+      const currentIds = this.attachments[issueId] || [];
+      const nextIds = currentIds.filter((id) => id !== attachmentId);
+      const nextAttachmentMap = { ...this.attachmentMap };
+      delete nextAttachmentMap[attachmentId];
+      this.attachmentMap = nextAttachmentMap;
+      this.attachments = {
+        ...this.attachments,
+        [issueId]: nextIds,
+      };
       this.rootIssueStore.issues.updateIssue(issueId, {
-        attachment_count: this.getAttachmentsCountByIssueId(issueId),
+        attachment_count: nextIds.length,
       });
     });
 
