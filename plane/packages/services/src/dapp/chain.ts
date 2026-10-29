@@ -17,6 +17,8 @@ import {
   isInvitationDeleted,
 } from "./store";
 import { setStoredCredential } from "./auth";
+import { readIPFSSnapshot } from "./ipfs-snapshot";
+import { resolveInvitationWorkspace } from "./invitation-workspace";
 import { saveSnapshotToIDB, loadSnapshotFromIDB, saveCidToIDB, getCidFromIDB } from "./indexed-db";
 import { registerSigningSessionInvalidator, runExclusiveChainTx } from "./tx-gateway";
 import { publishSnapshot, snapshotUploadPolicy, isPublishedCID, notifySnapshotUploadReuse, SnapshotUploadError } from "./snapshot-upload";
@@ -2055,50 +2057,17 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
     }
   } catch {}
 
-  // Check if IndexedDB already has this CID's snapshot (offline / instant cache)
+  // "latest" in IndexedDB is a mutable offline checkpoint, not the immutable
+  // contents of its last known CID. Registration/autosave can change that data
+  // before publication. Only the per-CID caches above contain fetched/pinned data.
+
+  const result = await readIPFSSnapshot(getConfiguredIpfsGateways(cleanCid));
+  if (!result) return null;
   try {
-    const idbSnapshot = await loadSnapshotFromIDB();
-    if (idbSnapshot?.cid === cleanCid && idbSnapshot.data) {
-      console.log(`[DApp DB] Tìm thấy CID ${cleanCid} trực tiếp trong IndexedDB.`);
-      return idbSnapshot.data;
-    }
+    sessionStorage.setItem(`ipfs_${cleanCid}`, result.text);
+    localStorage.setItem(`ipfs_${cleanCid}`, result.text);
   } catch {}
-
-  const gateways = getConfiguredIpfsGateways(cleanCid);
-
-  for (const gw of gateways) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-      // oxlint-disable-next-line no-await-in-loop -- Try gateways in configured priority order and stop at the first valid response.
-      const res = await fetch(gw, {
-        signal: controller.signal,
-        headers: { Accept: "application/json" },
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        // oxlint-disable-next-line no-await-in-loop -- Try gateways in configured priority order and stop at the first valid response.
-        const text = await res.text();
-        if (text && text.trim().startsWith("{")) {
-          const json = JSON.parse(text);
-          if (json && typeof json === "object") {
-            console.log(`[DApp DB] Tải thành công từ IPFS gateway: ${gw}`);
-            try {
-              sessionStorage.setItem(`ipfs_${cleanCid}`, text);
-              if (typeof localStorage !== "undefined") {
-                localStorage.setItem(`ipfs_${cleanCid}`, text);
-              }
-            } catch {}
-            return json;
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`[DApp DB] IPFS gateway ${gw} lỗi hoặc timeout:`, err);
-    }
-  }
-  console.error(`[DApp DB] Không thể tải dữ liệu từ bất kỳ IPFS gateway nào cho CID: ${cleanCid}`);
-  return null;
+  return result.data;
 }
 
 export function applyOffchainDB(ipfsDB: Record<string, any>): void {
@@ -2187,6 +2156,10 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     if (w?.id && w?.slug) {
       const s = String(w.slug).toLowerCase().trim();
       const id = String(w.id).toLowerCase().trim();
+      // A seeded workspace-<slug> is not an alias of a real UUID workspace.
+      // Propagating its historical removals bans newly invited recipients.
+      const canonical = resolveInvitationWorkspace(ipfsDB.workspaces || allKnownWorkspaces, s);
+      if (canonical && String(canonical.id).toLowerCase().trim() !== id) continue;
       wsSlugToId[s] = id;
       wsIdToSlug[id] = s;
     }

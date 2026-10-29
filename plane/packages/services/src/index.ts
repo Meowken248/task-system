@@ -27,4 +27,5 @@ export * from "./dapp/chain";
 export * from "./dapp/snapshot-upload";
 export * from "./dapp/tx-gateway";
 export * from "./dapp/indexed-db";
+export * from "./dapp/auth";
 export * from "./issue";

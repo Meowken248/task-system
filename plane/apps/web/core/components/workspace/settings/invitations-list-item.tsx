@@ -17,6 +17,7 @@ import { CustomSelect, CustomMenu } from "@plane/ui";
 import { cn, copyTextToClipboard } from "@plane/utils";
 // components
 import { ConfirmWorkspaceMemberRemove } from "@/components/workspace/confirm-workspace-member-remove";
+import { ApproveInvitationWallet } from "./approve-invitation-wallet";
 // hooks
 import { useMember } from "@/hooks/store/use-member";
 import { useUserPermissions } from "@/hooks/store/user";
@@ -31,6 +32,7 @@ export const WorkspaceInvitationsListItem = observer(function WorkspaceInvitatio
   const { workspaceSlug } = useParams();
   // states
   const [removeMemberModal, setRemoveMemberModal] = useState(false);
+  const [walletModal, setWalletModal] = useState(false);
   // plane hooks
   const { t } = useTranslation();
   // store hooks
@@ -91,6 +93,13 @@ export const WorkspaceInvitationsListItem = observer(function WorkspaceInvitatio
 
   const MENU_ITEMS: TContextMenuItem[] = [
     {
+      key: "approve-wallet",
+      action: () => setWalletModal(true),
+      title: "Xác nhận ví người nhận",
+      icon: LinkIcon,
+      shouldRender: isAdmin,
+    },
+    {
       key: "copy-link",
       action: () => void handleCopyText(),
       title: t("common.actions.copy_link"),
@@ -112,6 +121,21 @@ export const WorkspaceInvitationsListItem = observer(function WorkspaceInvitatio
 
   return (
     <>
+      {walletModal && isAdmin && (
+        <ApproveInvitationWallet
+          email={invitationDetails.email}
+          initialWallet={invitationDetails.wallet_address}
+          onClose={() => setWalletModal(false)}
+          onSubmit={async (wallet) => {
+            await updateMemberInvitation(workspaceSlug.toString(), invitationDetails.id, { wallet_address: wallet });
+            setToast({
+              type: TOAST_TYPE.SUCCESS,
+              title: "Đã xác nhận ví",
+              message: "Quyền nhận lời mời đã được xác nhận và công bố. Người nhận có thể kiểm tra lại lời mời.",
+            });
+          }}
+        />
+      )}
       <ConfirmWorkspaceMemberRemove
         isOpen={removeMemberModal}
         onClose={() => setRemoveMemberModal(false)}
@@ -128,6 +152,11 @@ export const WorkspaceInvitationsListItem = observer(function WorkspaceInvitatio
           </span>
           <div>
             <h4 className="cursor-default text-body-xs-regular">{invitationDetails.email}</h4>
+            <p className="max-w-sm text-caption-sm-regular break-all text-secondary">
+              {invitationDetails.wallet_address
+                ? `Ví: ${invitationDetails.wallet_address}${invitationDetails.wallet_approval_required || (invitationDetails as any).chain_approval_failed ? " — Chưa xác nhận" : ""}`
+                : "Chờ xác nhận ví người nhận"}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2 text-11">

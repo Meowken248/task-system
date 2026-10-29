@@ -182,7 +182,7 @@ export class WorkspaceService extends APIService {
   async updateWorkspaceInvitation(
     workspaceSlug: string,
     invitationId: string,
-    data: Partial<IWorkspaceMember>
+    data: Partial<IWorkspaceMemberInvitation>
   ): Promise<any> {
     return this.patch(`/api/workspaces/${workspaceSlug}/invitations/${invitationId}/`, data)
       .then((response) => response?.data)

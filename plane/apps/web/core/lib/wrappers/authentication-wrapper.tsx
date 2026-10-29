@@ -12,6 +12,7 @@ import useSWR from "swr";
 import { LogoSpinner } from "@/components/common/logo-spinner";
 // helpers
 import { EPageTypes } from "@/helpers/authentication.helper";
+import { safeInternalPath, getInvitationReturnPath, toRouterReturnPath } from "@/helpers/invitation-navigation";
 // hooks
 import { useWorkspace } from "@/hooks/store/use-workspace";
 import { useUser, useUserProfile, useUserSettings } from "@/hooks/store/user";
@@ -24,16 +25,16 @@ type TAuthenticationWrapper = {
   pageType?: TPageType;
 };
 
-const isValidURL = (url: string): boolean => {
-  const disallowedSchemes = /^(https?|ftp):\/\//i;
-  return !disallowedSchemes.test(url);
-};
-
 export const AuthenticationWrapper = observer(function AuthenticationWrapper(props: TAuthenticationWrapper) {
   const pathname = usePathname();
   const router = useAppRouter();
   const searchParams = useSearchParams();
-  const nextPath = searchParams.get("next_path");
+  const base = process.env.VITE_ROUTER_BASENAME || "";
+  const safeNext = safeInternalPath(searchParams.get("next_path"));
+  const nextPath = safeNext ? toRouterReturnPath(safeNext, base) : null;
+  const inviteReturn = getInvitationReturnPath(new URLSearchParams(searchParams.toString()));
+  const invitationPath = inviteReturn ? toRouterReturnPath(inviteReturn, base) : null;
+  const signInPath = `/?next_path=${encodeURIComponent(`${pathname || "/"}${searchParams.toString() ? `?${searchParams}` : ""}`)}`;
   // props
   const { children, pageType = EPageTypes.AUTHENTICATED } = props;
   // hooks
@@ -59,7 +60,7 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
     let redirectionRoute = "/create-workspace";
 
     // validating the nextPath from the router query
-    if (nextPath && isValidURL(nextPath.toString())) {
+    if (nextPath) {
       redirectionRoute = nextPath.toString();
       return redirectionRoute;
     }
@@ -95,6 +96,10 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
   if (pageType === EPageTypes.NON_AUTHENTICATED) {
     if (!currentUser?.id) return <>{children}</>;
     else {
+      if (invitationPath) {
+        router.replace(invitationPath);
+        return <></>;
+      }
       if (currentUserProfile?.id && isUserOnboard) {
         const currentRedirectRoute = getWorkspaceRedirectionUrl();
         router.push(currentRedirectRoute);
@@ -108,7 +113,7 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
 
   if (pageType === EPageTypes.ONBOARDING) {
     if (!currentUser?.id) {
-      router.push(`/${pathname ? `?next_path=${pathname}` : ``}`);
+      router.push(signInPath);
       return <></>;
     } else {
       if (currentUser && currentUserProfile?.id && isUserOnboard) {
@@ -121,7 +126,7 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
 
   if (pageType === EPageTypes.SET_PASSWORD) {
     if (!currentUser?.id) {
-      router.push(`/${pathname ? `?next_path=${pathname}` : ``}`);
+      router.push(signInPath);
       return <></>;
     } else {
       if (currentUser && !currentUser?.is_password_autoset && currentUserProfile?.id && isUserOnboard) {
@@ -140,7 +145,7 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
         return <></>;
       }
     } else {
-      router.push(`/${pathname ? `?next_path=${pathname}` : ``}`);
+      router.push(signInPath);
       return <></>;
     }
   }

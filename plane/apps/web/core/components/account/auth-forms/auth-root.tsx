@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { observer } from "mobx-react";
 import { useSearchParams } from "next/navigation";
+import { getInvitationReturnPath } from "@/helpers/invitation-navigation";
 // plane imports
 import { OAuthOptions } from "@plane/ui";
 // helpers
@@ -36,8 +37,10 @@ export const AuthRoot = observer(function AuthRoot(props: TAuthRoot) {
   const searchParams = useSearchParams();
   // query params
   const emailParam = searchParams.get("email");
-  const invitation_id = searchParams.get("invitation_id");
-  const workspaceSlug = searchParams.get("slug");
+  const invitationPath = getInvitationReturnPath(new URLSearchParams(searchParams.toString()));
+  const invitationParams = new URLSearchParams(invitationPath?.split("?")[1] || "");
+  const invitation_id = invitationParams.get("invitation_id");
+  const workspaceSlug = invitationParams.get("slug");
   const error_code = searchParams.get("error_code");
   // props
   const { authMode: currentAuthMode } = props;
@@ -121,6 +124,7 @@ export const AuthRoot = observer(function AuthRoot(props: TAuthRoot) {
       <AuthHeader
         workspaceSlug={workspaceSlug?.toString() || undefined}
         invitationId={invitation_id?.toString() || undefined}
+        invitationToken={invitationParams.get("token") || undefined}
         invitationEmail={email || undefined}
         authMode={authMode}
         currentAuthStep={authStep}

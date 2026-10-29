@@ -117,13 +117,11 @@ export async function loadSnapshotFromIDB(): Promise<{ data: Record<string, any>
 
     return new Promise((resolve) => {
       try {
-        const tx = db.transaction([SNAPSHOT_STORE, METADATA_STORE], "readonly");
+        const tx = db.transaction(SNAPSHOT_STORE, "readonly");
         const snapStore = tx.objectStore(SNAPSHOT_STORE);
-        const metaStore = tx.objectStore(METADATA_STORE);
 
         let snapshotData: Record<string, any> | null = null;
         let snapshotCid: string | null = null;
-        let metaCid: string | null = null;
 
         const snapReq = snapStore.get("latest");
         snapReq.addEventListener("success", () => {
@@ -133,17 +131,10 @@ export async function loadSnapshotFromIDB(): Promise<{ data: Record<string, any>
           }
         });
 
-        const metaReq = metaStore.get("last_valid_cid");
-        metaReq.addEventListener("success", () => {
-          if (metaReq.result?.value) {
-            metaCid = metaReq.result.value;
-          }
-        });
-
         tx.addEventListener("complete", () => {
           resolve({
             data: snapshotData,
-            cid: metaCid || snapshotCid,
+            cid: snapshotCid,
           });
         });
         tx.addEventListener("error", () => resolve({ data: null, cid: null }));

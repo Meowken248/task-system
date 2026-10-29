@@ -93,3 +93,12 @@ test("an aborted snapshot transaction is not reported as saved", async () => {
   db.abortWrites = true;
   assert.equal(await module.saveSnapshotToIDB({ issues: [] }, "fixture-cid"), false);
 });
+
+test("a newer CID pointer cannot relabel an older mutable local checkpoint", async () => {
+  const { module } = await fixture();
+  const data = { invitations: [] };
+  await module.saveSnapshotToIDB(data, "old-checkpoint-cid");
+  await module.saveCidToIDB("new-published-cid");
+  assert.deepEqual(await module.loadSnapshotFromIDB(), { data, cid: "old-checkpoint-cid" });
+  assert.equal(await module.getCidFromIDB(), "new-published-cid");
+});

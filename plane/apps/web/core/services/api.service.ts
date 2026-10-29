@@ -47,6 +47,7 @@ export abstract class APIService {
           const isAuthPage =
             isAtAppRoot ||
             currentPathname.endsWith("/sign-up") ||
+            currentPathname.endsWith("/workspace-invitations") ||
             currentPathname.includes("/accounts/");
 
           if (!isAuthPage && !APIService.authRedirectInProgress) {

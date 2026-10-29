@@ -78,3 +78,21 @@ export function isInvitationDeleted(inv: any, deletedSet: Set<string>): boolean 
   }
   return false;
 }
+
+/** Published re-invitations supersede old device-local email bans. Exact
+ * invitation-id/token revocations and published email bans still apply.
+ */
+export function effectiveInvitationTombstones(inv: any, local: Set<string>, published?: string[]): Set<string> {
+  const effective = new Set(local);
+  if (published) {
+    const email = String(inv?.email || "")
+      .toLowerCase()
+      .trim();
+    if (email) {
+      effective.delete(email);
+      for (const key of getInvitationWorkspaceKeys(inv)) effective.delete(`ws:${key}|email:${email}`);
+    }
+    published.forEach((entry) => effective.add(entry));
+  }
+  return effective;
+}

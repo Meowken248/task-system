@@ -7,6 +7,8 @@
 import { startTransition, StrictMode } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { HydratedRouter } from "react-router/dom";
+import { verifyOtpCode, clearOtpCode, setLoggedInUser } from "@plane/services";
+import { safeInternalPath } from "@/helpers/invitation-navigation";
 
 // ── DOM Guard: Prevent crash from browser translation (Google Translate) / extensions ──
 if (typeof window !== "undefined" && typeof Node === "function" && Node.prototype) {
@@ -73,11 +75,8 @@ function resolveAppPath(path?: string | null): string {
     return rootPath;
   }
 
-  if (path.startsWith("http://") || path.startsWith("https://")) {
-    return path;
-  }
-
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const normalizedPath = safeInternalPath(path);
+  if (!normalizedPath) return rootPath;
 
   if (cleanBase && (normalizedPath === cleanBase || normalizedPath.startsWith(`${cleanBase}/`))) {
     return normalizedPath;
@@ -91,6 +90,7 @@ if (typeof document !== "undefined") {
     const action = form.action || "";
 
     if (action.includes("/auth/sign-out")) {
+      setLoggedInUser(null);
       localStorage.removeItem("plane_dapp_auth_user");
       localStorage.removeItem("plane_dapp_auth_email");
       sessionStorage.removeItem("plane_dapp_auth_user");
@@ -105,7 +105,7 @@ if (typeof document !== "undefined") {
     }
 
     const nextPathInput = form.querySelector('input[name="next_path"]') as HTMLInputElement | null;
-    const nextPath = nextPathInput?.value;
+    const nextPath = safeInternalPath(nextPathInput?.value);
     const emailInput = form.querySelector('input[name="email"]') as HTMLInputElement | null;
     const email = (emailInput?.value || "").trim().toLowerCase();
     const passwordInput = form.querySelector('input[type="password"], input[name="password"]') as HTMLInputElement | null;
@@ -140,51 +140,17 @@ if (typeof document !== "undefined") {
         return;
       }
 
-      // Đọc mã OTP từ cache
-      let otpMap: Record<string, { code: string; expiresAt: number; attempts: number }> = {};
-      try {
-        const rawOtp = localStorage.getItem("plane_dapp_otp_cache");
-        if (rawOtp) otpMap = JSON.parse(rawOtp);
-      } catch { }
-
-      const record = otpMap[email];
-      if (!record || !record.code) {
-        alert("Mã xác nhận không tồn tại hoặc đã hết hạn. Vui lòng bấm gửi lại mã mới.");
+      const verifyResult = await verifyOtpCode(email, code);
+      if (!verifyResult.valid) {
+        alert(verifyResult.error || "Mã xác nhận không chính xác hoặc đã hết hạn.");
         form.dispatchEvent(new Event("error", { bubbles: true }));
         const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
         if (submitBtn) submitBtn.disabled = false;
         return;
       }
 
-      if (Date.now() > record.expiresAt) {
-        delete otpMap[email];
-        try { localStorage.setItem("plane_dapp_otp_cache", JSON.stringify(otpMap)); } catch { }
-        alert("Mã xác nhận đã hết hạn (quá 10 phút). Vui lòng bấm gửi lại mã mới.");
-        form.dispatchEvent(new Event("error", { bubbles: true }));
-        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
-        if (submitBtn) submitBtn.disabled = false;
-        return;
-      }
-
-      if (record.code !== code) {
-        record.attempts = (record.attempts || 0) + 1;
-        if (record.attempts >= 5) {
-          delete otpMap[email];
-          try { localStorage.setItem("plane_dapp_otp_cache", JSON.stringify(otpMap)); } catch { }
-          alert("Bạn đã nhập sai mã quá 5 lần. Mã này đã bị hủy, vui lòng lấy mã mới.");
-        } else {
-          try { localStorage.setItem("plane_dapp_otp_cache", JSON.stringify(otpMap)); } catch { }
-          alert(`Mã xác nhận không chính xác. Bạn còn ${5 - record.attempts} lần thử!`);
-        }
-        form.dispatchEvent(new Event("error", { bubbles: true }));
-        const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement | null;
-        if (submitBtn) submitBtn.disabled = false;
-        return;
-      }
-
-      // Xác thực thành công -> Hủy mã
-      delete otpMap[email];
-      try { localStorage.setItem("plane_dapp_otp_cache", JSON.stringify(otpMap)); } catch { }
+      // Xác thực thành công -> Hủy mã OTP trong cache
+      clearOtpCode(email);
 
       let user = localDB.users.find((u: any) => (u?.email || "").toLowerCase() === email);
       if (!user) {
@@ -215,6 +181,7 @@ if (typeof document !== "undefined") {
       }
 
       const authUserId = user.id;
+      setLoggedInUser(authUserId);
       localStorage.setItem("plane_dapp_auth_user", authUserId);
       localStorage.setItem("plane_dapp_auth_email", email);
       sessionStorage.setItem("plane_dapp_auth_user", authUserId);
@@ -321,6 +288,7 @@ if (typeof document !== "undefined") {
       } catch { }
 
       const authUserId = user?.id || `user-${Date.now().toString(36)}`;
+      setLoggedInUser(authUserId);
       localStorage.setItem("plane_dapp_auth_user", authUserId);
       localStorage.setItem("plane_dapp_auth_email", email);
       sessionStorage.setItem("plane_dapp_auth_user", authUserId);
@@ -488,6 +456,7 @@ if (typeof document !== "undefined") {
       } catch { }
 
       localStorage.setItem("plane_dapp_auth_user", userRecord.id);
+      setLoggedInUser(userRecord.id);
       localStorage.setItem("plane_dapp_auth_email", userRecord.email);
       sessionStorage.setItem("plane_dapp_auth_user", userRecord.id);
       sessionStorage.setItem("plane_dapp_auth_email", userRecord.email);

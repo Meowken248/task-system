@@ -370,7 +370,12 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
       runInAction(() => {
         set(this.workspaceMemberInvitations, workspaceSlug, memberInvitations);
       });
-      await this.workspaceService.updateWorkspaceInvitation(workspaceSlug, invitationId, data);
+      const updated = await this.workspaceService.updateWorkspaceInvitation(workspaceSlug, invitationId, data);
+      runInAction(() => {
+        set(this.workspaceMemberInvitations, workspaceSlug, memberInvitations.map((invitation) =>
+          invitation.id === invitationId ? { ...invitation, ...updated } : invitation
+        ));
+      });
     } catch (error) {
       // revert back to original members in case of error
       runInAction(() => {

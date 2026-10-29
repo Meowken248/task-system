@@ -51,6 +51,9 @@ export interface IWorkspaceMemberInvitation {
   role: TUserPermissions;
   token: string;
   invite_link: string;
+  wallet_address?: string;
+  wallet_approval_required?: boolean;
+  source_verified?: boolean;
   workspace: {
     id: string;
     logo_url: string;

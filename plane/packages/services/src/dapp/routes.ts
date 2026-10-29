@@ -65,20 +65,20 @@ import {
   type InvitationTokenClaims,
 } from "./invitation-tokens";
 
-import { respondToWorkspaceInvitation } from "./workspace-invitations";
+import { respondToWorkspaceInvitation, findLocalWorkspace } from "./workspace-invitations";
 import { invitationLink, withInvitationLock } from "./invitation-policy";
 import { listWorkspaceMembers } from "./workspace-members";
 export { readWorkspaceSnapshotFromChain, recoverInvitationFromChainSnapshot, findLocalWorkspace, buildWorkspaceFromChainSnapshot, upsertWorkspaceMemberRecord } from "./workspace-invitations";
 const escapeCsv = (val: any): string => {
-          if (val === null || val === undefined) return '""';
-          const str = String(val).replace(/"/g, '""');
-          return `"${str}"`;
-        };
+  if (val === null || val === undefined) return '""';
+  const str = String(val).replace(/"/g, '""');
+  return `"${str}"`;
+};
 
 const describeRelatedIssue = (relatedIssue: any) =>
-      relatedIssue?.project_detail?.identifier && relatedIssue?.sequence_id
-        ? `${relatedIssue.project_detail.identifier}-${relatedIssue.sequence_id}`
-        : relatedIssue?.name || "";
+  relatedIssue?.project_detail?.identifier && relatedIssue?.sequence_id
+    ? `${relatedIssue.project_detail.identifier}-${relatedIssue.sequence_id}`
+    : relatedIssue?.name || "";
 
 export { ok, parseApiUrl };
 
@@ -161,7 +161,7 @@ export function addWorkspaceRemovedIdentifiers(slugOrId: string | undefined | nu
   }
   try {
     localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
-  } catch {}
+  } catch { }
 }
 
 
@@ -425,9 +425,9 @@ const findIssueByRouteParam = (issueParam: string, projectParam?: string | null)
 
   const project = projectParam
     ? (localDB.projects || []).find(
-        (p: any) =>
-          p.id === projectParam || (p.identifier && p.identifier.toLowerCase() === projectParam.toLowerCase())
-      )
+      (p: any) =>
+        p.id === projectParam || (p.identifier && p.identifier.toLowerCase() === projectParam.toLowerCase())
+    )
     : undefined;
   const projectKeys = new Set([projectParam, project?.id, project?.identifier].filter(Boolean) as string[]);
 
@@ -569,7 +569,9 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   return handleRouteUnlocked(method, url, body);
 }
 
-async function handleRouteUnlocked(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
+async function handleRouteUnlocked(
+  method: string, url: string, body: Record<string, any>, preserveInvitationId?: string
+): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   syncCrossPortWorkspaces();
   const routeSessionUserId = getLoggedInUserId();
@@ -3443,7 +3445,7 @@ async function handleRouteUnlocked(method: string, url: string, body: Record<str
             if (parsed[email]) resolvedWallets.add(parsed[email].toLowerCase());
           });
         }
-      } catch {}
+      } catch { }
 
       // 4. Secondary cross-resolution: find any remaining members/invitations/users matching resolved emails or wallets
       (localDB.workspace_members || []).forEach((m: any) => {
@@ -3503,7 +3505,7 @@ async function handleRouteUnlocked(method: string, url: string, body: Record<str
             if (sEth) resolvedWallets.add(sEth.toLowerCase());
           }
         }
-      } catch {}
+      } catch { }
 
       // Add all emails and wallets to allTargetIdentifiers
       resolvedEmails.forEach((em) => allTargetIdentifiers.add(em));
@@ -6010,10 +6012,10 @@ async function handleRouteUnlocked(method: string, url: string, body: Record<str
 
   // search-issues endpoint — delegate to handleCRUD
   if (url.includes("/search-issues") || url.includes("search-issues")) {
-    return handleCRUD(method, url, body);
+    return handleCRUD(method, url, body, preserveInvitationId);
   }
   // ── Generic CRUD ────────────────────────────────────────────────────
-  return handleCRUD(method, url, body);
+  return handleCRUD(method, url, body, preserveInvitationId);
 }
 
 // ── Workspace Global Search handler (Power-K command palette) ─────────────
@@ -6312,8 +6314,8 @@ function getWorkspaceOwnerEth(ws: any, wsSlug: string): string {
   // 3. ws.owner object
   if (ws?.owner && typeof ws.owner === "object") {
     const wObj = extractEthAddress(ws.owner.wallet_address) ||
-                 extractEthAddress(ws.owner.metanode_wallet_address) ||
-                 extractEthAddress(ws.owner.id);
+      extractEthAddress(ws.owner.metanode_wallet_address) ||
+      extractEthAddress(ws.owner.id);
     if (wObj) return wObj.toLowerCase();
   }
 
@@ -6396,7 +6398,12 @@ function enrichProjectEntity(collection: string, item: any, defaultProjId?: stri
 }
 
 // ── Generic CRUD handler ─────────────────────────────────────────────────
-async function handleCRUD(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
+async function handleCRUD(
+  method: string,
+  url: string,
+  body: Record<string, any>,
+  preserveInvitationId?: string
+): Promise<RouteResult> {
   let { collection, id, isPaginated } = parseApiUrl(url);
   console.log(
     `[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`
@@ -8558,7 +8565,7 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
     if (collection === "invitations" && body.emails && Array.isArray(body.emails)) {
       const match = url.match(/\/api\/workspaces\/([^/]+)\//);
       const wsSlug = match ? match[1] : (localDB.workspaces?.[0]?.slug || "fiai");
-      const currentWs = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
+      const currentWs = findLocalWorkspace(wsSlug);
 
       if (!currentWs) return { status: 404, data: { error: "Không tìm thấy không gian làm việc." } };
       if (!body.emails.length || body.emails.some((entry: any) => !entry || typeof entry.email !== "string" || !(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(entry.email.trim()) || /^0x[a-f0-9]{40}$/i.test(entry.email.trim())) || ![5, 10, 15, 20].includes(Number(entry.role ?? 15)))) {
@@ -8649,17 +8656,21 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
         );
 
         if (existingInv) {
+          existingInv.workspace = { id: currentWs.id, slug: currentWs.slug || wsSlug, name: currentWs.name, logo_url: currentWs.logo_url || "" };
+          existingInv.workspace_id = currentWs.id;
+          existingInv.workspace_slug = currentWs.slug || wsSlug;
           existingInv.role = e.role || existingInv.role || 15;
           existingInv.updated_at = new Date().toISOString();
-          // Reissuing always rotates the token; old links must stop working
-          // after the replacement snapshot is published.
-          existingInv.token = createInvitationToken();
+          // First wallet approval keeps the original email link usable. Role
+          // changes, wallet replacement and explicit reissues rotate the token.
+          if (preserveInvitationId !== existingInv.id) existingInv.token = createInvitationToken();
           existingInv.token_version = 2;
           existingInv.status = "pending";
           existingInv.responded_at = null;
           existingInv.publication_status = "pending";
           existingInv.wallet_address = e.wallet_address || existingInv.wallet_address || "";
-          existingInv.token_expires_at = new Date(Date.now() + INVITE_TOKEN_TTL_MS).toISOString();
+          if (preserveInvitationId !== existingInv.id)
+            existingInv.token_expires_at = new Date(Date.now() + INVITE_TOKEN_TTL_MS).toISOString();
           existingInv.invite_link = invitationLink(wsSlug, existingInv.id, existingInv.token);
           newInvites.push(existingInv);
           console.log(`[DApp Interceptor] Updated existing pending invite for ${rawEmail} (${existingInv.id})`);
@@ -8779,6 +8790,13 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
       newInvites.forEach((inv) => { inv.publication_status = "published"; inv.published_cid = publishedCid; });
       saveStoredInvitations(localDB[collection]);
       saveDB();
+
+      // Wallet approval is not a second email delivery. The recipient can
+      // refresh the original link once the chain and shared snapshot confirm it.
+      if (preserveInvitationId) {
+        if (chainErrors.length) return { status: 503, data: { code: "WALLET_APPROVAL_PENDING", error: chainErrors[0].error } };
+        return ok({ invitations: newInvites });
+      }
 
       // Send invitation emails and report the REAL delivery result back to the
       // admin. Previously this was fire-and-forget, so the UI always claimed
@@ -9381,13 +9399,30 @@ async function handleCRUD(method: string, url: string, body: Record<string, any>
   if (method === "patch" || method === "put") {
     if (collection === "invitations") {
       const slug = url.match(/\/api\/workspaces\/([^/]+)\//)?.[1];
-      const workspace = (localDB.workspaces || []).find((entry: any) => entry.slug === slug || entry.id === slug);
+      const workspace = findLocalWorkspace(slug);
       const keys = new Set([slug, workspace?.id, workspace?.slug].filter(Boolean));
       const invitation = (localDB.invitations || []).find((entry: any) => entry.id === id && getInvitationWorkspaceKeys(entry).some((key) => keys.has(key)));
       if (!invitation) return { status: 404, data: { error: "Không tìm thấy lời mời trong không gian làm việc này." } };
       if (invitation.accepted) return { status: 409, data: { error: "Hãy thay đổi quyền trong danh sách thành viên đã tham gia." } };
-      if (Object.keys(body).some((key) => key !== "role") || ![5, 10, 15, 20].includes(Number(body.role))) return { status: 400, data: { error: "Chỉ được cập nhật quyền hợp lệ của lời mời." } };
-      const result = await handleRouteUnlocked("post", `/api/workspaces/${slug}/invitations/`, { emails: [{ email: invitation.email, role: Number(body.role), wallet_address: invitation.wallet_address }] });
+      const nextRole = Number(body.role ?? invitation.role);
+      const nextWallet = body.wallet_address ?? invitation.wallet_address;
+      if (!Object.keys(body).length || Object.keys(body).some((key) => !["role", "wallet_address"].includes(key)) || ![5, 10, 15, 20].includes(nextRole))
+        return { status: 400, data: { error: "Chỉ được cập nhật quyền và ví nhận lời mời hợp lệ." } };
+      if (body.wallet_address !== undefined && (typeof body.wallet_address !== "string" || !/^0x[a-f0-9]{40}$/i.test(body.wallet_address.trim()) || /^0x0{40}$/i.test(body.wallet_address.trim())))
+        return { status: 400, data: { error: "Ví người nhận không hợp lệ." } };
+      const firstWalletApproval = Boolean(body.wallet_address && (!invitation.wallet_address ||
+        ((invitation.wallet_approval_required || invitation.chain_approval_failed) &&
+          invitation.wallet_address.toLowerCase() === body.wallet_address.trim().toLowerCase())) &&
+        nextRole === Number(invitation.role) && !invitation.responded_at &&
+        !["revoked", "rejected"].includes(invitation.status) &&
+        /^inv_[a-f0-9]{64}$/.test(invitation.token || "") &&
+        Date.parse(invitation.token_expires_at) > Date.now() &&
+        !isInvitationDeleted(invitation, readInvitationTombstones()));
+      const result = await handleRouteUnlocked("post", `/api/workspaces/${slug}/invitations/`, {
+        emails: [{ email: invitation.email, role: nextRole, wallet_address: nextWallet }],
+      }, firstWalletApproval ? invitation.id : undefined);
+      if (result.status < 400 && result.data.chain_failures?.length)
+        return { status: 503, data: { code: "WALLET_APPROVAL_PENDING", error: result.data.chain_failures[0].error } };
       return result.status >= 400 ? result : ok(result.data.invitations.find((entry: any) => entry.id === id));
     }
     if (!localDB[collection]) localDB[collection] = [];

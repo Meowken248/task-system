@@ -12,6 +12,7 @@ import type { IEmailCheckData } from "@plane/types";
 // helpers
 import type { TAuthErrorInfo } from "@/helpers/authentication.helper";
 import { authErrorHandler } from "@/helpers/authentication.helper";
+import { getInvitationReturnPath, safeInternalPath } from "@/helpers/invitation-navigation";
 // hooks
 import { useInstance } from "@/hooks/store/use-instance";
 import { useAppRouter } from "@/hooks/use-app-router";
@@ -41,7 +42,7 @@ export const AuthFormRoot = observer(function AuthFormRoot(props: TAuthFormRoot)
   const router = useAppRouter();
   // query params
   const searchParams = useSearchParams();
-  const nextPath = searchParams.get("next_path");
+  const nextPath = getInvitationReturnPath(new URLSearchParams(searchParams.toString())) || safeInternalPath(searchParams.get("next_path"));
   // states
   const [isExistingEmail, setIsExistingEmail] = useState(false);
   // hooks
@@ -86,7 +87,8 @@ export const AuthFormRoot = observer(function AuthFormRoot(props: TAuthFormRoot)
     setErrorInfo(undefined);
     setEmail("");
     setAuthStep(EAuthSteps.EMAIL);
-    router.push(currentAuthMode === EAuthModes.SIGN_IN ? `/` : "/sign-up");
+    const authPath = currentAuthMode === EAuthModes.SIGN_IN ? "/" : "/sign-up";
+    router.push(`${authPath}${nextPath ? `?next_path=${encodeURIComponent(nextPath)}` : ""}`);
   };
 
   // generating the unique code

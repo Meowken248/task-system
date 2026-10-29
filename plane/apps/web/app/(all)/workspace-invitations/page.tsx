@@ -1,233 +1,232 @@
 /**
  * Copyright (c) 2023-present Plane Software, Inc. and contributors
  * SPDX-License-Identifier: AGPL-3.0-only
- * See the LICENSE file for details.
  */
-
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { observer } from "mobx-react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { Boxes, Share2, Star, User2 } from "lucide-react";
-import { CheckIcon, CloseIcon } from "@plane/propel/icons";
-import { TOAST_TYPE, setToast } from "@plane/propel/toast";
-// components
+import { Button } from "@plane/propel/button";
+import { setLoggedInUser } from "@plane/services";
+import { copyTextToClipboard } from "@plane/utils";
 import { LogoSpinner } from "@/components/common/logo-spinner";
-import { EmptySpace, EmptySpaceItem } from "@/components/ui/empty-space";
-// constants
 import { WORKSPACE_INVITATION } from "@/constants/fetch-keys";
-// helpers
 import { EPageTypes } from "@/helpers/authentication.helper";
-// hooks
+import { getInvitationReturnPath } from "@/helpers/invitation-navigation";
 import { useUser } from "@/hooks/store/user";
-import { useAppRouter } from "@/hooks/use-app-router";
-// wrappers
 import { AuthenticationWrapper } from "@/lib/wrappers/authentication-wrapper";
 import { WorkspaceService } from "@/services/workspace.service";
 import { resolveMetanodeWalletAddress } from "@/services/blockchain/metanode-wallet.service";
-// services
 
-// service initialization
 const workspaceService = new WorkspaceService();
+const errorMessage = (error: unknown) => {
+  const failure = error as { error?: string; message?: string };
+  return failure?.error || failure?.message || "Chưa hoàn tất thao tác. Hãy thử lại.";
+};
 
 function WorkspaceInvitationPage() {
-  const [isAccepting, setIsAccepting] = useState(false);
-  const [isJoining, setIsJoining] = useState(false);
-  // router
-  const router = useAppRouter();
-  // query params
   const searchParams = useSearchParams();
-  const invitation_id = searchParams.get("invitation_id");
+  const invitationId = searchParams.get("invitation_id");
   const slug = searchParams.get("slug");
-  const token = searchParams.get("token");
-  // store hooks
+  const token = searchParams.get("token") || undefined;
   const { data: currentUser } = useUser();
-
-  const { data: invitationDetail, error } = useSWR(
-    invitation_id && slug && [WORKSPACE_INVITATION(invitation_id.toString()), slug, token],
-    invitation_id && slug
-      ? () => workspaceService.getWorkspaceInvitation(slug.toString(), invitation_id.toString(), token || undefined)
-      : null
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [message, setMessage] = useState("");
+  const [wallet, setWallet] = useState("");
+  const [rejected, setRejected] = useState(false);
+  const {
+    data: invitation,
+    error,
+    isLoading,
+    isValidating,
+    mutate,
+  } = useSWR(
+    invitationId && slug
+      ? [WORKSPACE_INVITATION(invitationId), slug, token, currentUser?.id, currentUser?.email]
+      : null,
+    () => workspaceService.getWorkspaceInvitation(slug!, invitationId!, token),
+    { shouldRetryOnError: false, revalidateOnFocus: true }
   );
-
-  const getDestinationUrl = (targetSlug?: string | null) => {
-    const basePath =
-      (typeof window !== "undefined" && (window as any).env?.VITE_ROUTER_BASENAME) ||
-      (typeof window !== "undefined" && window.location.pathname.startsWith("/plane") ? "/plane" : "");
-    return targetSlug ? `${basePath}/${targetSlug}` : `${basePath}/`;
-  };
-
-  const isEmailMismatch = Boolean(
+  const base = (process.env.VITE_ROUTER_BASENAME || "").replace(/\/+$/, "");
+  const returnPath = getInvitationReturnPath(new URLSearchParams(searchParams.toString()));
+  const authUrl = (signup = false) =>
+    `${base}/${signup ? "sign-up" : ""}?${new URLSearchParams({
+      ...(returnPath ? { next_path: returnPath } : {}),
+      ...(invitation?.email && !/^0x[a-f0-9]{40}$/i.test(invitation.email) ? { email: invitation.email } : {}),
+    })}`;
+  const walletRecipient = /^0x[a-f0-9]{40}$/i.test(invitation?.email || "");
+  const mismatch = Boolean(
     currentUser?.email &&
-    invitationDetail?.email &&
-    currentUser.email.toLowerCase().trim() !== invitationDetail.email.toLowerCase().trim()
+    invitation?.email &&
+    !walletRecipient &&
+    currentUser.email.toLowerCase().trim() !== invitation.email.toLowerCase().trim()
   );
+  const approvalRequired = Boolean(invitation?.wallet_approval_required);
+  const terminalCodes = new Set([
+    "INVITATION_NOT_FOUND",
+    "INVITATION_REVOKED",
+    "INVITATION_EXPIRED",
+    "MEMBER_REMOVED",
+    "INVITATION_TOKEN_MISMATCH",
+    "INVITATION_ROLE_INVALID",
+  ]);
+  const failureCode = (error as { code?: string })?.code;
 
-  useEffect(() => {
-    if (invitationDetail?.accepted && !isAccepting && !isJoining && currentUser?.id && !isEmailMismatch) {
-      const targetSlug = invitationDetail?.workspace?.slug || slug;
-      window.location.replace(getDestinationUrl(targetSlug));
-    }
-  }, [invitationDetail?.accepted, isAccepting, isJoining, invitationDetail?.workspace?.slug, slug, currentUser?.id, isEmailMismatch]);
-
-  const handleAccept = async () => {
-    if (!invitationDetail || isAccepting || isJoining || isEmailMismatch) return;
-    setIsAccepting(true);
-    try {
-      setToast({
-        type: TOAST_TYPE.INFO,
-        title: "Xác thực ví MetaNode",
-        message: "Đang kết nối ví MetaNode để xác thực quyền thành viên on-chain...",
-      });
-
-      // 1. Resolve & prompt user's MetaNode wallet (same modal as task creation)
-      const walletAddress = await resolveMetanodeWalletAddress({ forceSelect: true });
-
-      // 2. Submit join with confirmed wallet address
-      await workspaceService.joinWorkspace(invitationDetail.workspace.slug, invitationDetail.id, {
-        accepted: true,
-        token: token,
-        wallet_address: walletAddress,
-      });
-
-      setIsJoining(true);
-      setToast({
-        type: TOAST_TYPE.SUCCESS,
-        title: "Thành công",
-        message: `Đã kết nối ví ${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} và gia nhập không gian làm việc!`,
-      });
-
-      const targetSlug = invitationDetail.workspace?.slug || slug;
-      const targetUrl = getDestinationUrl(targetSlug);
-      // Hard navigation reload ensures MobX stores and SWR rehydrate fresh session credentials cleanly
-      setTimeout(() => {
-        window.location.replace(targetUrl);
-      }, 800);
-    } catch (err: any) {
-      console.error("[Workspace Invitations] Error accepting invitation:", err);
-      setIsJoining(false);
-      setToast({
-        type: TOAST_TYPE.ERROR,
-        title: "Không thể tham gia không gian làm việc",
-        message: err?.error || err?.response?.data?.error || err?.message || "Lỗi khi kết nối ví MetaNode hoặc gia nhập không gian làm việc.",
-      });
-    } finally {
-      setIsAccepting(false);
-    }
+  const switchAccount = () => {
+    // Preserve offline edits, snapshots and CID caches when changing accounts.
+    setLoggedInUser(null);
+    window.location.assign(authUrl());
   };
 
-  const handleReject = () => {
-    if (!invitationDetail || !token) return;
-    void workspaceService
-      .joinWorkspace(invitationDetail.workspace.slug, invitationDetail.id, {
-        accepted: false,
-        token: token,
-      })
-      .then(() => {
-        window.location.replace(getDestinationUrl(null));
-      })
-      .catch((err: unknown) => console.error(err));
+  const respond = async (accepted: boolean) => {
+    if (!invitation || !currentUser || mismatch || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setMessage("");
+    try {
+      const address = accepted ? await resolveMetanodeWalletAddress({ forceSelect: true }) : undefined;
+      if (address) setWallet(address);
+      if (accepted && approvalRequired) {
+        setMessage(
+          "Hãy gửi địa chỉ ví bên dưới cho quản trị viên. Sau khi được xác nhận, bấm Kiểm tra lại lời mời ngay tại đây."
+        );
+        return;
+      }
+      if (accepted && invitation.wallet_address?.toLowerCase() !== address?.toLowerCase()) {
+        setMessage(
+          `Ví đã chọn không khớp ví được mời: ${invitation.wallet_address}. Hãy chọn đúng ví hoặc liên hệ quản trị viên.`
+        );
+        return;
+      }
+      const result = await workspaceService.joinWorkspace(invitation.workspace.slug, invitation.id, {
+        accepted,
+        token,
+        ...(address ? { wallet_address: address } : {}),
+      });
+      if (accepted && result.accepted && result.verified_on_chain)
+        window.location.replace(`${base}/${encodeURIComponent(invitation.workspace.slug)}`);
+      else if (!accepted) setRejected(true);
+      else setMessage("Chưa xác nhận được quyền thành viên. Hãy kiểm tra lại lời mời.");
+    } catch (failure) {
+      setMessage(errorMessage(failure));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
 
   return (
     <AuthenticationWrapper pageType={EPageTypes.PUBLIC}>
-      <div className="flex h-full w-full flex-col items-center justify-center px-3">
-        {isEmailMismatch && !isAccepting && !isJoining && (
-          <div className="mb-6 w-full max-w-md rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-center">
-            <p className="text-13 text-primary">
-              Lời mời này được gửi đến <strong>{invitationDetail?.email}</strong>.
-              <br />
-              Bạn hiện đang đăng nhập bằng tài khoản <strong>{currentUser?.email}</strong>.
-            </p>
-            <button
-              type="button"
-              className="mt-3 inline-flex items-center rounded bg-amber-600 px-3 py-1.5 text-12 font-medium text-white hover:bg-amber-700"
-              onClick={() => {
-                sessionStorage.clear();
-                localStorage.removeItem("plane_dapp_auth_user");
-                localStorage.removeItem("plane_dapp_auth_email");
-                localStorage.removeItem("plane_active_wallet_address");
-                localStorage.removeItem("last_workspace_slug");
-                document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
-                window.location.reload();
-              }}
-            >
-              Đăng xuất để tham gia bằng tài khoản chính xác
-            </button>
-          </div>
-        )}
-        {isAccepting || isJoining ? (
-          <div className="flex flex-col items-center justify-center space-y-4 py-8 text-center max-w-md">
-            <LogoSpinner />
-            <div className="space-y-1">
-              <h3 className="text-16 font-medium text-primary">
-                {isJoining ? "Đang chuyển đến không gian làm việc" : "Đang xác thực ví MetaNode"}
-              </h3>
-              <p className="text-13 text-secondary animate-pulse">
-                {isJoining
-                  ? "Xác thực thành công. Vui lòng đợi trong giây lát..."
-                  : "Vui lòng xác nhận trong popup ví MetaNode để ký tham gia workspace on-chain..."}
+      <div className="flex h-full min-h-screen w-full items-center justify-center px-4 py-12">
+        <main
+          className="w-full max-w-lg space-y-5 rounded-lg border border-subtle bg-surface-1 p-6"
+          aria-busy={busy || isValidating}
+        >
+          <h1 className="text-h5-medium text-primary">Lời mời tham gia không gian làm việc</h1>
+          {!invitationId || !slug ? (
+            <p role="alert">Liên kết thiếu thông tin lời mời. Hãy mở đầy đủ liên kết trong email.</p>
+          ) : isLoading ? (
+            <div role="status" className="flex items-center gap-3">
+              <LogoSpinner />
+              <span>Đang kiểm tra lời mời…</span>
+            </div>
+          ) : error ? (
+            <>
+              <p role="alert">{errorMessage(error)}</p>
+              <p className="text-body-sm-regular text-secondary">
+                {terminalCodes.has(failureCode || "")
+                  ? "Hãy liên hệ quản trị viên để kiểm tra hoặc gửi lại lời mời."
+                  : "Chưa đọc được trạng thái lời mời. Kết nối có thể đang gián đoạn; bạn có thể thử lại tại đây."}
               </p>
-            </div>
-          </div>
-        ) : invitationDetail && !invitationDetail.responded_at ? (
-          error ? (
-            <div className="shadow-2xl flex w-full flex-col space-y-4 rounded-sm border border-subtle bg-surface-1 px-4 py-8 text-center md:w-1/3">
-              <h2 className="text-18 uppercase">INVITATION NOT FOUND</h2>
-            </div>
-          ) : (
-            <EmptySpace
-              title={`You have been invited to ${invitationDetail.workspace.name}`}
-              description="Your workspace is where you'll create projects, collaborate on your work items, and organize different streams of work in your Plane account."
-            >
-              <EmptySpaceItem
-                Icon={CheckIcon}
-                title="Accept with MetaNode Wallet"
-                description="Connect your MetaNode wallet and sign membership on Sequoia chain"
-                action={handleAccept}
-              />
-              <EmptySpaceItem Icon={CloseIcon} title="Ignore" action={handleReject} />
-            </EmptySpace>
-          )
-        ) : error || invitationDetail?.responded_at ? (
-          invitationDetail?.accepted ? (
-            <EmptySpace
-              title={`You are already a member of ${invitationDetail.workspace.name}`}
-              description="Your workspace is where you'll create projects, collaborate on your work items, and organize different streams of work in your Plane account."
-            >
-              <EmptySpaceItem
-                Icon={Boxes}
-                title="Continue to home"
-                action={() => {
-                  const targetSlug = invitationDetail.workspace?.slug || slug;
-                  window.location.replace(getDestinationUrl(targetSlug));
-                }}
-              />
-            </EmptySpace>
-          ) : (
-            <EmptySpace
-              title="This invitation link is not active anymore."
-              description="Your workspace is where you'll create projects, collaborate on your work items, and organize different streams of work in your Plane account."
-              link={{ text: "Or start from an empty project", href: "/" }}
-            >
+              <Button variant="secondary" disabled={isValidating} onClick={() => void mutate()}>
+                Thử lại
+              </Button>
+            </>
+          ) : rejected ? (
+            <p role="status">Bạn đã từ chối lời mời trên thiết bị này.</p>
+          ) : invitation ? (
+            <>
+              <p>
+                Bạn được mời tham gia <strong>{invitation.workspace.name}</strong>.
+              </p>
+              <p className="text-body-sm-regular break-all text-secondary">Người nhận: {invitation.email}</p>
               {!currentUser ? (
-                <EmptySpaceItem Icon={User2} title="Sign in to continue" href="/" />
+                <>
+                  <p>Đăng nhập hoặc đăng ký bằng email nhận lời mời để tiếp tục.</p>
+                  <div className="flex flex-wrap gap-3">
+                    <Button onClick={() => window.location.assign(authUrl())}>Đăng nhập</Button>
+                    <Button variant="secondary" onClick={() => window.location.assign(authUrl(true))}>
+                      Đăng ký
+                    </Button>
+                  </div>
+                </>
+              ) : mismatch ? (
+                <>
+                  <p role="alert">
+                    Bạn đang đăng nhập bằng {currentUser.email}. Hãy dùng tài khoản {invitation.email}.
+                  </p>
+                  <Button onClick={switchAccount}>Đổi tài khoản</Button>
+                </>
+              ) : invitation.accepted ? (
+                <Button
+                  onClick={() => window.location.replace(`${base}/${encodeURIComponent(invitation.workspace.slug)}`)}
+                >
+                  Mở không gian làm việc
+                </Button>
               ) : (
-                <EmptySpaceItem Icon={Boxes} title="Continue to home" href="/" />
+                <>
+                  {invitation.source_verified === false && (
+                    <p role="status">
+                      Đang hiển thị bản lưu trên máy. Khi tham gia, hệ thống sẽ kiểm tra lại trạng thái mới nhất.
+                    </p>
+                  )}
+                  <p>
+                    {approvalRequired
+                      ? "Lời mời còn hiệu lực, đang chờ quản trị viên xác nhận ví của bạn. Chọn ví và gửi địa chỉ cho quản trị viên để được cấp quyền tham gia."
+                      : "Chọn ví được mời và xác nhận giao dịch để tham gia."}
+                  </p>
+                  {invitation.wallet_address && (
+                    <p className="text-body-sm-regular break-all">Ví được mời: {invitation.wallet_address}</p>
+                  )}
+                  <div className="flex flex-wrap gap-3">
+                    <Button disabled={busy || isValidating} onClick={() => void respond(true)}>
+                      {busy ? "Đang xử lý…" : approvalRequired ? "Chọn ví của tôi" : "Chấp nhận và xác nhận ví"}
+                    </Button>
+                    <Button variant="secondary" disabled={busy || isValidating} onClick={() => void mutate()}>
+                      Kiểm tra lại lời mời
+                    </Button>
+                    <Button variant="secondary" disabled={busy || isValidating} onClick={() => void respond(false)}>
+                      Từ chối
+                    </Button>
+                  </div>
+                </>
               )}
-              <EmptySpaceItem Icon={Star} title="Star us on GitHub" href="https://github.com/makeplane" />
-              <EmptySpaceItem
-                Icon={Share2}
-                title="Join our community of active creators"
-                href="https://forum.plane.so"
-              />
-            </EmptySpace>
-          )
-        ) : (
-          <div className="flex h-full w-full items-center justify-center">
-            <LogoSpinner />
-          </div>
-        )}
+            </>
+          ) : (
+            <p>Chưa đọc được lời mời. Hãy tải lại trang.</p>
+          )}
+          {wallet && (
+            <div className="space-y-2">
+              <p className="text-body-sm-regular break-all">Ví của bạn: {wallet}</p>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  void copyTextToClipboard(wallet)
+                    .then(() => setMessage("Đã sao chép địa chỉ ví."))
+                    .catch(() => setMessage("Chưa sao chép được. Hãy sao chép địa chỉ ví hiển thị bên trên."));
+                }}
+              >
+                Sao chép địa chỉ ví
+              </Button>
+            </div>
+          )}
+          {message && (
+            <p role="status" aria-live="polite" className="text-body-sm-regular text-secondary">
+              {message}
+            </p>
+          )}
+        </main>
       </div>
     </AuthenticationWrapper>
   );

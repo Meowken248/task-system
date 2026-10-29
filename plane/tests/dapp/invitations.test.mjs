@@ -8,7 +8,7 @@ import {
   isInvitationTokenExpired,
 } from "../../packages/services/src/dapp/invitation-tokens.ts";
 import { validateInvitation, withInvitationLock } from "../../packages/services/src/dapp/invitation-policy.ts";
-import { localDB, defaultDB, getUserWorkspaces } from "../../packages/services/src/dapp/store.ts";
+import { localDB, defaultDB, getUserWorkspaces, getLoggedInUserId, getLoggedInEmail, isLoggedIn, setLoggedInUser } from "../../packages/services/src/dapp/store.ts";
 import { handleRoute } from "../../packages/services/src/dapp/routes.ts";
 import { respondToWorkspaceInvitation } from "../../packages/services/src/dapp/workspace-invitations.ts";
 import {
@@ -20,6 +20,7 @@ import {
   setDirtyState,
   getIsDirtyState,
   commitWorkspaceCID,
+  applyOffchainDB,
 } from "../../packages/services/src/dapp/chain.ts";
 
 const actor = "0x1111111111111111111111111111111111111111";
@@ -247,6 +248,142 @@ test("GET link has no membership or acceptance side effects", async () => {
   assert.equal(localDB.invitations[0].accepted, false);
   assert.equal(localDB.workspace_members.length, 0);
   assert.equal(sent, 0);
+});
+
+test("explicit sign-out cannot be undone by a still-connected wallet and preserves offline data", () => {
+  localStorage.setItem("offline-fixture", "pending-edit");
+  sessionStorage.setItem("ipfs_fixture", "published-cache");
+  setLoggedInUser(null);
+  // The Wallet Center can rediscover the active Vault wallet after signing out.
+  sessionStorage.setItem("plane_active_wallet_address", actor);
+  localStorage.setItem("plane_active_wallet_address", actor);
+  assert.equal(getLoggedInUserId(), null);
+  assert.equal(getLoggedInEmail(), null);
+  assert.equal(isLoggedIn(), false);
+  assert.equal(localStorage.getItem("offline-fixture"), "pending-edit");
+  assert.equal(sessionStorage.getItem("ipfs_fixture"), "published-cache");
+  setLoggedInUser("recipient");
+  sessionStorage.setItem("plane_dapp_auth_email", invitation.email);
+  assert.equal(isLoggedIn(), true);
+  assert.equal(getLoggedInUserId(), "recipient");
+});
+
+test("a fresh receiver resolves the published workspace before a legacy placeholder", async () => {
+  const placeholder = { id: `workspace-${slug}`, slug, name: "Legacy placeholder" };
+  localDB.workspaces = [placeholder];
+  snapshot.workspaces.unshift(placeholder);
+  snapshot.removed_members = { [placeholder.id]: [invitation.email] };
+  localDB.removed_members = structuredClone(snapshot.removed_members);
+  // Earlier versions propagated the placeholder's markers to every alias.
+  localDB.removed_members[slug] = [invitation.email];
+  localDB.removed_members[`id-${slug}`] = [invitation.email];
+  const result = await respondToWorkspaceInvitation("get", slug, "invite", {}, invitation.token);
+  assert.equal(result.status, 200);
+  assert.equal(result.data.workspace.id, `id-${slug}`);
+  assert.equal(localDB.workspace_members.length, 0);
+  assert.equal(sent, 0);
+  const accepted = await respond();
+  assert.equal(accepted.status, 200);
+  assert.equal(localDB.workspace_members[0].workspace_id, `id-${slug}`);
+  assert.equal(localDB.removed_members[slug].includes(invitation.email), false);
+  assert.equal(localDB.removed_members[`id-${slug}`].includes(invitation.email), false);
+  applyOffchainDB(structuredClone(snapshot));
+  assert.equal(localDB.workspace_members.length, 1, "later hydration must not propagate the legacy ban again");
+  assert.equal(localDB.removed_members[slug].includes(invitation.email), false);
+});
+
+test("legacy invitation removal is still enforced for its actual workspace", async () => {
+  const placeholder = { id: `workspace-${slug}`, slug, name: "Legacy workspace" };
+  snapshot.workspaces.unshift(placeholder);
+  snapshot.invitations[0].workspace = placeholder;
+  snapshot.invitations[0].workspace_id = placeholder.id;
+  snapshot.removed_members = { [placeholder.id]: [invitation.email] };
+  const result = await respondToWorkspaceInvitation("get", slug, "invite", {}, invitation.token);
+  assert.equal(result.status, 410);
+  assert.equal(result.data.code, "MEMBER_REMOVED");
+  assert.equal(sent, 0);
+});
+
+test("published re-invitation supersedes stale email bans but not exact id or token revocations", async () => {
+  localDB._deleted_invitation_ids = [invitation.email, `ws:${slug}|email:${invitation.email}`];
+  assert.equal((await respondToWorkspaceInvitation("get", slug, "invite", {}, invitation.token)).status, 200);
+  assert.equal((await respond()).status, 200);
+  assert.equal(getUserWorkspaces("recipient", invitation.email).length, 1);
+  localDB._deleted_invitation_ids.push(invitation.id);
+  assert.equal((await respondToWorkspaceInvitation("get", slug, "invite", {}, invitation.token)).status, 410);
+  localDB._deleted_invitation_ids = [invitation.token];
+  assert.equal((await respondToWorkspaceInvitation("get", slug, "invite", {}, invitation.token)).status, 410);
+});
+
+test("a published email ban still revokes the invitation", async () => {
+  snapshot._deleted_invitation_ids = [`ws:${slug}|email:${invitation.email}`];
+  assert.equal((await respond()).status, 410);
+  assert.equal(sent, 0);
+});
+
+test("a missing source without a cached invitation is unavailable, not an expired link", async () => {
+  failRpc = true;
+  localDB.invitations = [];
+  const result = await respondToWorkspaceInvitation("get", slug, "invite", {}, invitation.token);
+  assert.equal(result.status, 503);
+  assert.equal(result.data.code, "INVITATION_SOURCE_UNAVAILABLE");
+});
+
+test("anonymous email-only link exposes pending wallet approval without granting membership", async () => {
+  delete snapshot.invitations[0].wallet_address;
+  sessionStorage.clear();
+  const result = await respondToWorkspaceInvitation("get", slug, "invite", {}, invitation.token);
+  assert.equal(result.status, 200);
+  assert.equal(result.data.wallet_approval_required, true);
+  assert.equal(result.data.source_verified, true);
+  assert.equal(result.data.accepted, false);
+  assert.equal(result.data.token, undefined);
+  assert.equal(sent, 0);
+});
+
+test("first admin wallet approval preserves the email link and waits for publication", async () => {
+  role = 3;
+  delete localDB.invitations[0].wallet_address;
+  localDB.invitations[0].wallet_approval_required = true;
+  const originalToken = invitation.token;
+  const result = await handleRoute("patch", `/api/workspaces/${slug}/invitations/invite/`, { wallet_address: actor });
+  assert.equal(result.status, 200);
+  assert.equal(result.data.token, originalToken);
+  assert.equal(result.data.wallet_approval_required, false);
+  assert.equal(result.data.wallet_address, actor);
+  assert.equal(snapshot.invitations[0].token, originalToken);
+  assert.equal(pending.role, 1);
+  assert.equal(cid, publishedCid);
+  assert.equal(mailed, 0);
+  assert.equal(localDB.workspace_members.length, 0);
+  role = 0;
+  assert.equal((await respond()).status, 200);
+});
+
+test("failed first approval stays pending and retry keeps the original token", async () => {
+  role = 3;
+  legacyRegistry = true;
+  delete localDB.invitations[0].wallet_address;
+  localDB.invitations[0].wallet_approval_required = true;
+  const update = () => handleRoute("patch", `/api/workspaces/${slug}/invitations/invite/`, { wallet_address: actor });
+  assert.equal((await update()).status, 503);
+  assert.equal(localDB.invitations[0].token, invitation.token);
+  legacyRegistry = false;
+  assert.equal((await update()).status, 200);
+  assert.equal(localDB.invitations[0].token, invitation.token);
+  assert.equal(mailed, 0);
+});
+
+test("wallet replacement rotates the link and a member cannot approve a wallet", async () => {
+  role = 1;
+  const url = `/api/workspaces/${slug}/invitations/invite/`;
+  const body = { wallet_address: "0x4444444444444444444444444444444444444444" };
+  assert.equal((await handleRoute("patch", url, body)).status, 403);
+  assert.equal(sent, 0);
+  role = 3;
+  const result = await handleRoute("patch", url, body);
+  assert.equal(result.status, 200);
+  assert.notEqual(result.data.token, invitation.token);
 });
 test("bulk and single acceptance reject a different email", async () => {
   sessionStorage.setItem("plane_dapp_auth_email", "wrong@example.invalid");

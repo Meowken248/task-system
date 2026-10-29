@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { initDAppDB, resolveDBConflict } from "@plane/services";
 
-export function DbBootstrap() {
+export function DbBootstrap({ nonBlocking = false }: { nonBlocking?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ cid: string, ipfsDB: any } | null>(null);
@@ -58,6 +58,11 @@ export function DbBootstrap() {
       setLoading(false);
     }
   };
+
+  // Account entry and invitation pages handle their own loading/retry states.
+  // Continue recovery in the background without blocking forms with a workspace
+  // database overlay. Keep conflict choices explicit when opening a workspace.
+  if (nonBlocking) return null;
 
   if (error) {
     return (

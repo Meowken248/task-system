@@ -102,6 +102,7 @@ export const defaultDB: DAppDatabase = {
 // ── Auth state (persisted in localStorage and sessionStorage) ─────────────────
 export function getLoggedInUserId(): string | null {
   if (typeof window === "undefined") return null;
+  if (sessionStorage.getItem("plane_dapp_signed_out") === "1") return null;
   const email = getLoggedInEmail();
   if (email) {
     const cleanMail = email.toLowerCase().trim();
@@ -129,10 +130,12 @@ export function getLoggedInUserId(): string | null {
 
 export function getLoggedInEmail(): string | null {
   if (typeof window === "undefined") return null;
+  if (sessionStorage.getItem("plane_dapp_signed_out") === "1") return null;
   return sessionStorage.getItem("plane_dapp_auth_email") || localStorage.getItem("plane_dapp_auth_email");
 }
 
 export function isLoggedIn(): boolean {
+  if (typeof window !== "undefined" && sessionStorage.getItem("plane_dapp_signed_out") === "1") return false;
   if (getLoggedInUserId()) return true;
   if (getLoggedInEmail()) return true;
   if (typeof window !== "undefined") {
@@ -145,9 +148,13 @@ export function isLoggedIn(): boolean {
 export function setLoggedInUser(userId: string | null): void {
   if (typeof window === "undefined") return;
   if (userId) {
+    sessionStorage.removeItem("plane_dapp_signed_out");
     sessionStorage.setItem("plane_dapp_auth_user", userId);
     localStorage.setItem("plane_dapp_auth_user", userId);
   } else {
+    // A connected Vault is not consent to sign back into the account the user
+    // just left. Only an explicit successful login clears this tab's marker.
+    sessionStorage.setItem("plane_dapp_signed_out", "1");
     sessionStorage.removeItem("plane_dapp_auth_user");
     localStorage.removeItem("plane_dapp_auth_user");
     sessionStorage.removeItem("plane_dapp_auth_email");

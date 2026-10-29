@@ -19,6 +19,7 @@ import { WorkspaceService } from "@/services/workspace.service";
 type TAuthHeader = {
   workspaceSlug: string | undefined;
   invitationId: string | undefined;
+  invitationToken?: string;
   invitationEmail: string | undefined;
   authMode: EAuthModes;
   currentAuthStep: EAuthSteps;
@@ -58,13 +59,13 @@ const Titles = {
 const workSpaceService = new WorkspaceService();
 
 export const AuthHeader = observer(function AuthHeader(props: TAuthHeader) {
-  const { workspaceSlug, invitationId, invitationEmail, authMode, currentAuthStep } = props;
+  const { workspaceSlug, invitationId, invitationToken, invitationEmail, authMode, currentAuthStep } = props;
   // plane imports
   const { t } = useTranslation();
 
   const { data: invitation, isLoading } = useSWR(
-    workspaceSlug && invitationId ? `WORKSPACE_INVITATION_${workspaceSlug}_${invitationId}` : null,
-    async () => workspaceSlug && invitationId && workSpaceService.getWorkspaceInvitation(workspaceSlug, invitationId),
+    workspaceSlug && invitationId ? ["AUTH_WORKSPACE_INVITATION", workspaceSlug, invitationId, invitationToken] : null,
+    async () => workspaceSlug && invitationId && workSpaceService.getWorkspaceInvitation(workspaceSlug, invitationId, invitationToken),
     {
       revalidateOnFocus: false,
       shouldRetryOnError: false,

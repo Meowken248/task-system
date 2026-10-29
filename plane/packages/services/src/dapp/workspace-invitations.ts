@@ -24,6 +24,8 @@ import {
   getStoredWalletAddress,
 } from "./chain";
 import { validateInvitation, withInvitationLock } from "./invitation-policy";
+import { resolveInvitationWorkspace } from "./invitation-workspace";
+import { effectiveInvitationTombstones } from "./invitation-tombstones";
 
 const memberRoles = new Set([1, 2, 3]);
 const invitationFailure = (status: number, code: string, error: string): RouteResult => ({
@@ -51,7 +53,10 @@ export function respondToWorkspaceInvitation(
       return fail(400, "INVALID_RESPONSE", "Vui lòng chọn chấp nhận hoặc từ chối lời mời.");
     const token = typeof body.token === "string" ? body.token : queryToken;
     const chain = await readWorkspaceSnapshotFromChain(wsSlug, invitationId, token);
-    let ws = findLocalWorkspace(wsSlug) || buildWorkspaceFromChainSnapshot(chain, wsSlug);
+    let ws =
+      (chain.available ? buildWorkspaceFromChainSnapshot(chain, wsSlug) : null) ||
+      findLocalWorkspace(wsSlug) ||
+      buildWorkspaceFromChainSnapshot(chain, wsSlug);
     if (!ws)
       return fail(
         chain.available ? 404 : 503,
@@ -65,7 +70,7 @@ export function respondToWorkspaceInvitation(
     const cached = [...(localDB.invitations || []), ...getStoredInvitations()].find(matches);
     // Never synthesise a record from URL claims, even when IPFS/RPC is down.
     // On mutation require the latest shared snapshot to observe remote revocation.
-    if (method === "post" && !chain.available)
+    if (!chain.available && (method === "post" || !cached))
       return fail(
         503,
         "INVITATION_SOURCE_UNAVAILABLE",
@@ -84,7 +89,11 @@ export function respondToWorkspaceInvitation(
       checkRecipient: method === "post",
     });
     if (invalid) return fail(invalid.status, invalid.code, invalid.error);
-    const deleted = new Set([...readInvitationTombstones(), ...(chain.snapshot?._deleted_invitation_ids || [])]);
+    const deleted = effectiveInvitationTombstones(
+      inv,
+      readInvitationTombstones(),
+      chain.available ? chain.snapshot?._deleted_invitation_ids || [] : undefined
+    );
     if (isInvitationDeleted(inv, deleted)) return fail(410, "INVITATION_REVOKED", "Lời mời đã bị thu hồi.");
     const invEmail = String(inv.email || "")
       .toLowerCase()
@@ -92,10 +101,9 @@ export function respondToWorkspaceInvitation(
     const invWallet = String(inv.wallet_address || (/^0x[a-f0-9]{40}$/i.test(invEmail) ? invEmail : "")).toLowerCase();
     const removed = new Set(
       keys
-        .flatMap((key) => [
-          ...(localDB.removed_members?.[key] || []),
-          ...(chain.snapshot?.removed_members?.[key] || []),
-        ])
+        .flatMap(
+          (key) => (chain.available ? chain.snapshot?.removed_members?.[key] : localDB.removed_members?.[key]) || []
+        )
         .map((value: any) => String(value).toLowerCase().trim())
     );
     if ([invEmail, invWallet, invitationId.toLowerCase()].filter(Boolean).some((value) => removed.has(value)))
@@ -110,6 +118,9 @@ export function respondToWorkspaceInvitation(
       id: inv.id,
       email: inv.email,
       role: inv.role,
+      wallet_address: invWallet,
+      wallet_approval_required: !invWallet || Boolean(inv.wallet_approval_required || inv.chain_approval_failed),
+      source_verified: chain.available,
       // The in-app path authenticates by account; do not expose the stored secret.
       accepted: confirmedForViewer,
       responded_at: confirmedForViewer ? inv.responded_at || new Date().toISOString() : null,
@@ -131,7 +142,7 @@ export function respondToWorkspaceInvitation(
         return fail(
           409,
           "WALLET_APPROVAL_REQUIRED",
-          `Quản trị viên chưa xác nhận ví nhận lời mời. Hãy gửi địa chỉ ${requestedWallet} cho quản trị viên để cập nhật lời mời, rồi mở lại liên kết mới.`
+          `Quản trị viên chưa xác nhận ví nhận lời mời. Hãy gửi địa chỉ ${requestedWallet} cho quản trị viên để xác nhận, rồi kiểm tra lại lời mời.`
         );
       const recipientError = validateInvitation(inv, {
         id: invitationId,
@@ -174,10 +185,11 @@ export function respondToWorkspaceInvitation(
           email,
           wallet: signer,
         });
-        const latestDeleted = new Set([
-          ...(latest.snapshot?._deleted_invitation_ids || []),
-          ...readInvitationTombstones(),
-        ]);
+        const latestDeleted = effectiveInvitationTombstones(
+          latest.invitation,
+          readInvitationTombstones(),
+          latest.snapshot?._deleted_invitation_ids || []
+        );
         const latestRemoved = new Set(
           keys
             .flatMap((key) => latest.snapshot?.removed_members?.[key] || [])
@@ -196,7 +208,7 @@ export function respondToWorkspaceInvitation(
         // Apply only the shared source checked above. Restore the existing
         // signed-in user's profile; a snapshot must never switch accounts.
         if (latest.snapshot) applyOffchainDB(latest.snapshot);
-        ws = findLocalWorkspace(wsSlug) || ws;
+        ws = buildWorkspaceFromChainSnapshot(latest, wsSlug) || ws;
         if (!(localDB.workspaces || []).some((entry: any) => entry.id === ws.id)) localDB.workspaces.push(ws);
         const profileIndex = (localDB.users || []).findIndex((entry: any) => entry.id === user.id);
         if (profileIndex < 0) localDB.users.push(user);
@@ -211,6 +223,18 @@ export function respondToWorkspaceInvitation(
           role: memberRole,
           verifiedOnChain: true,
         });
+        // A verified rejoin supersedes this device's old removal markers. Keep
+        // invitation-id/token revocations and every other person's markers.
+        const joinedKeys = new Set([...keys, ...getInvitationWorkspaceKeys(latest.invitation)]);
+        const joinedIdentifiers = new Set(
+          [email, signer, user.id, invitationId].map((value) => String(value).toLowerCase())
+        );
+        for (const key of joinedKeys) {
+          if (localDB.removed_members?.[key])
+            localDB.removed_members[key] = localDB.removed_members[key].filter(
+              (value: string) => !joinedIdentifiers.has(String(value).toLowerCase().trim())
+            );
+        }
         const activeUser = localDB.users.find((entry: any) => entry.id === user.id);
         Object.assign(activeUser, {
           last_workspace_id: ws.id,
@@ -367,17 +391,7 @@ export function findLocalWorkspace(slugOrId: string | null | undefined): any | n
     .toLowerCase()
     .trim();
   if (!key) return null;
-  return (
-    (localDB.workspaces || []).find(
-      (w: any) =>
-        String(w?.slug || "")
-          .toLowerCase()
-          .trim() === key ||
-        String(w?.id || "")
-          .toLowerCase()
-          .trim() === key
-    ) || null
-  );
+  return resolveInvitationWorkspace(localDB.workspaces || [], key);
 }
 
 /**
@@ -395,16 +409,11 @@ export function buildWorkspaceFromChainSnapshot(chain: ChainWorkspaceSnapshot, w
   if (!slug) return null;
 
   const snapshotWorkspaces = chain.snapshot?.workspaces;
-  const fromSnapshot =
-    (Array.isArray(snapshotWorkspaces) ? snapshotWorkspaces : []).find(
-      (w: any) =>
-        String(w?.slug || "")
-          .toLowerCase()
-          .trim() === slug ||
-        String(w?.id || "")
-          .toLowerCase()
-          .trim() === slug
-    ) || null;
+  const fromSnapshot = resolveInvitationWorkspace(
+    Array.isArray(snapshotWorkspaces) ? snapshotWorkspaces : [],
+    slug,
+    chain.invitation
+  );
   if (fromSnapshot) return { ...fromSnapshot };
 
   if (!chain.registered && !chain.name) return null;
