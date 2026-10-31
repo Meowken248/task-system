@@ -137,7 +137,7 @@ export class IssueAttachmentService extends APIService {
     const allAttachments = localDB.attachments || [];
     const target = allAttachments.find((a: any) => a.id === assetId || a.asset === assetId);
     if (!target || (target.issue || target.issue_id) !== issueId ||
-      (access.role < 20 && target.created_by !== access.user.id))
+      (access.projectRole < 20 && target.created_by !== access.user.id))
       throw new Error("Bạn không có quyền xóa tệp này.");
     await deleteAttachment(assetId);
     if (target?.id && target.id !== assetId) await deleteAttachment(target.id);

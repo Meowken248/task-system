@@ -322,3 +322,35 @@ test("the issue attachment API cannot return a different issue's attachment id",
   localDB.attachments = [{ id: "foreign-attachment", issue: "issue-b", workspace: "ws-b", project: "project-b" }];
   assert.equal((await handleRoute("get", "/api/workspaces/team-a/projects/project-a/issues/issue-a/attachments/foreign-attachment/", {})).status, 404);
 });
+
+test("workspace Admin can upload despite a lower cached project role", async () => {
+  chainRole = 2;
+  localDB.project_members = [{ project: "project-a", member: "user-a", role: 5 }];
+  const result = await handleRoute("post", "/api/assets/v2/workspaces/team-a/projects/project-a/", { entity_type: "ISSUE_DESCRIPTION", entity_identifier: "issue-a" });
+  assert.equal(result.status, 200);
+});
+
+test("a private project creator can use issue metadata before a separate project-member row exists", async () => {
+  chainRole = 1;
+  localDB.projects[0].network = 0;
+  localDB.projects[0].created_by = "user-a";
+  assert.equal((await issueMeta()).status, 200);
+});
+
+test("a project Admin may upload a project cover but may not change the workspace logo", async () => {
+  chainRole = 1;
+  localDB.project_members = [{ project: "project-a", member: "user-a", role: 20 }];
+  const cover = await handleRoute("post", "/api/assets/v2/workspaces/team-a/projects/project-a/", { entity_type: "PROJECT_COVER", entity_identifier: "project-a" });
+  assert.equal(cover.status, 200);
+  const logo = await handleRoute("post", "/api/assets/v2/workspaces/team-a/", { entity_type: "WORKSPACE_LOGO", entity_identifier: "ws-a" });
+  assert.equal(logo.status, 403);
+});
+
+test("project Guest remains read-only and a zero-role row cannot open a private project", async () => {
+  chainRole = 1;
+  localDB.project_members = [{ project: "project-a", member: "user-a", role: 5 }];
+  assert.equal((await handleRoute("post", "/api/assets/v2/workspaces/team-a/projects/project-a/", { entity_type: "ISSUE_DESCRIPTION" })).status, 403);
+  localDB.projects[0].network = 0;
+  localDB.project_members[0].role = 0;
+  assert.equal((await issueMeta()).status, 403);
+});

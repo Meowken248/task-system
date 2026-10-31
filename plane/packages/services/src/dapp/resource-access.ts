@@ -89,14 +89,22 @@ export async function requireProjectAccess(workspaceKey: string, projectKey: str
   const project = resourceProject(access.workspace, projectKey);
   const wallet = normalized(getStoredWalletAddress());
   const member = (localDB.project_members || []).find((entry: any) =>
-    (entry.project || entry.project_id) === project.id && entry.is_active !== false &&
+    (entry.project || entry.project_id) === project.id && entry.is_active !== false && Number(entry.role) !== 0 &&
     (wallet ? normalized(entry.wallet_address || entry.member?.metanode_wallet_address || entry.member) === wallet ||
       ((entry.member?.id || entry.member) === access.user.id && normalized(access.user.metanode_wallet_address || access.user.wallet_address) === wallet)
       : (entry.member?.id || entry.member) === access.user.id)
   );
-  if (access.role < 20 && project.network === 0 && !member) throw deny();
-  if (write && (access.role < 15 || (member && Number(member.role) < 15))) throw deny();
-  return { ...access, project };
+  const creator = project.created_by || project.owner?.id || project.owner;
+  const profileMatchesWallet = !wallet || normalized(access.user.metanode_wallet_address || access.user.wallet_address) === wallet;
+  const isCreator = Boolean((wallet && normalized(creator) === wallet) || (profileMatchesWallet && creator === access.user.id));
+  if (access.role < 20 && project.network === 0 && !member && !isCreator) throw deny();
+  // Workspace Admin wins over stale project rows. A workspace guest cannot
+  // gain write access merely because a cached project row claims Admin.
+  const projectRole = access.role >= 20 ? 20 : access.role >= 15
+    ? isCreator ? 20 : Number(member?.role) || 15
+    : Math.min(access.role, Number(member?.role) || access.role);
+  if (write && projectRole < 15) throw deny();
+  return { ...access, project, projectRole };
 }
 
 export async function requireIssueAccess(workspaceKey: string, projectKey: string, issueKey: string, write = false) {

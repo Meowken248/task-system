@@ -49,9 +49,13 @@ async function authorizeScope(record: any, pathname: string, write: boolean, use
   if (wsPath && resourceWorkspace(decodeURIComponent(wsPath)).id !== workspace.id) throw forbidden();
   const project = scope.project ? resourceProject(workspace, scope.project) : undefined;
   if (projectPath && (!project || resourceProject(workspace, decodeURIComponent(projectPath)).id !== project.id)) throw forbidden();
-  const access = project ? await requireProjectAccess(workspace.slug, project.id, write) : await requireWorkspaceAccess(workspace.slug);
-  if (write && access.role < 15) throw forbidden();
-  if (write && ["WORKSPACE_LOGO", "PROJECT_COVER"].includes(record.entity_type) && access.role < 20) throw forbidden();
+  // Workspace settings never inherit the administrator role of a project.
+  if (record.entity_type === "WORKSPACE_LOGO" && project) throw forbidden();
+  const role = project
+    ? (await requireProjectAccess(workspace.slug, project.id, write)).projectRole
+    : (await requireWorkspaceAccess(workspace.slug)).role;
+  if (write && role < 15) throw forbidden();
+  if (write && ["WORKSPACE_LOGO", "PROJECT_COVER"].includes(record.entity_type) && role < 20) throw forbidden();
   // Existing entities may not be rebound to a project/workspace supplied by the caller.
   const entity = record.entity_identifier;
   if (record.entity_type === "WORKSPACE_LOGO" && resourceWorkspace(entity).id !== workspace.id) throw forbidden();
@@ -64,7 +68,7 @@ async function authorizeScope(record: any, pathname: string, write: boolean, use
     const parentProject = parent.project || parent.project_id;
     if (parentProject && resourceProject(workspace, parentProject).id !== project?.id) throw forbidden();
   }
-  return { role: access.role, workspace: workspace.id, project: project?.id };
+  return { role, workspace: workspace.id, project: project?.id };
 }
 
 async function authorizeAsset(id: string, pathname: string, method: string, user: any) {
