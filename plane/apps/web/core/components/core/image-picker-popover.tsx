@@ -301,9 +301,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                   {fiaiSDK ? (
                     <div className="flex h-full w-full flex-col items-center justify-center gap-y-6 px-4">
                       <p className="text-center text-14 text-secondary">
-                        Metanode File Processor is active.
-                        <br />
-                        Click below to select and upload a file securely.
+                        Select an image to upload.
                       </p>
                       <Button
                         variant="primary"
@@ -369,7 +367,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                           input.click();
                         }}
                       >
-                        {isImageUploading ? "Uploading..." : "Upload via Metanode"}
+                        {isImageUploading ? "Uploading..." : "Upload image"}
                       </Button>
                     </div>
                   ) : (

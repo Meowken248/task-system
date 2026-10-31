@@ -7,7 +7,7 @@
 import type { AxiosRequestConfig } from "axios";
 // plane types
 import { API_BASE_URL } from "@plane/constants";
-import { getFileMetaDataForUpload, generateFileUploadPayload, FileUploadService } from "@plane/services";
+import { getFileMetaDataForUpload, generateFileUploadPayload, FileUploadService, localDB } from "@plane/services";
 import type { EFileAssetType, TFileEntityInfo, TFileSignedURLResponse } from "@plane/types";
 import { getAssetIdFromUrl } from "@plane/utils";
 // helpers
@@ -84,9 +84,9 @@ export class FileService extends APIService {
       );
       if (!content?.asset_url) throw new Error("Chưa lưu được nội dung tệp.");
       checkCancelled();
-      const confirmed = await this.patch(`${path}${initialized.asset_id}/`);
+      const confirmed = await this.patch(`${path}${initialized.asset_id}/`, content.ipfs_cid ? { ipfs_cid: content.ipfs_cid } : undefined);
       if (!confirmed.data?.is_uploaded) throw new Error("Chưa xác nhận được tệp đã lưu.");
-      return { ...initialized, asset_url: content.asset_url };
+      return { ...initialized, asset_url: confirmed.data.asset_url || content.asset_url };
     } catch (error) {
       const failure = error as { response?: { data?: unknown } };
       throw failure?.response?.data || error;
@@ -175,6 +175,8 @@ export class FileService extends APIService {
   }
 
   async deleteOldWorkspaceAsset(workspaceId: string, src: string): Promise<any> {
+    const pinned = (localDB.assets || []).find((asset: any) => asset.storage === "ipfs" && asset.asset_url === src && asset.workspace === workspaceId);
+    if (pinned) return this.deleteWorkspaceAsset(workspaceId, pinned.id);
     const assetKey = getAssetIdFromUrl(src);
     return this.delete(`/api/workspaces/file-assets/${workspaceId}/${assetKey}/`)
       .then((response) => response?.status)
@@ -184,6 +186,8 @@ export class FileService extends APIService {
   }
 
   async deleteOldUserAsset(src: string): Promise<any> {
+    const pinned = (localDB.assets || []).find((asset: any) => asset.storage === "ipfs" && asset.user_asset && asset.asset_url === src);
+    if (pinned) return this.deleteUserAsset(pinned.id);
     const assetKey = getAssetIdFromUrl(src);
     return this.delete(`/api/users/file-assets/${assetKey}/`)
       .then((response) => response?.status)

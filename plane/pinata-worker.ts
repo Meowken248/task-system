@@ -1,5 +1,6 @@
 /** Storage proxy. Deployment secrets remain in Worker environment bindings. */
 import type { ExecutionContext } from "@cloudflare/workers-types";
+import { MAX_PRESENTATION_IMAGE_BYTES, presentationImageMime } from "./packages/services/src/file/image-policy";
 
 export interface Env {
   PINATA_JWT: string;
@@ -31,7 +32,7 @@ const bounded = (raw: string | undefined, fallback: number, min: number, max: nu
 const json = (status: number, value: Record<string, unknown>, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(value), { status, headers: { ...cors, "Content-Type": "application/json", ...extra } });
 
-async function readBoundedJson(request: Request, limit: number, signal: AbortSignal): Promise<Record<string, unknown>> {
+async function readBoundedBody(request: Request, limit: number, signal: AbortSignal): Promise<Uint8Array> {
   const declared = request.headers.get("Content-Length");
   if (declared && Number(declared) > limit) throw new StorageProxyError(413, "STORAGE_TOO_LARGE");
   if (!request.body) throw new StorageProxyError(400, "STORAGE_INVALID_REQUEST");
@@ -65,6 +66,11 @@ async function readBoundedJson(request: Request, limit: number, signal: AbortSig
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return bytes;
+}
+
+async function readBoundedJson(request: Request, limit: number, signal: AbortSignal): Promise<Record<string, unknown>> {
+  const bytes = await readBoundedBody(request, limit, signal);
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder().decode(bytes));
@@ -97,13 +103,38 @@ export default {
         }, timeoutMs);
       });
       const operation = (async () => {
-        const content = await readBoundedJson(request, maxBytes, controller.signal);
-        const response = await fetch("https://api.pinata.cloud/pinning/pinJSONToIPFS", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.PINATA_JWT}` },
-          body: JSON.stringify({ pinataContent: content, pinataMetadata: { name: "OffchainDataRegistry_Upload" } }),
-          signal: controller.signal,
-        });
+        const multipart = request.headers.get("Content-Type")?.toLowerCase().startsWith("multipart/form-data;");
+        let response: Response;
+        if (multipart) {
+          const bytes = await readBoundedBody(request, MAX_PRESENTATION_IMAGE_BYTES + 64 * 1024, controller.signal);
+          let form: FormData;
+          try {
+            form = await new Response(bytes.buffer as ArrayBuffer, { headers: { "Content-Type": request.headers.get("Content-Type")! } }).formData();
+          } catch { throw new StorageProxyError(400, "STORAGE_INVALID_REQUEST"); }
+          const image = form.get("file");
+          if (!image || typeof image === "string" || form.getAll("file").length !== 1 || !image.size)
+            throw new StorageProxyError(400, "STORAGE_INVALID_IMAGE");
+          if (image.size > MAX_PRESENTATION_IMAGE_BYTES) throw new StorageProxyError(413, "STORAGE_TOO_LARGE");
+          const mime = presentationImageMime(new Uint8Array(await image.slice(0, 12).arrayBuffer()));
+          if (!mime || (image.type && image.type.replace("image/jpg", "image/jpeg") !== mime))
+            throw new StorageProxyError(400, "STORAGE_INVALID_IMAGE");
+          const payload = new FormData();
+          const name = image.name.replace(/[^\p{L}\p{N}._ -]/gu, "_").slice(0, 128) || "image";
+          payload.append("file", new Blob([await image.arrayBuffer()], { type: mime }), name);
+          payload.append("pinataMetadata", JSON.stringify({ name }));
+          response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
+            method: "POST", headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
+            body: payload, signal: controller.signal,
+          });
+        } else {
+          const content = await readBoundedJson(request, maxBytes, controller.signal);
+          response = await fetch("https://api.pinata.cloud/pinning/pinJSONToIPFS", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.PINATA_JWT}` },
+            body: JSON.stringify({ pinataContent: content, pinataMetadata: { name: "OffchainDataRegistry_Upload" } }),
+            signal: controller.signal,
+          });
+        }
         if (response.status === 401 || response.status === 403)
           return json(503, {
             code: "STORAGE_UPSTREAM_AUTH",

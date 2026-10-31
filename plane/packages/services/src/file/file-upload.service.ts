@@ -8,6 +8,7 @@ import type { AxiosRequestConfig, AxiosProgressEvent } from "axios";
 // api service
 import { APIService } from "../api.service";
 import { saveAttachment } from "./attachment-storage";
+import { pinPresentationImage } from "./ipfs-image";
 
 /**
  * Converts a File object to a Base64 string (without the data URL prefix)
@@ -69,7 +70,7 @@ async function computeSha256(file: File): Promise<string> {
  * @extends {APIService}
  */
 export class FileUploadService extends APIService {
-  private operations = new Set<{ cancelled: boolean }>();
+  private operations = new Set<{ cancelled: boolean; controller: AbortController }>();
 
   constructor() {
     super("");
@@ -90,7 +91,7 @@ export class FileUploadService extends APIService {
     if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
       throw new Error("No file found in FormData under 'asset' or 'file' key");
     }
-    const operation = { cancelled: false };
+    const operation = { cancelled: false, controller: new AbortController() };
     this.operations.add(operation);
     const checkCancelled = () => {
       if (operation.cancelled) throw new Error("Đã hủy upload tệp.");
@@ -105,6 +106,13 @@ export class FileUploadService extends APIService {
       } as AxiosProgressEvent);
     try {
       progress(0);
+      if (data.get("storage") === "ipfs") {
+        const result = await pinPresentationImage(file, operation.controller.signal);
+        checkCancelled();
+        progress(1);
+        const id = data.get("asset_id") || data.get("key");
+        return { asset_id: id, id, asset_url: result.url, file_url: result.url, ipfs_cid: result.cid };
+      }
       const [base64Data, hash] = await Promise.all([fileToBase64(file), computeSha256(file)]);
       checkCancelled();
       progress(0.5);
@@ -147,6 +155,9 @@ export class FileUploadService extends APIService {
    * Cancels the upload
    */
   cancelUpload() {
-    for (const operation of this.operations) operation.cancelled = true;
+    for (const operation of this.operations) {
+      operation.cancelled = true;
+      operation.controller.abort();
+    }
   }
 }

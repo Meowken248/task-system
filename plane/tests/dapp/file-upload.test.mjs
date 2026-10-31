@@ -2,6 +2,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
 import { readFileSync } from "node:fs";
+import { imageIpfsFixture } from "./ipfs-image-fixture.mjs";
 import {
   saveAttachment,
   getAttachment,
@@ -14,6 +15,10 @@ import {
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith("@/app/assets/")) return {
+      url: "data:text/javascript," + encodeURIComponent(`export default ${JSON.stringify("/fixture-assets/" + specifier.slice("@/app/assets/".length).split("?")[0])}`),
+      shortCircuit: true,
+    };
     if (specifier.startsWith("@/"))
       return nextResolve(new URL(`../../apps/web/core/${specifier.slice(2)}.ts`, import.meta.url).href, context);
     return nextResolve(specifier, context);
@@ -31,9 +36,11 @@ registerHooks({
 });
 const { FileService } = await import("../../apps/web/core/services/file.service.ts");
 const { IssueAttachmentService } = await import("../../apps/web/core/services/issue/issue_attachment.service.ts");
+const { handleCoverImageChange, STATIC_COVER_IMAGES } = await import("../../apps/web/helpers/cover-image.helper.ts");
 const { EditorAssetStore } = await import("../../apps/web/core/store/editor/asset.store.ts");
 let failWrites = false;
 let failOpen = false;
+let ipfs;
 
 // Mock IndexedDB and browser globals for Node test environment
 class MockIDBRequest {
@@ -160,9 +167,8 @@ beforeEach(() => {
   globalThis.sessionStorage = globalThis.window.sessionStorage;
   globalThis.localStorage = globalThis.window.localStorage;
   globalThis.document = { cookie: "" };
-  globalThis.fetch = async () => {
-    throw new Error("Unexpected network call from local upload test");
-  };
+  ipfs = imageIpfsFixture();
+  globalThis.fetch = ipfs.fetch;
 
   localDB.users = [
     {
@@ -320,8 +326,8 @@ test("Full API lifecycle: POST init -> upload ingestion -> PATCH confirm -> GET 
 test("User Avatar upload lifecycle updates user avatar_url immediately", async () => {
   // 1. Init user asset
   const initRes = await handleRoute("post", "/api/assets/v2/user-assets/", {
-    name: "my-avatar.jpg",
-    type: "image/jpeg",
+    name: "my-avatar.png",
+    type: "image/png",
     size: 512,
     entity_type: "USER_AVATAR",
     entity_identifier: "user-1",
@@ -330,22 +336,19 @@ test("User Avatar upload lifecycle updates user avatar_url immediately", async (
   const assetId = initRes.data.asset_id;
 
   // 2. Upload avatar image
-  const avatarBase64 = "/9j/4AAQSkZJRgABAQEASABIAAD/";
-  await handleRoute("post", "/api/assets/v2/upload/", {
-    asset_id: assetId,
-    name: "my-avatar.jpg",
-    base64: avatarBase64,
-    type: "image/jpeg",
-    size: 20,
-  });
+  const form = new FormData();
+  form.append("storage", "ipfs");
+  form.append("asset_id", assetId);
+  form.append("file", png());
+  const pinned = await new FileUploadService().uploadFile("", form);
 
   // 3. Confirm avatar upload
-  const patchRes = await handleRoute("patch", `/api/assets/v2/user-assets/${assetId}/`, {});
+  const patchRes = await handleRoute("patch", `/api/assets/v2/user-assets/${assetId}/`, { ipfs_cid: pinned.ipfs_cid });
   assert.equal(patchRes.status, 200);
 
   // 4. Verify user avatar was updated
   const user = localDB.users.find((u) => u.id === "user-1");
-  assert.ok(user.avatar_url.startsWith("data:image/jpeg;base64,"));
+  assert.ok(user.avatar_url.startsWith("https://image-gateway.fixture/ipfs/"));
   assert.equal(user.avatar_url, user.avatar);
 });
 
@@ -452,12 +455,12 @@ test("missing upload bytes do not produce a fake success URL", async () => {
   assert.equal(response.data.success, undefined);
 });
 
-test("quota failures reject the web upload and never mark metadata as uploaded", async () => {
+test("quota failures reject a local editor upload and never mark metadata as uploaded", async () => {
   failWrites = true;
   await assert.rejects(
     new FileService().uploadWorkspaceAsset(
       "test-ws",
-      { entity_type: "WORKSPACE_LOGO", entity_identifier: "ws-1" },
+      { entity_type: "PAGE_DESCRIPTION" },
       png()
     ),
     /quota/
@@ -535,7 +538,7 @@ test("cover upload does not overwrite an existing user avatar", async () => {
   const avatar = await service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
   const cover = await service.uploadUserAsset(
     { entity_type: "USER_COVER" },
-    new File(["cover"], "cover.txt", { type: "text/plain" })
+    png()
   );
   assert.equal(localDB.users[0].avatar_url, avatar.asset_url);
   assert.equal(localDB.users[0].cover_image_url, cover.asset_url);
@@ -641,4 +644,74 @@ test("attachment API storage failure preserves bytes, metadata and issue count",
   assert.ok(await getAttachment(result.id));
   assert.equal(localDB.attachments.length, 1);
   assert.equal(localDB.issues[0].attachment_count, 1);
+});
+
+test("avatar, profile cover and workspace logo use real IPFS URLs without storing image bytes locally", async () => {
+  failOpen = true;
+  const service = new FileService();
+  const avatar = await service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
+  const cover = await service.uploadUserAsset({ entity_type: "USER_COVER" }, png());
+  const logo = await service.uploadWorkspaceAsset("test-ws", { entity_type: "WORKSPACE_LOGO", entity_identifier: "ws-1" }, png());
+  for (const result of [avatar, cover, logo]) assert(result.asset_url.startsWith("https://image-gateway.fixture/ipfs/"));
+  for (const result of [avatar, cover, logo]) assert.equal(mockDB.storage.has(result.asset_id), false);
+  for (const [key, value] of mockDB.storage) {
+    assert.equal(key.startsWith("plane_att_"), false);
+    assert.equal(String(value).includes("data:image/"), false, "metadata checkpoints contain references, not image bytes");
+  }
+  assert.equal(ipfs.requests.length, 3);
+  assert(localDB.assets.every((asset) => asset.storage === "ipfs" && asset.ipfs_cid && !asset.asset_url.startsWith("data:")));
+  assert.equal(localDB.users[0].avatar_url, avatar.asset_url);
+  assert.equal(localDB.users[0].cover_image_url, cover.asset_url);
+  assert.equal(localDB.workspaces[0].logo_url, logo.asset_url);
+});
+
+test("failed IPFS pinning preserves the previous avatar and does not confirm success", async () => {
+  localDB.users[0].avatar_url = "https://existing.fixture/old.png";
+  ipfs.failUpload = true;
+  await assert.rejects(new FileService().uploadUserAsset({ entity_type: "USER_AVATAR" }, png()), /IPFS/);
+  assert.equal(localDB.users[0].avatar_url, "https://existing.fixture/old.png");
+  assert(localDB.assets.every((asset) => asset.is_uploaded === false));
+});
+
+test("a non-image gateway response cannot replace the current profile image", async () => {
+  localDB.users[0].cover_image_url = "https://existing.fixture/cover.png";
+  ipfs.badGateway = true;
+  await assert.rejects(new FileService().uploadUserAsset({ entity_type: "USER_COVER" }, png()), /IPFS/);
+  assert.equal(localDB.users[0].cover_image_url, "https://existing.fixture/cover.png");
+});
+
+test("deleting an IPFS avatar dereferences it without depending on IndexedDB", async () => {
+  const service = new FileService();
+  const avatar = await service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
+  failOpen = true;
+  await service.deleteOldUserAsset(avatar.asset_url);
+  assert.equal(localDB.users[0].avatar_url, null);
+  assert.equal(localDB.assets.length, 0);
+});
+
+test("a preset profile cover is pinned even when the MetaNode SDK is present", async () => {
+  const jpeg = readFileSync(new URL("../../apps/web/app/assets/cover-images/image_1.jpg", import.meta.url));
+  const fixtureFetch = ipfs.fetch;
+  globalThis.fetch = (url, options) => url === STATIC_COVER_IMAGES.IMAGE_1
+    ? Promise.resolve(new Response(jpeg, { headers: { "Content-Type": "image/jpeg" } })) : fixtureFetch(url, options);
+  window.fiaiSDK = {};
+  try {
+    const result = await handleCoverImageChange(null, STATIC_COVER_IMAGES.IMAGE_1, {
+      entityIdentifier: "", entityType: "USER_COVER", isUserAsset: true,
+    });
+    assert.equal(ipfs.requests.length, 1);
+    assert(result.cover_image_url.startsWith("https://image-gateway.fixture/ipfs/"));
+    assert.equal(result.cover_image_url, result.cover_image);
+    assert.equal(localDB.users[0].cover_image_url, result.cover_image_url);
+  } finally { delete window.fiaiSDK; }
+});
+
+test("an implicit user avatar also uses IPFS and its metadata API returns the pinned URL", async () => {
+  const result = await new FileService().uploadUserAsset({}, png());
+  assert.equal(localDB.assets[0].entity_type, "USER_AVATAR");
+  assert.equal(localDB.assets[0].storage, "ipfs");
+  const metadata = await handleRoute("get", `/api/assets/v2/user-assets/${result.asset_id}/`, {});
+  assert.equal(metadata.status, 200);
+  assert.equal(metadata.data.file_url, result.asset_url);
+  assert.equal(metadata.data.base64, undefined);
 });
