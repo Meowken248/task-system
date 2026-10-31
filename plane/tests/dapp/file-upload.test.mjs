@@ -623,3 +623,22 @@ test("direct attachment deletion rejects an asset belonging to another issue", a
   assert.ok(await getAttachment(result.id));
   assert.equal(localDB.attachments.length, 1);
 });
+
+test("attachment API deletion records a tombstone and updates the actual issue count", async () => {
+  const result = await new IssueAttachmentService().uploadIssueAttachment("test-ws", "proj-1", "issue-1", png());
+  assert.equal(localDB.issues[0].attachment_count, 1);
+  const deleted = await handleRoute("delete", `/api/workspaces/test-ws/projects/proj-1/issues/issue-1/attachments/${result.id}/`, {});
+  assert.equal(deleted.status, 200);
+  assert.equal(await getAttachment(result.id), null);
+  assert.equal(localDB.issues[0].attachment_count, 0);
+  assert(localDB._deleted_attachment_ids.includes(result.id));
+});
+
+test("attachment API storage failure preserves bytes, metadata and issue count", async () => {
+  const result = await new IssueAttachmentService().uploadIssueAttachment("test-ws", "proj-1", "issue-1", png());
+  failWrites = true;
+  await assert.rejects(handleRoute("delete", `/api/workspaces/test-ws/projects/proj-1/issues/issue-1/attachments/${result.id}/`, {}));
+  assert.ok(await getAttachment(result.id));
+  assert.equal(localDB.attachments.length, 1);
+  assert.equal(localDB.issues[0].attachment_count, 1);
+});

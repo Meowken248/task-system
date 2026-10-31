@@ -301,3 +301,24 @@ test("a basename, uppercase method and query cannot bypass project deletion perm
   assert.equal(result.status, 403);
   assert.equal(dataSnapshot(), before);
 });
+
+test("generic collection aliases cannot delete workspaces or projects", async () => {
+  chainRole = 1;
+  const before = dataSnapshot();
+  assert.equal((await handleRoute("delete", "/api/projects/project-a/workspaces/ws-a/", {})).status, 404);
+  assert.equal((await handleRoute("delete", "/api/projects/project-a/projects/project-b/", {})).status, 404);
+  assert.equal(dataSnapshot(), before);
+});
+
+test("generic asset aliases cannot read or delete metadata around the asset API", async () => {
+  seedAsset();
+  setLoggedInUser(null);
+  assert.equal((await handleRoute("get", "/api/assets/asset-a/", {})).status, 404);
+  assert.equal((await handleRoute("delete", "/api/assets/asset-a/", {})).status, 404);
+  assert.equal(localDB.assets.length, 1);
+});
+
+test("the issue attachment API cannot return a different issue's attachment id", async () => {
+  localDB.attachments = [{ id: "foreign-attachment", issue: "issue-b", workspace: "ws-b", project: "project-b" }];
+  assert.equal((await handleRoute("get", "/api/workspaces/team-a/projects/project-a/issues/issue-a/attachments/foreign-attachment/", {})).status, 404);
+});

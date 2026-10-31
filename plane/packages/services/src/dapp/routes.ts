@@ -2025,7 +2025,7 @@ async function handleRouteUnlocked(
   }
 
   // ── Workspace Deletion ────────────────────────────────────────────────
-  const wsDeleteMatch = url.match(/\/api\/workspaces\/([^/]+)\/?$/);
+  const wsDeleteMatch = url.split("?")[0].match(/^\/api\/workspaces\/([^/]+)\/?$/);
   if (wsDeleteMatch && method === "delete") {
     const slugOrId = wsDeleteMatch[1];
     const targetWs = (localDB.workspaces || []).find((w: any) => w.id === slugOrId || w.slug === slugOrId);
@@ -4018,7 +4018,7 @@ async function handleRouteUnlocked(
   }
 
   // ── Project Detail (GET, PATCH, DELETE) ──────────────────────────────
-  const projectDetailMatch = url.match(/\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/?(?:\?.*)?$/);
+  const projectDetailMatch = url.match(/^\/api\/workspaces\/[^/]+\/projects\/([^/]+)\/?(?:\?.*)?$/);
   if (projectDetailMatch) {
     const projectId = projectDetailMatch[1];
     if (projectId !== "details" && projectId !== "project-identifiers" && projectId !== "search") {
@@ -5487,22 +5487,30 @@ async function handleRouteUnlocked(
   if (attachmentsMatch) {
     const issueId = attachmentsMatch[2];
     const attachmentId = attachmentsMatch[3];
+    const scope = url.match(/^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:issues|work-items|epics)\/[^/]+\/attachments(?:\/[^/]+)?\/?(?:\?.*)?$/);
+    if (!scope) return { status: 404, data: { error: "Đường dẫn tệp không được hỗ trợ." } };
+    try {
+      await requireIssueAccess(decodeURIComponent(scope[1]), decodeURIComponent(scope[2]), issueId, method !== "get");
+    } catch (error) {
+      if (!(error instanceof ResourceAccessError)) throw error;
+      return { status: error.status, data: { code: error.code, error: error.message } };
+    }
     if (method === "get") {
       if (attachmentId) {
-        const found = (localDB["attachments"] || []).find((a: any) => a.id === attachmentId || a.asset === attachmentId);
+        const found = (localDB["attachments"] || []).find((a: any) =>
+          (a.id === attachmentId || a.asset === attachmentId) && (a.issue === issueId || a.issue_id === issueId));
         return found ? ok(found) : { data: null, status: 404 };
       }
       const attachments = (localDB["attachments"] || []).filter((a: any) => a.issue === issueId || a.issue_id === issueId);
       return ok(attachments);
     }
     if (method === "delete" && attachmentId) {
-      if (localDB["attachments"]) {
-        localDB["attachments"] = localDB["attachments"].filter((a: any) => a.id !== attachmentId && a.asset !== attachmentId);
-        saveDB();
-      }
-      void deleteAttachment(attachmentId);
-      return ok({});
+      const target = (localDB.attachments || []).find((a: any) =>
+        (a.id === attachmentId || a.asset === attachmentId) && (a.issue === issueId || a.issue_id === issueId));
+      if (!target) return { status: 404, data: { error: "Không tìm thấy tệp trong công việc này." } };
+      return handleFileAssetRoute("delete", `/api/assets/v2/workspaces/${scope[1]}/projects/${scope[2]}/${target.id}/`, {});
     }
+    return { status: 405, data: { error: "Thao tác tệp không được hỗ trợ." } };
   }
 
   // description-versions
@@ -6420,6 +6428,11 @@ async function handleCRUD(
   preserveInvitationId?: string
 ): Promise<RouteResult> {
   let { collection, id, isPaginated } = parseApiUrl(url);
+  // These resources have dedicated, scoped handlers above. Generic aliases
+  // must never become a second path around authorization or file persistence.
+  if (["assets", "attachments"].includes(collection) ||
+    (method === "delete" && ["workspaces", "projects"].includes(collection)))
+    return { status: 404, data: { error: "Đường dẫn tài nguyên không được hỗ trợ." } };
   console.log(
     `[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`
   );

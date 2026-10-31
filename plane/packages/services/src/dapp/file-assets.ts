@@ -288,10 +288,17 @@ async function handleAuthorizedFileAssetRoute(method: string, url: string, body:
   }
 
   if (method === "delete") {
+    const removedAttachments = (localDB.attachments || []).filter((asset: any) => asset.id === id || asset.asset_id === id);
     await deleteAttachment(id);
     localDB._deleted_asset_ids = [...new Set([...(localDB._deleted_asset_ids || []), id])];
+    if (removedAttachments.length)
+      localDB._deleted_attachment_ids = [...new Set([...(localDB._deleted_attachment_ids || []), id, ...removedAttachments.map((asset: any) => asset.id)])];
     localDB.assets = (localDB.assets || []).filter((asset: any) => asset.id !== id && asset.asset_id !== id);
     localDB.attachments = (localDB.attachments || []).filter((asset: any) => asset.id !== id && asset.asset_id !== id);
+    const affectedIssues = new Set(removedAttachments.map((asset: any) => asset.issue || asset.issue_id));
+    for (const issue of localDB.issues || []) {
+      if (affectedIssues.has(issue.id)) issue.attachment_count = localDB.attachments.filter((asset: any) => (asset.issue || asset.issue_id) === issue.id).length;
+    }
     saveDB();
     return ok({ success: true, deleted: id });
   }
