@@ -249,3 +249,55 @@ test("missing issue identity does not create a broken browse redirect", async ()
   delete localDB.issues[0].sequence_id;
   assert.equal((await issueMeta()).status, 409);
 });
+
+test("upload ingestion rejects a revoked member before replacing any file bytes", async () => {
+  seedAsset();
+  chainRole = 0;
+  const result = await handleRoute("post", "/api/assets/v2/upload/", { asset_id: "asset-a", base64: "Yg==" });
+  assert.equal(result.status, 403);
+  assert.equal(localDB.assets[0].asset_url, "data:text/plain;base64,YQ==");
+});
+
+test("logout while permission RPC is pending prevents a later deletion", async () => {
+  const originalFetch = globalThis.fetch;
+  let entered, release;
+  const started = new Promise((resolve) => { entered = resolve; });
+  const pendingRead = new Promise((resolve) => { release = resolve; });
+  globalThis.fetch = async (...args) => {
+    entered();
+    await pendingRead;
+    return originalFetch(...args);
+  };
+  const before = dataSnapshot();
+  const operation = workspaceDelete();
+  await started;
+  setLoggedInUser(null);
+  release();
+  const result = await operation;
+  assert([401, 409].includes(result.status), "logout clears both the session and wallet; either guard must reject");
+  assert.equal(dataSnapshot(), before);
+});
+
+test("absolute API URLs cannot bypass the destructive permission guard", async () => {
+  chainRole = 1;
+  const before = dataSnapshot();
+  const result = await handleRoute("delete", "http://localhost:3000/api/workspaces/team-a/", {});
+  assert.equal(result.status, 403);
+  assert.equal(dataSnapshot(), before);
+});
+
+test("duplicate trailing slashes cannot fall through to unguarded generic deletion", async () => {
+  chainRole = 1;
+  const before = dataSnapshot();
+  const result = await handleRoute("delete", "/api/workspaces/ws-a////", {});
+  assert.equal(result.status, 403);
+  assert.equal(dataSnapshot(), before);
+});
+
+test("a basename, uppercase method and query cannot bypass project deletion permissions", async () => {
+  chainRole = 1;
+  const before = dataSnapshot();
+  const result = await handleRoute("DELETE", "http://localhost:3000/plane/api/workspaces/team-a/projects/project-a/?check=1", {});
+  assert.equal(result.status, 403);
+  assert.equal(dataSnapshot(), before);
+});

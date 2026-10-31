@@ -569,6 +569,17 @@ async function projectExistsInWorkspaceSnapshot(wsSlug: string, projectId: strin
 }
 
 export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
+  // Guards and CRUD must interpret exactly the same path, including absolute
+  // Axios URLs, a router basename and repeated slashes.
+  try {
+    const parsed = new URL(url, "http://dapp.invalid"); // Parsing base only; no network request.
+    const pathname = parsed.pathname.replace(/\/+/g, "/");
+    const apiIndex = pathname.indexOf("/api/");
+    url = (apiIndex >= 0 ? pathname.slice(apiIndex) : pathname) + parsed.search;
+    method = method.toLowerCase();
+  } catch {
+    return { status: 400, data: { code: "INVALID_URL", error: "Đường dẫn yêu cầu không hợp lệ." } };
+  }
   const management = url.match(/\/api\/workspaces\/([^/?#]+)\/(?:invitations|members)(?:\/|\?|$)/);
   if (management && !/\/join\/?(?:\?|$)/.test(url) && ["post", "put", "patch", "delete"].includes(method)) {
     return withInvitationLock(`management:${management[1]}`, () => handleRouteUnlocked(method, url, body));
