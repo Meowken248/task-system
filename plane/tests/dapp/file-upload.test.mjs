@@ -30,6 +30,7 @@ registerHooks({
   },
 });
 const { FileService } = await import("../../apps/web/core/services/file.service.ts");
+const { IssueAttachmentService } = await import("../../apps/web/core/services/issue/issue_attachment.service.ts");
 const { EditorAssetStore } = await import("../../apps/web/core/store/editor/asset.store.ts");
 let failWrites = false;
 let failOpen = false;
@@ -176,6 +177,7 @@ beforeEach(() => {
       id: "ws-1",
       slug: "test-ws",
       name: "Test Workspace",
+      created_by: "user-1",
       logo_url: "",
     },
   ];
@@ -184,11 +186,17 @@ beforeEach(() => {
       id: "proj-1",
       identifier: "PROJ",
       name: "Test Project",
+      workspace: "ws-1",
+      network: 2,
       cover_image: "",
     },
   ];
   localDB.attachments = [];
   localDB.assets = [];
+  localDB.project_members = [];
+  localDB.workspace_members = [];
+  localDB.issues = [{ id: "issue-1", project: "proj-1", workspace: "ws-1" }];
+  localDB._deleted_issue_ids = [];
 });
 
 test("saveAttachment persists data and getAttachment retrieves it accurately", async () => {
@@ -586,4 +594,32 @@ test("data, blob and external sources are preserved instead of being wrapped in 
       async (source) => assert.equal(await resolveAssetSource(source), source)
     )
   );
+});
+
+test("direct attachment upload and deletion use the authenticated issue scope", async () => {
+  const service = new IssueAttachmentService();
+  const result = await service.uploadIssueAttachment("test-ws", "proj-1", "issue-1", png());
+  assert.equal(result.created_by, "user-1");
+  assert.ok(await getAttachment(result.id));
+  assert.equal((await service.getIssueAttachments("test-ws", "proj-1", "issue-1")).length, 1);
+  await service.deleteIssueAttachment("test-ws", "proj-1", "issue-1", result.id);
+  assert.equal(await getAttachment(result.id), null);
+  assert.equal(localDB.attachments.length, 0);
+});
+
+test("direct attachment service rejects a project from another workspace before storing bytes", async () => {
+  localDB.workspaces.push({ id: "ws-2", slug: "other-ws", created_by: "user-1" });
+  const service = new IssueAttachmentService();
+  await assert.rejects(service.uploadIssueAttachment("other-ws", "proj-1", "issue-1", png()), /quyền/);
+  assert.equal(localDB.attachments.length, 0);
+  assert.equal(mockDB.storage.size, 0);
+});
+
+test("direct attachment deletion rejects an asset belonging to another issue", async () => {
+  localDB.issues.push({ id: "issue-2", project: "proj-1" });
+  const service = new IssueAttachmentService();
+  const result = await service.uploadIssueAttachment("test-ws", "proj-1", "issue-2", png());
+  await assert.rejects(service.deleteIssueAttachment("test-ws", "proj-1", "issue-1", result.id), /quyền/);
+  assert.ok(await getAttachment(result.id));
+  assert.equal(localDB.attachments.length, 1);
 });

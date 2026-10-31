@@ -37,7 +37,8 @@ export function resourceWorkspace(key: string): any {
 }
 
 export function resourceProject(ws: any, key: string): any {
-  const project = (localDB.projects || []).find((entry: any) => entry.id === key || entry.identifier === key);
+  const candidates = (localDB.projects || []).filter((entry: any) => entry.id === key || entry.identifier === key);
+  const project = candidates.find((entry: any) => [ws.id, ws.slug].includes(entry.workspace || entry.workspace_id)) || candidates[0];
   if (!project || (localDB._deleted_project_ids || []).includes(project.id))
     throw new ResourceAccessError(404, "NOT_FOUND", "Không tìm thấy dự án.");
   if (![ws.id, ws.slug].includes(project.workspace || project.workspace_id)) throw deny();
@@ -77,6 +78,8 @@ export async function requireWorkspaceAccess(key: string, manage = false): Promi
     );
     role = Number(member?.role) || 0;
   }
+  if (getLoggedInUserId() !== user.id)
+    throw new ResourceAccessError(401, "AUTH_REQUIRED", "Phiên đăng nhập đã thay đổi. Hãy thử lại.");
   if (role < (manage ? 20 : 5)) throw deny();
   return { user, workspace, role };
 }
@@ -87,7 +90,8 @@ export async function requireProjectAccess(workspaceKey: string, projectKey: str
   const wallet = normalized(getStoredWalletAddress());
   const member = (localDB.project_members || []).find((entry: any) =>
     (entry.project || entry.project_id) === project.id && entry.is_active !== false &&
-    (wallet ? normalized(entry.wallet_address || entry.member?.metanode_wallet_address || entry.member) === wallet
+    (wallet ? normalized(entry.wallet_address || entry.member?.metanode_wallet_address || entry.member) === wallet ||
+      ((entry.member?.id || entry.member) === access.user.id && normalized(access.user.metanode_wallet_address || access.user.wallet_address) === wallet)
       : (entry.member?.id || entry.member) === access.user.id)
   );
   if (access.role < 20 && project.network === 0 && !member) throw deny();

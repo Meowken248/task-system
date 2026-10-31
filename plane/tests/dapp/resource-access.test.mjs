@@ -127,3 +127,90 @@ test("local-only mode still rejects ordinary member deletion", async () => {
   assert.equal((await workspaceDelete()).status, 403);
   assert.equal(dataSnapshot(), before);
 });
+
+const assetPath = (workspace = "team-a", assetId = "asset-a") => `/api/assets/v2/workspaces/${workspace}/${assetId}/`;
+const seedAsset = (overrides = {}) => {
+  const record = { id: "asset-a", workspace: "ws-a", project: "project-a", created_by: "user-a",
+    entity_type: "ISSUE_DESCRIPTION", entity_identifier: "issue-a", is_uploaded: true,
+    asset_url: "data:text/plain;base64,YQ==", ...overrides };
+  localDB.assets.push(record);
+  return record;
+};
+
+test("anonymous asset GET and DELETE do not expose or remove cached content", async () => {
+  seedAsset();
+  setLoggedInUser(null);
+  assert.equal((await handleRoute("get", assetPath(), {})).status, 401);
+  assert.equal((await handleRoute("delete", assetPath(), {})).status, 401);
+  assert.equal(localDB.assets.length, 1);
+});
+
+test("a known asset id cannot be read or deleted through another workspace", async () => {
+  seedAsset();
+  assert.equal((await handleRoute("get", assetPath("team-b"), {})).status, 403);
+  assert.equal((await handleRoute("delete", assetPath("team-b"), {})).status, 403);
+  assert.equal(localDB.assets.length, 1);
+  assert(!(localDB._deleted_asset_ids || []).includes("asset-a"));
+});
+
+test("an active member can read a scoped asset but a revoked chain role cannot", async () => {
+  seedAsset();
+  chainRole = 1;
+  assert.equal((await handleRoute("get", assetPath(), {})).data.base64, "YQ==");
+  chainRole = 0;
+  assert.equal((await handleRoute("get", assetPath(), {})).status, 403);
+});
+
+test("private-project assets require project membership even with workspace membership", async () => {
+  seedAsset();
+  chainRole = 1;
+  localDB.projects[0].network = 0;
+  assert.equal((await handleRoute("get", assetPath(), {})).status, 403);
+  localDB.project_members = [{ project: "project-a", member: "user-a", role: 15 }];
+  assert.equal((await handleRoute("get", assetPath(), {})).status, 200);
+});
+
+test("mixed-scope bulk confirmation is rejected before confirming the authorized item", async () => {
+  const first = seedAsset({ is_uploaded: false });
+  seedAsset({ id: "asset-b", workspace: "ws-b", project: "project-b", entity_identifier: "issue-b" });
+  const result = await handleRoute("post", "/api/assets/v2/workspaces/team-a/issue-a/bulk/", { asset_ids: ["asset-a", "asset-b"] });
+  assert.equal(result.status, 403);
+  assert.equal(first.is_uploaded, false);
+});
+
+test("a foreign entity cannot be bound through a legitimate project asset initializer", async () => {
+  const result = await handleRoute("post", "/api/assets/v2/workspaces/team-a/projects/project-a/", {
+    entity_type: "ISSUE_DESCRIPTION", entity_identifier: "issue-b",
+  });
+  assert.equal(result.status, 403);
+  assert.equal(localDB.assets.length, 0);
+});
+
+test("unscoped legacy content is not assigned to the workspace in a forged path", async () => {
+  localDB.assets = [{ id: "asset-a", is_uploaded: true, asset_url: "data:text/plain;base64,YQ==" }];
+  assert.equal((await handleRoute("get", assetPath(), {})).status, 403);
+});
+
+test("legacy cover metadata can infer its scope from its actual project", async () => {
+  localDB.assets = [{ id: "asset-a", entity_type: "PROJECT_COVER", entity_identifier: "project-a", is_uploaded: true, asset_url: "data:text/plain;base64,YQ==" }];
+  assert.equal((await handleRoute("get", assetPath(), {})).status, 200);
+  assert.equal((await handleRoute("get", assetPath("team-b"), {})).status, 403);
+});
+
+test("Member cannot delete an asset created by another member", async () => {
+  seedAsset({ created_by: "other-user" });
+  chainRole = 1;
+  assert.equal((await handleRoute("delete", assetPath(), {})).status, 403);
+  assert.equal(localDB.assets.length, 1);
+});
+
+test("asset initialization stores canonical scope and the authenticated creator", async () => {
+  chainRole = 1;
+  const result = await handleRoute("post", "/api/assets/v2/workspaces/team-a/projects/project-a/", {
+    entity_type: "ISSUE_DESCRIPTION", entity_identifier: "issue-a", created_by: "spoofed-user", workspace: "ws-b",
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.data.workspace, "ws-a");
+  assert.equal(result.data.project, "project-a");
+  assert.equal(result.data.created_by, "user-a");
+});

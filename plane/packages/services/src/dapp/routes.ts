@@ -4941,7 +4941,7 @@ async function handleRouteUnlocked(
   }
 
   if (/\/api\/assets\/v2(?:\/|$)/.test(url)) {
-    return handleFileAssetRoute(method, url, body, routeSessionUser);
+    return handleFileAssetRoute(method, url, body);
   }
 
   // ── Issue sub-resource endpoints ─────────────────────────────────────

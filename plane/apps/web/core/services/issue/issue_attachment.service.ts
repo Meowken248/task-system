@@ -18,7 +18,7 @@ import {
   recordIssueContentOnChain,
 } from "@/services/blockchain/plane-task-chain.service";
 import { notifyVaultProblem } from "@/services/blockchain/vault-notice";
-import { localDB, saveDB, FileUploadService, deleteAttachment } from "@plane/services";
+import { localDB, saveDB, FileUploadService, deleteAttachment, requireIssueAccess } from "@plane/services";
 
 export class IssueAttachmentService extends APIService {
   private serviceType: TIssueServiceType;
@@ -36,6 +36,7 @@ export class IssueAttachmentService extends APIService {
     file: File,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TIssueAttachment> {
+    const access = await requireIssueAccess(workspaceSlug, projectId, issueId, true);
     // Trước đây đoạn này gửi POST multipart tới `""` (gốc ứng dụng) — không phải
     // nơi nhận tệp — nên yêu cầu treo tới khi quá thời gian rồi mới báo lỗi (BA-32).
     // Tệp không cần rời khỏi máy: chỉ dấu vết (mã tệp + tên + kích thước) lên hệ thống.
@@ -60,8 +61,8 @@ export class IssueAttachmentService extends APIService {
       issue_id: issueId,
       created_at: now,
       updated_at: now,
-      created_by: "",
-      updated_by: "",
+      created_by: access.user.id,
+      updated_by: access.user.id,
       project: projectId,
       workspace: workspaceSlug,
       issue: issueId,
@@ -121,6 +122,7 @@ export class IssueAttachmentService extends APIService {
   }
 
   async getIssueAttachments(workspaceSlug: string, projectId: string, issueId: string): Promise<TIssueAttachment[]> {
+    await requireIssueAccess(workspaceSlug, projectId, issueId);
     const allAttachments = localDB.attachments || [];
     return allAttachments.filter((a: any) => a.issue === issueId || a.issue_id === issueId);
   }
@@ -131,8 +133,12 @@ export class IssueAttachmentService extends APIService {
     issueId: string,
     assetId: string
   ): Promise<TIssueAttachment> {
+    const access = await requireIssueAccess(workspaceSlug, projectId, issueId, true);
     const allAttachments = localDB.attachments || [];
     const target = allAttachments.find((a: any) => a.id === assetId || a.asset === assetId);
+    if (!target || (target.issue || target.issue_id) !== issueId ||
+      (access.role < 20 && target.created_by !== access.user.id))
+      throw new Error("Bạn không có quyền xóa tệp này.");
     await deleteAttachment(assetId);
     if (target?.id && target.id !== assetId) await deleteAttachment(target.id);
     localDB._deleted_attachment_ids = [
