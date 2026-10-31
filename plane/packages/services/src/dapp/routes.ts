@@ -1,5 +1,5 @@
 import { handleFileAssetRoute } from "./file-assets";
-import { requireWorkspaceAccess, resourceProject, ResourceAccessError } from "./resource-access";
+import { requireWorkspaceAccess, requireIssueAccess, resourceProject, ResourceAccessError } from "./resource-access";
 import type { RouteResult } from "./types";
 import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, generateAndStoreOtp, verifyOtpCode, clearOtpCode } from "./auth";
 import {
@@ -4938,6 +4938,21 @@ async function handleRouteUnlocked(
     }
 
     return ok({});
+  }
+
+  const issueMetaRoute = url.match(/^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:issues|work-items|epics)\/([^/]+)\/meta\/?(?:\?.*)?$/);
+  if (issueMetaRoute && method === "get") {
+    try {
+      const access = await requireIssueAccess(
+        decodeURIComponent(issueMetaRoute[1]), decodeURIComponent(issueMetaRoute[2]), decodeURIComponent(issueMetaRoute[3])
+      );
+      if (!access.project.identifier || !Number.isInteger(access.issue.sequence_id) || access.issue.sequence_id <= 0)
+        return { status: 409, data: { code: "ISSUE_METADATA_UNAVAILABLE", error: "Công việc chưa có mã định danh hợp lệ. Hãy đồng bộ rồi thử lại." } };
+      return ok({ project_identifier: access.project.identifier, sequence_id: access.issue.sequence_id });
+    } catch (error) {
+      if (!(error instanceof ResourceAccessError)) throw error;
+      return { status: error.status, data: { code: error.code, error: error.message } };
+    }
   }
 
   if (/\/api\/assets\/v2(?:\/|$)/.test(url)) {

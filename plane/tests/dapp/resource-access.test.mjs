@@ -21,7 +21,7 @@ beforeEach(() => {
     workspaces: [{ id: "ws-a", slug: "team-a", created_by: "user-a" }, { id: "ws-b", slug: "team-b", created_by: "other" }],
     workspace_members: [{ id: "member-a", workspace: "ws-a", member: "user-a", role: 20, wallet_address: wallet }],
     projects: [{ id: "project-a", identifier: "AAA", workspace: "ws-a", network: 2 }, { id: "project-b", identifier: "BBB", workspace: "ws-b", network: 2 }],
-    issues: [{ id: "issue-a", project: "project-a" }, { id: "issue-b", project: "project-b" }],
+    issues: [{ id: "issue-a", project: "project-a", sequence_id: 7 }, { id: "issue-b", project: "project-b", sequence_id: 1 }],
     assets: [], attachments: [],
   });
   setLoggedInUser("user-a");
@@ -213,4 +213,39 @@ test("asset initialization stores canonical scope and the authenticated creator"
   assert.equal(result.data.workspace, "ws-a");
   assert.equal(result.data.project, "project-a");
   assert.equal(result.data.created_by, "user-a");
+});
+
+const issueMeta = (workspace = "team-a", project = "project-a", issue = "issue-a") =>
+  handleRoute("get", `/api/workspaces/${workspace}/projects/${project}/issues/${issue}/meta/`, {});
+
+test("issue UUID metadata supplies the exact project identifier and sequence for redirects", async () => {
+  const result = await issueMeta();
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { project_identifier: "AAA", sequence_id: 7 });
+});
+
+test("issue metadata refuses another project or workspace path", async () => {
+  assert.equal((await issueMeta("team-a", "project-a", "issue-b")).status, 403);
+  assert.equal((await issueMeta("team-a", "project-b", "issue-b")).status, 403);
+});
+
+test("issue metadata does not revive deleted work items or projects", async () => {
+  localDB._deleted_issue_ids = ["issue-a"];
+  assert.equal((await issueMeta()).status, 404);
+  localDB._deleted_issue_ids = [];
+  localDB._deleted_project_ids = ["project-a"];
+  assert.equal((await issueMeta()).status, 404);
+});
+
+test("issue metadata requires login and private-project access", async () => {
+  chainRole = 1;
+  localDB.projects[0].network = 0;
+  assert.equal((await issueMeta()).status, 403);
+  setLoggedInUser(null);
+  assert.equal((await issueMeta()).status, 401);
+});
+
+test("missing issue identity does not create a broken browse redirect", async () => {
+  delete localDB.issues[0].sequence_id;
+  assert.equal((await issueMeta()).status, 409);
 });
