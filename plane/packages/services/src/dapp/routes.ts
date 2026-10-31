@@ -871,11 +871,11 @@ async function handleRouteUnlocked(
     const wsProjectIds = new Set(wsProjects.map((p: any) => p.id));
     const wsIssues = (localDB.issues || []).filter((i: any) => wsProjectIds.has(i.project || i.project_id) && !(localDB._deleted_issue_ids || []).includes(i.id) && !i.is_draft);
 
-    const wsMembers = (localDB.workspace_members || []).filter((m: any) => wsKeys.has(m.workspace) || wsKeys.has(m.workspace_id));
-    const total_users = Math.max(wsMembers.length, (localDB.users || []).length, 1);
-    const total_admins = Math.max(wsMembers.filter((m: any) => m.role === 20 || m.role === "admin").length, 1);
-    const total_members = wsMembers.filter((m: any) => m.role === 15 || m.role === "member").length;
-    const total_guests = wsMembers.filter((m: any) => m.role === 5 || m.role === "guest").length;
+    const wsMembers = listWorkspaceMembers(localDB, slug, ws?.id);
+    const total_users = wsMembers.length;
+    const total_admins = wsMembers.filter((m: any) => m.role === 20).length;
+    const total_members = wsMembers.filter((m: any) => m.role === 15).length;
+    const total_guests = wsMembers.filter((m: any) => m.role === 5).length;
     const total_projects = wsProjects.length;
     const total_work_items = wsIssues.length;
 
