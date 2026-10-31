@@ -409,11 +409,11 @@ test("Work item / Issue attachment syncs attachment_count and issue_attachments 
   assert.equal(attRes.data[0].id, "asset_test_123");
 });
 
-const png = () =>
+const png = (encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=") =>
   new File(
     [
       Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=",
+        encoded,
         "base64"
       ),
     ],
@@ -538,8 +538,9 @@ test("cover upload does not overwrite an existing user avatar", async () => {
   const avatar = await service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
   const cover = await service.uploadUserAsset(
     { entity_type: "USER_COVER" },
-    png()
+    png("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
   );
+  assert.notEqual(avatar.asset_url, cover.asset_url, "different image bytes have separate CIDs in this regression");
   assert.equal(localDB.users[0].avatar_url, avatar.asset_url);
   assert.equal(localDB.users[0].cover_image_url, cover.asset_url);
 });
@@ -714,4 +715,17 @@ test("an implicit user avatar also uses IPFS and its metadata API returns the pi
   assert.equal(metadata.status, 200);
   assert.equal(metadata.data.file_url, result.asset_url);
   assert.equal(metadata.data.base64, undefined);
+});
+
+test("shared IPFS content does not make avatar deletion remove the cover or another user's asset", async () => {
+  const service = new FileService();
+  const cover = await service.uploadUserAsset({ entity_type: "USER_COVER" }, png());
+  const avatar = await service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
+  assert.equal(avatar.asset_url, cover.asset_url, "IPFS deduplicates the same file into the same CID");
+  localDB.assets.unshift({ ...localDB.assets[1], id: "foreign-avatar", asset_id: "foreign-avatar", created_by: "other-user" });
+  await service.deleteOldUserAsset(avatar.asset_url);
+  assert.equal(localDB.users[0].avatar_url, null);
+  assert.equal(localDB.users[0].cover_image_url, cover.asset_url);
+  assert(localDB.assets.some((asset) => asset.id === "foreign-avatar"));
+  assert(localDB.assets.some((asset) => asset.id === cover.asset_id));
 });

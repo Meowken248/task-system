@@ -7,7 +7,7 @@
 import type { AxiosRequestConfig } from "axios";
 // plane types
 import { API_BASE_URL } from "@plane/constants";
-import { getFileMetaDataForUpload, generateFileUploadPayload, FileUploadService, localDB } from "@plane/services";
+import { getFileMetaDataForUpload, generateFileUploadPayload, FileUploadService, localDB, getLoggedInUserId } from "@plane/services";
 import type { EFileAssetType, TFileEntityInfo, TFileSignedURLResponse } from "@plane/types";
 import { getAssetIdFromUrl } from "@plane/utils";
 // helpers
@@ -186,7 +186,8 @@ export class FileService extends APIService {
   }
 
   async deleteOldUserAsset(src: string): Promise<any> {
-    const pinned = (localDB.assets || []).find((asset: any) => asset.storage === "ipfs" && asset.user_asset && asset.asset_url === src);
+    const pinned = (localDB.assets || []).find((asset: any) => asset.storage === "ipfs" && asset.user_asset &&
+      asset.entity_type === "USER_AVATAR" && asset.created_by === getLoggedInUserId() && asset.asset_url === src);
     if (pinned) return this.deleteUserAsset(pinned.id);
     const assetKey = getAssetIdFromUrl(src);
     return this.delete(`/api/users/file-assets/${assetKey}/`)
