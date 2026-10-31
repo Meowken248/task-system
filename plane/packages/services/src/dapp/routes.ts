@@ -1,4 +1,5 @@
 import { handleFileAssetRoute } from "./file-assets";
+import { requireWorkspaceAccess, resourceProject, ResourceAccessError } from "./resource-access";
 import type { RouteResult } from "./types";
 import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, generateAndStoreOtp, verifyOtpCode, clearOtpCode } from "./auth";
 import {
@@ -636,6 +637,18 @@ async function handleRouteUnlocked(
 
   const addWalletMemberRoute = url.match(/\/api\/workspaces\/([^/?#]+)\/members\/?(?:\?.*)?$/);
   if (addWalletMemberRoute && method === "post") return addWorkspaceWalletMember(decodeURIComponent(addWalletMemberRoute[1]), body);
+
+  // Validate destructive requests before touching records, cascades or tombstones.
+  const destructiveRoute = url.split("?")[0].match(/^\/api\/workspaces\/([^/]+)(?:\/projects\/([^/]+))?\/?$/);
+  if (method === "delete" && destructiveRoute) {
+    try {
+      const access = await requireWorkspaceAccess(decodeURIComponent(destructiveRoute[1]), true);
+      if (destructiveRoute[2]) resourceProject(access.workspace, decodeURIComponent(destructiveRoute[2]));
+    } catch (error) {
+      if (!(error instanceof ResourceAccessError)) throw error;
+      return { status: error.status, data: { code: error.code, error: error.message } };
+    }
+  }
 
   // ── Workspace Membership Route Guard (block removed members from workspace APIs) ──
   const wsGuardMatch = url.match(/\/api\/workspaces\/([^/?#]+)/);
