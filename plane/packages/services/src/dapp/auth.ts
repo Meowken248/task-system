@@ -104,7 +104,7 @@ const MAX_OTP_ATTEMPTS = 5;
 const OTP_HASH_PREFIX = "sha256:";
 
 /** Sinh mã 6 chữ số bằng nguồn ngẫu nhiên mật mã (không dùng Math.random đơn thuần). */
-function createOtpCode(): string {
+export function createOtpCode(): string {
   const values = new Uint32Array(1);
   if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
     crypto.getRandomValues(values);
@@ -161,14 +161,24 @@ export async function generateAndStoreOtp(email: string): Promise<string> {
   if (!cleanEmail) return "";
 
   const code = createOtpCode();
+  await storeOtpCode(cleanEmail, code);
+  return code;
+}
+
+/** Commit only after delivery is accepted; a failed resend must preserve the old code. */
+export async function storeOtpCode(email: string, code: string): Promise<void> {
+  const cleanEmail = email.trim().toLowerCase();
+  const codeHash = await hashOtpCode(code);
+  // Read after the async hash, so concurrent requests for different emails do not lose entries.
   const map = getStoredOtpMap();
   map[cleanEmail] = {
-    codeHash: await hashOtpCode(code),
+    codeHash,
     expiresAt: Date.now() + OTP_TTL_MS,
     attempts: 0,
   };
   saveStoredOtpMap(map);
-  return code;
+  if (getStoredOtpMap()[cleanEmail]?.codeHash !== codeHash)
+    throw new Error("Không lưu được mã xác nhận trên thiết bị. Hãy kiểm tra quyền lưu trữ rồi thử lại.");
 }
 
 export async function verifyOtpCode(

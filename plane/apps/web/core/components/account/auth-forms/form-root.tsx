@@ -11,7 +11,7 @@ import { EAuthModes, EAuthSteps } from "@plane/constants";
 import type { IEmailCheckData } from "@plane/types";
 // helpers
 import type { TAuthErrorInfo } from "@/helpers/authentication.helper";
-import { authErrorHandler } from "@/helpers/authentication.helper";
+import { authErrorHandler, EErrorAlertType, EAuthenticationErrorCodes } from "@/helpers/authentication.helper";
 import { getInvitationReturnPath, safeInternalPath } from "@/helpers/invitation-navigation";
 // hooks
 import { useInstance } from "@/hooks/store/use-instance";
@@ -54,32 +54,21 @@ export const AuthFormRoot = observer(function AuthFormRoot(props: TAuthFormRoot)
   const handleEmailVerification = async (data: IEmailCheckData) => {
     setEmail(data.email);
     setErrorInfo(undefined);
-    await authService
-      .emailCheck(data)
-      .then(async (response) => {
-        if (response.existing) {
-          if (currentAuthMode === EAuthModes.SIGN_UP) setAuthMode(EAuthModes.SIGN_IN);
-          if (response.status === "MAGIC_CODE") {
-            setAuthStep(EAuthSteps.UNIQUE_CODE);
-            generateEmailUniqueCode(data.email);
-          } else if (response.status === "CREDENTIAL") {
-            setAuthStep(EAuthSteps.PASSWORD);
-          }
-        } else {
-          if (currentAuthMode === EAuthModes.SIGN_IN) setAuthMode(EAuthModes.SIGN_UP);
-          if (response.status === "MAGIC_CODE") {
-            setAuthStep(EAuthSteps.UNIQUE_CODE);
-            generateEmailUniqueCode(data.email);
-          } else if (response.status === "CREDENTIAL") {
-            setAuthStep(EAuthSteps.PASSWORD);
-          }
-        }
-        setIsExistingEmail(response.existing);
-      })
-      .catch((error) => {
-        const errorhandler = authErrorHandler(error?.error_code?.toString(), data?.email || undefined);
-        if (errorhandler?.type) setErrorInfo(errorhandler);
-      });
+    try {
+      const response = await authService.emailCheck(data);
+      if (response.existing && currentAuthMode === EAuthModes.SIGN_UP) setAuthMode(EAuthModes.SIGN_IN);
+      if (!response.existing && currentAuthMode === EAuthModes.SIGN_IN) setAuthMode(EAuthModes.SIGN_UP);
+      if (response.status === "MAGIC_CODE") {
+        await generateEmailUniqueCode(data.email);
+        setAuthStep(EAuthSteps.UNIQUE_CODE);
+      } else if (response.status === "CREDENTIAL") {
+        setAuthStep(EAuthSteps.PASSWORD);
+      }
+      setIsExistingEmail(response.existing);
+    } catch (error: any) {
+      const errorhandler = authErrorHandler(error?.error_code?.toString(), data?.email || undefined);
+      if (errorhandler?.type) setErrorInfo(errorhandler);
+    }
   };
 
   const handleEmailClear = () => {
@@ -92,15 +81,19 @@ export const AuthFormRoot = observer(function AuthFormRoot(props: TAuthFormRoot)
   };
 
   // generating the unique code
-  const generateEmailUniqueCode = async (email: string): Promise<{ code: string } | undefined> => {
-    if (!isSMTPConfigured) return;
-    const payload = { email: email };
+  const generateEmailUniqueCode = async (targetEmail: string): Promise<{ code: string } | undefined> => {
+    const payload = { email: targetEmail };
     return await authService
       .generateUniqueCode(payload)
       .then(() => ({ code: "" }))
       .catch((error) => {
         const errorhandler = authErrorHandler(error?.error_code?.toString());
-        if (errorhandler?.type) setErrorInfo(errorhandler);
+        setErrorInfo(errorhandler?.type ? errorhandler : {
+          type: EErrorAlertType.BANNER_ALERT,
+          code: EAuthenticationErrorCodes.SMTP_NOT_CONFIGURED,
+          title: "Chưa gửi được mã xác nhận",
+          message: error?.error || "Chưa gửi được mã xác nhận. Vui lòng thử lại sau.",
+        });
         throw error;
       });
   };
@@ -128,9 +121,13 @@ export const AuthFormRoot = observer(function AuthFormRoot(props: TAuthFormRoot)
         isSMTPConfigured={isSMTPConfigured}
         email={email}
         handleEmailClear={handleEmailClear}
-        handleAuthStep={(step: EAuthSteps) => {
-          if (step === EAuthSteps.UNIQUE_CODE) generateEmailUniqueCode(email);
-          setAuthStep(step);
+        handleAuthStep={async (step: EAuthSteps) => {
+          try {
+            if (step === EAuthSteps.UNIQUE_CODE) await generateEmailUniqueCode(email);
+            setAuthStep(step);
+          } catch {
+            // The generation handler displays the delivery error; retain the current form.
+          }
         }}
         nextPath={nextPath || undefined}
       />

@@ -11,7 +11,7 @@ const DEFAULT_SENDER_NAME = "Plane Workspace";
  * Instead the API key is injected through `VITE_BREVO_API_KEY` at build time.
  *
  * When the key/sender is missing the mail helpers degrade gracefully: they log a
- * warning and return `false`, and the calling flow (invitations, OTP) keeps working.
+ * warning and return `false`. Callers must surface a delivery failure to the user.
  */
 export function getBrevoApiKey(): string {
   return (getEnvVar("VITE_BREVO_API_KEY") || "").trim();

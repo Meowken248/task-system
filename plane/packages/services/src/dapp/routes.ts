@@ -1,7 +1,8 @@
 import { handleFileAssetRoute } from "./file-assets";
 import { requireWorkspaceAccess, requireIssueAccess, resourceProject, ResourceAccessError } from "./resource-access";
 import type { RouteResult } from "./types";
-import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, generateAndStoreOtp, verifyOtpCode, clearOtpCode } from "./auth";
+import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, verifyOtpCode, clearOtpCode } from "./auth";
+import { requestOtpDelivery } from "./otp-delivery";
 import {
   localDB,
   saveDB,
@@ -56,7 +57,7 @@ import {
   commitWorkspaceCID,
   writeWorkspaceWalletInvitation,
 } from "./chain";
-import { sendWorkspaceInviteEmail, sendOtpEmail } from "./mail";
+import { sendWorkspaceInviteEmail } from "./mail";
 import {
   findNonProjectAssignees as findNonProjectAssigneesPure,
   describeInvalidAssignees,
@@ -1507,20 +1508,13 @@ async function handleRouteUnlocked(
 
   // ── Magic Code Generation (Brevo Email OTP) ──────────────────────────
   if (url.includes("/auth/magic-generate")) {
-    const email = (body?.email || "").trim().toLowerCase();
-    if (!email) {
+    if (method !== "post") return { status: 405, data: { error: "Thao tác không được hỗ trợ." } };
+    const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return { data: { error: "Vui lòng cung cấp địa chỉ email hợp lệ." }, status: 400 };
     }
 
-    const otpCode = await generateAndStoreOtp(email);
-    // KHÔNG log mã xác nhận: log trình duyệt/CI có thể bị thu thập và làm lộ mã.
-
-    // Gửi email qua Brevo (chạy nền, bắt lỗi an toàn)
-    void sendOtpEmail(email, otpCode).catch((err) => {
-      console.warn(`[DApp Auth OTP] ⚠️ Gửi email Brevo gặp sự cố:`, err?.message || err);
-    });
-
-    return ok({ message: "Mã xác nhận 6 chữ số đã được gửi tới email của bạn." });
+    return requestOtpDelivery(email);
   }
 
   // ── Magic Code Sign In / Sign Up ────────────────────────────────────
