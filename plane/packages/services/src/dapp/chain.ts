@@ -17,6 +17,7 @@ import {
   isInvitationDeleted,
 } from "./store";
 import { preserveLocalUserAuth, sanitizeSharedSnapshot } from "./shared-snapshot";
+import { preserveNewerPresentationMedia } from "./presentation-media";
 import { readIPFSSnapshot } from "./ipfs-snapshot";
 import { resolveInvitationWorkspace } from "./invitation-workspace";
 import { saveSnapshotToIDB, loadSnapshotFromIDB, saveCidToIDB, getCidFromIDB } from "./indexed-db";
@@ -2306,6 +2307,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
         continue;
       }
       preserveLocalUserAuth(u, existing);
+      preserveNewerPresentationMedia(u, existing, "user");
       if (u.theme) {
         localDB.users[existingIndex].theme = {
           ...localDB.users[existingIndex].theme,
@@ -2334,6 +2336,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     (w: any) => !mergedDeletedWorkspaces.has(w.id) && !mergedDeletedWorkspaceSlugs.has(w.slug)
   );
   for (const w of currentWorkspaces) {
+    const sharedWorkspace = localDB.workspaces.find((entry: any) => entry.id === w.id);
+    if (sharedWorkspace) preserveNewerPresentationMedia(w, sharedWorkspace, "workspace");
     if (
       !mergedDeletedWorkspaces.has(w.id) &&
       !mergedDeletedWorkspaceSlugs.has(w.slug) &&

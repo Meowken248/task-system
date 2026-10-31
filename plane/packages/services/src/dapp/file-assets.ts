@@ -2,6 +2,7 @@ import type { RouteResult } from "./types";
 import { localDB, saveDB } from "./store";
 import { saveAttachment, getAttachment, deleteAttachment, type StoredAttachment } from "../file/attachment-storage";
 import { attachmentDataUrl } from "../file/asset-source";
+import { setPresentationMedia } from "./presentation-media";
 import {
   authenticatedResourceUser, requireWorkspaceAccess, requireProjectAccess,
   resourceWorkspace, resourceProject, ResourceAccessError,
@@ -102,13 +103,11 @@ function bindAsset(record: any, url: string, user: any): void {
   const profile = (localDB.users || []).find((candidate: any) => candidate.id === user?.id);
   if (record.entity_type === "USER_COVER") {
     if (profile) {
-      profile.cover_image_url = url;
-      profile.cover_image = url;
+      setPresentationMedia(profile, "cover", url);
     }
   } else if (record.entity_type === "USER_AVATAR" || (record.user_asset && !record.entity_type)) {
     if (profile) {
-      profile.avatar_url = url;
-      profile.avatar = url;
+      setPresentationMedia(profile, "avatar", url);
     }
   } else if (record.entity_type === "PROJECT_COVER") {
     const project = (localDB.projects || []).find(
@@ -119,7 +118,7 @@ function bindAsset(record: any, url: string, user: any): void {
     const workspace = (localDB.workspaces || []).find(
       (candidate: any) => candidate.id === record.entity_identifier || candidate.slug === record.entity_identifier
     );
-    if (workspace) workspace.logo_url = url;
+    if (workspace) setPresentationMedia(workspace, "logo", url);
   }
 }
 

@@ -3,6 +3,7 @@ import { requireWorkspaceAccess, requireIssueAccess, resourceProject, ResourceAc
 import type { RouteResult } from "./types";
 import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, verifyOtpCode, clearOtpCode } from "./auth";
 import { requestOtpDelivery } from "./otp-delivery";
+import { applyPresentationMediaPatch } from "./presentation-media";
 import {
   localDB,
   saveDB,
@@ -2162,6 +2163,7 @@ async function handleRouteUnlocked(
             }
           }
         }
+        applyPresentationMediaPatch(routeSessionUser, body, "user");
         Object.assign(routeSessionUser, body);
         saveDB();
       }
@@ -9503,6 +9505,7 @@ async function handleCRUD(
         }
       }
 
+      if (collection === "workspaces") applyPresentationMediaPatch(localDB[collection][idx], body, "workspace");
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
       if (collection === "issues") {
         if (body.state_id) localDB[collection][idx].state = body.state_id;
