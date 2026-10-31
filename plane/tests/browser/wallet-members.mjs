@@ -9,8 +9,8 @@ import { AbiCoder, id } from "ethers";
 import { createUserObject } from "../../packages/services/src/dapp/auth.ts";
 
 const root = process.cwd();
-const output = path.resolve(root, "docs/verification/wallet-members-2026-10-29");
-const built = path.resolve(root, "apps/web/build/client");
+const output = path.resolve(root, process.env.PLANE_TEST_OUTPUT_DIR || "docs/verification/wallet-members-2026-10-29");
+const built = process.env.PLANE_TEST_BUILD_DIR || path.resolve(root, "apps/web/build/client");
 const profile = path.resolve(root, `tmp/wallet-member-chrome-${Date.now()}`);
 for (const target of [output, profile]) {
   assert(target.startsWith(root + path.sep));
@@ -145,6 +145,7 @@ const chrome = spawn(
   "C:/Program Files/Google/Chrome/Application/chrome.exe",
   [
     "--headless=new",
+    "--disable-gpu",
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-extensions",
@@ -277,7 +278,8 @@ async function click(sessionId, expression) {
   );
 }
 async function screenshot(sessionId, filename) {
-  const result = await send("Page.captureScreenshot", { format: "png" }, sessionId);
+  await send("Page.bringToFront", {}, sessionId);
+  const result = await send("Page.captureScreenshot", { format: "png", fromSurface: true }, sessionId);
   fs.writeFileSync(path.join(output, filename), Buffer.from(result.data, "base64"));
 }
 async function page(user, wallet, suffix, label) {

@@ -34,3 +34,20 @@ lockfile, env thật, hạ tầng hoặc deploy contract trong đợt này.
 - Build trực tiếp với env hiện hữu bị guard bí mật chặn; không bỏ qua guard.
 - Giao dịch thực, email thật và cộng tác hai ví thật chỉ được ghi là đạt khi
   đã có bằng chứng tương ứng; fixture không thay thế các bằng chứng đó.
+
+## Tiến độ đã xác minh
+
+- Quyền xóa: `4e9cef7`.
+- Phạm vi asset và dịch vụ attachment trực tiếp: `f7c6ce6`.
+- Metadata link UUID: `1dc7b88`.
+- OTP chờ kết quả gửi, xử lý lỗi và giữ mã cũ khi gửi lại lỗi: `804177c`.
+- Analytics dùng danh sách thành viên chuẩn: `fd12a56`.
+- Bổ sung sau kiểm thử biên: chuẩn hóa URL (`88df5c7`), khóa alias CRUD và
+  thống nhất xóa attachment (`6792353`). Các ca tái hiện thất bại trước sửa,
+  đạt sau sửa.
+- Bổ sung ma trận quyền hợp lệ (`18b7568`): Workspace Admin ưu tiên hơn cache
+  project; Project Admin/creator được dùng tài nguyên project; Guest chỉ đọc.
+  Quyền quản trị project không cấp quyền sửa workspace logo.
+- Regression hiện tại: 279/279 đạt; TypeScript services/web đạt; services build
+  và web build trên bản sao đã loại bí mật đạt. Báo cáo nghiệm thu và giới hạn
+  nằm trong [báo cáo đợt sửa](/C:/task-system/plane/BAO_CAO_SUA_VA_KIEM_THU_2026-10-31.md).

@@ -90,7 +90,8 @@ function scan(dir) {
   }
 }
 scan(built);
-const evidence = path.resolve(root, "docs/verification/uploads-2026-10-31");
+const evidence = path.resolve(root, process.env.PLANE_TEST_OUTPUT_DIR || "docs/verification/uploads-2026-10-31");
+if (!evidence.startsWith(root + path.sep)) throw new Error("Unsafe verification output path");
 fs.mkdirSync(evidence, { recursive: true });
 const proof = {
   clientDate: "2026-10-31",

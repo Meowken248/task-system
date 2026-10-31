@@ -9,8 +9,8 @@ import { AbiCoder, id } from "ethers";
 import { createUserObject } from "../../packages/services/src/dapp/auth.ts";
 
 const root = process.cwd();
-const output = path.resolve(root, "docs/verification/uploads-2026-10-31");
-const built = process.env.UPLOAD_TEST_BUILD_DIR || path.resolve(root, "apps/web/build/client");
+const output = path.resolve(root, process.env.PLANE_TEST_OUTPUT_DIR || "docs/verification/uploads-2026-10-31");
+const built = process.env.PLANE_TEST_BUILD_DIR || process.env.UPLOAD_TEST_BUILD_DIR || path.resolve(root, "apps/web/build/client");
 const profile = path.resolve(root, `tmp/upload-chrome-${Date.now()}`);
 for (const target of [output, profile]) {
   assert(target.startsWith(root + path.sep));
@@ -238,6 +238,9 @@ function send(method, params = {}, sessionId) {
   });
 }
 const sessions = new Map();
+let mailAccepted = false;
+let mailRequests = 0;
+let mailGate;
 async function fulfill(event, sessionId) {
   const url = new URL(event.request.url);
   const headers = [
@@ -247,12 +250,12 @@ async function fulfill(event, sessionId) {
     { name: "access-control-allow-headers", value: "*" },
     { name: "access-control-allow-private-network", value: "true" },
   ];
-  const respond = (value) =>
+  const respond = (value, status = 200) =>
     send(
       "Fetch.fulfillRequest",
       {
         requestId: event.requestId,
-        responseCode: 200,
+        responseCode: status,
         responseHeaders: headers,
         body: Buffer.from(JSON.stringify(value)).toString("base64"),
       },
@@ -265,6 +268,12 @@ async function fulfill(event, sessionId) {
     body = null;
   }
   if (event.request.method === "OPTIONS") return respond({});
+  if (url.origin === origin && url.pathname === "/__mail_fixture") {
+    assert.equal(body.to?.[0]?.email, "browser-otp@example.invalid");
+    mailRequests++;
+    if (mailGate) await mailGate;
+    return respond(mailAccepted ? { messageId: "fixture-accepted" } : { error: "fixture mail unavailable" }, mailAccepted ? 201 : 503);
+  }
   if (url.origin === origin && url.pathname === "/__wallet_fixture") {
     assert.equal(body.from.toLowerCase(), admin);
     assert.equal(body.functionName, "addMember");
@@ -352,7 +361,7 @@ async function screenshot(sessionId, filename) {
   );
   fs.writeFileSync(path.join(output, filename), Buffer.from(result.data, "base64"));
 }
-async function page(user, wallet, suffix, label) {
+async function page(user, wallet, suffix, label, signedOut = false) {
   const context = await send("Target.createBrowserContext");
   await send("Browser.setDownloadBehavior", {
     behavior: "allow",
@@ -377,6 +386,7 @@ async function page(user, wallet, suffix, label) {
   const database = structuredClone(shared);
   const seed = `(()=>{const user=${JSON.stringify(user)},db=${JSON.stringify(database)},wallet=${JSON.stringify(wallet)},origin=${JSON.stringify(origin)};
     if(!sessionStorage.getItem('wallet_browser_seeded')){localStorage.clear();sessionStorage.clear();localStorage.setItem('plane_dapp_local_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_latest_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_auth_user',user.id);sessionStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_dapp_auth_user',user.id);localStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('wallet_browser_seeded','1');}
+    if(${JSON.stringify(signedOut)}){sessionStorage.setItem('plane_dapp_signed_out','1');window.__env__={VITE_MAIL_PROXY_URL:origin+'/__mail_fixture'};}
     const sdk={interceptors:{request:[],response:[]},emit(){},destroy(){},request:async(action,p={})=>{if(action==='getAllWallets')return[{address:wallet}];if(action==='getVaultStatus')return{isLocked:false,isInitialized:true};if(action.startsWith('getActiveWallet'))return{address:wallet};if(action==='sendTransaction'){if(p.isReadOnly)return{returnValue:-1};throw Error('Fixture blocks signing transactions');}return{};},on(){},off(){},registerHostAction(){},getStatus(){return{'crypto-vault':'ready','blockchain-bridge':'ready'};}};
     Object.defineProperty(window,'fiaiSDK',{configurable:true,get:()=>sdk,set:()=>{}});
   })();`;
@@ -468,12 +478,14 @@ try {
   fs.mkdirSync(downloadDir, { recursive: true });
   fs.rmSync(path.join(downloadDir, "upload-fixture.txt"), { force: true });
   await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDir, eventsEnabled: true });
-  const session = await page(owner, admin, slug + "/browse/UPL-1", "upload");
+  const session = await page(owner, admin, `${slug}/projects/${projectId}/issues/${issueId}/`, "upload");
   await until(
     session,
     "document.body.innerText.includes('Upload test description') || Array.from(document.querySelectorAll('textarea,input')).some(e=>e.value==='Upload regression issue')",
     60000
   );
+  await until(session, "location.pathname.endsWith('/browse/UPL-1')");
+  cases.push({ name: "UUID work item URL redirects to the correct browse URL", passed: true });
   await pause(1200);
   await send("Page.bringToFront", {}, session);
   const documentNode = await send("DOM.getDocument", {}, session);
@@ -554,6 +566,35 @@ try {
   } catch (error) {
     screenshotDiagnostics.push({ error: error.message });
   }
+  const authSession = await page(owner, admin, "sign-up", "otp", true);
+  await until(authSession, "!!document.getElementById('email')");
+  await click(authSession, "document.getElementById('email')");
+  await send("Input.insertText", { text: "browser-otp@example.invalid" }, authSession);
+  let releaseMail;
+  mailGate = new Promise((resolve) => { releaseMail = resolve; });
+  await click(authSession, "document.querySelector('form button[type=submit]')");
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (mailRequests > 0) break;
+    await pause(50);
+  }
+  assert.equal(mailRequests, 1);
+  assert.equal(await evaluate(authSession, "!!document.getElementById('unique-code')"), false);
+  assert.equal(await evaluate(authSession, "document.querySelector('form button[type=submit]').disabled"), true);
+  cases.push({ name: "OTP form waits for provider acceptance before opening the code step", passed: true });
+  releaseMail();
+  mailGate = undefined;
+  await until(authSession, "document.body.innerText.includes('Chưa gửi được mã xác nhận')");
+  assert.equal(await evaluate(authSession, "!!document.getElementById('unique-code')"), false);
+  assert.equal(await evaluate(authSession, "document.querySelector('form button[type=submit]').disabled"), false);
+  cases.push({ name: "OTP delivery failure shows a retryable message and retains the email form", passed: true });
+  mailAccepted = true;
+  await click(authSession, "document.querySelector('form button[type=submit]')");
+  await until(authSession, "!!document.getElementById('unique-code')");
+  assert.equal(mailRequests, 2);
+  assert.equal(await evaluate(authSession, "!!JSON.parse(localStorage.getItem('plane_dapp_otp_cache')||'{}')['browser-otp@example.invalid']?.codeHash"), true);
+  cases.push({ name: "Retry after mail recovers opens the OTP step with a stored code hash", passed: true });
+  await screenshot(authSession, "otp-after-retry.png");
+  assert.deepEqual(issues, [], "OTP browser checks must not introduce uncaught exceptions");
   fs.writeFileSync(
     path.join(output, "browser-validation.json"),
     JSON.stringify(
