@@ -1,5 +1,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { registerHooks, stripTypeScriptTypes } from "node:module";
+import { readFileSync } from "node:fs";
 import {
   saveAttachment,
   getAttachment,
@@ -7,7 +9,30 @@ import {
   FileUploadService,
   handleRoute,
   localDB,
+  resolveAssetSource,
 } from "../../packages/services/dist/index.js";
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith("@/"))
+      return nextResolve(new URL(`../../apps/web/core/${specifier.slice(2)}.ts`, import.meta.url).href, context);
+    return nextResolve(specifier, context);
+  },
+  load(url, context, nextLoad) {
+    if (url.startsWith(new URL("../../apps/web/core/services/", import.meta.url).href) && url.endsWith(".ts")) {
+      return {
+        format: "module",
+        source: stripTypeScriptTypes(readFileSync(new URL(url), "utf8"), { mode: "transform", sourceUrl: url }),
+        shortCircuit: true,
+      };
+    }
+    return nextLoad(url, context);
+  },
+});
+const { FileService } = await import("../../apps/web/core/services/file.service.ts");
+const { EditorAssetStore } = await import("../../apps/web/core/store/editor/asset.store.ts");
+let failWrites = false;
+let failOpen = false;
 
 // Mock IndexedDB and browser globals for Node test environment
 class MockIDBRequest {
@@ -15,7 +40,11 @@ class MockIDBRequest {
     this.result = null;
     this.error = null;
     this.onsuccess = null;
+    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- The mock implements this event-target property.
     this.onerror = null;
+  }
+  addEventListener(type, listener) {
+    this[`on${type}`] = listener;
   }
 }
 
@@ -23,10 +52,14 @@ class MockIDBTransaction {
   constructor(store) {
     this.store = store;
     this.oncomplete = null;
+    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- The mock implements this event-target property.
     this.onerror = null;
   }
   objectStore() {
     return this.store;
+  }
+  addEventListener(type, listener) {
+    this[`on${type}`] = listener;
   }
 }
 
@@ -35,7 +68,7 @@ class MockIDBObjectStore {
     this.map = map;
   }
   put(item) {
-    this.map.set(item.key, item);
+    if (!failWrites) this.map.set(item.key, item);
     const req = new MockIDBRequest();
     queueMicrotask(() => {
       req.result = item.key;
@@ -52,7 +85,7 @@ class MockIDBObjectStore {
     return req;
   }
   delete(key) {
-    this.map.delete(key);
+    if (!failWrites) this.map.delete(key);
     const req = new MockIDBRequest();
     queueMicrotask(() => {
       if (req.onsuccess) req.onsuccess({ target: req });
@@ -71,31 +104,46 @@ class MockIDBDatabase {
   createObjectStore() {
     return new MockIDBObjectStore(this.storage);
   }
-  transaction() {
+  transaction(_store, mode) {
     const tx = new MockIDBTransaction(new MockIDBObjectStore(this.storage));
     queueMicrotask(() => {
-      if (tx.oncomplete) tx.oncomplete();
+      if (this === mockDB && mode === "readwrite" && failWrites) {
+        tx.error = new Error("fixture-quota-exceeded");
+        tx.onabort?.();
+      } else tx.oncomplete?.();
     });
     return tx;
   }
   addEventListener() {}
+  close() {}
 }
 
 const mockDB = new MockIDBDatabase();
+const auxiliaryDB = new MockIDBDatabase();
 
 beforeEach(() => {
   mockDB.storage.clear();
+  failWrites = false;
+  failOpen = false;
   globalThis.window = {
     indexedDB: {
-      open: () => {
+      open: (name) => {
         const req = new MockIDBRequest();
         queueMicrotask(() => {
-          req.result = mockDB;
+          if (failOpen && name === "plane_attachment_storage") {
+            req.error = new Error("fixture-storage-blocked");
+            req.onerror?.();
+            return;
+          }
+          req.result = name === "plane_attachment_storage" ? mockDB : auxiliaryDB;
           if (req.onsuccess) req.onsuccess({ target: req });
         });
         return req;
       },
     },
+    location: { origin: "http://localhost:3000", hostname: "localhost", port: "3000", pathname: "/", search: "" },
+    dispatchEvent() {},
+    addEventListener() {},
     sessionStorage: {
       getItem: (k) => mockDB.storage.get(k) || null,
       setItem: (k, v) => mockDB.storage.set(k, v),
@@ -110,6 +158,10 @@ beforeEach(() => {
   globalThis.indexedDB = globalThis.window.indexedDB;
   globalThis.sessionStorage = globalThis.window.sessionStorage;
   globalThis.localStorage = globalThis.window.localStorage;
+  globalThis.document = { cookie: "" };
+  globalThis.fetch = async () => {
+    throw new Error("Unexpected network call from local upload test");
+  };
 
   localDB.users = [
     {
@@ -207,7 +259,8 @@ test("Full API lifecycle: POST init -> upload ingestion -> PATCH confirm -> GET 
   assert.equal(initRes.data.upload_data.url, "/api/assets/v2/upload/");
 
   // 2. Upload file content to storage
-  const sampleBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const sampleBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
   const uploadRes = await handleRoute("post", "/api/assets/v2/upload/", {
     asset_id: assetId,
     name: "screenshot.png",
@@ -319,11 +372,7 @@ test("Work item / Issue attachment syncs attachment_count and issue_attachments 
   ];
 
   // 1. Fetch issue details via route handler
-  const res = await handleRoute(
-    "get",
-    "/api/workspaces/test-ws/projects/proj-1/issues/issue-test-1/",
-    {}
-  );
+  const res = await handleRoute("get", "/api/workspaces/test-ws/projects/proj-1/issues/issue-test-1/", {});
   assert.equal(res.status, 200);
   assert.equal(res.data.id, "issue-test-1");
   // Attachment count must reflect real attachments in DB, not stale 0
@@ -332,11 +381,7 @@ test("Work item / Issue attachment syncs attachment_count and issue_attachments 
   assert.equal(res.data.issue_attachments[0].attributes.name, "Time off.xlsx");
 
   // 2. Fetch issue list
-  const listRes = await handleRoute(
-    "get",
-    "/api/workspaces/test-ws/projects/proj-1/issues/?all=true",
-    {}
-  );
+  const listRes = await handleRoute("get", "/api/workspaces/test-ws/projects/proj-1/issues/?all=true", {});
   assert.equal(listRes.status, 200);
   const found = listRes.data.results.find((i) => i.id === "issue-test-1");
   assert.ok(found);
@@ -353,3 +398,192 @@ test("Work item / Issue attachment syncs attachment_count and issue_attachments 
   assert.equal(attRes.data[0].id, "asset_test_123");
 });
 
+const png = () =>
+  new File(
+    [
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=",
+        "base64"
+      ),
+    ],
+    "screenshot.png",
+    { type: "image/png" }
+  );
+
+test("the real web FileService uploads an editor image and resolves its saved ID without HTTP", async () => {
+  const result = await new FileService().uploadProjectAsset(
+    "test-ws",
+    "proj-1",
+    { entity_type: "ISSUE_DESCRIPTION", entity_identifier: "issue-1" },
+    png()
+  );
+  assert(result.asset_url.startsWith("data:image/png;base64,"));
+  assert.equal(await resolveAssetSource(result.asset_id), result.asset_url);
+  assert.equal(
+    await resolveAssetSource(`/api/assets/v2/workspaces/test-ws/projects/proj-1/${result.asset_id}/`),
+    result.asset_url
+  );
+  assert.equal(
+    await resolveAssetSource(`http://localhost:3000/api/assets/v2/display/${result.asset_id}/?download=1`),
+    result.asset_url
+  );
+});
+
+test("an upload cannot be confirmed without actual file content", async () => {
+  const initialized = await handleRoute("post", "/api/assets/v2/workspaces/test-ws/", { name: "missing.png" });
+  const confirmed = await handleRoute("patch", `/api/assets/v2/workspaces/test-ws/${initialized.data.asset_id}/`, {});
+  assert.equal(confirmed.status, 409);
+  assert.equal(localDB.assets[0].is_uploaded, false);
+  assert.equal((await handleRoute("get", `/api/assets/v2/display/${initialized.data.asset_id}/`, {})).status, 404);
+  await assert.rejects(resolveAssetSource(initialized.data.asset_id), /nội dung tệp/);
+});
+
+test("missing upload bytes do not produce a fake success URL", async () => {
+  const response = await handleRoute("post", "/api/assets/v2/upload/", { asset_id: "no-bytes" });
+  assert.equal(response.status, 400);
+  assert.equal(response.data.success, undefined);
+});
+
+test("quota failures reject the web upload and never mark metadata as uploaded", async () => {
+  failWrites = true;
+  await assert.rejects(
+    new FileService().uploadWorkspaceAsset(
+      "test-ws",
+      { entity_type: "WORKSPACE_LOGO", entity_identifier: "ws-1" },
+      png()
+    ),
+    /quota/
+  );
+  assert.equal(localDB.workspaces[0].logo_url, "");
+  assert(localDB.assets.every((asset) => asset.is_uploaded === false));
+});
+
+test("a failed byte deletion keeps the asset metadata and does not report success", async () => {
+  const service = new FileService();
+  const uploaded = await service.uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png());
+  failWrites = true;
+  await assert.rejects(service.deleteWorkspaceAsset("test-ws", uploaded.asset_id));
+  assert(localDB.assets.some((asset) => asset.id === uploaded.asset_id));
+  assert(mockDB.storage.has(uploaded.asset_id));
+});
+
+test("blocked IndexedDB does not silently claim persistence in sessionStorage", async () => {
+  failOpen = true;
+  await assert.rejects(saveAttachment("must-not-be-fake", { name: "a.txt", base64: "YQ==" }), /blocked/);
+  assert.equal(sessionStorage.getItem("plane_att_must-not-be-fake"), null);
+});
+
+test("upload cancellation stops confirmation instead of returning a fabricated URL", async () => {
+  const service = new FileUploadService();
+  const form = new FormData();
+  form.append("file", png());
+  const upload = service.uploadFile("", form);
+  service.cancelUpload();
+  await assert.rejects(upload, /hủy upload/);
+  assert.equal(mockDB.storage.size, 0);
+});
+
+test("cancelling while metadata is being initialized also stops the web upload", async () => {
+  const service = new FileService();
+  const pending = service.uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png());
+  service.cancelUpload();
+  await assert.rejects(pending, /hủy upload/);
+  assert(localDB.assets.every((asset) => !asset.is_uploaded));
+});
+
+test("concurrent uploads retain independent IDs and file bytes", async () => {
+  const service = new FileService();
+  const [first, second] = await Promise.all([
+    service.uploadProjectAsset("test-ws", "proj-1", { entity_type: "ISSUE_DESCRIPTION" }, png()),
+    service.uploadProjectAsset(
+      "test-ws",
+      "proj-1",
+      { entity_type: "COMMENT_DESCRIPTION" },
+      new File(["comment bytes"], "comment.txt", { type: "text/plain" })
+    ),
+  ]);
+  assert.notEqual(first.asset_id, second.asset_id);
+  assert.equal(await resolveAssetSource(first.asset_id), first.asset_url);
+  assert.equal(await resolveAssetSource(second.asset_id), second.asset_url);
+});
+
+test("repeated callbacks for one editor block share a single pending upload", async () => {
+  const store = new EditorAssetStore();
+  const args = {
+    blockId: "same-image-block",
+    workspaceSlug: "test-ws",
+    projectId: "proj-1",
+    data: { entity_type: "ISSUE_DESCRIPTION" },
+    file: png(),
+  };
+  const [first, second] = await Promise.all([store.uploadEditorAsset(args), store.uploadEditorAsset(args)]);
+  assert.equal(first.asset_id, second.asset_id);
+  assert.equal(localDB.assets.length, 1);
+  assert.equal(store.assetsUploadStatus[args.blockId], undefined);
+});
+
+test("cover upload does not overwrite an existing user avatar", async () => {
+  const service = new FileService();
+  const avatar = await service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
+  const cover = await service.uploadUserAsset(
+    { entity_type: "USER_COVER" },
+    new File(["cover"], "cover.txt", { type: "text/plain" })
+  );
+  assert.equal(localDB.users[0].avatar_url, avatar.asset_url);
+  assert.equal(localDB.users[0].cover_image_url, cover.asset_url);
+});
+
+test("workspace logo and project cover bind the actual uploaded content", async () => {
+  const service = new FileService();
+  const logo = await service.uploadWorkspaceAsset(
+    "test-ws",
+    { entity_type: "WORKSPACE_LOGO", entity_identifier: "ws-1" },
+    png()
+  );
+  const cover = await service.uploadProjectAsset(
+    "test-ws",
+    "proj-1",
+    { entity_type: "PROJECT_COVER", entity_identifier: "proj-1" },
+    png()
+  );
+  assert.equal(localDB.workspaces[0].logo_url, logo.asset_url);
+  assert.equal(localDB.projects[0].cover_image, cover.asset_url);
+});
+
+test("a confirmed snapshot can resolve content on a device without the original byte cache", async () => {
+  const result = await new FileService().uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png());
+  mockDB.storage.clear();
+  assert.equal(await resolveAssetSource(result.asset_id), result.asset_url);
+  assert.equal(
+    (await handleRoute("get", `/api/assets/v2/display/${result.asset_id}/`, {})).data.asset_url,
+    result.asset_url
+  );
+});
+
+test("duplicating an editor asset copies bytes under the new ID and survives removal of the original", async () => {
+  const service = new FileService();
+  const original = await service.uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png());
+  const copy = await service.duplicateAsset("test-ws", original.asset_id, {
+    entity_type: "PAGE_DESCRIPTION",
+    entity_id: "page-copy",
+  });
+  assert.notEqual(copy.asset_id, original.asset_id);
+  assert.equal((await getAttachment(copy.asset_id)).key, copy.asset_id);
+  await service.deleteWorkspaceAsset("test-ws", original.asset_id);
+  assert.equal(await resolveAssetSource(copy.asset_id), original.asset_url);
+  await assert.rejects(resolveAssetSource(original.asset_id));
+});
+
+test("missing restore and check operations do not create phantom assets", async () => {
+  assert.equal((await handleRoute("get", "/api/assets/v2/workspaces/test-ws/check/absent/", {})).data.exists, false);
+  assert.equal((await handleRoute("post", "/api/assets/v2/workspaces/test-ws/restore/absent/", {})).status, 404);
+  assert.equal(localDB.assets.length, 0);
+});
+
+test("data, blob and external sources are preserved instead of being wrapped in API paths", async () => {
+  await Promise.all(
+    ["data:image/png;base64,YQ==", "blob:http://localhost/fixture", "https://images.example.invalid/a.png"].map(
+      async (source) => assert.equal(await resolveAssetSource(source), source)
+    )
+  );
+});

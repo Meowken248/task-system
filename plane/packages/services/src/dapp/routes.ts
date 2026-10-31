@@ -1,3 +1,4 @@
+import { handleFileAssetRoute } from "./file-assets";
 import type { RouteResult } from "./types";
 import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, generateAndStoreOtp, verifyOtpCode, clearOtpCode } from "./auth";
 import {
@@ -71,7 +72,7 @@ import { respondToWorkspaceInvitation, findLocalWorkspace } from "./workspace-in
 import { invitationLink, withInvitationLock } from "./invitation-policy";
 import { listWorkspaceMembers } from "./workspace-members";
 import { addWorkspaceWalletMember, discoverWalletWorkspaces, cacheVerifiedWalletMember } from "./workspace-wallet-members";
-import { getAttachment, saveAttachment, deleteAttachment } from "../file/attachment-storage";
+import { deleteAttachment } from "../file/attachment-storage";
 export { readWorkspaceSnapshotFromChain, recoverInvitationFromChainSnapshot, findLocalWorkspace, buildWorkspaceFromChainSnapshot, upsertWorkspaceMemberRecord } from "./workspace-invitations";
 const escapeCsv = (val: any): string => {
   if (val === null || val === undefined) return '""';
@@ -4926,209 +4927,8 @@ async function handleRouteUnlocked(
     return ok({});
   }
 
-  // Assets v2 bulk status update
-  if (url.match(/\/api\/assets\/v2\/.*\/bulk\/?/) && method === "post") {
-    return ok({ success: true, asset_ids: body?.asset_ids || [] });
-  }
-
-  // Assets v2 upload ingestion endpoint
-  if (url.match(/\/api\/assets\/v2\/upload\/?/) && method === "post") {
-    const assetId = body?.asset_id || body?.id || body?.key;
-    if (assetId && body?.base64) {
-      await saveAttachment(assetId, {
-        name: body?.name || "uploaded_file",
-        base64: body.base64,
-        type: body?.type || "application/octet-stream",
-        size: body?.size || body.base64.length,
-      });
-    }
-    const dataUrl = body?.base64
-      ? (body.base64.startsWith("data:") ? body.base64 : `data:${body?.type || "application/octet-stream"};base64,${body.base64}`)
-      : `/api/assets/v2/display/${assetId || ""}/`;
-    return ok({
-      asset_id: assetId,
-      id: assetId,
-      asset_url: dataUrl,
-      file_url: dataUrl,
-      success: true,
-    });
-  }
-
-  // Assets v2 metadata initialization & signed URL response
-  if (url.match(/\/api\/assets\/v2\//) && method === "post") {
-    const assetId = body?.id || body?.asset_id || body?.key || `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const assetUrl = `/api/assets/v2/display/${assetId}/`;
-    const issueMatch = url.match(/\/(issues|work-items|epics)\/([^/]+)\/attachments/);
-    const issueId = issueMatch ? issueMatch[2] : null;
-
-    if (issueId) {
-      if (!localDB["attachments"]) localDB["attachments"] = [];
-      localDB["attachments"].push({
-        id: assetId,
-        asset_id: assetId,
-        asset: assetId,
-        asset_url: assetUrl,
-        issue: issueId,
-        issue_id: issueId,
-        is_uploaded: false,
-        attributes: {
-          name: body?.name || "attachment",
-          size: body?.size || 1024,
-          type: body?.type || "application/octet-stream",
-        },
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      saveDB();
-    }
-
-    if (!localDB["assets"]) localDB["assets"] = [];
-    localDB["assets"].push({
-      id: assetId,
-      asset_id: assetId,
-      entity_type: body?.entity_type,
-      entity_identifier: body?.entity_identifier,
-      name: body?.name || "asset",
-      size: body?.size || 0,
-      type: body?.type || "application/octet-stream",
-      asset_url: assetUrl,
-      is_uploaded: false,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-    saveDB();
-
-    return ok({
-      asset_id: assetId,
-      id: assetId,
-      asset_url: assetUrl,
-      upload_data: {
-        url: "/api/assets/v2/upload/",
-        fields: {
-          asset_id: assetId,
-          key: assetId,
-          "Content-Type": body?.type || "application/octet-stream",
-        },
-      },
-    });
-  }
-
-  // Assets v2 confirmation & binding to target entities
-  if (url.match(/\/api\/assets\/v2\//) && method === "patch") {
-    const segmentMatch = url.match(/\/attachments\/([^/]+)\/?/);
-    const trailingId = (url.split("?")[0] || "").replace(/\/+$/, "").split("/").pop() || null;
-    const assetId = segmentMatch ? segmentMatch[1] : trailingId;
-
-    let targetAttachment = (localDB["attachments"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
-    let targetAsset = (localDB["assets"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
-
-    if (targetAttachment) targetAttachment.is_uploaded = true;
-    if (targetAsset) targetAsset.is_uploaded = true;
-
-    // Check if image data exists in local storage
-    const stored = assetId ? await getAttachment(assetId) : null;
-    const resolvedUrl = stored?.base64
-      ? (stored.base64.startsWith("data:") ? stored.base64 : `data:${stored.type || "image/png"};base64,${stored.base64}`)
-      : `/api/assets/v2/display/${assetId}/`;
-
-    if (targetAttachment) targetAttachment.asset_url = resolvedUrl;
-    if (targetAsset) targetAsset.asset_url = resolvedUrl;
-
-    // Bind User Avatar / User Cover
-    if (url.includes("user-assets") || targetAsset?.entity_type === "USER_AVATAR") {
-      if (routeSessionUser) {
-        routeSessionUser.avatar_url = resolvedUrl;
-        routeSessionUser.avatar = resolvedUrl;
-      }
-      if (localDB.users) {
-        const u = localDB.users.find((entry: any) => (routeSessionUserId && entry.id === routeSessionUserId) || (loggedInEmail && entry.email === loggedInEmail));
-        if (u) {
-          u.avatar_url = resolvedUrl;
-          u.avatar = resolvedUrl;
-        }
-      }
-    } else if (targetAsset?.entity_type === "USER_COVER") {
-      if (routeSessionUser) routeSessionUser.cover_image = resolvedUrl;
-      if (localDB.users) {
-        const u = localDB.users.find((entry: any) => (routeSessionUserId && entry.id === routeSessionUserId) || (loggedInEmail && entry.email === loggedInEmail));
-        if (u) u.cover_image = resolvedUrl;
-      }
-    } else if (targetAsset?.entity_type === "PROJECT_COVER") {
-      const proj = (localDB.projects || []).find((p: any) => p.id === targetAsset.entity_identifier || p.identifier === targetAsset.entity_identifier);
-      if (proj) proj.cover_image = resolvedUrl;
-    } else if (targetAsset?.entity_type === "WORKSPACE_LOGO") {
-      const ws = (localDB.workspaces || []).find((w: any) => w.id === targetAsset.entity_identifier || w.slug === targetAsset.entity_identifier);
-      if (ws) ws.logo_url = resolvedUrl;
-    }
-
-    saveDB();
-    return ok(targetAttachment || targetAsset || { id: assetId, asset_id: assetId, is_uploaded: true, asset_url: resolvedUrl });
-  }
-
-  // Assets v2 retrieval & download
-  if (url.match(/\/api\/assets\/v2\//) && method === "get") {
-    const trailingId = (url.split("?")[0] || "").replace(/\/+$/, "").split("/").pop() || null;
-    const assetId = trailingId && trailingId !== "v2" && trailingId !== "user-assets" ? trailingId : null;
-
-    if (!assetId) return { data: { error: "Asset ID required" }, status: 400 };
-
-    const stored = await getAttachment(assetId);
-    const attachment = (localDB["attachments"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
-    const asset = (localDB["assets"] || []).find((a: any) => a.id === assetId || a.asset_id === assetId);
-
-    if (url.includes("/download/")) {
-      if (stored) {
-        const dataUrl = stored.base64.startsWith("data:") ? stored.base64 : `data:${stored.type || "application/octet-stream"};base64,${stored.base64}`;
-        return ok({
-          id: assetId,
-          asset_id: assetId,
-          name: stored.name,
-          type: stored.type,
-          size: stored.size,
-          base64: stored.base64,
-          asset_url: dataUrl,
-          file_url: dataUrl,
-        });
-      }
-      if (attachment) return ok(attachment);
-      return { data: { error: "Download file not found" }, status: 404 };
-    }
-
-    if (stored) {
-      const dataUrl = stored.base64.startsWith("data:") ? stored.base64 : `data:${stored.type || "image/png"};base64,${stored.base64}`;
-      return ok({
-        id: assetId,
-        asset_id: assetId,
-        name: stored.name,
-        type: stored.type,
-        size: stored.size,
-        asset_url: dataUrl,
-        file_url: dataUrl,
-        is_uploaded: true,
-      });
-    }
-
-    if (attachment) return ok(attachment);
-    if (asset) return ok(asset);
-    return { data: { error: "Asset not found" }, status: 404 };
-  }
-
-  // Assets v2 deletion
-  if (url.match(/\/api\/assets\/v2\//) && method === "delete") {
-    const trailingId = (url.split("?")[0] || "").replace(/\/+$/, "").split("/").pop() || null;
-    const assetId = trailingId && trailingId !== "v2" ? trailingId : null;
-
-    if (assetId) {
-      if (localDB["attachments"]) {
-        localDB["attachments"] = localDB["attachments"].filter((a: any) => a.id !== assetId && a.asset_id !== assetId);
-      }
-      if (localDB["assets"]) {
-        localDB["assets"] = localDB["assets"].filter((a: any) => a.id !== assetId && a.asset_id !== assetId);
-      }
-      await deleteAttachment(assetId);
-      saveDB();
-    }
-    return ok({ success: true, deleted: assetId });
+  if (/\/api\/assets\/v2(?:\/|$)/.test(url)) {
+    return handleFileAssetRoute(method, url, body, routeSessionUser);
   }
 
   // ── Issue sub-resource endpoints ─────────────────────────────────────
@@ -5217,6 +5017,7 @@ async function handleRouteUnlocked(
       }
       if (method === "delete") {
         if (localDB.comments) {
+          localDB._deleted_comment_ids = [...new Set([...(localDB._deleted_comment_ids || []), targetIssueCommentId])];
           localDB.comments = localDB.comments.filter((c: any) => c.id !== targetIssueCommentId);
           saveDB();
         }
@@ -5296,6 +5097,7 @@ async function handleRouteUnlocked(
         const commentIdMatch = url.match(/\/comments\/([^/]+)\/?(?:\?.*)?$/);
         if (commentIdMatch) {
           const commentId = commentIdMatch[1];
+          localDB._deleted_comment_ids = [...new Set([...(localDB._deleted_comment_ids || []), commentId])];
           localDB.comments = localDB.comments.filter((c: any) => c.id !== commentId);
           saveDB();
         }

@@ -4,15 +4,16 @@
  * See the LICENSE file for details.
  */
 
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import { observer } from "mobx-react";
-import { useParams } from "next/navigation";
 import { Download } from "lucide-react";
 // plane imports
 import { CORE_EXTENSIONS } from "@plane/editor";
 import type { TEditorAsset } from "@plane/editor";
 import { useTranslation } from "@plane/i18n";
-import { getEditorAssetDownloadSrc, getEditorAssetSrc } from "@plane/utils";
+import { resolveAssetSource } from "@plane/services";
+import { downloadAsset } from "@/helpers/download-asset";
+import { setToast, TOAST_TYPE } from "@plane/propel/toast";
 // plane web imports
 import { AdditionalPageNavigationPaneAssetItem } from "@/plane-web/components/pages/navigation-pane/tab-panels/assets";
 import { PageNavigationPaneAssetsTabEmptyState } from "@/plane-web/components/pages/navigation-pane/tab-panels/empty-states/assets";
@@ -30,42 +31,24 @@ type AssetItemProps = {
 
 const AssetItem = observer(function AssetItem(props: AssetItemProps) {
   const { asset, page } = props;
-  // navigation
-  const { workspaceSlug } = useParams();
-  // derived values
-  const { project_ids } = page;
-  // translation
   const { t } = useTranslation();
-
-  const assetSrc: string = useMemo(() => {
-    if (!asset.src || !workspaceSlug) return "";
-    if (asset.src.startsWith("http")) {
-      return asset.src;
-    } else {
-      return (
-        getEditorAssetSrc({
-          assetId: asset.src,
-          projectId: project_ids?.[0],
-          workspaceSlug: workspaceSlug.toString(),
-        }) ?? ""
-      );
-    }
-  }, [asset.src, project_ids, workspaceSlug]);
-
-  const assetDownloadSrc: string = useMemo(() => {
-    if (!asset.src || !workspaceSlug) return "";
-    if (asset.src.startsWith("http")) {
-      return asset.src;
-    } else {
-      return (
-        getEditorAssetDownloadSrc({
-          assetId: asset.src,
-          projectId: project_ids?.[0],
-          workspaceSlug: workspaceSlug.toString(),
-        }) ?? ""
-      );
-    }
-  }, [asset.src, project_ids, workspaceSlug]);
+  const [assetSrc, setAssetSrc] = useState("");
+  useEffect(() => {
+    let active = true;
+    setAssetSrc("");
+    void resolveAssetSource(asset.src)
+      .then((url) => {
+        if (active) setAssetSrc(url);
+        return url;
+      })
+      .catch(() => {
+        if (active) setAssetSrc("");
+      });
+    return () => {
+      active = false;
+    };
+  }, [asset.src]);
+  const assetDownloadSrc = assetSrc;
 
   if ([CORE_EXTENSIONS.IMAGE, CORE_EXTENSIONS.CUSTOM_IMAGE].includes(asset.type as CORE_EXTENSIONS))
     return (
@@ -84,7 +67,21 @@ const AssetItem = observer(function AssetItem(props: AssetItemProps) {
           <div className="flex items-end justify-between gap-2">
             <p className="shrink-0 text-11 text-secondary" />
             <a
-              href={assetDownloadSrc}
+              href={assetDownloadSrc || undefined}
+              download={asset.name}
+              onClick={async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                try {
+                  await downloadAsset([asset.src], asset.name);
+                } catch (error) {
+                  setToast({
+                    type: TOAST_TYPE.WARNING,
+                    title: "Không mở được tệp",
+                    message: error instanceof Error ? error.message : "Không tải được tệp này.",
+                  });
+                }
+              }}
               target="_blank"
               rel="noreferrer noopener"
               className="pointer-events-none flex shrink-0 items-center gap-1 rounded-sm px-1 py-0.5 text-secondary opacity-0 transition-opacity group-hover/asset-item:pointer-events-auto group-hover/asset-item:opacity-100 hover:text-primary"

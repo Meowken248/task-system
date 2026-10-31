@@ -144,15 +144,37 @@ function openAttachmentDB(): Promise<IDBDatabase> {
     if (typeof window === "undefined" || !window.indexedDB) {
       return reject(new Error("IndexedDB not available"));
     }
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
+    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      reject(new Error("Không mở được kho tệp. Hãy đóng tab Plane cũ rồi thử lại."));
+    }, 8000);
+    request.addEventListener("upgradeneeded", () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: "key" });
       }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    });
+    request.addEventListener("success", () => {
+      clearTimeout(timer);
+      if (settled) {
+        request.result.close?.();
+        return;
+      }
+      settled = true;
+      resolve(request.result);
+    });
+    request.addEventListener("error", () => {
+      settled = true;
+      clearTimeout(timer);
+      reject(request.error);
+    });
+    request.addEventListener("blocked", () => {
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error("Kho tệp đang bị tab khác khóa."));
+    });
   });
 }
 
@@ -163,24 +185,19 @@ export async function saveAttachmentToStorage(
   key: string,
   data: { name: string; base64: string; type?: string; size?: number }
 ): Promise<void> {
-  if (!key || !data.base64) return;
+  if (!key || !data.base64) throw new Error("Tệp không có nội dung để lưu.");
+  const db = await openAttachmentDB();
   try {
-    const db = await openAttachmentDB();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, "readwrite");
       const store = tx.objectStore(STORE_NAME);
-      store.put({ key, ...data, savedAt: Date.now() });
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      store.put({ ...data, key, savedAt: Date.now() });
+      tx.addEventListener("complete", () => resolve());
+      tx.addEventListener("error", () => reject(tx.error));
+      tx.addEventListener("abort", () => reject(tx.error || new Error("Lưu tệp đã bị hủy.")));
     });
-  } catch (e) {
-    try {
-      if (data.base64.length < 2000000) {
-        sessionStorage.setItem(`plane_att_${key}`, JSON.stringify(data));
-      }
-    } catch {
-      // Ignore storage quota errors
-    }
+  } finally {
+    db.close?.();
   }
 }
 
@@ -197,8 +214,8 @@ export async function getAttachmentFromStorage(
       const tx = db.transaction(STORE_NAME, "readonly");
       const store = tx.objectStore(STORE_NAME);
       const req = store.get(key);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
+      req.addEventListener("success", () => resolve(req.result || null));
+      req.addEventListener("error", () => reject(req.error));
     });
     if (result && result.base64) return result;
   } catch {
@@ -224,8 +241,8 @@ export async function deleteAttachmentFromStorage(key: string): Promise<void> {
       const tx = db.transaction(STORE_NAME, "readwrite");
       const store = tx.objectStore(STORE_NAME);
       store.delete(key);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      tx.addEventListener("complete", () => resolve());
+      tx.addEventListener("error", () => reject(tx.error));
     });
   } catch {
     // fallback
@@ -237,4 +254,3 @@ export async function deleteAttachmentFromStorage(key: string): Promise<void> {
     // ignore
   }
 }
-

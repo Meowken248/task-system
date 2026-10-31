@@ -272,14 +272,16 @@ function ImageFullScreenModalWithoutPortal(props: Props) {
             </button>
           </div>
           {!isTouchDevice && (
-            <button
-              type="button"
-              onClick={() => window.open(downloadSrc, "_blank")}
+            <a
+              href={downloadSrc}
+              download="image"
+              target="_blank"
+              rel="noopener noreferrer"
               className="grid size-8 flex-shrink-0 place-items-center text-white/60 transition-colors duration-200 hover:text-white"
               aria-label="Download image"
             >
               <Download className="size-4" />
-            </button>
+            </a>
           )}
           {!isTouchDevice && (
             <button

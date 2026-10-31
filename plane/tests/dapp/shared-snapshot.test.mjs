@@ -15,6 +15,57 @@ beforeEach(() => {
   Object.assign(localDB, structuredClone(defaultDB));
 });
 
+test("refresh preserves editor comments and uploaded asset metadata missing from an older snapshot", () => {
+  const url = "data:image/png;base64,YQ==";
+  localDB.comments = [
+    {
+      id: "comment-with-image",
+      issue: "issue-1",
+      comment_html: '<image-component src="asset-1"></image-component>',
+      updated_at: "2026-10-31T10:00:00Z",
+    },
+  ];
+  localDB.assets = [
+    { id: "asset-1", asset_id: "asset-1", asset_url: url, is_uploaded: true, updated_at: "2026-10-31T10:00:00Z" },
+  ];
+  applyOffchainDB({ comments: [], assets: [], users: [], workspaces: [] });
+  assert.equal(localDB.comments[0].id, "comment-with-image");
+  assert.equal(localDB.assets[0].asset_url, url);
+});
+
+test("newer remote editor comments and asset metadata win without duplicating records", () => {
+  localDB.comments = [{ id: "comment", comment_html: "old", updated_at: "2026-10-29T00:00:00Z" }];
+  localDB.assets = [{ id: "asset", name: "old", updated_at: "2026-10-29T00:00:00Z" }];
+  applyOffchainDB({
+    comments: [{ id: "comment", comment_html: "new", updated_at: "2026-10-31T00:00:00Z" }],
+    assets: [{ id: "asset", name: "new", updated_at: "2026-10-31T00:00:00Z" }],
+    users: [],
+    workspaces: [],
+  });
+  assert.equal(localDB.comments.length, 1);
+  assert.equal(localDB.comments[0].comment_html, "new");
+  assert.equal(localDB.assets.length, 1);
+  assert.equal(localDB.assets[0].name, "new");
+});
+
+test("old snapshots cannot resurrect deleted editor assets, attachments or comments", () => {
+  localDB._deleted_asset_ids = ["asset-deleted"];
+  localDB._deleted_attachment_ids = ["attachment-deleted"];
+  localDB._deleted_comment_ids = ["comment-deleted"];
+  applyOffchainDB({
+    assets: [{ id: "asset-deleted" }],
+    attachments: [{ id: "attachment-deleted" }],
+    comments: [{ id: "comment-deleted" }],
+    issue_comments: [{ id: "comment-deleted" }],
+    users: [],
+    workspaces: [],
+  });
+  assert.deepEqual(localDB.assets, []);
+  assert.deepEqual(localDB.attachments, []);
+  assert.deepEqual(localDB.comments, []);
+  assert.deepEqual(localDB.issue_comments, []);
+});
+
 test("shared exports omit credentials and nested secrets without mutating local profiles", () => {
   setStoredCredential("owner@example.invalid", "local-password-hash");
   localDB.users = [

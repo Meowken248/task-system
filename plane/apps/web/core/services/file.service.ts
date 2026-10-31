@@ -50,8 +50,8 @@ export enum TFileAssetType {
 }
 
 export class FileService extends APIService {
-  private cancelSource: any;
   private fileUploadService: FileUploadService;
+  private cancellationVersion = 0;
 
   constructor() {
     super(API_BASE_URL);
@@ -60,12 +60,37 @@ export class FileService extends APIService {
     this.fileUploadService = new FileUploadService();
   }
 
-  private async updateWorkspaceAssetUploadStatus(workspaceSlug: string, assetId: string): Promise<void> {
-    return this.patch(`/api/assets/v2/workspaces/${workspaceSlug}/${assetId}/`)
-      .then((response) => response?.data)
-      .catch((error) => {
-        throw error?.response?.data;
-      });
+  private async uploadAsset(
+    path: string,
+    data: TFileEntityInfo,
+    file: File,
+    onProgress?: AxiosRequestConfig["onUploadProgress"]
+  ): Promise<TFileSignedURLResponse> {
+    const version = this.cancellationVersion;
+    const checkCancelled = () => {
+      if (version !== this.cancellationVersion) throw new Error("Đã hủy upload tệp.");
+    };
+    try {
+      const metadata = await getFileMetaDataForUpload(file);
+      const response = await this.post(path, { ...data, ...metadata });
+      const initialized: TFileSignedURLResponse = response.data;
+      checkCancelled();
+      if (!initialized?.asset_id || !initialized.upload_data?.fields)
+        throw new Error("Chưa tạo được mã tệp. Hãy thử lại.");
+      const content = await this.fileUploadService.uploadFile(
+        initialized.upload_data.url,
+        generateFileUploadPayload(initialized, file),
+        onProgress
+      );
+      if (!content?.asset_url) throw new Error("Chưa lưu được nội dung tệp.");
+      checkCancelled();
+      const confirmed = await this.patch(`${path}${initialized.asset_id}/`);
+      if (!confirmed.data?.is_uploaded) throw new Error("Chưa xác nhận được tệp đã lưu.");
+      return { ...initialized, asset_url: content.asset_url };
+    } catch (error) {
+      const failure = error as { response?: { data?: unknown } };
+      throw failure?.response?.data || error;
+    }
   }
 
   async uploadWorkspaceAsset(
@@ -74,48 +99,11 @@ export class FileService extends APIService {
     file: File,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TFileSignedURLResponse> {
-    const fileMetaData = await getFileMetaDataForUpload(file);
-    return this.post(`/api/assets/v2/workspaces/${workspaceSlug}/`, {
-      ...data,
-      ...fileMetaData,
-    })
-      .then(async (response) => {
-        const signedURLResponse: TFileSignedURLResponse = response?.data;
-        const fileUploadPayload = generateFileUploadPayload(signedURLResponse, file);
-        try {
-          const uploadResult = await this.fileUploadService.uploadFile(
-            signedURLResponse.upload_data.url,
-            fileUploadPayload
-          );
-          if (uploadResult && (uploadResult.asset_url || uploadResult.asset)) {
-            signedURLResponse.asset_url = uploadResult.asset_url || uploadResult.asset;
-          }
-        } catch (uploadError: any) {
-          console.warn("Caught upload error in file.service.ts, falling back to mock:", uploadError);
-          signedURLResponse.asset_url = "mock-uploaded-file-url";
-        }
-        await this.updateWorkspaceAssetUploadStatus(workspaceSlug.toString(), signedURLResponse.asset_id);
-        return signedURLResponse;
-      })
-      .catch((error) => {
-        throw error?.response?.data || error;
-      });
+    return this.uploadAsset(`/api/assets/v2/workspaces/${workspaceSlug}/`, data, file, uploadProgressHandler);
   }
 
   async deleteWorkspaceAsset(workspaceSlug: string, assetId: string): Promise<void> {
     return this.delete(`/api/assets/v2/workspaces/${workspaceSlug}/${assetId}/`)
-      .then((response) => response?.data)
-      .catch((error) => {
-        throw error?.response?.data;
-      });
-  }
-
-  private async updateProjectAssetUploadStatus(
-    workspaceSlug: string,
-    projectId: string,
-    assetId: string
-  ): Promise<void> {
-    return this.patch(`/api/assets/v2/workspaces/${workspaceSlug}/projects/${projectId}/${assetId}/`)
       .then((response) => response?.data)
       .catch((error) => {
         throw error?.response?.data;
@@ -158,64 +146,16 @@ export class FileService extends APIService {
     file: File,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TFileSignedURLResponse> {
-    const fileMetaData = await getFileMetaDataForUpload(file);
-    return this.post(`/api/assets/v2/workspaces/${workspaceSlug}/projects/${projectId}/`, {
-      ...data,
-      ...fileMetaData,
-    })
-      .then(async (response) => {
-        const signedURLResponse: TFileSignedURLResponse = response?.data;
-        const fileUploadPayload = generateFileUploadPayload(signedURLResponse, file);
-        try {
-          const uploadResult = await this.fileUploadService.uploadFile(
-            signedURLResponse.upload_data.url,
-            fileUploadPayload
-          );
-          if (uploadResult && (uploadResult.asset_url || uploadResult.asset)) {
-            signedURLResponse.asset_url = uploadResult.asset_url || uploadResult.asset;
-          }
-        } catch (uploadError: any) {
-          console.warn("Caught upload error in uploadProjectAsset, falling back to mock:", uploadError);
-          signedURLResponse.asset_url = "mock-uploaded-file-url";
-        }
-        await this.updateProjectAssetUploadStatus(workspaceSlug, projectId, signedURLResponse.asset_id);
-        return signedURLResponse;
-      })
-      .catch((error) => {
-        throw error?.response?.data || error;
-      });
-  }
-
-  private async updateUserAssetUploadStatus(assetId: string): Promise<void> {
-    return this.patch(`/api/assets/v2/user-assets/${assetId}/`)
-      .then((response) => response?.data)
-      .catch((error) => {
-        throw error?.response?.data;
-      });
+    return this.uploadAsset(
+      `/api/assets/v2/workspaces/${workspaceSlug}/projects/${projectId}/`,
+      data,
+      file,
+      uploadProgressHandler
+    );
   }
 
   async uploadUserAsset(data: TFileEntityInfo, file: File): Promise<TFileSignedURLResponse> {
-    const fileMetaData = await getFileMetaDataForUpload(file);
-    return this.post(`/api/assets/v2/user-assets/`, {
-      ...data,
-      ...fileMetaData,
-    })
-      .then(async (response) => {
-        const signedURLResponse: TFileSignedURLResponse = response?.data;
-        const fileUploadPayload = generateFileUploadPayload(signedURLResponse, file);
-        const uploadResult = await this.fileUploadService.uploadFile(
-          signedURLResponse.upload_data.url,
-          fileUploadPayload
-        );
-        if (uploadResult && (uploadResult.asset_url || uploadResult.asset)) {
-          signedURLResponse.asset_url = uploadResult.asset_url || uploadResult.asset;
-        }
-        await this.updateUserAssetUploadStatus(signedURLResponse.asset_id);
-        return signedURLResponse;
-      })
-      .catch((error) => {
-        throw error?.response?.data;
-      });
+    return this.uploadAsset(`/api/assets/v2/user-assets/`, data, file);
   }
 
   async deleteUserAsset(assetId: string): Promise<void> {
@@ -285,7 +225,8 @@ export class FileService extends APIService {
   }
 
   cancelUpload() {
-    this.cancelSource.cancel("Upload canceled");
+    this.cancellationVersion++;
+    this.fileUploadService.cancelUpload();
   }
 
   async getUnsplashImages(query?: string): Promise<UnSplashImage[]> {

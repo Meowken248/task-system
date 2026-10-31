@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import axios from "axios";
+import type { AxiosRequestConfig, AxiosProgressEvent } from "axios";
 // api service
 import { APIService } from "../api.service";
 import { saveAttachment } from "./attachment-storage";
@@ -64,63 +64,64 @@ async function computeSha256(file: File): Promise<string> {
 }
 
 /**
- * Service class for handling file upload operations via File Processor and Metanode FiaiSDK
+ * Local-first uploads shared by editor images, covers and attachments.
  *
  * @extends {APIService}
  */
 export class FileUploadService extends APIService {
-  private cancelSource: any;
+  private operations = new Set<{ cancelled: boolean }>();
 
   constructor() {
     super("");
   }
 
   /**
-   * Uploads a file using File Processor / FiaiSDK with safe fallback
+   * Saves file bytes locally before callers confirm asset metadata.
    * @param {string} _url - Ignored in DApp mode
    * @param {FormData} data - The form data to upload
    * @returns {Promise<any>} Promise resolving to upload result with asset hash
    * @throws {Error} If the request fails
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async uploadFile(_url: string, data: FormData): Promise<any> {
-    if (typeof window === "undefined") return;
-    // oxlint-disable-next-line import/no-named-as-default-member -- Axios exposes this factory on its default value; its named CancelToken declaration is type-only.
-    this.cancelSource = axios.CancelToken.source();
+  async uploadFile(_url: string, data: FormData, onProgress?: AxiosRequestConfig["onUploadProgress"]): Promise<any> {
+    if (typeof window === "undefined") throw new Error("Upload cần được thực hiện trên trình duyệt.");
 
     // 1. Extract file from FormData
     const file = (data.get("asset") || data.get("file")) as File;
-    if (!file) {
+    if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
       throw new Error("No file found in FormData under 'asset' or 'file' key");
     }
-
+    const operation = { cancelled: false };
+    this.operations.add(operation);
+    const checkCancelled = () => {
+      if (operation.cancelled) throw new Error("Đã hủy upload tệp.");
+    };
+    const progress = (value: number) =>
+      onProgress?.({
+        loaded: Math.floor(file.size * value),
+        total: file.size,
+        progress: value,
+        bytes: 0,
+        lengthComputable: true,
+      } as AxiosProgressEvent);
     try {
-      const [base64Data, hash] = await Promise.all([
-        fileToBase64(file),
-        computeSha256(file),
-      ]);
-      const ext = file.name.split(".").pop() || "";
+      progress(0);
+      const [base64Data, hash] = await Promise.all([fileToBase64(file), computeSha256(file)]);
+      checkCancelled();
+      progress(0.5);
       const mimeType = file.type || "application/octet-stream";
       const dataUrl = `data:${mimeType};base64,${base64Data}`;
-      const providedAssetId = (data.get("asset_id") || data.get("id")) as string | null;
+      const providedAssetId = (data.get("asset_id") || data.get("id") || data.get("key")) as string | null;
       const assetId = providedAssetId || hash;
 
-      // 2. Persist to local IndexedDB attachment storage under both assetId and hash
+      // Persist under the same ID that the editor stores in its document.
       await saveAttachment(assetId, {
         name: file.name,
         base64: base64Data,
         type: mimeType,
         size: file.size,
       });
-      if (providedAssetId && providedAssetId !== hash) {
-        await saveAttachment(hash, {
-          name: file.name,
-          base64: base64Data,
-          type: mimeType,
-          size: file.size,
-        });
-      }
-
+      checkCancelled();
+      progress(1);
       return {
         asset: assetId,
         asset_id: assetId,
@@ -137,6 +138,8 @@ export class FileUploadService extends APIService {
     } catch (error: any) {
       console.error("[Metanode] File Upload Error:", error);
       throw error;
+    } finally {
+      this.operations.delete(operation);
     }
   }
 
@@ -144,9 +147,6 @@ export class FileUploadService extends APIService {
    * Cancels the upload
    */
   cancelUpload() {
-    if (this.cancelSource) {
-      this.cancelSource.cancel("Upload canceled");
-    }
+    for (const operation of this.operations) operation.cancelled = true;
   }
 }
-

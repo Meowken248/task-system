@@ -9,3 +9,4 @@ export * from "./sites-file.service";
 export * from "./file.service";
 export * from "./helper";
 export * from "./attachment-storage";
+export * from "./asset-source";

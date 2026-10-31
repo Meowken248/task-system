@@ -18,57 +18,11 @@ import {
   recordIssueContentOnChain,
 } from "@/services/blockchain/plane-task-chain.service";
 import { notifyVaultProblem } from "@/services/blockchain/vault-notice";
-import { localDB, saveDB } from "@plane/services";
-import { getAttachmentFromStorage, saveAttachmentToStorage, deleteAttachmentFromStorage } from "@plane/utils";
-
-/**
- * Đọc tệp ngay trên máy thành base64 (bỏ tiền tố `data:*;base64,` để khớp
- * `downloadBase64File`/`base64ToBlob`). Hỗ trợ cả môi trường Browser và Node.js.
- */
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    if (typeof file.arrayBuffer === "function") {
-      file
-        .arrayBuffer()
-        .then((buf) => {
-          const nodeBuffer = (globalThis as any).Buffer;
-          if (typeof nodeBuffer !== "undefined") {
-            resolve(nodeBuffer.from(buf).toString("base64"));
-            return;
-          }
-          let binary = "";
-          const bytes = new Uint8Array(buf);
-          for (let i = 0; i < bytes.byteLength; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          resolve(btoa(binary));
-        })
-        .catch(() => {
-          readWithFileReader(file, resolve, reject);
-        });
-      return;
-    }
-    readWithFileReader(file, resolve, reject);
-  });
-}
-
-function readWithFileReader(file: File, resolve: (val: string) => void, reject: (err: unknown) => void) {
-  if (typeof FileReader === "undefined") {
-    reject(new Error("Không đọc được tệp đã chọn."));
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = () => {
-    const result = typeof reader.result === "string" ? reader.result : "";
-    const commaIndex = result.indexOf(",");
-    resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
-  };
-  reader.onerror = () => reject(reader.error ?? new Error("Không đọc được tệp đã chọn."));
-  reader.readAsDataURL(file);
-}
+import { localDB, saveDB, FileUploadService, deleteAttachment } from "@plane/services";
 
 export class IssueAttachmentService extends APIService {
   private serviceType: TIssueServiceType;
+  private fileUploadService = new FileUploadService();
 
   constructor(serviceType: TIssueServiceType = EIssueServiceType.ISSUES) {
     super(API_BASE_URL);
@@ -82,38 +36,15 @@ export class IssueAttachmentService extends APIService {
     file: File,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TIssueAttachment> {
-    // Bước 1: đọc tệp ngay trên máy (30%).
-    uploadProgressHandler?.({
-      loaded: Math.floor(file.size * 0.3),
-      total: file.size,
-      progress: 0.3,
-    } as any);
-
     // Trước đây đoạn này gửi POST multipart tới `""` (gốc ứng dụng) — không phải
     // nơi nhận tệp — nên yêu cầu treo tới khi quá thời gian rồi mới báo lỗi (BA-32).
     // Tệp không cần rời khỏi máy: chỉ dấu vết (mã tệp + tên + kích thước) lên hệ thống.
-    let base64: string;
-    try {
-      base64 = await readFileAsBase64(file);
-    } catch {
-      throw { error: "Không đọc được tệp đã chọn. Hãy thử lại với tệp khác." };
-    }
     const assetId = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const fileType = file.type || "application/octet-stream";
 
-    // Bước 2: lưu tệp vào máy trước khi đồng bộ (70%).
-    uploadProgressHandler?.({
-      loaded: Math.floor(file.size * 0.7),
-      total: file.size,
-      progress: 0.7,
-    } as any);
-
-    await saveAttachmentToStorage(assetId, { name: file.name, base64, type: fileType, size: file.size });
-    // Kiểm tra lại ngay: nếu trình duyệt không lưu được (hết chỗ) thì dừng
-    const storedFile = await getAttachmentFromStorage(assetId);
-    if (!storedFile?.base64) {
-      throw { error: "Máy không đủ chỗ để lưu tệp này. Hãy xoá bớt tệp đính kèm cũ rồi thử lại." };
-    }
+    const payload = new FormData();
+    payload.append("asset_id", assetId);
+    payload.append("file", file);
+    await this.fileUploadService.uploadFile("", payload, uploadProgressHandler);
 
     const now = new Date().toISOString();
     const attachmentRecord: TIssueAttachment = {
@@ -145,9 +76,7 @@ export class IssueAttachmentService extends APIService {
 
     const targetIssue = (localDB.issues || []).find((i: any) => i.id === issueId);
     if (targetIssue) {
-      const issueAttachments = localDB.attachments.filter(
-        (a: any) => a.issue === issueId || a.issue_id === issueId
-      );
+      const issueAttachments = localDB.attachments.filter((a: any) => a.issue === issueId || a.issue_id === issueId);
       targetIssue.attachment_count = issueAttachments.length;
     }
     saveDB();
@@ -204,6 +133,11 @@ export class IssueAttachmentService extends APIService {
   ): Promise<TIssueAttachment> {
     const allAttachments = localDB.attachments || [];
     const target = allAttachments.find((a: any) => a.id === assetId || a.asset === assetId);
+    await deleteAttachment(assetId);
+    if (target?.id && target.id !== assetId) await deleteAttachment(target.id);
+    localDB._deleted_attachment_ids = [
+      ...new Set([...(localDB._deleted_attachment_ids || []), assetId, ...(target?.id ? [target.id] : [])]),
+    ];
     localDB.attachments = allAttachments.filter((a: any) => a.id !== assetId && a.asset !== assetId);
 
     const targetIssue = (localDB.issues || []).find((i: any) => i.id === issueId);
@@ -214,12 +148,6 @@ export class IssueAttachmentService extends APIService {
     }
     saveDB();
 
-    void deleteAttachmentFromStorage(assetId).catch(() => {});
-    if (target?.id && target.id !== assetId) {
-      void deleteAttachmentFromStorage(target.id).catch(() => {});
-    }
-
     return (target || { id: assetId, issue_id: issueId }) as TIssueAttachment;
   }
 }
-

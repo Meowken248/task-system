@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { debounce, set } from "lodash-es";
+import { set } from "lodash-es";
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
 import { computedFn } from "mobx-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -17,6 +17,7 @@ import type { TAttachmentUploadStatus } from "../issue/issue-details/attachment.
 export interface IEditorAssetStore {
   // computed
   assetsUploadPercentage: Record<string, number>;
+  cancelEditorAssetUpload: () => void;
   // helper methods
   getAssetUploadStatusByEditorBlockId: (blockId: string) => TAttachmentUploadStatus | undefined;
   // actions
@@ -53,6 +54,8 @@ export class EditorAssetStore implements IEditorAssetStore {
   assetsUploadStatus: Record<string, TAttachmentUploadStatus> = {};
   // services
   fileService: FileService;
+  cancelEditorAssetUpload = () => this.fileService.cancelUpload();
+  private pendingUploads = new Map<string, { file: File; promise: Promise<TFileSignedURLResponse> }>();
 
   constructor() {
     makeObservable(this, {
@@ -87,15 +90,31 @@ export class EditorAssetStore implements IEditorAssetStore {
   );
 
   // actions
-  private debouncedUpdateProgress = debounce((blockId: string, progress: number) => {
+  private updateProgress = (blockId: string, progress: number) => {
     runInAction(() => {
       if (this.assetsUploadStatus[blockId]) {
         set(this.assetsUploadStatus, [blockId, "progress"], progress);
       }
     });
-  }, 16);
+  };
 
-  uploadEditorAsset: IEditorAssetStore["uploadEditorAsset"] = async (args) => {
+  uploadEditorAsset: IEditorAssetStore["uploadEditorAsset"] = (args) => {
+    const pending = this.pendingUploads.get(args.blockId);
+    if (pending)
+      return pending.file === args.file
+        ? pending.promise
+        : Promise.reject(new Error("Khối ảnh này đang tải một tệp khác. Hãy chờ hoàn tất hoặc hủy trước."));
+    const promise = this.performUpload(args);
+    this.pendingUploads.set(args.blockId, { file: args.file, promise });
+    void promise
+      .finally(() => {
+        if (this.pendingUploads.get(args.blockId)?.promise === promise) this.pendingUploads.delete(args.blockId);
+      })
+      .catch(() => undefined);
+    return promise;
+  };
+
+  private performUpload = async (args: Parameters<IEditorAssetStore["uploadEditorAsset"]>[0]) => {
     const { blockId, data, file, projectId, workspaceSlug } = args;
     const tempId = uuidv4();
 
@@ -118,14 +137,14 @@ export class EditorAssetStore implements IEditorAssetStore {
           file,
           (progressEvent) => {
             const progressPercentage = Math.round((progressEvent.progress ?? 0) * 100);
-            this.debouncedUpdateProgress(blockId, progressPercentage);
+            this.updateProgress(blockId, progressPercentage);
           }
         );
         return response;
       } else {
         const response = await this.fileService.uploadWorkspaceAsset(workspaceSlug, data, file, (progressEvent) => {
           const progressPercentage = Math.round((progressEvent.progress ?? 0) * 100);
-          this.debouncedUpdateProgress(blockId, progressPercentage);
+          this.updateProgress(blockId, progressPercentage);
         });
         return response;
       }
@@ -133,7 +152,6 @@ export class EditorAssetStore implements IEditorAssetStore {
       console.error("Error in uploading page asset:", error);
       throw error;
     } finally {
-      this.debouncedUpdateProgress.cancel();
       runInAction(() => {
         delete this.assetsUploadStatus[blockId];
       });

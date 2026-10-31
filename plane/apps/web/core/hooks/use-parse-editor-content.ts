@@ -9,6 +9,7 @@ import { useCallback } from "react";
 import type { TSearchEntities } from "@plane/types";
 // helpers
 import { getBase64Image, getEditorAssetSrc } from "@plane/utils";
+import { resolveAssetSource } from "@plane/services";
 import type { TCustomComponentsMetaData } from "@plane/utils";
 // hooks
 import { useMember } from "@/hooks/store/use-member";
@@ -129,7 +130,8 @@ export const useParseEditorContent = (args: TArgs) => {
           const src = img.getAttribute("src");
           if (src) {
             try {
-              const base64Image = await getBase64Image(src);
+              const content = await resolveAssetSource(src);
+              const base64Image = content.startsWith("data:") ? content : await getBase64Image(content);
               img.src = base64Image;
             } catch (error) {
               // log the error if the image conversion fails

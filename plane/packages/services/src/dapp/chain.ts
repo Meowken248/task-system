@@ -2177,6 +2177,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentCycles = [...(localDB.cycles || [])];
   const currentModules = [...(localDB.modules || [])];
   const currentComments = [...(localDB.issue_comments || [])];
+  const currentEditorComments = [...(localDB.comments || [])];
+  const currentAssets = [...(localDB.assets || [])];
   const currentAttachments = [...(localDB.attachments || [])];
   const currentDeployBoards = [...(localDB["project-deploy-boards"] || [])];
   const currentMembers = [...(localDB.members || [])];
@@ -2208,6 +2210,9 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
     ...(localDB._deleted_issue_ids || []),
     ...(ipfsDB._deleted_issue_ids || []),
   ]);
+  const mergedDeletedAssets = new Set<string>([...(localDB._deleted_asset_ids || []), ...(ipfsDB._deleted_asset_ids || [])]);
+  const mergedDeletedAttachments = new Set<string>([...(localDB._deleted_attachment_ids || []), ...(ipfsDB._deleted_attachment_ids || [])]);
+  const mergedDeletedComments = new Set<string>([...(localDB._deleted_comment_ids || []), ...(ipfsDB._deleted_comment_ids || [])]);
   const mergedDeletedInvitations = new Set<string>([
     ...(localDB._deleted_invitation_ids || []),
     ...(ipfsDB._deleted_invitation_ids || []),
@@ -2270,6 +2275,9 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
 
   for (const key in localDB) delete localDB[key];
   Object.assign(localDB, ipfsDB);
+  localDB._deleted_asset_ids = [...mergedDeletedAssets];
+  localDB._deleted_attachment_ids = [...mergedDeletedAttachments];
+  localDB._deleted_comment_ids = [...mergedDeletedComments];
 
   localDB._deleted_workspace_ids = Array.from(mergedDeletedWorkspaces);
   localDB._deleted_workspace_slugs = Array.from(mergedDeletedWorkspaceSlugs);
@@ -2661,6 +2669,22 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       localDB.notifications.push(n);
     }
   }
+  // The editor/comment API writes `comments`; older snapshots used
+  // `issue_comments`. Preserve both collections and asset metadata on refresh.
+  for (const [collection, records] of [["comments", currentEditorComments], ["assets", currentAssets]] as const) {
+    if (!localDB[collection]) localDB[collection] = [];
+    for (const record of records) {
+      const index = localDB[collection].findIndex((existing: any) => existing.id === record.id);
+      if (index < 0) localDB[collection].push(record);
+      else {
+        const localTime = Date.parse(record.updated_at || record.created_at || "") || 0;
+        const remoteTime = Date.parse(localDB[collection][index].updated_at || localDB[collection][index].created_at || "") || 0;
+        if (localTime >= remoteTime) localDB[collection][index] = { ...localDB[collection][index], ...record };
+      }
+    }
+    const deleted = collection === "comments" ? mergedDeletedComments : mergedDeletedAssets;
+    localDB[collection] = localDB[collection].filter((record: any) => !deleted.has(record.id) && !mergedDeletedIssues.has(record.issue || record.issue_id) && !mergedDeletedProjects.has(record.project || record.project_id));
+  }
   if (!localDB.issue_comments) localDB.issue_comments = [];
   for (const c of currentComments) {
     if (!localDB.issue_comments.some((existing: any) => existing.id === c.id)) {
@@ -2673,6 +2697,8 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       localDB.attachments.push(a);
     }
   }
+  localDB.attachments = localDB.attachments.filter((attachment: any) => !mergedDeletedAttachments.has(attachment.id) && !mergedDeletedAssets.has(attachment.asset_id || attachment.id));
+  localDB.issue_comments = localDB.issue_comments.filter((comment: any) => !mergedDeletedComments.has(comment.id));
   if (!localDB["project-deploy-boards"]) localDB["project-deploy-boards"] = [];
   for (const b of currentDeployBoards) {
     if (
