@@ -1,0 +1,8 @@
+{
+  "requestType": "json-snapshot",
+  "status": 200,
+  "validCid": true,
+  "responseKeys": [
+    "cid"
+  ]
+}

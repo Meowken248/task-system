@@ -1,0 +1,11 @@
+{
+  "cliExitCode": 0,
+  "ready": true,
+  "loginCachePresent": true,
+  "cachedAccessExpired": false,
+  "networkOrCertificateFailure": false,
+  "credentialsPrinted": false,
+  "workerDeployed": true,
+  "workerName": "plane-ipfs-proxy",
+  "workerUrl": "https://plane-ipfs-proxy.anh2482006.workers.dev"
+}

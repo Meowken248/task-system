@@ -241,6 +241,15 @@ const sessions = new Map();
 let mailAccepted = false;
 let mailRequests = 0;
 let mailGate;
+const testPresentationMedia = process.env.PLANE_TEST_PRESENTATION_MEDIA === "1";
+const pinnedImages = new Map();
+let failImagePin = false;
+let imageUploadRequests = 0;
+let imageGatewayReads = 0;
+const mediaPixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
+const decodedCover = (url) => `(()=>{const image=document.querySelector('form img.h-44');return image?.src===${JSON.stringify(url)}&&image.complete&&image.naturalWidth>0})()`;
+const decodedAvatar = (url) => `(()=>{const image=document.querySelector('button[aria-label="Change profile picture"] img');return image?.src===${JSON.stringify(url)}&&image.complete&&image.naturalWidth>0})()`;
+const decodedLogo = (url) => `(()=>{const image=document.querySelector('img[alt="Workspace Logo"]');return image?.src===${JSON.stringify(url)}&&image.complete&&image.naturalWidth>0})()`;
 async function fulfill(event, sessionId) {
   const url = new URL(event.request.url);
   const headers = [
@@ -268,6 +277,20 @@ async function fulfill(event, sessionId) {
     body = null;
   }
   if (event.request.method === "OPTIONS") return respond({});
+  const requestHeaders = Object.fromEntries(Object.entries(event.request.headers || {}).map(([key, value]) => [key.toLowerCase(), value]));
+  if (testPresentationMedia && event.request.method === "POST" && String(requestHeaders["content-type"]).startsWith("multipart/form-data")) {
+    imageUploadRequests++;
+    if (failImagePin) return respond({ code: "STORAGE_TEMPORARY" }, 503);
+    const cid = "Qm" + "2".repeat(44); // All three pickers upload the same pixel: one immutable CID.
+    pinnedImages.set(cid, mediaPixel);
+    return respond({ cid });
+  }
+  const image = pinnedImages.get(url.pathname.split("/").pop());
+  if (image) {
+    imageGatewayReads++;
+    return send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: 200,
+      responseHeaders: headers.map((header) => header.name === "content-type" ? { name: header.name, value: "image/png" } : header), body: image }, sessionId);
+  }
   if (url.origin === origin && url.pathname === "/__mail_fixture") {
     assert.equal(body.to?.[0]?.email, "browser-otp@example.invalid");
     mailRequests++;
@@ -565,6 +588,94 @@ try {
     await screenshot(session, "images-after-reload.png");
   } catch (error) {
     screenshotDiagnostics.push({ error: error.message });
+  }
+  if (testPresentationMedia) {
+    const imagePath = path.resolve(root, "tmp/profile-media-pixel.png");
+    fs.writeFileSync(imagePath, Buffer.from(mediaPixel, "base64"));
+    const profileUrl = `${origin}${mount}/settings/profile/general`;
+    const logoUrl = `${origin}${mount}/${slug}/settings`;
+    const setImageFile = async (selector) => {
+      const doc = await send("DOM.getDocument", {}, session);
+      const input = await send("DOM.querySelector", { nodeId: doc.root.nodeId, selector }, session);
+      assert(input.nodeId, "image picker must expose a file input");
+      await send("DOM.setFileInputFiles", { nodeId: input.nodeId, files: [imagePath] }, session);
+    };
+    const uploadModalImage = async () => {
+      await until(session, "!!document.querySelector('[role=dialog] input[type=file]')");
+      await setImageFile("[role=dialog] input[type=file]");
+      await click(session, "Array.from(document.querySelectorAll('[role=dialog] button')).find(e=>e.textContent.trim()==='Upload & Save')");
+    };
+    const currentMedia = () => evaluate(session, `(()=>{const db=JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}');const user=db.users?.find(u=>u.id===${JSON.stringify(owner.id)});const workspace=db.workspaces?.find(w=>w.id===${JSON.stringify(workspace.id)});return{avatar:user?.avatar_url,cover:user?.cover_image_url,logo:workspace?.logo_url,assets:(db.assets||[]).filter(a=>['USER_AVATAR','USER_COVER','WORKSPACE_LOGO'].includes(a.entity_type))}})()`);
+    await send("Network.setCacheDisabled", { cacheDisabled: true }, session);
+    await send("Page.navigate", { url: profileUrl }, session);
+    await until(session, "!!document.querySelector('button[aria-label=\"Change profile picture\"]')");
+    await click(session, "document.querySelector('button[aria-label=\"Change profile picture\"]')");
+    await uploadModalImage();
+    await until(session, "!document.querySelector('[role=dialog] input[type=file]')");
+    const avatarState = await currentMedia();
+    assert(avatarState.avatar?.includes("/ipfs/"));
+    await send("Page.reload", { ignoreCache: true }, session);
+    await until(session, decodedAvatar(avatarState.avatar), 60000);
+    assert.equal((await currentMedia()).avatar, avatarState.avatar);
+    cases.push({ name: "Avatar uploaded through the real modal remains a decoded IPFS image after F5", passed: true });
+
+    await click(session, "Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim().toLowerCase()==='change cover')");
+    await until(session, "Array.from(document.querySelectorAll('button')).some(e=>e.textContent.trim()==='Upload image') || Array.from(document.querySelectorAll('[role=tab]')).some(e=>e.textContent.trim()==='Upload')");
+    if (!await evaluate(session, "Array.from(document.querySelectorAll('button')).some(e=>e.textContent.trim()==='Upload image')"))
+      await click(session, "Array.from(document.querySelectorAll('[role=tab]')).find(e=>e.textContent.trim()==='Upload')");
+    await send("Page.setInterceptFileChooserDialog", { enabled: true }, session);
+    await click(session, "Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='Upload image')");
+    await setImageFile("body > input[type=file]");
+    await until(session, "JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').assets?.some(a=>a.entity_type==='USER_COVER'&&a.is_uploaded)");
+    await click(session, "document.querySelector('form button[type=submit]')");
+    const coverState = await currentMedia();
+    assert(coverState.cover?.includes("/ipfs/"));
+    await send("Page.reload", { ignoreCache: true }, session);
+    await until(session, decodedCover(coverState.cover), 60000);
+    cases.push({ name: "Profile cover is saved as an IPFS URL and renders after F5", passed: true });
+
+    await send("Page.navigate", { url: logoUrl }, session);
+    await until(session, "!!document.querySelector('button[aria-label=\"Change workspace logo\"]')");
+    await click(session, "document.querySelector('button[aria-label=\"Change workspace logo\"]')");
+    await uploadModalImage();
+    await until(session, "!document.querySelector('[role=dialog] input[type=file]')");
+    const logoState = await currentMedia();
+    assert(logoState.logo?.includes("/ipfs/"));
+    for (const asset of logoState.assets) {
+      assert.equal(asset.storage, "ipfs"); assert(asset.ipfs_cid); assert(!asset.asset_url.startsWith("data:"));
+      assert.equal(asset.base64, undefined);
+    }
+    const readsBeforeReload = imageGatewayReads;
+    await send("Storage.clearDataForOrigin", { origin, storageTypes: "indexeddb,cache_storage" }, session);
+    await send("Page.reload", { ignoreCache: true }, session);
+    await until(session, decodedLogo(logoState.logo), 60000);
+    assert(imageGatewayReads > readsBeforeReload, "the image is fetched from the IPFS gateway after clearing local byte caches");
+    cases.push({ name: "Workspace logo survives F5 with IndexedDB cleared and is read from IPFS", passed: true });
+    await screenshot(session, "workspace-logo-after-f5.png");
+
+    await send("Page.navigate", { url: profileUrl }, session);
+    await until(session, decodedAvatar(avatarState.avatar), 60000);
+    await until(session, decodedCover(coverState.cover), 60000);
+    await screenshot(session, "profile-images-after-f5.png");
+    failImagePin = true;
+    await click(session, "document.querySelector('button[aria-label=\"Change profile picture\"]')");
+    await uploadModalImage();
+    await until(session, "document.body.innerText.includes('IPFS') && !Array.from(document.querySelectorAll('[role=dialog] button')).some(e=>e.textContent.trim()==='Uploading')");
+    assert.equal((await currentMedia()).avatar, avatarState.avatar);
+    assert.deepEqual(issues, [], "a handled upload failure must not become an uncaught UI exception");
+    cases.push({ name: "An IPFS upload error keeps the previous avatar and does not throw an uncaught UI error", passed: true });
+    failImagePin = false;
+    await click(session, "Array.from(document.querySelectorAll('[role=dialog] button')).find(e=>e.textContent.trim()==='Remove')");
+    await until(session, "!document.querySelector('[role=dialog] input[type=file]')");
+    await send("Page.reload", { ignoreCache: true }, session);
+    await until(session, decodedCover(coverState.cover), 60000);
+    const afterAvatarRemoval = await currentMedia();
+    assert(!afterAvatarRemoval.avatar);
+    assert.equal(afterAvatarRemoval.cover, coverState.cover);
+    assert.equal(afterAvatarRemoval.logo, logoState.logo);
+    assert.equal(await evaluate(session, "!!document.querySelector('button[aria-label=\"Change profile picture\"] img')"), false);
+    cases.push({ name: "Removing an avatar preserves cover/logo with the same CID and remains removed after F5", passed: true });
+    fs.writeFileSync(path.join(output, "profile-media-proof.json"), JSON.stringify({ ...logoState, afterAvatarRemoval, imageGatewayReads, simulatedPins: pinnedImages.size, imageUploadRequests }, null, 2));
   }
   const authSession = await page(owner, admin, "sign-up", "otp", true);
   await until(authSession, "!!document.getElementById('email')");
