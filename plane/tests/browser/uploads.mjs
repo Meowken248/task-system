@@ -10,7 +10,7 @@ import { createUserObject } from "../../packages/services/src/dapp/auth.ts";
 
 const root = process.cwd();
 const output = path.resolve(root, process.env.PLANE_TEST_OUTPUT_DIR || "docs/verification/uploads-2026-10-31");
-const built = process.env.PLANE_TEST_BUILD_DIR || process.env.UPLOAD_TEST_BUILD_DIR || path.resolve(root, "apps/web/build/client");
+const built = path.resolve(process.env.PLANE_TEST_BUILD_DIR || process.env.UPLOAD_TEST_BUILD_DIR || path.resolve(root, "apps/web/build/client"));
 const profile = path.resolve(root, `tmp/upload-chrome-${Date.now()}`);
 for (const target of [output, profile]) {
   assert(target.startsWith(root + path.sep));
@@ -409,7 +409,7 @@ async function page(user, wallet, suffix, label, signedOut = false) {
   const database = structuredClone(shared);
   const seed = `(()=>{const user=${JSON.stringify(user)},db=${JSON.stringify(database)},wallet=${JSON.stringify(wallet)},origin=${JSON.stringify(origin)};
     if(!sessionStorage.getItem('wallet_browser_seeded')){localStorage.clear();sessionStorage.clear();localStorage.setItem('plane_dapp_local_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_latest_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_auth_user',user.id);sessionStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_dapp_auth_user',user.id);localStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('wallet_browser_seeded','1');}
-    if(${JSON.stringify(signedOut)}){sessionStorage.setItem('plane_dapp_signed_out','1');window.__env__={VITE_MAIL_PROXY_URL:origin+'/__mail_fixture'};}
+    if(${JSON.stringify(signedOut)}){sessionStorage.setItem('plane_dapp_signed_out','1');window.__env__={VITE_MAIL_PROXY_URL:origin+'/__mail_fixture',VITE_EMAIL_SENDER_ADDRESS:'fixture-sender@example.invalid',VITE_EMAIL_SENDER_NAME:'Browser fixture'};}
     const sdk={interceptors:{request:[],response:[]},emit(){},destroy(){},request:async(action,p={})=>{if(action==='getAllWallets')return[{address:wallet}];if(action==='getVaultStatus')return{isLocked:false,isInitialized:true};if(action.startsWith('getActiveWallet'))return{address:wallet};if(action==='sendTransaction'){if(p.isReadOnly)return{returnValue:-1};throw Error('Fixture blocks signing transactions');}return{};},on(){},off(){},registerHostAction(){},getStatus(){return{'crypto-vault':'ready','blockchain-bridge':'ready'};}};
     Object.defineProperty(window,'fiaiSDK',{configurable:true,get:()=>sdk,set:()=>{}});
   })();`;

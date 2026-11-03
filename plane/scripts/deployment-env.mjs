@@ -22,6 +22,7 @@ export function readDeploymentEnv(path = process.env.PLANE_ENV_FILE || resolve(p
     "VITE_CONTRACT_ADDRESS",
     "VITE_CONTRACT_GAS",
     "VITE_DEFAULT_WORKSPACE_SLUG",
+    "VITE_DEFAULT_WORKSPACE_NAME",
     "VITE_IPFS_GATEWAYS",
   ]);
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {

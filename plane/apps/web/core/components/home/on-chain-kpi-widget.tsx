@@ -237,10 +237,10 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     () =>
       selectedTask
         ? resolveActivityRecords(
-            selectedTask.records.filter((r) => r.event_type === "task_content"),
-            comments,
-            attachments
-          )
+          selectedTask.records.filter((r) => r.event_type === "task_content"),
+          comments,
+          attachments
+        )
         : [],
     [selectedTask, comments, attachments]
   );
@@ -257,7 +257,7 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     if (!selectedTask) return undefined;
     const confirmedAssignee =
       selectedTaskDetails?.assignee &&
-      selectedTaskDetails.assignee.toLowerCase() !== "0x0000000000000000000000000000000000000000"
+        selectedTaskDetails.assignee.toLowerCase() !== "0x0000000000000000000000000000000000000000"
         ? normalizeWallet(selectedTaskDetails.assignee)
         : undefined;
 
@@ -312,9 +312,8 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
     return (
       <div key={task.id}>
         <div
-          className={`flex rounded-lg transition-colors ${
-            isSelected ? "border-accent-primary border-l-2 bg-accent-primary/10" : "hover:bg-surface-2"
-          }`}
+          className={`flex rounded-lg transition-colors ${isSelected ? "border-accent-primary border-l-2 bg-accent-primary/10" : "hover:bg-surface-2"
+            }`}
           style={{ marginLeft: `${depth * 14}px` }}
         >
           {hasChildren ? (
@@ -358,9 +357,8 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
             )}
             <span className="bg-surface-3 mt-2 block h-1 overflow-hidden rounded-full" aria-hidden="true">
               <span
-                className={`block h-full rounded-full transition-all ${
-                  progress.confidence === "confirmed" ? "bg-accent-primary" : "bg-accent-primary/60"
-                }`}
+                className={`block h-full rounded-full transition-all ${progress.confidence === "confirmed" ? "bg-accent-primary" : "bg-accent-primary/60"
+                  }`}
                 style={{ width: `${progress.value ?? 0}%` }}
               />
             </span>
@@ -373,24 +371,24 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
 
   const kpiItems = kpi
     ? [
-        ["Tổng task", kpi.total],
-        ["Đang làm", kpi.inProgress],
-        ["Hoàn thành", kpi.completed],
-        ["Đã hủy", kpi.cancelled],
-        ["Đúng tiến độ", kpi.onSchedule],
-        ["Chậm", kpi.delayed],
-        ["Quá hạn", kpi.overdue],
-        ["Tiến độ TB", `${kpi.averageProgress}%`],
-      ]
+      ["Tổng task", kpi.total],
+      ["Đang làm", kpi.inProgress],
+      ["Hoàn thành", kpi.completed],
+      ["Đã hủy", kpi.cancelled],
+      ["Đúng tiến độ", kpi.onSchedule],
+      ["Chậm", kpi.delayed],
+      ["Quá hạn", kpi.overdue],
+      ["Tiến độ TB", `${kpi.averageProgress}%`],
+    ]
     : [];
 
   return (
     <section className="shadow-sm overflow-hidden rounded-2xl border border-subtle bg-layer-1/75 backdrop-blur-xl">
       <header className="border-b border-subtle px-5 py-4">
         <h2 className="text-14 font-semibold text-primary">Dashboard KPI</h2>
-        <p className="mt-1 text-11 text-tertiary">
+        {/* <p className="mt-1 text-11 text-tertiary">
           Theo dõi tiến độ và báo cáo; dữ liệu contract và dữ liệu chờ đồng bộ được ghi nhãn riêng.
-        </p>
+        </p> */}
         <div className="mt-2 flex items-center gap-3 text-11 text-tertiary" aria-live="polite">
           <button
             type="button"
@@ -441,11 +439,10 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   key={project.id}
                   type="button"
                   onClick={() => void selectProject(project.id)}
-                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${
-                    selectedProjectId === project.id
+                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors active:scale-[0.99] ${selectedProjectId === project.id
                       ? "bg-accent-primary/10 text-accent-primary"
                       : "text-secondary hover:bg-surface-2"
-                  }`}
+                    }`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-12 font-medium">{project.name}</span>
@@ -573,13 +570,12 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                   <div className="flex items-center justify-end gap-2">
                     <p className="text-10 text-tertiary">Tiến độ chuẩn hóa</p>
                     <span
-                      className={`rounded px-1.5 py-0.5 text-9 font-medium ${
-                        selectedTaskProgress?.confidence === "confirmed"
+                      className={`rounded px-1.5 py-0.5 text-9 font-medium ${selectedTaskProgress?.confidence === "confirmed"
                           ? "bg-accent-primary/10 text-accent-primary"
                           : selectedTaskProgress?.confidence === "estimated"
                             ? "bg-warning-subtle text-warning-primary"
                             : "bg-surface-2 text-tertiary"
-                      }`}
+                        }`}
                     >
                       {selectedTaskProgress?.confidence === "confirmed"
                         ? "On-chain"
@@ -810,13 +806,12 @@ export function OnChainKpiWidget({ workspaceSlug }: Props) {
                                 {report.progress === null ? "Chưa có tiến độ" : `Tiến độ ${report.progress}%`}
                               </span>
                               <span
-                                className={`rounded-md px-2 py-0.5 text-10 font-medium ${
-                                  report.reconciliationStatus === "content_verified"
+                                className={`rounded-md px-2 py-0.5 text-10 font-medium ${report.reconciliationStatus === "content_verified"
                                     ? "bg-success-subtle text-success-primary"
                                     : report.reconciliationStatus === "confirmed_on_chain"
                                       ? "bg-accent-primary/10 text-accent-primary"
                                       : "bg-surface-2 text-tertiary"
-                                }`}
+                                  }`}
                               >
                                 {report.reconciliationStatus === "content_verified"
                                   ? "Nội dung khớp contract"

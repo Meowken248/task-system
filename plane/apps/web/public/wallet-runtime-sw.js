@@ -1,111 +1,144 @@
 "use strict";
 (() => {
-  var i = self,
-    d = "fiai-runtime-",
-    u = "/wallet-runtime/",
-    h = "__version__";
-  i.addEventListener("install", () => {
-    i.skipWaiting();
+  // src/host/runtime/wallet-runtime-sw.ts
+  var sw = self;
+  var RUNTIME_CACHE_PREFIX = "fiai-runtime-";
+  var RUNTIME_VERSION_KEY = "__version__";
+  function getRuntimePathPrefix() {
+    const pathname = new URL(sw.registration.scope).pathname;
+    return pathname.endsWith("/") ? pathname : `${pathname}/`;
+  }
+  sw.addEventListener("install", () => {
+    void sw.skipWaiting();
   });
-  i.addEventListener("activate", (s) => {
-    s.waitUntil(i.clients.claim());
+  sw.addEventListener("activate", (event) => {
+    event.waitUntil(sw.clients.claim());
   });
-  i.addEventListener("fetch", (s) => {
-    let t = new URL(s.request.url);
-    t.pathname.startsWith(u) && s.respondWith(m(t));
+  sw.addEventListener("fetch", (event) => {
+    const url = new URL(event.request.url);
+    const runtimePrefix = getRuntimePathPrefix();
+    if (!url.pathname.startsWith(runtimePrefix)) return;
+    event.respondWith(handleRuntimeFetch(url, runtimePrefix));
   });
-  async function m(s) {
-    let t = s.pathname.substring(u.length);
-    console.log("[Wallet Runtime SW] pathAfterRuntime", t);
-    let e = t.indexOf("/");
-    if (e === -1) return new Response("Not Found", { status: 404, statusText: "Not Found" });
-    let n = t.substring(0, e),
-      a = t.substring(e + 1);
-    if (!n || !a) return new Response("Not Found", { status: 404, statusText: "Not Found" });
-    let c = d + n;
+  async function handleRuntimeFetch(url, runtimePrefix) {
+    const pathAfterRuntime = url.pathname.substring(runtimePrefix.length);
+    console.log("[Wallet Runtime SW] pathAfterRuntime", pathAfterRuntime);
+    const slashIndex = pathAfterRuntime.indexOf("/");
+    if (slashIndex === -1) {
+      return new Response("Not Found", { status: 404, statusText: "Not Found" });
+    }
+    const appId = pathAfterRuntime.substring(0, slashIndex);
+    const filePath = pathAfterRuntime.substring(slashIndex + 1);
+    if (!appId || !filePath) {
+      return new Response("Not Found", { status: 404, statusText: "Not Found" });
+    }
+    const cacheName = RUNTIME_CACHE_PREFIX + appId;
     try {
-      let r = await caches.open(c),
-        p = `/${a}`,
-        l = await r.match(p);
-      if (l) return l;
-      if (!a.includes(".")) {
-        let o = await r.match("/index.html");
-        if (o) return o;
+      const cache = await caches.open(cacheName);
+      const cacheKey = `/${filePath}`;
+      const cachedResponse = await cache.match(cacheKey);
+      if (cachedResponse) {
+        return cachedResponse;
       }
-      return new Response(`File not found: ${a}`, { status: 404, statusText: "Not Found" });
+      if (!filePath.includes(".")) {
+        const indexResponse = await cache.match("/index.html");
+        if (indexResponse) {
+          return indexResponse;
+        }
+      }
+      return new Response(`File not found: ${filePath}`, {
+        status: 404,
+        statusText: "Not Found"
+      });
     } catch {
       return new Response("Cache error", { status: 500, statusText: "Internal Error" });
     }
   }
-  i.addEventListener("message", (s) => {
-    let t = s.data;
-    if (!t || typeof t.type != "string") return;
-    let e = s.ports[0];
-    if (e)
-      switch (t.type) {
-        case "install":
-          y(t, e);
-          break;
-        case "delete":
-          w(t, e);
-          break;
-        case "has-app":
-          I(t, e);
-          break;
-        default:
-          e.postMessage({ type: "error", message: `Unknown message type: ${t.type}` });
-      }
+  sw.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || typeof data.type !== "string") return;
+    const port = event.ports[0];
+    if (!port) return;
+    switch (data.type) {
+      case "install":
+        void handleInstall(data, port);
+        break;
+      case "delete":
+        void handleDelete(data, port);
+        break;
+      case "has-app":
+        void handleHasApp(data, port);
+        break;
+      default:
+        port.postMessage({ type: "error", message: `Unknown message type: ${data.type}` });
+    }
   });
-  async function y(s, t) {
+  async function handleInstall(msg, port) {
     try {
-      let { appId: e, version: n, files: a } = s,
-        c = d + e;
-      await caches.delete(c);
-      let r = await caches.open(c),
-        p = [];
-      for (let o of a) {
-        let g = o.path.startsWith("/") ? o.path : `/${o.path}`,
-          f = new Response(o.content, {
-            status: 200,
-            statusText: "OK",
-            headers: {
-              "Content-Type": o.mimeType,
-              "Content-Length": String(o.content.byteLength),
-              "Cache-Control": "no-cache",
-              "X-Runtime-Version": n,
-            },
-          });
-        p.push(r.put(g, f));
+      const { appId, version, files } = msg;
+      const cacheName = RUNTIME_CACHE_PREFIX + appId;
+      await caches.delete(cacheName);
+      const cache = await caches.open(cacheName);
+      const puts = [];
+      for (const file of files) {
+        const normalizedPath = file.path.startsWith("/") ? file.path : `/${file.path}`;
+        const response = new Response(file.content, {
+          status: 200,
+          statusText: "OK",
+          headers: {
+            "Content-Type": file.mimeType,
+            "Content-Length": String(file.content.byteLength),
+            "Cache-Control": "no-cache",
+            // SW controls caching, not HTTP cache
+            "X-Runtime-Version": version
+          }
+        });
+        puts.push(cache.put(normalizedPath, response));
       }
-      let l = new Response(n, { status: 200, headers: { "Content-Type": "text/plain" } });
-      (p.push(r.put(`/${h}`, l)), await Promise.all(p), t.postMessage({ type: "installed", appId: e }));
-    } catch (e) {
-      let n = e instanceof Error ? e.message : String(e);
-      t.postMessage({ type: "error", message: `Install failed: ${n}` });
+      const versionResponse = new Response(version, {
+        status: 200,
+        headers: { "Content-Type": "text/plain" }
+      });
+      puts.push(cache.put(`/${RUNTIME_VERSION_KEY}`, versionResponse));
+      await Promise.all(puts);
+      port.postMessage({ type: "installed", appId });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      port.postMessage({ type: "error", message: `Install failed: ${errorMessage}` });
     }
   }
-  async function w(s, t) {
+  async function handleDelete(msg, port) {
     try {
-      let e = d + s.appId;
-      (await caches.delete(e), t.postMessage({ type: "deleted", appId: s.appId }));
-    } catch (e) {
-      let n = e instanceof Error ? e.message : String(e);
-      t.postMessage({ type: "error", message: `Delete failed: ${n}` });
+      const cacheName = RUNTIME_CACHE_PREFIX + msg.appId;
+      await caches.delete(cacheName);
+      port.postMessage({ type: "deleted", appId: msg.appId });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      port.postMessage({ type: "error", message: `Delete failed: ${errorMessage}` });
     }
   }
-  async function I(s, t) {
+  async function handleHasApp(msg, port) {
     try {
-      let e = d + s.appId,
-        n = await caches.has(e),
-        a;
-      if (n) {
-        let r = await (await caches.open(e)).match(`/${h}`);
-        r && (a = await r.text());
+      const cacheName = RUNTIME_CACHE_PREFIX + msg.appId;
+      const exists = await caches.has(cacheName);
+      let version;
+      if (exists) {
+        const cache = await caches.open(cacheName);
+        const versionResp = await cache.match(`/${RUNTIME_VERSION_KEY}`);
+        if (versionResp) {
+          version = await versionResp.text();
+        }
       }
-      t.postMessage({ type: "app-status", appId: s.appId, exists: n, version: a });
-    } catch (e) {
-      let n = e instanceof Error ? e.message : String(e);
-      t.postMessage({ type: "error", message: `Has-app check failed: ${n}` });
+      port.postMessage({
+        type: "app-status",
+        appId: msg.appId,
+        exists,
+        version
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      port.postMessage({ type: "error", message: `Has-app check failed: ${errorMessage}` });
     }
   }
 })();
+//# sourceMappingURL=wallet-runtime-sw.js.map

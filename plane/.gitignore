@@ -111,6 +111,8 @@ build/
 temp/
 scripts/*
 !scripts/deployment-env.mjs
+!scripts/deploy-fresh.mjs
+!scripts/sync-fiai-runtime.mjs
 !scripts/backup-registry-snapshots.mjs
 !scripts/preview-workspace-registry-migration.mjs
 !scripts/restore-workspace-registry.mjs
