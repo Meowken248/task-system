@@ -113,7 +113,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   });
 }
 
-
 function normalizeTransactionHash(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const candidate = value.trim();
@@ -421,7 +420,8 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
   const abi = contractFunctions.find((item) => item.type === "function" && item.name === functionName);
   if (!abi) throw new Error("Tính năng này chưa được cấu hình trên hệ thống. Vui lòng liên hệ quản trị viên.");
   const contractAddress = readEnv("VITE_CONTRACT_ADDRESS");
-  if (!isWalletAddress(contractAddress)) throw new Error("Hệ thống chưa được cấu hình nơi lưu dữ liệu. Vui lòng liên hệ quản trị viên.");
+  if (!isWalletAddress(contractAddress))
+    throw new Error("Hệ thống chưa được cấu hình nơi lưu dữ liệu. Vui lòng liên hệ quản trị viên.");
   let bridge = (await initFiaiSDK()) ?? getFiaiSDK();
   if (!bridge) throw new Error("Chưa kết nối được ứng dụng ví. Hãy mở ứng dụng ví rồi thử lại.");
   let from = await resolveMetanodeWalletAddress();
@@ -486,7 +486,8 @@ async function sendContractTransactionNow(functionName: string, values: Record<s
     const message = blockchainErrorMessage(error);
     if (/failed to decrypt payload/i.test(message)) {
       bridge = await resetFiaiSDK();
-      if (!bridge) throw new Error("Không kết nối lại được với ứng dụng ví. Hãy mở ứng dụng ví rồi thử lại.", { cause: error });
+      if (!bridge)
+        throw new Error("Không kết nối lại được với ứng dụng ví. Hãy mở ứng dụng ví rồi thử lại.", { cause: error });
       result = await sendWithWalletRecovery();
     } else if (isConfirmationTimeoutError(error)) {
       confirmationTimeoutError = error;
@@ -636,7 +637,8 @@ export async function deleteIssueByIssueIdOnChain(issueId: string, parentIssueId
 }
 
 export async function updateIssueProgressOnChain(taskId: number, progress: number): Promise<string> {
-  if (!Number.isInteger(progress) || progress < 0 || progress > 100) throw new Error("Tiến độ phải nằm trong khoảng 0–100.");
+  if (!Number.isInteger(progress) || progress < 0 || progress > 100)
+    throw new Error("Tiến độ phải nằm trong khoảng 0–100.");
   return sendContractTransaction("updateProgress", { taskId, progress });
 }
 export async function updateIssueProgressByIssueIdOnChain(issueId: string, progress: number): Promise<string> {
@@ -694,7 +696,8 @@ async function readContract(functionName: string, values: Record<string, InputVa
   const abi = contractFunctions.find((item) => item.type === "function" && item.name === functionName);
   if (!abi) throw new Error("Tính năng này chưa được cấu hình trên hệ thống. Vui lòng liên hệ quản trị viên.");
   const contractAddress = readEnv("VITE_CONTRACT_ADDRESS");
-  if (!isWalletAddress(contractAddress)) throw new Error("Hệ thống chưa được cấu hình nơi lưu dữ liệu. Vui lòng liên hệ quản trị viên.");
+  if (!isWalletAddress(contractAddress))
+    throw new Error("Hệ thống chưa được cấu hình nơi lưu dữ liệu. Vui lòng liên hệ quản trị viên.");
   await initFiaiSDK();
   const from = await resolveMetanodeWalletAddress({ silent: true }).catch(() => "");
 
@@ -785,7 +788,14 @@ export async function backfillIssuesOnChain(
   issues: TIssue[],
   onProgress?: (message: string) => void
 ): Promise<OnChainTaskBackfillResult> {
-  const result: OnChainTaskBackfillResult = { created: 0, skipped: 0, failed: 0, unknown: 0, aborted: false, errors: [] };
+  const result: OnChainTaskBackfillResult = {
+    created: 0,
+    skipped: 0,
+    failed: 0,
+    unknown: 0,
+    aborted: false,
+    errors: [],
+  };
   if (!isOnChainTaskSyncAvailable()) return { ...result, aborted: true };
 
   const validIssues = (issues || []).filter((issue) => Boolean(issue?.id));
@@ -895,6 +905,8 @@ export type OnChainTaskDetails = {
 };
 
 export type OnChainDailyReport = {
+  reportId?: number;
+  taskId?: number;
   reportedAt: number;
   progress: number;
   workHash: string;
@@ -902,11 +914,34 @@ export type OnChainDailyReport = {
   evidenceHash: string;
 };
 
-export async function getIssueOnChainTaskDetails(issueId: string): Promise<OnChainTaskDetails | null> {
+export async function getIssueOnChainTaskDetails(
+  issueId: string,
+  options: { strict?: boolean } = {}
+): Promise<OnChainTaskDetails | null> {
   try {
     const taskId = await getIssueTaskId(issueId);
     const raw = await readContract("getTask", { taskId });
-    if (!raw) return null;
+    if (!raw) {
+      if (options.strict) throw new Error("Không đọc được dữ liệu task trên contract.");
+      return null;
+    }
+    if (options.strict) {
+      const object = raw as Record<string, unknown>;
+      const fields = Array.isArray(raw)
+        ? raw.slice(4, 10)
+        : [object.createdAt, object.updatedAt, object.dueAt, object.progress, object.priority, object.status];
+      if (
+        fields.length !== 6 ||
+        fields.some(
+          (value: unknown) =>
+            value === undefined || value === null || !Number.isSafeInteger(Number(value)) || Number(value) < 0
+        ) ||
+        Number(fields[3]) > 100 ||
+        ![0, 1, 2, 3].includes(Number(fields[5]))
+      ) {
+        throw new Error("Dữ liệu task trên contract không hợp lệ.");
+      }
+    }
     if (Array.isArray(raw) && raw.length >= 10) {
       return {
         taskId,
@@ -934,44 +969,99 @@ export async function getIssueOnChainTaskDetails(issueId: string): Promise<OnCha
         status: Number(obj.status || 0),
       };
     }
+    if (options.strict) throw new Error("Dữ liệu task trên contract không hợp lệ.");
     return null;
-  } catch {
+  } catch (error) {
+    if (options.strict) throw error;
     return null;
   }
 }
 
-export async function getIssueOnChainReports(issueId: string): Promise<OnChainDailyReport[]> {
+function normalizeContractBytes32(value: unknown): string {
+  // FIAI's BLS ABI decoder omits 0x; ethers includes it. Both encode the same bytes.
+  if (typeof value !== "string" || !/^(?:0x)?[0-9a-f]{64}$/i.test(value))
+    throw new Error("Mã kiểm chứng báo cáo không hợp lệ.");
+  return `0x${value.replace(/^0x/i, "").toLowerCase()}`;
+}
+
+export async function getIssueOnChainReports(
+  issueId: string,
+  options: { strict?: boolean; taskId?: number } = {}
+): Promise<OnChainDailyReport[]> {
   try {
-    const taskId = await getIssueTaskId(issueId);
+    const taskId = options.taskId ?? (await getIssueTaskId(issueId));
     const countRaw = await readContract("getReportCount", { taskId });
     const count = readNumericResult(countRaw);
-    if (!count || count <= 0) return [];
+    if (count === null || !Number.isSafeInteger(count) || count < 0)
+      throw new Error("Không đọc được số lượng báo cáo hợp lệ.");
+    if (count === 0) return [];
     const reports: OnChainDailyReport[] = [];
     for (let i = 0; i < count; i++) {
       try {
         const rRaw = await readContract("getDailyReport", { taskId, reportId: i });
+        if (options.strict) {
+          const object = rRaw as Record<string, unknown> | null;
+          const values = Array.isArray(rRaw)
+            ? rRaw.slice(0, 5)
+            : object && [
+                object.reportedAt,
+                object.progress,
+                object.workHash,
+                object.difficultyHash,
+                object.evidenceHash,
+              ];
+          if (
+            !values ||
+            values.length !== 5 ||
+            values[0] == null ||
+            values[1] == null ||
+            values.slice(2).some((v: unknown) => typeof v !== "string" || !/^(?:0x)?[0-9a-f]{64}$/i.test(v))
+          )
+            throw new Error("Dữ liệu báo cáo không hợp lệ.");
+        }
         if (Array.isArray(rRaw) && rRaw.length >= 5) {
           reports.push({
+            reportId: i,
+            taskId,
             reportedAt: Number(rRaw[0] || 0),
             progress: Number(rRaw[1] || 0),
-            workHash: String(rRaw[2] || ""),
-            difficultyHash: String(rRaw[3] || ""),
-            evidenceHash: String(rRaw[4] || ""),
+            workHash: normalizeContractBytes32(rRaw[2]),
+            difficultyHash: normalizeContractBytes32(rRaw[3]),
+            evidenceHash: normalizeContractBytes32(rRaw[4]),
           });
         } else if (typeof rRaw === "object" && rRaw !== null) {
           const rObj = rRaw as Record<string, any>;
           reports.push({
+            reportId: i,
+            taskId,
             reportedAt: Number(rObj.reportedAt || 0),
             progress: Number(rObj.progress || 0),
-            workHash: String(rObj.workHash || ""),
-            difficultyHash: String(rObj.difficultyHash || ""),
-            evidenceHash: String(rObj.evidenceHash || ""),
+            workHash: normalizeContractBytes32(rObj.workHash),
+            difficultyHash: normalizeContractBytes32(rObj.difficultyHash),
+            evidenceHash: normalizeContractBytes32(rObj.evidenceHash),
           });
+        } else {
+          throw new Error("Dữ liệu báo cáo không hợp lệ.");
         }
-      } catch {}
+        const report = reports[reports.length - 1];
+        if (
+          !Number.isSafeInteger(report.reportedAt) ||
+          report.reportedAt < 0 ||
+          report.reportedAt > 8640000000000 ||
+          !Number.isSafeInteger(report.progress) ||
+          report.progress < 0 ||
+          report.progress > 100
+        ) {
+          reports.pop();
+          throw new Error("Tiến độ hoặc thời gian báo cáo không hợp lệ.");
+        }
+      } catch (error) {
+        if (options.strict) throw error;
+      }
     }
     return reports;
-  } catch {
+  } catch (error) {
+    if (options.strict) throw error;
     return [];
   }
 }
@@ -1242,7 +1332,8 @@ export async function getWalletKPI(walletAddress?: string): Promise<{ wallet: st
     };
   }
   const values = findKpiValues(await readContract("getKPI", { assignee: wallet }));
-  if (!values) throw new Error("Không đọc được chỉ số KPI trả về. Vui lòng thử lại.");
+  if (!values || values.some((value) => !Number.isSafeInteger(value) || value < 0) || values[9] > 100)
+    throw new Error("Không đọc được chỉ số KPI hợp lệ. Vui lòng thử lại.");
   const [total, todo, completed, inProgress, cancelled, onSchedule, delayed, overdue, progressSum, averageProgress] =
     values;
   return {

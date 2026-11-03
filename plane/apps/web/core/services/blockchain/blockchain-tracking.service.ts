@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "@plane/constants";
 import { APIService } from "@/services/api.service";
 import { getSigningWalletAddress } from "@/services/blockchain/metanode-wallet.service";
+import { notifyDashboardUpdate } from "./dashboard-updates";
 
 export type TBlockchainTrackingRecord = {
   report_id?: string;
@@ -32,6 +33,8 @@ export type TBlockchainTrackingRecord = {
   content_kind?: "comment" | "attachment" | "evidence";
   content_reference?: string;
   recorded_at?: string;
+  /** Read model only: calculated from all three original report fields. Never persisted by the dashboard. */
+  dashboard_content_hashes?: { work: string; difficulty: string; evidence: string };
 };
 
 type TTrackingOutboxEntry = {
@@ -116,6 +119,9 @@ class BlockchainTrackingService extends APIService {
     try {
       await this.post(path, payload);
       this.removeQueuedTracking(payload);
+      const scope = path.match(/\/workspaces\/([^/]+)\/projects\/([^/]+)/);
+      if (scope)
+        notifyDashboardUpdate({ workspaceSlug: decodeURIComponent(scope[1]), projectId: decodeURIComponent(scope[2]) });
     } catch (error) {
       const responseStatus = (error as { response?: { status?: number } })?.response?.status;
       if (responseStatus && responseStatus >= 400 && responseStatus < 500) {
@@ -130,6 +136,16 @@ class BlockchainTrackingService extends APIService {
 
   async getTransactions(workspaceSlug: string, projectId: string): Promise<TBlockchainTrackingRecord[]> {
     await this.flushTrackingOutbox();
+    const response = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`);
+    const records: TBlockchainTrackingRecord[] = Array.isArray(response?.data) ? response.data : [];
+    return this.currentContractRecords(records);
+  }
+
+  /**
+   * Pure read-only fetch of blockchain tracking records without flushing outbox or triggering side-effects.
+   * Dedicated for dashboard and read-only telemetry.
+   */
+  async getTransactionsReadOnly(workspaceSlug: string, projectId: string): Promise<TBlockchainTrackingRecord[]> {
     const response = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/blockchain-transactions/`);
     const records: TBlockchainTrackingRecord[] = Array.isArray(response?.data) ? response.data : [];
     return this.currentContractRecords(records);
