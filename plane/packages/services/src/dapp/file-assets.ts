@@ -124,51 +124,67 @@ function bindAsset(record: any, url: string, user: any): void {
   }
 }
 
-async function confirm(id: string, user: any, body: any = {}): Promise<RouteResult> {
+async function confirm(id: string, user: any, body: any = {}, signal?: AbortSignal): Promise<RouteResult> {
   const asset = assetRecord(id);
   const attachment = attachmentRecord(id);
   if (!asset && !attachment) return fail(404, "Không tìm thấy mã tệp để xác nhận.");
   if (asset && isPresentationImageType(asset.entity_type)) {
     const cid = body.ipfs_cid || asset.ipfs_cid;
     if (!cid) return fail(409, "Ảnh chưa được xác nhận lưu trên IPFS.");
-    const url = await verifyIpfsImage(cid);
-    // Recheck the current session/permissions after network I/O, before binding.
+    const url = await verifyIpfsImage(cid, signal);
+    if (signal?.aborted) return fail(499, "Đã hủy upload ảnh.");
+    // Recheck the current session/permissions and asset existence after network I/O, before binding.
+    const liveAsset = assetRecord(id);
+    if (!liveAsset || (localDB._deleted_asset_ids || []).includes(id)) {
+      return fail(404, "Không tìm thấy mã tệp để xác nhận.");
+    }
     const current = authenticatedResourceUser();
     if (current.id !== user.id) throw forbidden();
-    await authorizeScope(asset, "/api/assets/v2/display/" + id, true, current);
-    asset.ipfs_cid = cid;
-    asset.storage = "ipfs";
-    asset.asset_url = url;
-    asset.is_uploaded = true;
-    asset.updated_at = new Date().toISOString();
-    bindAsset(asset, url, user);
+    await authorizeScope(liveAsset, "/api/assets/v2/display/" + id, true, current);
+    if (signal?.aborted) return fail(499, "Đã hủy upload ảnh.");
+    const postAuthAsset = assetRecord(id);
+    if (!postAuthAsset || (localDB._deleted_asset_ids || []).includes(id)) {
+      return fail(404, "Không tìm thấy mã tệp để xác nhận.");
+    }
+    const postAuthUser = authenticatedResourceUser();
+    if (postAuthUser.id !== user.id) throw forbidden();
+    postAuthAsset.ipfs_cid = cid;
+    postAuthAsset.storage = "ipfs";
+    postAuthAsset.asset_url = url;
+    postAuthAsset.is_uploaded = true;
+    postAuthAsset.updated_at = new Date().toISOString();
+    bindAsset(postAuthAsset, url, user);
     saveDB();
-    return ok(asset);
+    return ok(postAuthAsset);
   }
   const file = await content(id);
   if (!file) return fail(409, "Chưa lưu được nội dung tệp. Không xác nhận upload thành công.");
+  if (signal?.aborted) return fail(499, "Đã hủy upload tệp.");
+  const liveAsset = assetRecord(id);
+  const liveAttachment = attachmentRecord(id);
+  if (!liveAsset && !liveAttachment) return fail(404, "Không tìm thấy mã tệp để xác nhận.");
   const url = attachmentDataUrl(file);
-  for (const record of [asset, attachment].filter(Boolean)) {
+  for (const record of [liveAsset, liveAttachment].filter(Boolean)) {
     record.is_uploaded = true;
     record.asset_url = url;
     record.updated_at = new Date().toISOString();
   }
-  if (asset) bindAsset(asset, url, user);
+  if (liveAsset) bindAsset(liveAsset, url, user);
   saveDB();
-  return ok(asset || attachment);
+  return ok(liveAsset || liveAttachment);
 }
 
 /** Metadata API stays in the DApp adapter. Renderers resolve content locally. */
-export async function handleFileAssetRoute(method: string, url: string, body: any): Promise<RouteResult> {
+export async function handleFileAssetRoute(method: string, url: string, body: any, signal?: AbortSignal): Promise<RouteResult> {
   try {
-    return await handleAuthorizedFileAssetRoute(method, url, body, authenticatedResourceUser());
+    return await handleAuthorizedFileAssetRoute(method, url, body, authenticatedResourceUser(), signal);
   } catch (error) {
     if (!(error instanceof ResourceAccessError)) throw error;
     return { status: error.status, data: { code: error.code, error: error.message } };
   }
 }
 
-async function handleAuthorizedFileAssetRoute(method: string, url: string, body: any, user: any): Promise<RouteResult> {
+async function handleAuthorizedFileAssetRoute(method: string, url: string, body: any, user: any, signal?: AbortSignal): Promise<RouteResult> {
   const pathname = url.split("?")[0].replace(/\/+$/, "");
   const segments = pathname.split("/").filter(Boolean);
   const id = decodeURIComponent(segments[segments.length - 1] || "");
@@ -293,7 +309,7 @@ async function handleAuthorizedFileAssetRoute(method: string, url: string, body:
   }
 
   if (["get", "patch", "delete"].includes(method)) await authorizeAsset(id, pathname, method, user);
-  if (method === "patch") return confirm(id, user, body);
+  if (method === "patch") return confirm(id, user, body, signal);
 
   if (method === "get") {
     const record = assetRecord(id);

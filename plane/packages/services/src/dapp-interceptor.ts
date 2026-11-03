@@ -45,8 +45,22 @@ export function setupDAppInterceptor(axiosInstance: AxiosInstance): void {
 
       let routeResult;
       try {
-        routeResult = await handleRoute(method, url, body);
+        if (adapterConfig.signal?.aborted) {
+          const error: any = new Error("Đã hủy upload tệp.");
+          error.name = "CanceledError";
+          error.code = "ERR_CANCELED";
+          error.config = adapterConfig;
+          throw error;
+        }
+        routeResult = await handleRoute(method, url, body, adapterConfig.signal as AbortSignal | undefined);
       } catch (err: any) {
+        if (adapterConfig.signal?.aborted) {
+          const error: any = new Error("Đã hủy upload tệp.");
+          error.name = "CanceledError";
+          error.code = "ERR_CANCELED";
+          error.config = adapterConfig;
+          throw error;
+        }
         console.error(`[DApp Interceptor] Error executing route handler for ${method.toUpperCase()} ${url}:`, err);
         const error: any = new Error(err?.message || "DApp route handler failed");
         error.name = "AxiosError";
@@ -60,6 +74,14 @@ export function setupDAppInterceptor(axiosInstance: AxiosInstance): void {
           config: adapterConfig,
           request: {},
         };
+        throw error;
+      }
+
+      if (adapterConfig.signal?.aborted) {
+        const error: any = new Error("Đã hủy upload tệp.");
+        error.name = "CanceledError";
+        error.code = "ERR_CANCELED";
+        error.config = adapterConfig;
         throw error;
       }
 

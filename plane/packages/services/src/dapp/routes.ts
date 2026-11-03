@@ -569,7 +569,7 @@ async function projectExistsInWorkspaceSnapshot(wsSlug: string, projectId: strin
   }
 }
 
-export async function handleRoute(method: string, url: string, body: Record<string, any>): Promise<RouteResult> {
+export async function handleRoute(method: string, url: string, body: Record<string, any>, signal?: AbortSignal): Promise<RouteResult> {
   // Guards and CRUD must interpret exactly the same path, including absolute
   // Axios URLs, a router basename and repeated slashes.
   try {
@@ -583,13 +583,13 @@ export async function handleRoute(method: string, url: string, body: Record<stri
   }
   const management = url.match(/\/api\/workspaces\/([^/?#]+)\/(?:invitations|members)(?:\/|\?|$)/);
   if (management && !/\/join\/?(?:\?|$)/.test(url) && ["post", "put", "patch", "delete"].includes(method)) {
-    return withInvitationLock(`management:${management[1]}`, () => handleRouteUnlocked(method, url, body));
+    return withInvitationLock(`management:${management[1]}`, () => handleRouteUnlocked(method, url, body, undefined, signal));
   }
-  return handleRouteUnlocked(method, url, body);
+  return handleRouteUnlocked(method, url, body, undefined, signal);
 }
 
 async function handleRouteUnlocked(
-  method: string, url: string, body: Record<string, any>, preserveInvitationId?: string
+  method: string, url: string, body: Record<string, any>, preserveInvitationId?: string, signal?: AbortSignal
 ): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   syncCrossPortWorkspaces();
@@ -2468,6 +2468,7 @@ async function handleRouteUnlocked(
           localDB.users.push(routeSessionUser);
         }
       }
+      applyPresentationMediaPatch(routeSessionUser, body, "user");
       Object.assign(routeSessionUser, body);
       saveDB();
     }
@@ -4963,7 +4964,7 @@ async function handleRouteUnlocked(
   }
 
   if (/\/api\/assets\/v2(?:\/|$)/.test(url)) {
-    return handleFileAssetRoute(method, url, body);
+    return handleFileAssetRoute(method, url, body, signal);
   }
 
   // ── Issue sub-resource endpoints ─────────────────────────────────────
@@ -9506,6 +9507,7 @@ async function handleCRUD(
       }
 
       if (collection === "workspaces") applyPresentationMediaPatch(localDB[collection][idx], body, "workspace");
+      if (collection === "users") applyPresentationMediaPatch(localDB[collection][idx], body, "user");
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
       if (collection === "issues") {
         if (body.state_id) localDB[collection][idx].state = body.state_id;

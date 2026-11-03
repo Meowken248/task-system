@@ -52,6 +52,7 @@ export enum TFileAssetType {
 export class FileService extends APIService {
   private fileUploadService: FileUploadService;
   private cancellationVersion = 0;
+  private activeControllers = new Set<AbortController>();
 
   constructor() {
     super(API_BASE_URL);
@@ -67,12 +68,16 @@ export class FileService extends APIService {
     onProgress?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TFileSignedURLResponse> {
     const version = this.cancellationVersion;
+    const controller = new AbortController();
+    this.activeControllers.add(controller);
     const checkCancelled = () => {
-      if (version !== this.cancellationVersion) throw new Error("Đã hủy upload tệp.");
+      if (version !== this.cancellationVersion || controller.signal.aborted) {
+        throw new Error("Đã hủy upload tệp.");
+      }
     };
     try {
       const metadata = await getFileMetaDataForUpload(file);
-      const response = await this.post(path, { ...data, ...metadata });
+      const response = await this.post(path, { ...data, ...metadata }, { signal: controller.signal });
       const initialized: TFileSignedURLResponse = response.data;
       checkCancelled();
       if (!initialized?.asset_id || !initialized.upload_data?.fields)
@@ -84,12 +89,20 @@ export class FileService extends APIService {
       );
       if (!content?.asset_url) throw new Error("Chưa lưu được nội dung tệp.");
       checkCancelled();
-      const confirmed = await this.patch(`${path}${initialized.asset_id}/`, content.ipfs_cid ? { ipfs_cid: content.ipfs_cid } : undefined);
+      const confirmed = await this.patch(
+        `${path}${initialized.asset_id}/`,
+        content.ipfs_cid ? { ipfs_cid: content.ipfs_cid } : undefined,
+        { signal: controller.signal }
+      );
+      checkCancelled();
       if (!confirmed.data?.is_uploaded) throw new Error("Chưa xác nhận được tệp đã lưu.");
       return { ...initialized, asset_url: confirmed.data.asset_url || content.asset_url };
     } catch (error) {
+      checkCancelled();
       const failure = error as { response?: { data?: unknown } };
       throw failure?.response?.data || error;
+    } finally {
+      this.activeControllers.delete(controller);
     }
   }
 
@@ -231,6 +244,10 @@ export class FileService extends APIService {
 
   cancelUpload() {
     this.cancellationVersion++;
+    for (const controller of this.activeControllers) {
+      controller.abort();
+    }
+    this.activeControllers.clear();
     this.fileUploadService.cancelUpload();
   }
 

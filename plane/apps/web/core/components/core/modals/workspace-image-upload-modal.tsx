@@ -32,6 +32,9 @@ type Props = {
 // services
 const fileService = new FileService();
 
+let uploadCounter = 0;
+let activeUploadId: number | null = null;
+
 export const WorkspaceImageUploadModal = observer(function WorkspaceImageUploadModal(props: Props) {
   const { handleRemove, isOpen, onClose, onSuccess, value } = props;
   // states
@@ -53,6 +56,10 @@ export const WorkspaceImageUploadModal = observer(function WorkspaceImageUploadM
   });
 
   const handleClose = () => {
+    if (isImageUploading || activeUploadId !== null) {
+      fileService.cancelUpload();
+      activeUploadId = null;
+    }
     setIsImageUploading(false);
     onClose();
     setTimeout(() => {
@@ -62,6 +69,8 @@ export const WorkspaceImageUploadModal = observer(function WorkspaceImageUploadM
 
   const handleSubmit = async () => {
     if (!image || !workspaceSlug || !currentWorkspace) return;
+    const operationId = ++uploadCounter;
+    activeUploadId = operationId;
     setIsImageUploading(true);
 
     try {
@@ -73,9 +82,11 @@ export const WorkspaceImageUploadModal = observer(function WorkspaceImageUploadM
         },
         image
       );
+      if (operationId !== activeUploadId) return;
       updateWorkspaceLogo(workspaceSlug.toString(), asset_url);
       onSuccess(asset_url);
     } catch (error: any) {
+      if (operationId !== activeUploadId) return;
       console.log("error", error);
       setToast({
         type: TOAST_TYPE.ERROR,
@@ -83,7 +94,10 @@ export const WorkspaceImageUploadModal = observer(function WorkspaceImageUploadM
         message: error.error || "Something went wrong",
       });
     } finally {
-      setIsImageUploading(false);
+      if (operationId === activeUploadId) {
+        activeUploadId = null;
+        setIsImageUploading(false);
+      }
     }
   };
 

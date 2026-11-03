@@ -729,3 +729,85 @@ test("shared IPFS content does not make avatar deletion remove the cover or anot
   assert(localDB.assets.some((asset) => asset.id === "foreign-avatar"));
   assert(localDB.assets.some((asset) => asset.id === cover.asset_id));
 });
+
+test('REVIEW: deleting a cover through the real user endpoint must survive an older snapshot', async () => {
+  const {applyOffchainDB}=await import('../../packages/services/dist/index.js');
+  await new FileService().uploadUserAsset({entity_type:'USER_COVER'}, png());
+  const previous=structuredClone({users:localDB.users,workspaces:localDB.workspaces});
+  const version=localDB.users[0].media_versions.cover;
+  const result=await handleRoute('patch','/api/users/me/',{cover_image:null,cover_image_url:null});
+  assert.equal(result.status,200);
+  assert.equal(localDB.users[0].cover_image_url,null);
+  const advanced=localDB.users[0].media_versions.cover>version;
+  applyOffchainDB(previous);
+  console.log('REVIEW_COVER',JSON.stringify({versionAdvanced:advanced,restoredCover:localDB.users[0].cover_image_url}));
+  assert.equal(localDB.users[0].cover_image_url,null,'Deleted cover must not return after snapshot restoration');
+});
+
+test('REVIEW: cancelling while IPFS confirmation is pending must not commit an avatar', async () => {
+  const service=new FileService();let release,entered;
+  const gate=new Promise(resolve=>{release=resolve});
+  const ready=new Promise(resolve=>{entered=resolve});let reads=0;
+  globalThis.fetch=async (url,options)=>{
+    if(String(url).startsWith('https://image-gateway.fixture/')&&++reads===2){entered();await gate;}
+    return ipfs.fetch(url,options);
+  };
+  const pending=service.uploadUserAsset({entity_type:'USER_AVATAR'},png());
+  await ready;service.cancelUpload();release();
+  const outcome=await Promise.allSettled([pending]);
+  console.log('REVIEW_CANCEL',JSON.stringify({outcome:outcome[0].status,avatar:localDB.users[0].avatar_url}));
+  assert.equal(localDB.users[0].avatar_url,'','Cancellation must keep the previous avatar');
+});
+
+test('REVIEW: deleting an asset during confirmation must prevent it binding to the user later', async () => {
+  const service=new FileService();let release,entered;
+  const gate=new Promise(resolve=>{release=resolve});
+  const ready=new Promise(resolve=>{entered=resolve});let reads=0;
+  globalThis.fetch=async (url,options)=>{
+    if(String(url).startsWith('https://image-gateway.fixture/')&&++reads===2){entered();await gate;}
+    return ipfs.fetch(url,options);
+  };
+  const pending=service.uploadUserAsset({entity_type:'USER_AVATAR'},png());
+  await ready;const id=localDB.assets[0].id;
+  const removed=await handleRoute('delete','/api/assets/v2/user-assets/'+id+'/',{});
+  assert.equal(removed.status,200);release();
+  const outcome=await Promise.allSettled([pending]);
+  console.log('REVIEW_DELETE',JSON.stringify({outcome:outcome[0].status,remainingAssets:localDB.assets.length,avatar:localDB.users[0].avatar_url}));
+  assert.equal(localDB.users[0].avatar_url,'','A deleted asset must not become the avatar');
+});
+
+async function logoPermissionRace(action) {
+  const wallet='0x1111111111111111111111111111111111111111';
+  sessionStorage.setItem('plane_active_wallet_address',wallet);
+  localDB.users[0].metanode_wallet_address=wallet;
+  process.env.VITE_WORKSPACE_REGISTRY_ADDRESS='0x3333333333333333333333333333333333333333';
+  process.env.VITE_RPC_URL='https://review-permission.fixture';
+  let release,entered;const gate=new Promise(resolve=>{release=resolve});const ready=new Promise(resolve=>{entered=resolve});
+  let reads=0,confirmationReached=false,held=false;
+  globalThis.fetch=async(url,options)=>{
+    if(String(url)==='https://review-permission.fixture') {
+      if(confirmationReached&&!held){held=true;entered();await gate;}
+      return Response.json({jsonrpc:'2.0',id:1,result:'0x'+BigInt(2).toString(16).padStart(64,'0')});
+    }
+    if(String(url).startsWith('https://image-gateway.fixture/')&&++reads===2)confirmationReached=true;
+    return ipfs.fetch(url,options);
+  };
+  const service=new FileService();
+  const pending=service.uploadWorkspaceAsset('test-ws',{entity_type:'WORKSPACE_LOGO',entity_identifier:'ws-1'},png());
+  await ready;const id=localDB.assets[0].id;
+  if(action==='cancel')service.cancelUpload();
+  else {const removed=await handleRoute('delete','/api/assets/v2/workspaces/test-ws/'+id+'/',{});assert.equal(removed.status,200);}
+  release();const [outcome]=await Promise.allSettled([pending]);
+  console.log('REVIEW2_RPC_RACE',JSON.stringify({action,outcome:outcome.status,logo:localDB.workspaces[0].logo_url,remainingAssets:localDB.assets.length}));
+  assert.equal(localDB.workspaces[0].logo_url,'','No logo may be committed after '+action+' during the final permission check');
+}
+
+test('REVIEW2: cancellation during final chain permission check must keep old workspace logo',{timeout:10000},async()=>{
+  try {await logoPermissionRace('cancel');} finally {process.env.VITE_WORKSPACE_REGISTRY_ADDRESS='';process.env.VITE_RPC_URL='';}
+});
+
+test('REVIEW2: deletion during final chain permission check must not bind a removed logo',{timeout:10000},async()=>{
+  try {await logoPermissionRace('delete');} finally {process.env.VITE_WORKSPACE_REGISTRY_ADDRESS='';process.env.VITE_RPC_URL='';}
+});
+
+
