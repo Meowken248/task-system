@@ -1,6 +1,16 @@
 {
   "$schema": "https://v2-8-12.turborepo.dev/schema.json",
-  "globalDependencies": [".npmrc", ".oxfmtrc.json", ".oxlintrc.json"],
+  "globalDependencies": [
+    ".npmrc",
+    ".oxfmtrc.json",
+    ".oxlintrc.json",
+    "scripts/app-env.mjs",
+    "scripts/app-env.d.mts",
+    "scripts/workspace-source-aliases.mjs",
+    "scripts/workspace-source-aliases.d.mts",
+    "scripts/check-public-env-secrets.mjs",
+    "scripts/sync-space-build.mjs"
+  ],
   "globalEnv": [
     "APP_VERSION",
     "DEV",
@@ -38,6 +48,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": ["ALLOW_PUBLIC_SIGNING_SECRETS"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": ["dist/**", "build/**", ".react-router/**"]
     },

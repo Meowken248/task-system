@@ -1,17 +1,14 @@
 import type { Config } from "@react-router/dev/config";
-import * as dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadEnv } from "vite";
+import { appBasePath, readAppEnv, resolveAppMode } from "../../scripts/app-env.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.resolve(__dirname, ".env") });
-
-const isBuild = process.argv.includes("build") || process.env.npm_lifecycle_event === "build";
-const defaultBasename = isBuild ? "/plane" : "/";
-const rawBasename = (process.env.VITE_ROUTER_BASENAME ?? defaultBasename).trim();
-const cleanBasename = rawBasename.replace(/^\/+|\/+$/g, "");
-// Must start and end with / so it matches Vite's normalized base (`/plane/`) in dev server
-const basename = cleanBasename ? `/${cleanBasename}/` : undefined;
+const mode = resolveAppMode();
+const env = readAppEnv(__dirname, mode, loadEnv);
+const base = appBasePath(env.VITE_ROUTER_BASENAME, mode === "development" ? "/" : "/plane");
+const basename = base === "/" ? undefined : base;
 
 export default {
   appDirectory: "app",

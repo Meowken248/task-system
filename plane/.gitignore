@@ -110,6 +110,13 @@ build/
 .react-router/
 temp/
 scripts/*
+!scripts/app-env.mjs
+!scripts/app-env.d.mts
+!scripts/workspace-source-aliases.mjs
+!scripts/workspace-source-aliases.d.mts
+!scripts/build-plane.mjs
+!scripts/check-public-env-secrets.mjs
+!scripts/sync-space-build.mjs
 !scripts/deployment-env.mjs
 !scripts/deploy-fresh.mjs
 !scripts/sync-fiai-runtime.mjs
