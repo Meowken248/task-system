@@ -1,5 +1,5 @@
 import { handleFileAssetRoute } from "./file-assets";
-import { requireWorkspaceAccess, requireIssueAccess, resourceProject, ResourceAccessError } from "./resource-access";
+import { requireWorkspaceAccess, requireProjectAccess, requireIssueAccess, resourceProject, ResourceAccessError } from "./resource-access";
 import type { RouteResult } from "./types";
 import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, verifyOtpCode, clearOtpCode } from "./auth";
 import { requestOtpDelivery } from "./otp-delivery";
@@ -76,6 +76,8 @@ import { invitationLink, withInvitationLock } from "./invitation-policy";
 import { listWorkspaceMembers } from "./workspace-members";
 import { addWorkspaceWalletMember, discoverWalletWorkspaces, cacheVerifiedWalletMember } from "./workspace-wallet-members";
 import { deleteAttachment } from "../file/attachment-storage";
+import { isValidScope, isActiveWorkIssue, nextRecordTimestamp, ensureIssueTriageMigration } from "./scope.helper";
+export { isValidScope, isActiveWorkIssue, ensureIssueTriageMigration } from "./scope.helper";
 export { readWorkspaceSnapshotFromChain, recoverInvitationFromChainSnapshot, findLocalWorkspace, buildWorkspaceFromChainSnapshot, upsertWorkspaceMemberRecord } from "./workspace-invitations";
 const escapeCsv = (val: any): string => {
   if (val === null || val === undefined) return '""';
@@ -569,6 +571,495 @@ async function projectExistsInWorkspaceSnapshot(wsSlug: string, projectId: strin
   }
 }
 
+
+/**
+ * Handles all user favorites endpoints with user-isolation,
+ * tombstone recording, scope validation, and orphaned entity cleanup.
+ */
+export async function handleFavoritesRoute(
+  method: string,
+  url: string,
+  body: any,
+  routeSessionUserId?: string | null
+): Promise<RouteResult | null> {
+  const normMethod = (method || "get").toLowerCase();
+  const isUserFavUrl = /\/api\/workspaces\/[^/]+\/user-favorites(?:\/|\?|$)/.test(url);
+  const isResFavUrl = /\/(user-favorite-cycles|user-favorite-modules|user-favorite-views|favorite-pages|user-favorite-pages)(?:\/|\?|$)/.test(url);
+
+  if (!isUserFavUrl && !isResFavUrl) return null;
+
+  const wsMatch = url.match(/\/api\/workspaces\/([^/]+)/);
+  const wsSlug = wsMatch ? decodeURIComponent(wsMatch[1]).trim() : "";
+  const access = await requireWorkspaceAccess(wsSlug);
+  const currentUserId = access.user.id;
+  if (routeSessionUserId && routeSessionUserId !== currentUserId) {
+    throw new ResourceAccessError(401, "AUTH_REQUIRED", "Phiên đăng nhập đã thay đổi.");
+  }
+  const ws = access.workspace;
+  const wsId = ws.id;
+  const ownsFavorite = (fav: any) => fav.user_id === currentUserId && [ws.id, ws.slug].includes(fav.workspace_id);
+  const projectAccess = new Map<string, ReturnType<typeof requireProjectAccess>>();
+  const readProject = (key: string) => {
+    if (!projectAccess.has(key)) projectAccess.set(key, requireProjectAccess(ws.slug, key));
+    return projectAccess.get(key)!;
+  };
+  const validateTarget = async (type: string, id: string, project?: string | null) => {
+    const collections: Record<string, string> = { cycle: "cycles", module: "modules", view: "views", views: "views", page: "pages", pages: "pages", project: "projects", issue: "issues" };
+    const collection = collections[type];
+    const tombstones: Record<string, string> = { cycles: "_deleted_cycle_ids", modules: "_deleted_module_ids", views: "_deleted_view_ids", pages: "_deleted_page_ids", projects: "_deleted_project_ids", issues: "_deleted_issue_ids" };
+    if (!collection || typeof id !== "string" || !id) throw new ResourceAccessError(400, "INVALID_FAVORITE", "Tài nguyên yêu thích không hợp lệ.");
+    const entity = (localDB[collection] || []).find((item: any) => item.id === id);
+    if (!entity || (localDB[tombstones[collection]] || []).includes(id)) throw new ResourceAccessError(404, "NOT_FOUND", "Không tìm thấy tài nguyên.");
+    const projectKey = type === "project" ? id : project || entity.project_id || entity.project || entity.project_ids?.[0];
+    if (!projectKey) throw new ResourceAccessError(404, "NOT_FOUND", "Không xác định được dự án của tài nguyên.");
+    const permitted = await readProject(projectKey);
+    if (!isValidScope(entity, type === "project" ? null : permitted.project.id, ws.id)) throw new ResourceAccessError(404, "NOT_FOUND", "Tài nguyên không thuộc dự án hoặc workspace này.");
+    if ((type === "page" || type === "pages") && entity.access === 1 && entity.created_by !== currentUserId) throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Trang riêng tư chỉ người tạo mới có quyền truy cập.");
+    return entity;
+  };
+  const visibleFavorite = async (fav: any): Promise<boolean> => {
+    if (!ownsFavorite(fav)) return false;
+    if (fav.is_folder || fav.entity_type === "folder") return true;
+    try {
+      await validateTarget(fav.entity_type, fav.entity_identifier || fav.entity_id || fav.entity_data?.id, fav.project_id);
+      return true;
+    } catch (error) {
+      if (error instanceof ResourceAccessError && [403, 404].includes(error.status)) return false;
+      throw error;
+    }
+  };
+  const visibleFavorites = async (items: any[]) => {
+    const visibility = await Promise.all(items.map(visibleFavorite));
+    return items.filter((_, index) => visibility[index]);
+  };
+
+  if (!localDB.favorites) localDB.favorites = [];
+  if (!localDB._deleted_favorite_ids) localDB._deleted_favorite_ids = [];
+
+  const deletedFavSet = new Set(localDB._deleted_favorite_ids || []);
+  const deletedCycleSet = new Set(localDB._deleted_cycle_ids || []);
+  const deletedModSet = new Set(localDB._deleted_module_ids || []);
+  const deletedViewSet = new Set(localDB._deleted_view_ids || []);
+  const deletedPageSet = new Set(localDB._deleted_page_ids || []);
+  const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
+
+  const isOrphaned = (fav: any) => {
+    const targetId = fav?.entity_data?.id || fav?.entity_id || fav?.entity_identifier;
+    if (!targetId) return false;
+    const type = fav?.entity_type;
+    if (type === "cycle" && (deletedCycleSet.has(targetId) || !(localDB.cycles || []).some((c: any) => c.id === targetId))) return true;
+    if (type === "module" && (deletedModSet.has(targetId) || !(localDB.modules || []).some((m: any) => m.id === targetId))) return true;
+    if (type === "views" && (deletedViewSet.has(targetId) || !(localDB.views || []).some((v: any) => v.id === targetId))) return true;
+    if ((type === "page" || type === "pages") && (deletedPageSet.has(targetId) || !(localDB.pages || []).some((p: any) => p.id === targetId))) return true;
+    if (type === "issue" && (deletedIssueSet.has(targetId) || !(localDB.issues || []).some((i: any) => i.id === targetId))) return true;
+    return false;
+  };
+
+  // ── A. Direct /user-favorites/ ──────────────────────────────────────────────
+  if (isUserFavUrl) {
+    // 1. GET /api/workspaces/:wsSlug/user-favorites/
+    if (normMethod === "get" && url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/?(?:\?.*)?$/)) {
+      const userFavorites = localDB.favorites.filter(
+        (fav: any) =>
+          fav.user_id === currentUserId &&
+          (fav.workspace_id === wsId || fav.workspace_id === wsSlug) && !deletedFavSet.has(fav.id) && !isOrphaned(fav)
+      );
+      return ok(await visibleFavorites(userFavorites));
+    }
+
+    // 2. GET /api/workspaces/:wsSlug/user-favorites/:favoriteId/group/
+    const groupMatch = url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/([^/?#]+)\/group\/?(?:\?.*)?$/);
+    if (groupMatch && normMethod === "get") {
+      const favId = groupMatch[1];
+      const parent = (localDB.favorites || []).find((fav: any) => fav.id === favId && ownsFavorite(fav) && !deletedFavSet.has(fav.id));
+      if (!parent) throw new ResourceAccessError(404, "NOT_FOUND", "Không tìm thấy thư mục yêu thích.");
+      const grouped = (localDB.favorites || []).filter(
+        (fav: any) =>
+          ownsFavorite(fav) &&
+          fav.parent === favId &&
+          !deletedFavSet.has(fav.id) &&
+          !isOrphaned(fav)
+      );
+      return ok(await visibleFavorites(grouped));
+    }
+
+    // 3. POST /api/workspaces/:wsSlug/user-favorites/ (FavoriteService.addFavorite)
+    if (normMethod === "post" && url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/?(?:\?.*)?$/)) {
+      const entityType = body?.entity_type;
+      if (typeof entityType !== "string" || !["folder", "cycle", "module", "view", "views", "page", "pages", "project", "issue"].includes(entityType)) {
+        return { status: 400, data: { code: "INVALID_FAVORITE", error: "Loại tài nguyên yêu thích không hợp lệ." } };
+      }
+      if (entityType === "folder" && (typeof body.name !== "string" || !body.name.trim())) {
+        return { status: 400, data: { code: "INVALID_FAVORITE", error: "Tên thư mục không được để trống." } };
+      }
+      const targetEntityId = body?.entity_identifier || body?.entity_id || body?.entity_data?.id;
+      const targetProjectId = body?.project_id;
+
+      let entityName = body?.name || body?.entity_data?.name || "Favorite";
+      let entityLogoProps: any = undefined;
+
+      if (entityType && entityType !== "folder") {
+        await validateTarget(entityType, targetEntityId, targetProjectId);
+        let targetEntity: any = null;
+        if (entityType === "cycle") {
+          targetEntity = (localDB.cycles || []).find((c: any) => c.id === targetEntityId);
+        } else if (entityType === "module") {
+          targetEntity = (localDB.modules || []).find((m: any) => m.id === targetEntityId);
+        } else if (entityType === "views" || entityType === "view") {
+          targetEntity = (localDB.views || []).find((v: any) => v.id === targetEntityId);
+        } else if (entityType === "page" || entityType === "pages") {
+          targetEntity = (localDB.pages || []).find((p: any) => p.id === targetEntityId);
+        } else if (entityType === "project") {
+          targetEntity = (localDB.projects || []).find((p: any) => p.id === targetEntityId);
+        } else if (entityType === "issue") {
+          targetEntity = (localDB.issues || []).find((i: any) => i.id === targetEntityId);
+        }
+
+        if (!targetEntity) {
+          return { status: 404, data: { code: "NOT_FOUND", error: "Không tìm thấy tài nguyên để thêm vào mục yêu thích." } };
+        }
+
+        // Validate entity scope against workspace and project
+        if (targetProjectId) {
+          if (!isValidScope(targetEntity, targetProjectId, wsSlug)) {
+            return { status: 404, data: { code: "NOT_FOUND", error: "Tài nguyên không thuộc dự án hoặc không gian làm việc này." } };
+          }
+        } else if (!isValidScope(targetEntity, null, wsSlug)) {
+          return { status: 404, data: { code: "NOT_FOUND", error: "Tài nguyên không thuộc không gian làm việc này." } };
+        }
+
+        // Private page access check
+        if ((entityType === "page" || entityType === "pages") && targetEntity.access === 1 && targetEntity.created_by !== currentUserId) {
+          return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Trang riêng tư chỉ người tạo mới có quyền truy cập." } };
+        }
+
+        entityName = targetEntity.name || entityName;
+        entityLogoProps = targetEntity.logo_props;
+      }
+
+      // Check existing favorite
+      const existing = entityType === "folder" ? undefined : (localDB.favorites || []).find(
+        (f: any) =>
+          f.user_id === currentUserId &&
+          f.entity_type === entityType &&
+          (f.entity_identifier === targetEntityId || f.entity_id === targetEntityId || f.entity_data?.id === targetEntityId) &&
+          !deletedFavSet.has(f.id)
+      );
+      if (existing) return ok(existing);
+
+      const newId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+      localDB._deleted_favorite_ids = (localDB._deleted_favorite_ids || []).filter((id: string) => id !== newId);
+
+      const newFav = {
+        id: newId,
+        name: entityName,
+        entity_type: entityType || "folder",
+        entity_identifier: targetEntityId || newId,
+        entity_data: {
+          id: targetEntityId,
+          name: entityName,
+          logo_props: entityLogoProps,
+        },
+        entity_id: targetEntityId,
+        is_folder: body?.is_folder || entityType === "folder",
+        sort_order: (localDB.favorites || []).length + 1,
+        parent: null,
+        children: [],
+        project_id: targetProjectId || null,
+        sequence: (localDB.favorites || []).length + 1,
+        workspace_id: wsId,
+        user_id: currentUserId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      localDB.favorites.push(newFav);
+      saveDB();
+      return ok(newFav);
+    }
+
+    // 4. PATCH /api/workspaces/:wsSlug/user-favorites/:favoriteId/
+    const favDirectPatchMatch = url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/([^/?#]+)\/?(?:\?.*)?$/);
+    if (favDirectPatchMatch && normMethod === "patch") {
+      const favId = favDirectPatchMatch[1];
+      const fav = (localDB.favorites || []).find((f: any) => f.id === favId && ownsFavorite(f));
+      if (!fav) {
+        return { status: 404, data: { code: "NOT_FOUND", error: "Không tìm thấy mục yêu thích." } };
+      }
+      const allowed = new Set(["name", "sort_order", "sequence", "parent"]);
+      if (!body || Object.keys(body).some((key) => !allowed.has(key)) ||
+        (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim())) ||
+        (body.sort_order !== undefined && (typeof body.sort_order !== "number" || !Number.isFinite(body.sort_order))) ||
+        (body.sequence !== undefined && (typeof body.sequence !== "number" || !Number.isFinite(body.sequence)))) {
+        return { status: 400, data: { code: "INVALID_FAVORITE_PATCH", error: "Chỉ được cập nhật tên, thứ tự hoặc thư mục chứa." } };
+      }
+      if (body.parent !== undefined && body.parent !== null) {
+        const visited = new Set([fav.id]);
+        let parentId = body.parent;
+        while (parentId) {
+          const parent = (localDB.favorites || []).find((f: any) => f.id === parentId && ownsFavorite(f) && f.is_folder && !deletedFavSet.has(f.id));
+          if (!parent || visited.has(parentId)) return { status: 400, data: { code: "INVALID_PARENT", error: "Thư mục chứa không hợp lệ." } };
+          visited.add(parentId);
+          parentId = parent.parent;
+        }
+      }
+      Object.assign(fav, body, { updated_at: nextRecordTimestamp(fav) });
+      saveDB();
+      return ok(fav);
+    }
+
+    // 5. DELETE /api/workspaces/:wsSlug/user-favorites/:favoriteId/
+    const favDirectDelMatch = url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/([^/?#]+)\/?(?:\?.*)?$/);
+    if (favDirectDelMatch && normMethod === "delete") {
+      const favId = favDirectDelMatch[1];
+      const fav = (localDB.favorites || []).find((f: any) => f.id === favId && ownsFavorite(f));
+      if (fav) {
+        if (!localDB._deleted_favorite_ids.includes(fav.id)) {
+          localDB._deleted_favorite_ids.push(fav.id);
+        }
+        localDB.favorites = (localDB.favorites || []).filter((f: any) => f.id !== fav.id);
+        saveDB();
+      }
+      return ok({ message: "Favorite removed" });
+    }
+  }
+
+  // ── B. ProjectPageService favorite-pages Endpoints ─────────────────────────
+  if (url.includes("/favorite-pages")) {
+    const projMatch = url.match(/\/projects\/([^/]+)/);
+    const projectId = projMatch ? decodeURIComponent(projMatch[1]).trim() : null;
+
+    // GET /api/workspaces/:wsSlug/projects/:projectId/favorite-pages/ -> returns TPage[]
+    if (normMethod === "get") {
+      const userFavPageIds = new Set(
+        (localDB.favorites || []).filter(
+          (f: any) =>
+            f.user_id === currentUserId &&
+            (f.entity_type === "page" || f.entity_type === "pages") &&
+            !deletedFavSet.has(f.id)
+        ).map((f: any) => f.entity_identifier || f.entity_id || f.entity_data?.id)
+      );
+
+      const resultPages: any[] = [];
+      const candidatePages = (localDB.pages || []).filter(
+        (p: any) => !deletedPageSet.has(p.id) && isValidScope(p, projectId, wsSlug)
+      );
+
+      for (const p of candidatePages) {
+        if (!userFavPageIds.has(p.id)) continue;
+        if (p.access === 1 && p.created_by !== currentUserId) continue; // Private page privacy!
+        resultPages.push({ ...p, is_favorite: true });
+      }
+
+      if (projectId) await readProject(projectId);
+      await Promise.all(resultPages.map((page) => validateTarget("page", page.id, projectId)));
+      return ok(resultPages);
+    }
+
+    // POST /api/workspaces/:wsSlug/projects/:projectId/favorite-pages/:pageId/
+    if (normMethod === "post") {
+      const pageIdMatch = url.match(/\/favorite-pages\/([^/?#]+)\/?(?:\?.*)?$/);
+      const pageId = pageIdMatch ? decodeURIComponent(pageIdMatch[1]).trim() : body?.page || body?.id;
+      if (!pageId) return { status: 400, data: { error: "Missing page id" } };
+      await validateTarget("page", pageId, projectId);
+
+      const page = (localDB.pages || []).find((p: any) => p.id === pageId);
+      if (!page || deletedPageSet.has(page.id)) {
+        return { status: 404, data: { code: "NOT_FOUND", error: "Không tìm thấy trang." } };
+      }
+      if (!isValidScope(page, projectId, wsSlug)) {
+        return { status: 404, data: { code: "NOT_FOUND", error: "Trang không thuộc dự án này." } };
+      }
+      if (page.access === 1 && page.created_by !== currentUserId) {
+        return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Trang riêng tư chỉ người tạo mới có quyền truy cập." } };
+      }
+
+      const existing = (localDB.favorites || []).find(
+        (f: any) =>
+          ownsFavorite(f) &&
+          (f.entity_type === "page" || f.entity_type === "pages") &&
+          (f.entity_identifier === pageId || f.entity_id === pageId || f.entity_data?.id === pageId) &&
+          !deletedFavSet.has(f.id)
+      );
+      if (existing) return ok(existing);
+
+      const newId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+      localDB._deleted_favorite_ids = (localDB._deleted_favorite_ids || []).filter((id: string) => id !== newId);
+      const newFav = {
+        id: newId,
+        name: page.name || "Page Favorite",
+        entity_type: "page",
+        entity_identifier: pageId,
+        entity_data: { id: pageId, name: page.name || "", logo_props: page.logo_props },
+        entity_id: pageId,
+        is_folder: false,
+        sort_order: (localDB.favorites || []).length + 1,
+        parent: null,
+        children: [],
+        project_id: projectId || page.project_id || page.project,
+        sequence: (localDB.favorites || []).length + 1,
+        workspace_id: wsId,
+        user_id: currentUserId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      localDB.favorites.push(newFav);
+      saveDB();
+      return ok({ message: "Success", data: newFav });
+    }
+
+    // DELETE /api/workspaces/:wsSlug/projects/:projectId/favorite-pages/:pageId/
+    if (normMethod === "delete") {
+      const pageIdMatch = url.match(/\/favorite-pages\/([^/?#]+)\/?(?:\?.*)?$/);
+      const pageId = pageIdMatch ? decodeURIComponent(pageIdMatch[1]).trim() : body?.page || body?.id;
+      if (projectId) await readProject(projectId);
+      const fav = (localDB.favorites || []).find(
+        (f: any) =>
+          ownsFavorite(f) && (!projectId || f.project_id === projectId) &&
+          (f.entity_type === "page" || f.entity_type === "pages") &&
+          (f.entity_identifier === pageId || f.entity_id === pageId || f.entity_data?.id === pageId || f.id === pageId)
+      );
+      if (fav) {
+        if (!localDB._deleted_favorite_ids.includes(fav.id)) {
+          localDB._deleted_favorite_ids.push(fav.id);
+        }
+        localDB.favorites = (localDB.favorites || []).filter((f: any) => f.id !== fav.id);
+        saveDB();
+      }
+      return ok({ message: "Favorite removed" });
+    }
+  }
+
+  // ── C. Resource-specific favorites (cycles, modules, views) ─────────────────
+  const resFavPattern = /\/(user-favorite-cycles|user-favorite-modules|user-favorite-views|user-favorite-pages)(?:\/([^/?#]+))?\/?(?:\?.*)?$/;
+  const resFavMatch = url.match(resFavPattern);
+  if (resFavMatch) {
+    const endpointType = resFavMatch[1];
+    const targetIdFromUrl = resFavMatch[2];
+    const typeMapping: Record<string, string> = {
+      "user-favorite-cycles": "cycle",
+      "user-favorite-modules": "module",
+      "user-favorite-views": "views",
+      "user-favorite-pages": "page",
+    };
+    const entityType = typeMapping[endpointType] || "issue";
+
+    const projMatch = url.match(/\/projects\/([^/]+)\//);
+    const projectId = projMatch ? decodeURIComponent(projMatch[1]).trim() : null;
+
+    if (normMethod === "get") {
+      const userFavs = (localDB.favorites || []).filter(
+        (fav: any) =>
+          fav.user_id === currentUserId &&
+          fav.entity_type === entityType &&
+          (fav.workspace_id === wsId || fav.workspace_id === wsSlug || !fav.workspace_id) &&
+          (!projectId || fav.project_id === projectId) &&
+          !deletedFavSet.has(fav.id) &&
+          !isOrphaned(fav)
+      );
+      if (projectId) await readProject(projectId);
+      return ok(await visibleFavorites(userFavs));
+    }
+
+    if (normMethod === "post") {
+      const targetEntityId =
+        body?.cycle ||
+        body?.module ||
+        body?.view ||
+        body?.page ||
+        body?.issue ||
+        body?.entity_id ||
+        body?.entity_identifier ||
+        targetIdFromUrl;
+      await validateTarget(entityType, targetEntityId, projectId);
+
+      let entityName = "Favorite";
+      let entityLogoProps: any = undefined;
+      let targetEntity: any = null;
+
+      if (entityType === "cycle") {
+        targetEntity = (localDB.cycles || []).find((x: any) => x.id === targetEntityId);
+      } else if (entityType === "module") {
+        targetEntity = (localDB.modules || []).find((x: any) => x.id === targetEntityId);
+      } else if (entityType === "views") {
+        targetEntity = (localDB.views || []).find((x: any) => x.id === targetEntityId);
+      } else if (entityType === "page") {
+        targetEntity = (localDB.pages || []).find((x: any) => x.id === targetEntityId);
+      }
+
+      if (!targetEntity) {
+        return { status: 404, data: { code: "NOT_FOUND", error: "Không tìm thấy tài nguyên." } };
+      }
+
+      if (projectId && !isValidScope(targetEntity, projectId, wsSlug)) {
+        return { status: 404, data: { code: "NOT_FOUND", error: "Tài nguyên không thuộc dự án này." } };
+      }
+
+      entityName = targetEntity.name || entityName;
+      entityLogoProps = targetEntity.logo_props;
+
+      const existing = (localDB.favorites || []).find(
+        (f: any) =>
+          f.user_id === currentUserId &&
+          f.entity_type === entityType &&
+          (f.entity_identifier === targetEntityId || f.entity_data?.id === targetEntityId || f.entity_id === targetEntityId) &&
+          !deletedFavSet.has(f.id)
+      );
+      if (existing) {
+        return ok(existing);
+      }
+
+      const newId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+      localDB._deleted_favorite_ids = (localDB._deleted_favorite_ids || []).filter((id: string) => id !== newId);
+
+      const newFav = {
+        id: newId,
+        name: entityName,
+        entity_type: entityType,
+        entity_identifier: targetEntityId,
+        entity_data: {
+          id: targetEntityId,
+          name: entityName,
+          logo_props: entityLogoProps,
+        },
+        entity_id: targetEntityId,
+        is_folder: false,
+        sort_order: (localDB.favorites || []).length + 1,
+        parent: null,
+        children: [],
+        project_id: projectId || targetEntity?.project_id || targetEntity?.project || null,
+        sequence: (localDB.favorites || []).length + 1,
+        workspace_id: wsId,
+        user_id: currentUserId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      localDB.favorites.push(newFav);
+      saveDB();
+      return ok(newFav);
+    }
+
+    if (normMethod === "delete") {
+      const targetId = targetIdFromUrl || body?.cycle || body?.module || body?.view || body?.page || body?.id;
+      if (projectId) await readProject(projectId);
+      const fav = (localDB.favorites || []).find(
+        (f: any) =>
+          ownsFavorite(f) && f.entity_type === entityType && (!projectId || f.project_id === projectId) &&
+          (f.id === targetId || f.entity_identifier === targetId || f.entity_data?.id === targetId || f.entity_id === targetId)
+      );
+      if (fav) {
+        if (!localDB._deleted_favorite_ids.includes(fav.id)) {
+          localDB._deleted_favorite_ids.push(fav.id);
+        }
+        localDB.favorites = (localDB.favorites || []).filter((f: any) => f.id !== fav.id);
+        saveDB();
+      }
+      return ok({ message: "Favorite removed" });
+    }
+  }
+
+  return { status: 405, data: { code: "METHOD_NOT_ALLOWED", error: "Thao tác yêu thích không được hỗ trợ." } };
+}
+
 export async function handleRoute(method: string, url: string, body: Record<string, any>, signal?: AbortSignal): Promise<RouteResult> {
   // Guards and CRUD must interpret exactly the same path, including absolute
   // Axios URLs, a router basename and repeated slashes.
@@ -592,6 +1083,33 @@ async function handleRouteUnlocked(
   method: string, url: string, body: Record<string, any>, preserveInvitationId?: string, signal?: AbortSignal
 ): Promise<RouteResult> {
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
+  // Authorize before migrations, cascades, persistence or tombstone writes.
+  try {
+    const scoped = url.split("?")[0].match(/^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:v2\/)?(cycles|modules|views|pages|inbox-issues)(?:\/([^/]+))?\/?$/);
+    if (scoped && ((method === "delete" && scoped[4]) ||
+      (scoped[3] === "inbox-issues" && ["post", "patch", "delete"].includes(method)))) {
+      const access = await requireProjectAccess(decodeURIComponent(scoped[1]), decodeURIComponent(scoped[2]), true);
+      if (scoped[4]) {
+        const collection = scoped[3] === "inbox-issues" ? "inbox_issues" : scoped[3];
+        const key = decodeURIComponent(scoped[4]);
+        const record = (localDB[collection] || []).find((item: any) => item.id === key ||
+          (collection === "inbox_issues" && (item.issue_id === key || item.issue?.id === key)));
+        if (!record || !isValidScope(record, access.project.id, access.workspace.id)) {
+          throw new ResourceAccessError(404, "NOT_FOUND", "Không tìm thấy tài nguyên trong dự án này.");
+        }
+        if (["pages", "views"].includes(collection) && access.projectRole < 20 && record.created_by !== access.user.id) {
+          throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Chỉ chủ sở hữu hoặc quản trị viên được xóa tài nguyên này.");
+        }
+      }
+    }
+    if (/\/(?:user-favorites|user-favorite-(?:cycles|modules|views|pages)|favorite-pages)(?:\/|\?|$)/.test(url)) {
+      const favResult = await handleFavoritesRoute(method, url, body, getLoggedInUserId());
+      if (favResult) return favResult;
+    }
+  } catch (error) {
+    if (!(error instanceof ResourceAccessError)) throw error;
+    return { status: error.status, data: { code: error.code, error: error.message } };
+  }
   syncCrossPortWorkspaces();
   const routeSessionUserId = getLoggedInUserId();
   const loggedInEmail = typeof window !== "undefined"
@@ -4628,10 +5146,6 @@ async function handleRouteUnlocked(
     return ok(localDB["recent-visits"] || []);
   }
 
-  if (method === "get" && url.match(/\/api\/workspaces\/[^/]+\/user-favorites\/?(?:\?.*)?$/)) {
-    return ok(localDB.favorites || []);
-  }
-
   // ── Notifications ───────────────────────────────────────────────────
   if (url.includes("/notifications")) {
     const notifWsMatch = url.match(/\/api\/workspaces\/([^/]+)\//);
@@ -5642,10 +6156,6 @@ async function handleRouteUnlocked(
     return ok(archived);
   }
 
-  if (url.includes("/user-favorite-cycles")) {
-    return ok({ message: "Success" });
-  }
-
   // ── 2. Modules Endpoints ──────────────────────────────────────────────
   // Module issues endpoint (supports both /modules/:id/issues/ and /modules/:id/module-issues/)
   const moduleIssuesMatch = url.match(/\/modules\/([^/]+)\/(?:issues|module-issues)(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
@@ -5745,10 +6255,6 @@ async function handleRouteUnlocked(
     return ok(archived);
   }
 
-  if (url.includes("/user-favorite-modules")) {
-    return ok({ message: "Success" });
-  }
-
   // ── 3. Views Endpoints ────────────────────────────────────────────────
   // View issues endpoint (/views/:id/issues/)
   const viewIssuesMatch = url.match(/\/views\/([^/]+)\/issues\/?(?:\?.*)?$/);
@@ -5773,10 +6279,6 @@ async function handleRouteUnlocked(
       prev_page_results: false,
       total_pages: 1,
     });
-  }
-
-  if (url.includes("/user-favorite-views")) {
-    return ok({ message: "Success" });
   }
 
   // ── 4. Pages Endpoints ────────────────────────────────────────────────
@@ -5859,11 +6361,6 @@ async function handleRouteUnlocked(
     }
   }
 
-  if (url.includes("/favorite-pages")) {
-    if (method.toLowerCase() === "get") return ok([]);
-    return ok({ message: "Success" });
-  }
-
   if (url.includes("/archived-pages") && method.toLowerCase() === "get") {
     const archivedPages = (localDB.pages || []).filter((p: any) => !!p.archived_at);
     return ok(archivedPages);
@@ -5894,6 +6391,7 @@ async function handleRouteUnlocked(
   // Inbox Issues endpoint (/inbox-issues/)
   const inboxIssuesMatch = url.match(/\/projects\/([^/]+)\/inbox-issues(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
   if (inboxIssuesMatch) {
+    if (method === "get") ensureIssueTriageMigration();
     const projectId = inboxIssuesMatch[1];
     const targetInboxIssueId = inboxIssuesMatch[2];
     const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
@@ -5950,31 +6448,43 @@ async function handleRouteUnlocked(
     if (method.toLowerCase() === "post") {
       const issueData = body?.issue || body || {};
       const newIssueId = issueData.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+      const newInboxId = body?.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+      if (typeof newIssueId !== "string" || !newIssueId.trim() || typeof newInboxId !== "string" || !newInboxId.trim()) {
+        return { status: 400, data: { code: "INVALID_ID", error: "Định danh yêu cầu không hợp lệ." } };
+      }
+      if ((localDB.issues || []).some((issue: any) => issue.id === newIssueId) ||
+        localDB.inbox_issues.some((item: any) => item.id === newInboxId)) {
+        return { status: 409, data: { code: "DUPLICATE_ID", error: "Yêu cầu hoặc task đã tồn tại." } };
+      }
       const projectStates = (localDB.states || []).filter((s: any) => s.project === projectId || s.project_id === projectId);
       const defaultState = projectStates.find((s: any) => s.default) || projectStates[0] || { id: "default-state", name: "Backlog", group: "backlog" };
+      const requestedState = issueData.state_id || issueData.state;
+      const selectedState = requestedState ? projectStates.find((state: any) => state.id === requestedState) : defaultState;
+      if (!selectedState) return { status: 400, data: { code: "INVALID_STATE", error: "Trạng thái không thuộc dự án này." } };
 
       const createdIssue = {
-        id: newIssueId,
+        ...issueData,
         name: issueData.name || "Untitled issue",
         description_html: issueData.description_html || "",
+        state: selectedState.id,
+        state_id: selectedState.id,
+        state_detail: selectedState,
+        priority: issueData.priority || "none",
+        id: newIssueId,
         project: projectId,
         project_id: projectId,
         workspace: wsId,
         workspace_id: wsId,
-        state: issueData.state || defaultState.id,
-        state_id: issueData.state || defaultState.id,
-        state_detail: defaultState,
-        priority: issueData.priority || "none",
+        is_triage: true,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         created_by: routeSessionUserId || "user-1",
-        ...issueData,
       };
       if (!localDB.issues) localDB.issues = [];
       localDB.issues.push(createdIssue);
 
       const createdInboxIssue = {
-        id: body?.id || crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
+        id: newInboxId,
         status: -2, // PENDING
         snoozed_till: null,
         duplicate_to: undefined,
@@ -5999,17 +6509,41 @@ async function handleRouteUnlocked(
         (i: any) => i.id === targetInboxIssueId || i.issue_id === targetInboxIssueId || i.issue?.id === targetInboxIssueId
       );
       if (idx > -1) {
-        localDB.inbox_issues[idx] = {
-          ...localDB.inbox_issues[idx],
-          ...body,
-          updated_at: new Date().toISOString(),
-        };
-        const underlyingId = localDB.inbox_issues[idx].issue_id || localDB.inbox_issues[idx].issue?.id;
+        const original = localDB.inbox_issues[idx];
+        const underlyingId = original.issue_id || original.issue?.id;
         const issue = (localDB.issues || []).find((iss: any) => iss.id === underlyingId);
+        const allowed = new Set(["status", "snoozed_till", "duplicate_to", "issue"]);
+        if (Object.keys(body || {}).some((key) => !allowed.has(key)) ||
+          (body?.issue?.id !== undefined && body.issue.id !== underlyingId) ||
+          (body?.status !== undefined && ![-2, -1, 0, 1, 2].includes(body.status))) {
+          return { status: 400, data: { code: "INVALID_INBOX_PATCH", error: "Không được thay đổi định danh hoặc phạm vi của yêu cầu." } };
+        }
+        if (!issue || !isValidScope(issue, projectId, wsId)) {
+          return { status: 404, data: { code: "NOT_FOUND", error: "Không tìm thấy task trong dự án này." } };
+        }
+        if (body?.issue?.state_id && !(localDB.states || []).some((state: any) =>
+          state.id === body.issue.state_id && (state.project_id || state.project) === projectId)) {
+          return { status: 400, data: { code: "INVALID_STATE", error: "Trạng thái không thuộc dự án này." } };
+        }
+        localDB.inbox_issues[idx] = {
+          ...original,
+          ...body,
+          issue,
+          updated_at: nextRecordTimestamp(original),
+        };
         if (body?.status === 1) {
-          if (issue && body?.issue?.state_id) {
-            issue.state_id = body.issue.state_id;
-            issue.state = body.issue.state_id;
+          if (issue) {
+            issue.is_triage = false;
+            issue.updated_at = nextRecordTimestamp(issue);
+            if (body?.issue?.state_id) {
+              issue.state_id = body.issue.state_id;
+              issue.state = body.issue.state_id;
+            }
+          }
+        } else if (body?.status !== undefined && body?.status !== 1) {
+          if (issue) {
+            issue.is_triage = true;
+            issue.updated_at = nextRecordTimestamp(issue);
           }
         }
         saveDB();
@@ -6023,6 +6557,27 @@ async function handleRouteUnlocked(
     }
 
     if (method.toLowerCase() === "delete" && targetInboxIssueId) {
+      if (!localDB._deleted_inbox_issue_ids) localDB._deleted_inbox_issue_ids = [];
+      const targetInbox = (localDB.inbox_issues || []).find(
+        (i: any) => i.id === targetInboxIssueId || i.issue_id === targetInboxIssueId || i.issue?.id === targetInboxIssueId
+      );
+      if (targetInbox) {
+        if (!localDB._deleted_inbox_issue_ids.includes(targetInbox.id)) {
+          localDB._deleted_inbox_issue_ids.push(targetInbox.id);
+        }
+        const underlyingIssueId = targetInbox.issue_id || targetInbox.issue?.id;
+        if (underlyingIssueId && localDB.issues) {
+          const underlyingIssue = localDB.issues.find((i: any) => i.id === underlyingIssueId);
+          if (underlyingIssue) {
+            if (targetInbox.status === 1) {
+              underlyingIssue.is_triage = false;
+            } else {
+              underlyingIssue.is_triage = true;
+            }
+            underlyingIssue.updated_at = nextRecordTimestamp(underlyingIssue);
+          }
+        }
+      }
       localDB.inbox_issues = localDB.inbox_issues.filter(
         (i: any) => i.id !== targetInboxIssueId && i.issue_id !== targetInboxIssueId && i.issue?.id !== targetInboxIssueId
       );
@@ -6682,6 +7237,7 @@ async function handleCRUD(
 
   // Handle search-issues directly — return ISearchIssueResponse[] format
   if (collection === "search-issues" && method === "get") {
+    ensureIssueTriageMigration();
     const urlObj = new URL(url, "http://localhost");
     const searchTerm = (urlObj.searchParams.get("search") || "").toLowerCase();
     const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
@@ -6853,6 +7409,10 @@ async function handleCRUD(
     collection === "search-issues"
   ) {
     collection = "issues";
+  }
+
+  if (collection === "issues") {
+    ensureIssueTriageMigration();
   }
 
   // ── Work item relations ──────────────────────────────────────────────
@@ -9570,6 +10130,40 @@ async function handleCRUD(
   }
 
   if (method === "delete") {
+    if (["cycles", "modules", "views", "pages", "inbox_issues"].includes(collection) &&
+      !/^\/api\/workspaces\/[^/]+\/projects\/[^/]+\/(?:v2\/)?(?:cycles|modules|views|pages|inbox-issues)\/[^/]+\/?$/.test(url.split("?")[0])) {
+      return { status: 400, data: { code: "INVALID_SCOPE", error: "Yêu cầu xóa phải chỉ rõ workspace và dự án." } };
+    }
+    const wsMatchDel = url.match(/\/api\/workspaces\/([^/]+)\//);
+    const wsSlugDel = wsMatchDel ? decodeURIComponent(wsMatchDel[1]).toLowerCase().trim() : null;
+    const projMatchDel = url.match(/\/projects\/([^/]+)\//);
+    const rawProjDel = projMatchDel ? decodeURIComponent(projMatchDel[1]).trim() : null;
+    let projIdDel: string | null = rawProjDel;
+    if (rawProjDel) {
+      const proj = (localDB.projects || []).find(
+        (p: any) => p.id === rawProjDel || (p.identifier && p.identifier.toLowerCase() === rawProjDel.toLowerCase())
+      );
+      if (proj) {
+        projIdDel = proj.id;
+      }
+    }
+
+    // Preserve the existing checks for resources outside this stage. The five
+    // scoped resources above are authorized by requireProjectAccess before entry.
+    if (!["cycles", "modules", "views", "pages", "inbox_issues"].includes(collection) && wsSlugDel &&
+      Array.isArray(localDB.workspace_members) && localDB.workspace_members.length > 0) {
+      const wsMembers = localDB.workspace_members.filter((m: any) =>
+        [m.workspace, m.workspace_id, m.workspace_slug].some((key: any) => typeof key === "string" && key.toLowerCase() === wsSlugDel));
+      if (wsMembers.length) {
+        const activeUserId = getLoggedInUserId();
+        if (!activeUserId) return { status: 401, data: { error: "Yêu cầu đăng nhập." } };
+        if (!wsMembers.some((m: any) => m.member === activeUserId || m.id === activeUserId ||
+          (typeof m.wallet_address === "string" && m.wallet_address.toLowerCase() === activeUserId.toLowerCase()))) {
+          return { status: 403, data: { error: "Không có quyền truy cập workspace này." } };
+        }
+      }
+    }
+
     if (collection === "workspaces" && id) {
       const targetWs = (localDB.workspaces || []).find((w: any) => w.id === id || w.slug === id);
       const targetId = targetWs?.id || id;
@@ -9689,7 +10283,11 @@ async function handleCRUD(
       return ok({ message: "Workspace deleted successfully" });
     } else if (collection === "projects" && id) {
       const targetProj = (localDB.projects || []).find((p: any) => p.id === id || p.identifier === id);
-      const targetId = targetProj?.id || id;
+      if (!targetProj) return { status: 404, data: { error: "Không tìm thấy project." } };
+      if (wsSlugDel && !isValidScope(targetProj, null, wsSlugDel)) {
+        return { status: 404, data: { error: "Project không thuộc workspace này." } };
+      }
+      const targetId = targetProj.id || id;
 
       if (!localDB._deleted_project_ids) localDB._deleted_project_ids = [];
       if (!localDB._deleted_project_ids.includes(targetId)) {
@@ -9746,6 +10344,11 @@ async function handleCRUD(
         localDB.project_members = localDB.project_members.filter((pm: any) => pm.project !== targetId && pm.project_id !== targetId);
       }
     } else if (collection === "issues" && id) {
+      const targetIssue = (localDB.issues || []).find((i: any) => i.id === id);
+      if (!targetIssue) return { status: 404, data: { error: "Không tìm thấy công việc." } };
+      if ((projIdDel || wsSlugDel) && !isValidScope(targetIssue, projIdDel, wsSlugDel)) {
+        return { status: 404, data: { error: "Công việc không thuộc project hoặc workspace này." } };
+      }
       if (!localDB._deleted_issue_ids) localDB._deleted_issue_ids = [];
       if (!localDB._deleted_issue_ids.includes(id)) {
         localDB._deleted_issue_ids.push(id);
@@ -9800,7 +10403,54 @@ async function handleCRUD(
       const revokedCid = await uploadToIPFS(true);
       if (!revokedCid || !await commitWorkspaceCID(wsSlugDel, revokedCid, { force: true })) return { status: 503, data: { code: "INVITATION_REVOCATION_PENDING", error: "Đã thu hồi lời mời trên máy nhưng chưa đồng bộ được trạng thái chung. Hãy đồng bộ lại trước khi báo hoàn tất." } };
       return ok({ revoked: true });
+    } else if (["cycles", "modules", "views", "pages", "inbox_issues"].includes(collection) && id) {
+      const targetRecord = (localDB[collection] || []).find((r: any) => r.id === id);
+      if (!targetRecord) {
+        return { status: 404, data: { error: `Không tìm thấy ${collection}.` } };
+      }
+      if ((projIdDel || wsSlugDel) && !isValidScope(targetRecord, projIdDel, wsSlugDel)) {
+        return { status: 404, data: { error: `${collection} không thuộc project hoặc workspace này.` } };
+      }
+
+      if (collection === "cycles") {
+        if (!localDB._deleted_cycle_ids) localDB._deleted_cycle_ids = [];
+        if (!localDB._deleted_cycle_ids.includes(id)) localDB._deleted_cycle_ids.push(id);
+      } else if (collection === "modules") {
+        if (!localDB._deleted_module_ids) localDB._deleted_module_ids = [];
+        if (!localDB._deleted_module_ids.includes(id)) localDB._deleted_module_ids.push(id);
+      } else if (collection === "views") {
+        if (!localDB._deleted_view_ids) localDB._deleted_view_ids = [];
+        if (!localDB._deleted_view_ids.includes(id)) localDB._deleted_view_ids.push(id);
+      } else if (collection === "pages") {
+        if (!localDB._deleted_page_ids) localDB._deleted_page_ids = [];
+        if (!localDB._deleted_page_ids.includes(id)) localDB._deleted_page_ids.push(id);
+      } else if (collection === "inbox_issues") {
+        if (!localDB._deleted_inbox_issue_ids) localDB._deleted_inbox_issue_ids = [];
+        if (!localDB._deleted_inbox_issue_ids.includes(id)) localDB._deleted_inbox_issue_ids.push(id);
+      }
+
+      // Also clean up favorites pointing to this deleted resource
+      if (localDB.favorites && Array.isArray(localDB.favorites)) {
+        const typeMap: Record<string, string> = {
+          cycles: "cycle",
+          modules: "module",
+          views: "views",
+          pages: "page",
+        };
+        const entType = typeMap[collection];
+        if (entType) {
+          localDB.favorites = localDB.favorites.filter(
+            (f: any) => !(f.entity_type === entType && f.entity_identifier === id)
+          );
+        }
+      }
+
+      localDB[collection] = (localDB[collection] || []).filter((r: any) => r.id !== id);
     } else {
+      if (collection === "favorites" && id) {
+        if (!localDB._deleted_favorite_ids) localDB._deleted_favorite_ids = [];
+        if (!localDB._deleted_favorite_ids.includes(id)) localDB._deleted_favorite_ids.push(id);
+      }
       localDB[collection] = (localDB[collection] || []).filter((r: any) => r.id !== id);
     }
     saveDB();

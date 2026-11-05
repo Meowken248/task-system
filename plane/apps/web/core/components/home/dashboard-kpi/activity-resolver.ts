@@ -117,8 +117,8 @@ export function resolveActivityRecords(
     const source = matchedAtt?.asset_url || matchedAtt?.id;
     const previewUrl =
       typeof source === "string" &&
-      /^(https?:\/\/|data:|blob:)/i.test(source) &&
-      !/\/api\/(?:public\/)?assets\//i.test(source)
+        /^(https?:\/\/|data:|blob:)/i.test(source) &&
+        !/\/api\/(?:public\/)?assets\//i.test(source)
         ? source
         : undefined;
 

@@ -24,6 +24,7 @@ import { saveSnapshotToIDB, loadSnapshotFromIDB, saveCidToIDB, getCidFromIDB } f
 import { registerSigningSessionInvalidator, runExclusiveChainTx } from "./tx-gateway";
 import { publishSnapshot, snapshotUploadPolicy, isPublishedCID, notifySnapshotUploadReuse, SnapshotUploadError } from "./snapshot-upload";
 import { walletMemberOperationPending, setWalletMemberOperationPending, clearWalletMemberOperationPending } from "./wallet-member-operation";
+import { mergeRecordLWW, canonicalStringify, ensureIssueTriageMigration } from "./scope.helper";
 
 /**
  * Generic on-chain sync (fire-and-forget, never blocks UI)
@@ -2193,6 +2194,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const currentPages = [...(localDB.pages || [])];
   const currentViews = [...(localDB.views || [])];
   const currentInboxIssues = [...(localDB.inbox_issues || [])];
+  const currentFavorites = [...(localDB.favorites || [])];
   const currentEstimates = [...(localDB.estimates || [])];
   const currentTransactions = [...(localDB["blockchain-transactions"] || [])];
   const mergedDeletedWorkspaces = new Set<string>([
@@ -2210,6 +2212,30 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   const mergedDeletedIssues = new Set<string>([
     ...(localDB._deleted_issue_ids || []),
     ...(ipfsDB._deleted_issue_ids || []),
+  ]);
+  const mergedDeletedCycles = new Set<string>([
+    ...(localDB._deleted_cycle_ids || []),
+    ...(ipfsDB._deleted_cycle_ids || []),
+  ]);
+  const mergedDeletedModules = new Set<string>([
+    ...(localDB._deleted_module_ids || []),
+    ...(ipfsDB._deleted_module_ids || []),
+  ]);
+  const mergedDeletedViews = new Set<string>([
+    ...(localDB._deleted_view_ids || []),
+    ...(ipfsDB._deleted_view_ids || []),
+  ]);
+  const mergedDeletedPages = new Set<string>([
+    ...(localDB._deleted_page_ids || []),
+    ...(ipfsDB._deleted_page_ids || []),
+  ]);
+  const mergedDeletedInboxIssues = new Set<string>([
+    ...(localDB._deleted_inbox_issue_ids || []),
+    ...(ipfsDB._deleted_inbox_issue_ids || []),
+  ]);
+  const mergedDeletedFavorites = new Set<string>([
+    ...(localDB._deleted_favorite_ids || []),
+    ...(ipfsDB._deleted_favorite_ids || []),
   ]);
   const mergedDeletedAssets = new Set<string>([...(localDB._deleted_asset_ids || []), ...(ipfsDB._deleted_asset_ids || [])]);
   const mergedDeletedAttachments = new Set<string>([...(localDB._deleted_attachment_ids || []), ...(ipfsDB._deleted_attachment_ids || [])]);
@@ -2284,6 +2310,12 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   localDB._deleted_workspace_slugs = Array.from(mergedDeletedWorkspaceSlugs);
   localDB._deleted_project_ids = Array.from(mergedDeletedProjects);
   localDB._deleted_issue_ids = Array.from(mergedDeletedIssues);
+  localDB._deleted_cycle_ids = Array.from(mergedDeletedCycles);
+  localDB._deleted_module_ids = Array.from(mergedDeletedModules);
+  localDB._deleted_view_ids = Array.from(mergedDeletedViews);
+  localDB._deleted_page_ids = Array.from(mergedDeletedPages);
+  localDB._deleted_inbox_issue_ids = Array.from(mergedDeletedInboxIssues);
+  localDB._deleted_favorite_ids = Array.from(mergedDeletedFavorites);
   localDB._deleted_invitation_ids = Array.from(mergedDeletedInvitations);
   localDB.removed_members = mergedRemovedMembers;
   if (typeof window !== "undefined") {
@@ -2420,6 +2452,12 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   );
 
   if (!localDB.issues) localDB.issues = [];
+  localDB.issues = localDB.issues.filter(
+    (i: any) =>
+      !mergedDeletedProjects.has(i.project) &&
+      !mergedDeletedProjects.has(i.project_id) &&
+      !mergedDeletedIssues.has(i.id)
+  );
   for (const issue of currentIssues) {
     if (
       !mergedDeletedProjects.has(issue.project) &&
@@ -2430,19 +2468,7 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
       if (existingIdx === -1) {
         localDB.issues.push(issue);
       } else {
-        const localUpdated = issue.updated_at
-          ? new Date(issue.updated_at).getTime()
-          : issue.created_at
-            ? new Date(issue.created_at).getTime()
-            : 0;
-        const ipfsUpdated = localDB.issues[existingIdx].updated_at
-          ? new Date(localDB.issues[existingIdx].updated_at).getTime()
-          : localDB.issues[existingIdx].created_at
-            ? new Date(localDB.issues[existingIdx].created_at).getTime()
-            : 0;
-        if (localUpdated >= ipfsUpdated) {
-          localDB.issues[existingIdx] = { ...localDB.issues[existingIdx], ...issue };
-        }
+        localDB.issues[existingIdx] = mergeRecordLWW(issue, localDB.issues[existingIdx]);
       }
     }
   }
@@ -2472,31 +2498,59 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   );
 
   if (!localDB.cycles) localDB.cycles = [];
+  localDB.cycles = localDB.cycles.filter(
+    (c: any) =>
+      !mergedDeletedProjects.has(c.project) &&
+      !mergedDeletedProjects.has(c.project_id) &&
+      !mergedDeletedCycles.has(c.id)
+  );
   for (const c of currentCycles) {
     if (
       !mergedDeletedProjects.has(c.project) &&
       !mergedDeletedProjects.has(c.project_id) &&
-      !localDB.cycles.some((existing: any) => existing.id === c.id)
+      !mergedDeletedCycles.has(c.id)
     ) {
-      localDB.cycles.push(c);
+      const existingIdx = localDB.cycles.findIndex((existing: any) => existing.id === c.id);
+      if (existingIdx === -1) {
+        localDB.cycles.push(c);
+      } else {
+        localDB.cycles[existingIdx] = mergeRecordLWW(c, localDB.cycles[existingIdx]);
+      }
     }
   }
   localDB.cycles = localDB.cycles.filter(
-    (c: any) => !mergedDeletedProjects.has(c.project) && !mergedDeletedProjects.has(c.project_id)
+    (c: any) =>
+      !mergedDeletedProjects.has(c.project) &&
+      !mergedDeletedProjects.has(c.project_id) &&
+      !mergedDeletedCycles.has(c.id)
   );
 
   if (!localDB.modules) localDB.modules = [];
+  localDB.modules = localDB.modules.filter(
+    (m: any) =>
+      !mergedDeletedProjects.has(m.project) &&
+      !mergedDeletedProjects.has(m.project_id) &&
+      !mergedDeletedModules.has(m.id)
+  );
   for (const m of currentModules) {
     if (
       !mergedDeletedProjects.has(m.project) &&
       !mergedDeletedProjects.has(m.project_id) &&
-      !localDB.modules.some((existing: any) => existing.id === m.id)
+      !mergedDeletedModules.has(m.id)
     ) {
-      localDB.modules.push(m);
+      const existingIdx = localDB.modules.findIndex((existing: any) => existing.id === m.id);
+      if (existingIdx === -1) {
+        localDB.modules.push(m);
+      } else {
+        localDB.modules[existingIdx] = mergeRecordLWW(m, localDB.modules[existingIdx]);
+      }
     }
   }
   localDB.modules = localDB.modules.filter(
-    (m: any) => !mergedDeletedProjects.has(m.project) && !mergedDeletedProjects.has(m.project_id)
+    (m: any) =>
+      !mergedDeletedProjects.has(m.project) &&
+      !mergedDeletedProjects.has(m.project_id) &&
+      !mergedDeletedModules.has(m.id)
   );
 
   if (!localDB.workspace_members) localDB.workspace_members = [];
@@ -2752,58 +2806,120 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
   }
 
   if (!localDB.pages) localDB.pages = [];
+  localDB.pages = localDB.pages.filter(
+    (p: any) =>
+      !mergedDeletedProjects.has(p.project) &&
+      !mergedDeletedProjects.has(p.project_id) &&
+      !mergedDeletedPages.has(p.id)
+  );
   for (const page of currentPages) {
-    if (!mergedDeletedProjects.has(page.project) && !mergedDeletedProjects.has(page.project_id)) {
+    if (
+      !mergedDeletedProjects.has(page.project) &&
+      !mergedDeletedProjects.has(page.project_id) &&
+      !mergedDeletedPages.has(page.id)
+    ) {
       const existingIdx = localDB.pages.findIndex((p: any) => p.id === page.id);
       if (existingIdx === -1) {
         localDB.pages.push(page);
       } else {
-        const localUpdated = page.updated_at
-          ? new Date(page.updated_at).getTime()
-          : page.created_at
-            ? new Date(page.created_at).getTime()
-            : 0;
-        const ipfsUpdated = localDB.pages[existingIdx].updated_at
-          ? new Date(localDB.pages[existingIdx].updated_at).getTime()
-          : localDB.pages[existingIdx].created_at
-            ? new Date(localDB.pages[existingIdx].created_at).getTime()
-            : 0;
-        if (localUpdated >= ipfsUpdated) {
-          localDB.pages[existingIdx] = { ...localDB.pages[existingIdx], ...page };
-        }
+        localDB.pages[existingIdx] = mergeRecordLWW(page, localDB.pages[existingIdx]);
       }
     }
   }
   localDB.pages = localDB.pages.filter(
-    (p: any) => !mergedDeletedProjects.has(p.project) && !mergedDeletedProjects.has(p.project_id)
+    (p: any) =>
+      !mergedDeletedProjects.has(p.project) &&
+      !mergedDeletedProjects.has(p.project_id) &&
+      !mergedDeletedPages.has(p.id)
   );
 
   if (!localDB.views) localDB.views = [];
+  localDB.views = localDB.views.filter(
+    (v: any) =>
+      !mergedDeletedProjects.has(v.project) &&
+      !mergedDeletedProjects.has(v.project_id) &&
+      !mergedDeletedViews.has(v.id)
+  );
   for (const v of currentViews) {
     if (
       !mergedDeletedProjects.has(v.project) &&
       !mergedDeletedProjects.has(v.project_id) &&
-      !localDB.views.some((existing: any) => existing.id === v.id)
+      !mergedDeletedViews.has(v.id)
     ) {
-      localDB.views.push(v);
+      const existingIdx = localDB.views.findIndex((existing: any) => existing.id === v.id);
+      if (existingIdx === -1) {
+        localDB.views.push(v);
+      } else {
+        localDB.views[existingIdx] = mergeRecordLWW(v, localDB.views[existingIdx]);
+      }
     }
   }
   localDB.views = localDB.views.filter(
-    (v: any) => !mergedDeletedProjects.has(v.project) && !mergedDeletedProjects.has(v.project_id)
+    (v: any) =>
+      !mergedDeletedProjects.has(v.project) &&
+      !mergedDeletedProjects.has(v.project_id) &&
+      !mergedDeletedViews.has(v.id)
   );
 
   if (!localDB.inbox_issues) localDB.inbox_issues = [];
+  localDB.inbox_issues = localDB.inbox_issues.filter(
+    (ib: any) =>
+      !mergedDeletedProjects.has(ib.project) &&
+      !mergedDeletedProjects.has(ib.project_id) &&
+      !mergedDeletedInboxIssues.has(ib.id)
+  );
   for (const ib of currentInboxIssues) {
     if (
       !mergedDeletedProjects.has(ib.project) &&
       !mergedDeletedProjects.has(ib.project_id) &&
-      !localDB.inbox_issues.some((existing: any) => existing.id === ib.id)
+      !mergedDeletedInboxIssues.has(ib.id)
     ) {
-      localDB.inbox_issues.push(ib);
+      const existingIdx = localDB.inbox_issues.findIndex((existing: any) => existing.id === ib.id);
+      if (existingIdx === -1) {
+        localDB.inbox_issues.push(ib);
+      } else {
+        localDB.inbox_issues[existingIdx] = mergeRecordLWW(ib, localDB.inbox_issues[existingIdx]);
+      }
     }
   }
   localDB.inbox_issues = localDB.inbox_issues.filter(
-    (ib: any) => !mergedDeletedProjects.has(ib.project) && !mergedDeletedProjects.has(ib.project_id)
+    (ib: any) =>
+      !mergedDeletedProjects.has(ib.project) &&
+      !mergedDeletedProjects.has(ib.project_id) &&
+      !mergedDeletedInboxIssues.has(ib.id)
+  );
+
+  ensureIssueTriageMigration(localDB);
+
+  if (!localDB.favorites) localDB.favorites = [];
+  const isTargetEntityDeleted = (fav: any) => {
+    const targetId = fav?.entity_data?.id || fav?.entity_id;
+    if (!targetId) return false;
+    const type = fav?.entity_type;
+    if (type === "cycle" && mergedDeletedCycles.has(targetId)) return true;
+    if (type === "module" && mergedDeletedModules.has(targetId)) return true;
+    if (type === "views" && mergedDeletedViews.has(targetId)) return true;
+    if (type === "page" && mergedDeletedPages.has(targetId)) return true;
+    if (type === "issue" && mergedDeletedIssues.has(targetId)) return true;
+    return false;
+  };
+
+  localDB.favorites = localDB.favorites.filter(
+    (fav: any) => !mergedDeletedFavorites.has(fav.id) && !isTargetEntityDeleted(fav)
+  );
+  for (const fav of currentFavorites) {
+    if (mergedDeletedFavorites.has(fav.id) || isTargetEntityDeleted(fav)) {
+      continue;
+    }
+    const existingIdx = localDB.favorites.findIndex((existing: any) => existing.id === fav.id);
+    if (existingIdx === -1) {
+      localDB.favorites.push(fav);
+    } else {
+      localDB.favorites[existingIdx] = mergeRecordLWW(fav, localDB.favorites[existingIdx]);
+    }
+  }
+  localDB.favorites = localDB.favorites.filter(
+    (fav: any) => !mergedDeletedFavorites.has(fav.id) && !isTargetEntityDeleted(fav)
   );
 
   if (!localDB.estimates) localDB.estimates = [];

@@ -128,6 +128,50 @@ test("local-only mode still rejects ordinary member deletion", async () => {
   assert.equal(dataSnapshot(), before);
 });
 
+const cyclePath = "/api/workspaces/team-a/projects/project-a/cycles/cycle-a/";
+const seedCycle = () => {
+  localDB.cycles = [{ id: "cycle-a", name: "Cycle A", project_id: "project-a", workspace_id: "ws-a" }];
+};
+
+test("revoked chain membership blocks cycle deletion despite a cached owner/Admin", async () => {
+  seedCycle();
+  chainRole = 0;
+  const before = structuredClone(localDB);
+  assert.equal((await handleRoute("delete", cyclePath, {})).status, 403);
+  assert.deepEqual(localDB, before);
+});
+
+test("chain permission outage preserves cycle data and tombstones", async () => {
+  seedCycle();
+  rpcOffline = true;
+  const before = structuredClone(localDB);
+  assert.equal((await handleRoute("delete", cyclePath, {})).status, 503);
+  assert.deepEqual(localDB, before);
+});
+
+test("verified Member deletes a cycle using a workspace slug and UUID ownership", async () => {
+  seedCycle();
+  chainRole = 1;
+  assert.equal((await handleRoute("delete", cyclePath, {})).status, 200);
+  assert.equal(localDB.cycles.length, 0);
+  assert.deepEqual(localDB._deleted_cycle_ids, ["cycle-a"]);
+});
+
+test("favorites cannot bypass chain revocation using cached workspace ownership", async () => {
+  seedCycle();
+  chainRole = 0;
+  const before = structuredClone(localDB);
+  assert.equal((await handleRoute("post", "/api/workspaces/team-a/user-favorites/", {
+    entity_type: "cycle", entity_identifier: "cycle-a", project_id: "project-a",
+  })).status, 403);
+  assert.deepEqual(localDB, before);
+});
+
+test("favorite reads do not silently fall back to cached roles when RPC is down", async () => {
+  rpcOffline = true;
+  assert.equal((await handleRoute("get", "/api/workspaces/team-a/user-favorites/", {})).status, 503);
+});
+
 const assetPath = (workspace = "team-a", assetId = "asset-a") => `/api/assets/v2/workspaces/${workspace}/${assetId}/`;
 const seedAsset = (overrides = {}) => {
   const record = { id: "asset-a", workspace: "ws-a", project: "project-a", created_by: "user-a",

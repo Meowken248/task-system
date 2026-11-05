@@ -19,6 +19,7 @@ export {
 
 // ── Re-export types and storage utilities for modular consumers ──────────────
 export * from "./dapp/types";
+export * from "./dapp/scope.helper";
 export { localDB, defaultDB, saveDB, getDBSnapshot } from "./dapp/store";
 
 /**
