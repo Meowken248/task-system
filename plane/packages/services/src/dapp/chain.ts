@@ -2414,6 +2414,10 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
         } else {
           preserveNewerPresentationMedia(p, localDB.projects[existingIdx], "project");
         }
+        // Number allocation is monotonic bookkeeping, independent of which
+        // project metadata version wins the snapshot merge.
+        const sequence = Math.max(Number(p.issue_sequence) || 0, Number(localDB.projects[existingIdx].issue_sequence) || 0);
+        if (sequence > 0) localDB.projects[existingIdx].issue_sequence = sequence;
       }
     }
   }

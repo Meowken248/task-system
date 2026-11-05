@@ -1,5 +1,7 @@
 # Review Plane và dọn tệp — 05/11/2026
 
+> Cập nhật sau review: các lỗi được chọn của năm phân hệ đã có bản sửa và kiểm chứng riêng trong [báo cáo sửa năm phân hệ](/C:/task-system/plane/BAO_CAO_SUA_NAM_PHAN_HE_2026-11-05.md). Các nhận định dưới đây ghi nhận baseline tại thời điểm review; xem báo cáo mới để phân biệt mục đã sửa với vấn đề vẫn còn.
+
 **Kết luận:** chưa đủ cơ sở coi toàn bộ Plane đã mượt hoặc hết bug. Các bộ test hiện có đều qua, nhưng kiểm tra bổ sung đã tái hiện những nhánh chưa được bộ test bao phủ, gồm sai phạm vi dữ liệu, quyền Pages, thu hồi quyền task và mất liên kết khi khôi phục snapshot.
 
 Nhánh kiểm tra: `Fix_bug_ver2.0`, baseline commit `477c3da` cùng các thay đổi cấu hình build/dev đang có. Lượt này chỉ dọn tệp tạm và lập báo cáo, không sửa nghiệp vụ, SDK, env, dependency, lockfile hay deploy lên mạng thực; không commit/push.

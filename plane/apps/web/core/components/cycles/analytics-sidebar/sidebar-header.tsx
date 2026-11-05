@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { observer } from "mobx-react";
 import { Controller, useForm } from "react-hook-form";
 import { ArrowRight } from "lucide-react";
@@ -40,6 +40,7 @@ const defaultValues: Partial<ICycle> = {
 const cycleService = new CycleService();
 
 export const CycleSidebarHeader = observer(function CycleSidebarHeader(props: Props) {
+  const dateValidationError = useRef("");
   const { workspaceSlug, projectId, cycleDetails, handleClose, isArchived = false } = props;
   // hooks
   const { allowPermissions } = useUserPermissions();
@@ -75,8 +76,10 @@ export const CycleSidebarHeader = observer(function CycleSidebarHeader(props: Pr
   const dateChecker = async (payload: any) => {
     try {
       const res = await cycleService.cycleDateCheck(workspaceSlug, projectId, payload);
+      dateValidationError.current = res.status ? "" : res.error || "Khoảng ngày Cycle không hợp lệ.";
       return res.status;
     } catch (_err) {
+      dateValidationError.current = "Chưa kiểm tra được ngày Cycle. Hãy thử lại.";
       return false;
     }
   };
@@ -89,7 +92,7 @@ export const CycleSidebarHeader = observer(function CycleSidebarHeader(props: Pr
       end_date: renderFormattedPayloadDate(endDate) || null,
     };
 
-    if (payload?.start_date && payload.end_date) {
+    if (payload?.start_date || payload.end_date) {
       isDateValid = await dateChecker({
         ...payload,
         cycle_id: cycleDetails.id,
@@ -98,17 +101,23 @@ export const CycleSidebarHeader = observer(function CycleSidebarHeader(props: Pr
       isDateValid = true;
     }
     if (isDateValid) {
-      submitChanges(payload);
-      setToast({
-        type: TOAST_TYPE.SUCCESS,
-        title: t("project_cycles.action.update.success.title"),
-        message: t("project_cycles.action.update.success.description"),
-      });
-    } else {
+      try {
+        await submitChanges(payload);
+        setToast({
+          type: TOAST_TYPE.SUCCESS,
+          title: t("project_cycles.action.update.success.title"),
+          message: t("project_cycles.action.update.success.description"),
+        });
+      } catch (error: any) {
+        isDateValid = false;
+        dateValidationError.current = error?.error || "Chưa cập nhật được ngày Cycle. Hãy thử lại.";
+      }
+    }
+    if (!isDateValid) {
       setToast({
         type: TOAST_TYPE.ERROR,
         title: t("project_cycles.action.update.failed.title"),
-        message: t("project_cycles.action.update.error.already_exists"),
+        message: dateValidationError.current || t("project_cycles.action.update.error.already_exists"),
       });
     }
     return isDateValid;

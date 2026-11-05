@@ -77,6 +77,11 @@ import { listWorkspaceMembers } from "./workspace-members";
 import { addWorkspaceWalletMember, discoverWalletWorkspaces, cacheVerifiedWalletMember } from "./workspace-wallet-members";
 import { deleteAttachment } from "../file/attachment-storage";
 import { isValidScope, isActiveWorkIssue, nextRecordTimestamp, ensureIssueTriageMigration } from "./scope.helper";
+import {
+  isPlanningAction, handlePlanningAction, validateCycleWrite, planningStats, issueModuleIds,
+  setIssueModules, nextIssueSequence, filterIssueRequest, validateIntakeIssuePatch, normalizeViewFilters, validateModuleIds, checkCycleDates,
+  validatePageVisibilityWrite, planningCycleStatus, setIssueCycle,
+} from "./planning-resources";
 export { isValidScope, isActiveWorkIssue, ensureIssueTriageMigration } from "./scope.helper";
 export { readWorkspaceSnapshotFromChain, recoverInvitationFromChainSnapshot, findLocalWorkspace, buildWorkspaceFromChainSnapshot, upsertWorkspaceMemberRecord } from "./workspace-invitations";
 const escapeCsv = (val: any): string => {
@@ -1085,10 +1090,27 @@ async function handleRouteUnlocked(
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   // Authorize before migrations, cascades, persistence or tombstone writes.
   try {
+    if (isPlanningAction(url)) return await handlePlanningAction(method, url, body);
+    if (["patch", "put"].includes(method) && Object.hasOwn(body, "access") && /\/pages\/[^/]+\/?$/.test(url.split("?")[0])) {
+      await validatePageVisibilityWrite(url, body);
+    }
+    if (["patch", "put"].includes(method) && (body.module_ids !== undefined || body.modules !== undefined)) {
+      const issueScope = url.split("?")[0].match(/^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:issues|work-items|epics)\/([^/]+)\/?$/);
+      if (issueScope) {
+        const access = await requireIssueAccess(decodeURIComponent(issueScope[1]), decodeURIComponent(issueScope[2]), decodeURIComponent(issueScope[3]), true);
+        validateModuleIds(body.module_ids ?? body.modules, access.project.id, access.workspace.id);
+      }
+    }
+    if (["post", "patch", "put"].includes(method) && /^\/api\/workspaces\/[^/]+\/projects\/[^/]+\/cycles(?:\/[^/]+)?\/?$/.test(url.split("?")[0])) {
+      await validateCycleWrite(method, url, body);
+    }
+    if (["post", "patch", "put"].includes(method) && /^\/api\/workspaces\/[^/]+\/projects\/[^/]+\/views(?:\/[^/]+)?\/?$/.test(url.split("?")[0])) {
+      body = normalizeViewFilters(body);
+    }
     const scoped = url.split("?")[0].match(/^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:v2\/)?(cycles|modules|views|pages|inbox-issues)(?:\/([^/]+))?\/?$/);
     if (scoped && ((method === "delete" && scoped[4]) ||
-      (scoped[3] === "inbox-issues" && ["post", "patch", "delete"].includes(method)))) {
-      const access = await requireProjectAccess(decodeURIComponent(scoped[1]), decodeURIComponent(scoped[2]), true);
+      (scoped[3] === "inbox-issues" && ["get", "post", "patch", "delete"].includes(method)))) {
+      const access = await requireProjectAccess(decodeURIComponent(scoped[1]), decodeURIComponent(scoped[2]), method !== "get");
       if (scoped[4]) {
         const collection = scoped[3] === "inbox-issues" ? "inbox_issues" : scoped[3];
         const key = decodeURIComponent(scoped[4]);
@@ -1097,7 +1119,7 @@ async function handleRouteUnlocked(
         if (!record || !isValidScope(record, access.project.id, access.workspace.id)) {
           throw new ResourceAccessError(404, "NOT_FOUND", "Không tìm thấy tài nguyên trong dự án này.");
         }
-        if (["pages", "views"].includes(collection) && access.projectRole < 20 && record.created_by !== access.user.id) {
+        if (method === "delete" && ["pages", "views"].includes(collection) && access.projectRole < 20 && record.created_by !== access.user.id) {
           throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Chỉ chủ sở hữu hoặc quản trị viên được xóa tài nguyên này.");
         }
       }
@@ -6039,31 +6061,6 @@ async function handleRouteUnlocked(
   }
 
   // ── 1. Cycles Endpoints ───────────────────────────────────────────────
-  // Date check endpoint
-  if (url.match(/\/cycles\/date-check\/?(?:\?.*)?$/) && method.toLowerCase() === "post") {
-    return ok({ status: true });
-  }
-
-  // Progress endpoints
-  const cycleProgressMatch = url.match(/\/cycles\/([^/]+)\/(?:progress|cycle-progress)\/?(?:\?.*)?$/);
-  if (cycleProgressMatch && method.toLowerCase() === "get") {
-    const cycleId = cycleProgressMatch[1];
-    const cycleIssues = (localDB.issues || []).filter((i: any) => i.cycle_id === cycleId || i.cycle === cycleId);
-    const completed = cycleIssues.filter((i: any) => i.state_detail?.group === "completed" || i.state === "completed").length;
-    const started = cycleIssues.filter((i: any) => i.state_detail?.group === "started" || i.state === "started").length;
-    const unstarted = cycleIssues.filter((i: any) => i.state_detail?.group === "unstarted" || i.state === "unstarted").length;
-    const backlog = cycleIssues.filter((i: any) => i.state_detail?.group === "backlog" || i.state === "backlog").length;
-    const cancelled = cycleIssues.filter((i: any) => i.state_detail?.group === "cancelled" || i.state === "cancelled").length;
-    return ok({
-      total_issues: cycleIssues.length,
-      completed_issues: completed,
-      started_issues: started,
-      unstarted_issues: unstarted,
-      backlog_issues: backlog,
-      cancelled_issues: cancelled,
-    });
-  }
-
   // Analytics endpoint
   const cycleAnalyticsMatch = url.match(/\/cycles\/([^/]+)\/analytics\/?(?:\?.*)?$/);
   if (cycleAnalyticsMatch && method.toLowerCase() === "get") {
@@ -6071,67 +6068,6 @@ async function handleRouteUnlocked(
       distribution: [],
       estimate_distribution: [],
     });
-  }
-
-  // Cycle issues endpoint
-  const cycleIssuesMatch = url.match(/\/cycles\/([^/]+)\/cycle-issues(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
-  if (cycleIssuesMatch) {
-    const cycleId = cycleIssuesMatch[1];
-    const bridgeId = cycleIssuesMatch[2];
-    if (method.toLowerCase() === "post") {
-      const issueIds = Array.isArray(body?.issues) ? body.issues : [];
-      if (localDB.issues) {
-        localDB.issues.forEach((i: any) => {
-          if (issueIds.includes(i.id)) {
-            i.cycle_id = cycleId;
-            i.cycle = cycleId;
-          }
-        });
-        saveDB();
-      }
-      return ok({ message: "Issues added to cycle", issues: issueIds });
-    }
-    if (method.toLowerCase() === "delete") {
-      if (localDB.issues && bridgeId) {
-        const issue = localDB.issues.find((i: any) => i.id === bridgeId);
-        if (issue) {
-          issue.cycle_id = null;
-          issue.cycle = null;
-          saveDB();
-        }
-      }
-      return ok({ message: "Issue removed from cycle" });
-    }
-    if (method.toLowerCase() === "get") {
-      const issues = (localDB.issues || []).filter((i: any) => i.cycle_id === cycleId || i.cycle === cycleId);
-      return ok({
-        results: issues,
-        total_count: issues.length,
-        total_results: issues.length,
-        next_cursor: null,
-        prev_cursor: null,
-        next_page_results: false,
-        prev_page_results: false,
-        total_pages: 1,
-      });
-    }
-  }
-
-  // Cycle transfer issues endpoint
-  const cycleTransferMatch = url.match(/\/cycles\/([^/]+)\/transfer-issues\/?(?:\?.*)?$/);
-  if (cycleTransferMatch && method.toLowerCase() === "post") {
-    const cycleId = cycleTransferMatch[1];
-    const newCycleId = body?.new_cycle_id;
-    if (localDB.issues && newCycleId) {
-      localDB.issues.forEach((i: any) => {
-        if (i.cycle_id === cycleId || i.cycle === cycleId) {
-          i.cycle_id = newCycleId;
-          i.cycle = newCycleId;
-        }
-      });
-      saveDB();
-    }
-    return ok({ message: "Issues transferred" });
   }
 
   // Cycle archive / restore
@@ -6157,82 +6093,6 @@ async function handleRouteUnlocked(
   }
 
   // ── 2. Modules Endpoints ──────────────────────────────────────────────
-  // Module issues endpoint (supports both /modules/:id/issues/ and /modules/:id/module-issues/)
-  const moduleIssuesMatch = url.match(/\/modules\/([^/]+)\/(?:issues|module-issues)(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
-  if (moduleIssuesMatch) {
-    const moduleId = moduleIssuesMatch[1];
-    const targetIssueId = moduleIssuesMatch[2];
-    if (method.toLowerCase() === "post") {
-      const issueIds = Array.isArray(body?.issues) ? body.issues : [];
-      if (localDB.issues) {
-        localDB.issues.forEach((i: any) => {
-          if (issueIds.includes(i.id)) {
-            const currentModules = Array.isArray(i.module_ids) ? i.module_ids : [];
-            if (!currentModules.includes(moduleId)) {
-              i.module_ids = [...currentModules, moduleId];
-            }
-          }
-        });
-        saveDB();
-      }
-      return ok({ message: "Issues added to module", issues: issueIds });
-    }
-    if (method.toLowerCase() === "delete" && targetIssueId) {
-      if (localDB.issues) {
-        const issue = localDB.issues.find((i: any) => i.id === targetIssueId);
-        if (issue && Array.isArray(issue.module_ids)) {
-          issue.module_ids = issue.module_ids.filter((m: string) => m !== moduleId);
-          saveDB();
-        }
-      }
-      return ok({ message: "Issue removed from module" });
-    }
-    if (method.toLowerCase() === "get") {
-      const issues = (localDB.issues || []).filter((i: any) => {
-        return (
-          (Array.isArray(i.module_ids) && i.module_ids.includes(moduleId)) ||
-          (Array.isArray(i.modules) && i.modules.includes(moduleId)) ||
-          i.module === moduleId
-        );
-      });
-      return ok({
-        results: issues,
-        total_count: issues.length,
-        total_results: issues.length,
-        next_cursor: null,
-        prev_cursor: null,
-        next_page_results: false,
-        prev_page_results: false,
-        total_pages: 1,
-      });
-    }
-  }
-
-  // Modules attached to an issue
-  const issueModulesMatch = url.match(/\/(?:issues|work-items|epics)\/([^/]+)\/modules\/?(?:\?.*)?$/);
-  if (issueModulesMatch) {
-    const issueId = issueModulesMatch[1];
-    if (method.toLowerCase() === "get") {
-      const issue = (localDB.issues || []).find((i: any) => i.id === issueId);
-      const modIds = new Set(Array.isArray(issue?.module_ids) ? issue.module_ids : []);
-      const matchedModules = (localDB.modules || []).filter((m: any) => modIds.has(m.id));
-      return ok(matchedModules);
-    }
-    if (method.toLowerCase() === "post") {
-      const issue = (localDB.issues || []).find((i: any) => i.id === issueId);
-      if (issue) {
-        const currentModules = Array.isArray(issue.module_ids) ? issue.module_ids : [];
-        const toAdd = Array.isArray(body?.modules) ? body.modules : [];
-        const toRemove = new Set(Array.isArray(body?.removed_modules) ? body.removed_modules : []);
-        issue.module_ids = Array.from(new Set([...currentModules, ...toAdd])).filter(
-          (mId: string) => !toRemove.has(mId)
-        );
-        saveDB();
-      }
-      return ok({ ...body });
-    }
-  }
-
   // Module archive / restore
   const moduleArchiveMatch = url.match(/\/modules\/([^/]+)\/archive\/?(?:\?.*)?$/);
   if (moduleArchiveMatch) {
@@ -6256,32 +6116,6 @@ async function handleRouteUnlocked(
   }
 
   // ── 3. Views Endpoints ────────────────────────────────────────────────
-  // View issues endpoint (/views/:id/issues/)
-  const viewIssuesMatch = url.match(/\/views\/([^/]+)\/issues\/?(?:\?.*)?$/);
-  if (viewIssuesMatch && method.toLowerCase() === "get") {
-    const viewId = viewIssuesMatch[1];
-    const targetView = (localDB.views || []).find((v: any) => v.id === viewId);
-    const projMatch = url.match(/\/projects\/([^/]+)\//);
-    const projId = targetView?.project || targetView?.project_id || (projMatch ? projMatch[1] : null);
-
-    const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
-    let list = (localDB.issues || []).filter((i: any) => !deletedIssueSet.has(i.id));
-    if (projId) {
-      list = list.filter((i: any) => i.project === projId || i.project_id === projId);
-    }
-    return ok({
-      results: list,
-      total_count: list.length,
-      total_results: list.length,
-      next_cursor: null,
-      prev_cursor: null,
-      next_page_results: false,
-      prev_page_results: false,
-      total_pages: 1,
-    });
-  }
-
-  // ── 4. Pages Endpoints ────────────────────────────────────────────────
   // Page description endpoint (/pages/:id/description/)
   const pageDescriptionMatch = url.match(/\/pages\/([^/]+)\/description\/?(?:\?.*)?$/);
   if (pageDescriptionMatch) {
@@ -6309,11 +6143,6 @@ async function handleRouteUnlocked(
     const pageId = pageActionMatch[1];
     const action = pageActionMatch[2];
     const page = (localDB.pages || []).find((p: any) => p.id === pageId);
-    if (action === "access" && method.toLowerCase() === "post") {
-      if (page && body?.access) page.access = body.access;
-      saveDB();
-      return ok({ message: "Access updated" });
-    }
     if (action === "archive") {
       if (method.toLowerCase() === "post") {
         if (page) page.archived_at = new Date().toISOString();
@@ -6392,7 +6221,8 @@ async function handleRouteUnlocked(
   const inboxIssuesMatch = url.match(/\/projects\/([^/]+)\/inbox-issues(?:\/([^/?#]+))?\/?(?:\?.*)?$/);
   if (inboxIssuesMatch) {
     if (method === "get") ensureIssueTriageMigration();
-    const projectId = inboxIssuesMatch[1];
+    const inboxProject = (localDB.projects || []).find((project: any) => project.id === inboxIssuesMatch[1] || project.identifier === inboxIssuesMatch[1]);
+    const projectId = inboxProject?.id || inboxIssuesMatch[1];
     const targetInboxIssueId = inboxIssuesMatch[2];
     const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
     const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
@@ -6400,6 +6230,20 @@ async function handleRouteUnlocked(
     const wsId = ws?.id || wsSlug;
 
     if (!localDB.inbox_issues) localDB.inbox_issues = [];
+
+    if (method === "get") {
+      let backfilled = false;
+      for (const issue of localDB.issues || []) {
+        if (!isValidScope(issue, projectId, wsId) || (localDB._deleted_issue_ids || []).includes(issue.id)) continue;
+        const sequence = Number(issue.sequence_id);
+        if (!Number.isSafeInteger(sequence) || sequence < 1) {
+          issue.sequence_id = nextIssueSequence(projectId);
+          issue.updated_at = nextRecordTimestamp(issue);
+          backfilled = true;
+        }
+      }
+      if (backfilled) saveDB({ localOnly: true });
+    }
 
     if (method.toLowerCase() === "get") {
       if (targetInboxIssueId) {
@@ -6471,6 +6315,8 @@ async function handleRouteUnlocked(
         state_detail: selectedState,
         priority: issueData.priority || "none",
         id: newIssueId,
+        sequence_id: nextIssueSequence(projectId),
+        project_detail: inboxProject,
         project: projectId,
         project_id: projectId,
         workspace: wsId,
@@ -6525,6 +6371,19 @@ async function handleRouteUnlocked(
           state.id === body.issue.state_id && (state.project_id || state.project) === projectId)) {
           return { status: 400, data: { code: "INVALID_STATE", error: "Trạng thái không thuộc dự án này." } };
         }
+        let issuePatch: Record<string, any>;
+        try {
+          issuePatch = validateIntakeIssuePatch(issue, body?.issue, projectId, wsId);
+          if (issuePatch.assignee_ids) {
+            const invalidAssignees = findNonProjectAssignees(projectId, issuePatch.assignee_ids, issue.assignee_ids || issue.assignees || []);
+            if (invalidAssignees.length) return { status: 400, data: buildAssigneeValidationError(projectId, invalidAssignees) };
+          }
+        } catch (error) {
+          if (error instanceof ResourceAccessError) return { status: error.status, data: { code: error.code, error: error.message } };
+          throw error;
+        }
+        Object.assign(issue, issuePatch, { updated_at: nextRecordTimestamp(issue) });
+        if (!Number.isSafeInteger(issue.sequence_id) || issue.sequence_id < 1) issue.sequence_id = nextIssueSequence(projectId);
         localDB.inbox_issues[idx] = {
           ...original,
           ...body,
@@ -6929,43 +6788,20 @@ function enrichProjectEntity(collection: string, item: any, defaultProjId?: stri
     enriched.color = enriched.color || "#3f3f46";
     enriched.description_html = enriched.description_html || "<p></p>";
   } else if (collection === "cycles") {
-    let computedStatus = enriched.status;
-    if (enriched.start_date && enriched.end_date) {
-      const now = new Date();
-      const s = new Date(enriched.start_date);
-      const e = new Date(enriched.end_date);
-      if (now < s) computedStatus = "upcoming";
-      else if (now > e) computedStatus = "completed";
-      else computedStatus = "current";
-    } else if (!computedStatus) {
-      computedStatus = "draft";
-    }
-    enriched.status = computedStatus;
-    enriched.total_issues = enriched.total_issues ?? 0;
-    enriched.completed_issues = enriched.completed_issues ?? 0;
-    enriched.started_issues = enriched.started_issues ?? 0;
-    enriched.unstarted_issues = enriched.unstarted_issues ?? 0;
-    enriched.backlog_issues = enriched.backlog_issues ?? 0;
-    enriched.cancelled_issues = enriched.cancelled_issues ?? 0;
+    enriched.status = planningCycleStatus(enriched);
+    Object.assign(enriched, planningStats("cycles", enriched));
     enriched.sort_order = enriched.sort_order ?? 10000;
-    if (!enriched.progress_snapshot) {
-      enriched.progress_snapshot = {
+    enriched.progress_snapshot = {
         total_issues: enriched.total_issues,
         completed_issues: enriched.completed_issues,
         started_issues: enriched.started_issues,
         unstarted_issues: enriched.unstarted_issues,
         backlog_issues: enriched.backlog_issues,
         cancelled_issues: enriched.cancelled_issues,
-      };
-    }
+    };
   } else if (collection === "modules") {
     enriched.status = enriched.status || "planned";
-    enriched.total_issues = enriched.total_issues ?? 0;
-    enriched.completed_issues = enriched.completed_issues ?? 0;
-    enriched.started_issues = enriched.started_issues ?? 0;
-    enriched.unstarted_issues = enriched.unstarted_issues ?? 0;
-    enriched.backlog_issues = enriched.backlog_issues ?? 0;
-    enriched.cancelled_issues = enriched.cancelled_issues ?? 0;
+    Object.assign(enriched, planningStats("modules", enriched));
     enriched.backlog_estimate_points = enriched.backlog_estimate_points ?? 0;
     enriched.started_estimate_points = enriched.started_estimate_points ?? 0;
     enriched.unstarted_estimate_points = enriched.unstarted_estimate_points ?? 0;
@@ -7985,31 +7821,25 @@ async function handleCRUD(
   // Auto-fix missing sequence_id and project_detail for existing issues
   if (collection === "issues") {
     let saveNeeded = false;
-    const projectSeqMap: Record<string, number> = {};
-
-    // First pass: find max sequence_id for each project
+    // Use the same allocator as Intake and ordinary creation, including the
+    // persisted high-water mark. A GET must not invent transient numbering.
     localDB.issues.forEach((issue: any) => {
-      if (issue.project && issue.sequence_id) {
-        projectSeqMap[issue.project] = Math.max(projectSeqMap[issue.project] || 0, issue.sequence_id);
-      }
-    });
-
-    // Second pass: backfill missing data
-    localDB.issues.forEach((issue: any) => {
-      if (issue.project && (!issue.sequence_id || !issue.project_detail)) {
-        if (!issue.sequence_id) {
-          projectSeqMap[issue.project] = (projectSeqMap[issue.project] || 0) + 1;
-          issue.sequence_id = projectSeqMap[issue.project];
+      const projectKey = issue.project_id || issue.project;
+      const sequence = Number(issue.sequence_id);
+      if (projectKey && (!Number.isSafeInteger(sequence) || sequence < 1 || !issue.project_detail)) {
+        if (!Number.isSafeInteger(sequence) || sequence < 1) {
+          issue.sequence_id = nextIssueSequence(projectKey);
+          issue.updated_at = nextRecordTimestamp(issue);
         }
         if (!issue.project_detail) {
-          const project = (localDB.projects || []).find((p: any) => p.id === issue.project);
+          const project = (localDB.projects || []).find((p: any) => p.id === projectKey || p.identifier === projectKey);
           if (project) issue.project_detail = project;
         }
         saveNeeded = true;
       }
     });
 
-    if (saveNeeded && method !== "get") saveDB();
+    if (saveNeeded) saveDB({ localOnly: method === "get" });
   }
 
   if (method === "get") {
@@ -8870,8 +8700,15 @@ async function handleCRUD(
 
     // Enrich issues with project_id, workspace_id, and other _id fields (required by UI)
     if (collection === "issues") {
-      const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
-      list = list.filter((item: any) => !deletedIssueSet.has(item.id));
+      const deletedIssueSet = new Set<string>(localDB._deleted_issue_ids || []);
+      ensureIssueTriageMigration();
+      list = list.filter((item: any) => isActiveWorkIssue(item, undefined, undefined, deletedIssueSet));
+      try {
+        list = filterIssueRequest(list, new URL(url, "http://dapp.invalid").searchParams);
+      } catch (error) {
+        if (error instanceof ResourceAccessError) return { status: error.status, data: { code: error.code, error: error.message } };
+        throw error;
+      }
       list = list.map((item: any) => {
         const stateDetail =
           item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
@@ -8890,6 +8727,8 @@ async function handleCRUD(
           state_id: item.state_id || item.state,
           parent_id: item.parent_id || item.parent,
           cycle_id: item.cycle_id || item.cycle,
+          module_ids: issueModuleIds(item),
+          modules: issueModuleIds(item),
           type_id: item.type_id || item.type,
           assignees: item.assignees || item.assignee_ids || [],
           assignee_ids: item.assignee_ids || item.assignees || [],
@@ -9158,6 +8997,12 @@ async function handleCRUD(
   }
 
   if (method === "post") {
+    if (collection === "cycles") {
+      const projectKey = url.match(/\/projects\/([^/]+)/)?.[1];
+      const project = (localDB.projects || []).find((entry: any) => entry.id === projectKey || entry.identifier === projectKey);
+      const checked = checkCycleDates(project?.id || projectKey || "", body);
+      if (!checked.status) return { status: 400, data: { code: "INVALID_CYCLE_DATES", error: checked.error } };
+    }
     console.log("[DApp Interceptor] POST", collection, body);
     const activeUserId = getLoggedInUserId();
     const activeUser = (localDB.users || []).find((u: any) => u.id === activeUserId);
@@ -9768,11 +9613,7 @@ async function handleCRUD(
 
         const validProjKeys = new Set([projId, project?.id, project?.identifier].filter(Boolean));
         // Auto-increment sequence_id for the project
-        const projectIssues = (localDB.issues || []).filter(
-          (i: any) => validProjKeys.has(i.project) || validProjKeys.has(i.project_id)
-        );
-        const maxSeq = projectIssues.reduce((max: number, issue: any) => Math.max(max, issue.sequence_id || 0), 0);
-        newRecord.sequence_id = maxSeq + 1;
+        newRecord.sequence_id = nextIssueSequence(canonicalProjId);
 
         // Ensure state_id belongs to this project
         const projStates = (localDB.states || []).filter(
@@ -10053,9 +9894,20 @@ async function handleCRUD(
     }
     if (idx > -1) {
       const previousRecord = { ...localDB[collection][idx] };
+      if (collection === "cycles" && (Object.hasOwn(body, "start_date") || Object.hasOwn(body, "end_date"))) {
+        const checked = checkCycleDates(previousRecord.project_id || previousRecord.project, { ...previousRecord, ...body }, previousRecord.id);
+        if (!checked.status) return { status: 400, data: { code: "INVALID_CYCLE_DATES", error: checked.error } };
+      }
 
       // D-B: an assignee must already be a member of the project.
       if (collection === "issues") {
+        if (body.module_ids !== undefined || body.modules !== undefined) {
+          try { validateModuleIds(body.module_ids ?? body.modules, previousRecord.project_id || previousRecord.project, previousRecord.workspace_id || previousRecord.workspace); }
+          catch (error) {
+            if (error instanceof ResourceAccessError) return { status: error.status, data: { code: error.code, error: error.message } };
+            throw error;
+          }
+        }
         const nextAssignees = Array.isArray(body?.assignees) ? body.assignees : body?.assignee_ids;
         if (Array.isArray(nextAssignees)) {
           const targetProjectId =
@@ -10074,8 +9926,10 @@ async function handleCRUD(
       if (collection === "workspaces") applyPresentationMediaPatch(localDB[collection][idx], body, "workspace");
       if (collection === "users") applyPresentationMediaPatch(localDB[collection][idx], body, "user");
       if (collection === "projects") applyPresentationMediaPatch(localDB[collection][idx], body, "project");
-      localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
+      localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: nextRecordTimestamp(previousRecord) };
       if (collection === "issues") {
+        if (body.module_ids !== undefined || body.modules !== undefined) setIssueModules(localDB[collection][idx], body.module_ids ?? body.modules);
+        if (Object.hasOwn(body, "cycle_id") || Object.hasOwn(body, "cycle")) setIssueCycle(localDB[collection][idx], Object.hasOwn(body, "cycle_id") ? body.cycle_id : body.cycle);
         if (body.state_id) localDB[collection][idx].state = body.state_id;
         if (body.state) localDB[collection][idx].state_id = body.state;
         const updatedStateId = localDB[collection][idx].state_id || localDB[collection][idx].state;

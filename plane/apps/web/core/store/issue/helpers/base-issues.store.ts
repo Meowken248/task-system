@@ -264,6 +264,18 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
   // Abstract class to be implemented to fetch parent stats such as project, module or cycle details
   abstract fetchParentStats: (workspaceSlug: string, projectId?: string, id?: string) => void;
 
+  protected async refreshPlanningStats(workspaceSlug: string, projectId: string, cycles: (string | null | undefined)[] = [], modules: string[] = []) {
+    const root = this.rootIssueStore.rootStore;
+    const reads = [
+      ...uniq(cycles.filter((id): id is string => Boolean(id))).map((id) => () => root.cycle.fetchCycleDetails(workspaceSlug, projectId, id)),
+      ...uniq(modules).map((id) => () => root.module.fetchModuleDetails(workspaceSlug, projectId, id)),
+    ];
+    // A failed stats read must not roll back a membership write already accepted.
+    await Promise.all(reads.map(async (read) => {
+      try { await read(); } catch (error) { console.warn("Could not refresh Cycle/Module statistics", error); }
+    }));
+  }
+
   abstract updateParentStats: (prevIssueState?: TIssue, nextIssueState?: TIssue, id?: string) => void;
 
   // current Module Id from url
@@ -812,6 +824,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
     issueIds: string[],
     fetchAddedIssues = true
   ) {
+    const previousCycles = issueIds.map((id) => this.rootIssueStore.issues.getIssueById(id)?.cycle_id);
     // Perform an APi call to add issue to cycle
     await this.issueService.addIssueToCycle(workspaceSlug, projectId, cycleId, {
       issues: issueIds,
@@ -835,6 +848,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
     issueIds.forEach((issueId) => {
       this.issueUpdate(workspaceSlug, projectId, issueId, { cycle_id: cycleId }, false);
     });
+    await this.refreshPlanningStats(workspaceSlug, projectId, [cycleId, ...previousCycles]);
   }
 
   /**
@@ -863,6 +877,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
 
     // update Issue cycle Id to null by calling current store's update Issue, without making an API call
     this.issueUpdate(workspaceSlug, projectId, issueId, { cycle_id: null }, false);
+    await this.refreshPlanningStats(workspaceSlug, projectId, [cycleId]);
   }
 
   /**
@@ -904,6 +919,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
       // if cycle Id is the current Cycle Id then call fetch parent stats
       if (this.cycleId === cycleId || this.cycleId === issueCycleId)
         this.fetchParentStats(workspaceSlug, projectId, this.cycleId);
+      await this.refreshPlanningStats(workspaceSlug, projectId, [cycleId, issueCycleId]);
     } catch (error) {
       // remove the new issue ids from the cycle issues map
       runInAction(() => {
@@ -946,6 +962,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
 
       // if cycle Id is the current Cycle Id then call fetch parent stats
       if (this.cycleId === issueCycleId) this.fetchParentStats(workspaceSlug, projectId, issueCycleId);
+      await this.refreshPlanningStats(workspaceSlug, projectId, [issueCycleId]);
     } catch (error) {
       // revert back changes if fails
       // Update issueIds from current store
@@ -997,6 +1014,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
       const updatedIssueModuleIds = uniq(concat(issueModuleIds, [moduleId]));
       this.issueUpdate(workspaceSlug, projectId, issueId, { module_ids: updatedIssueModuleIds }, false);
     });
+    await this.refreshPlanningStats(workspaceSlug, projectId, [], [moduleId]);
   }
 
   /**
@@ -1028,6 +1046,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
       });
     });
 
+    await this.refreshPlanningStats(workspaceSlug, projectId, [], [moduleId]);
     return response;
   }
 
@@ -1062,6 +1081,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
     if (moduleIds.includes(this.moduleId ?? "")) {
       this.fetchParentStats(workspaceSlug, projectId, this.moduleId);
     }
+    await this.refreshPlanningStats(workspaceSlug, projectId, [], moduleIds);
   }
 
   /*
@@ -1117,6 +1137,7 @@ export abstract class BaseIssuesStore implements IBaseIssuesStore {
       if (addModuleIds.includes(this.moduleId || "") || removeModuleIds.includes(this.moduleId || "")) {
         this.fetchParentStats(workspaceSlug, projectId);
       }
+      await this.refreshPlanningStats(workspaceSlug, projectId, [], [...addModuleIds, ...removeModuleIds]);
     } catch (error) {
       // revert the issue back to its original module ids
       runInAction(() => {
