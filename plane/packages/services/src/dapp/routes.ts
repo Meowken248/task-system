@@ -4005,6 +4005,7 @@ async function handleRouteUnlocked(
         const maxSeq = projectIssues.reduce((max: number, i: any) => Math.max(max, i.sequence_id || 0), 0);
         const sortOrder = typeof p.sort_order === "number" ? p.sort_order : (index + 1) * 10000;
         return Object.assign({}, p, {
+          cover_image_url: p.cover_image_url === undefined ? (p.cover_image ?? null) : p.cover_image_url,
           workspace: canonicalWsId || p.workspace,
           workspace_detail: ws || p.workspace_detail,
           member_role: resolvedRole,
@@ -4108,6 +4109,7 @@ async function handleRouteUnlocked(
           }
 
           return ok(Object.assign({}, p, {
+            cover_image_url: p.cover_image_url === undefined ? (p.cover_image ?? null) : p.cover_image_url,
             workspace: canonicalWsId || p.workspace,
             workspace_detail: ws || p.workspace_detail,
             member_role: resolvedRole,
@@ -4119,6 +4121,7 @@ async function handleRouteUnlocked(
           }));
         }
         if (method === "patch" || method === "put") {
+          applyPresentationMediaPatch(localDB.projects[projectIdx], body, "project");
           localDB.projects[projectIdx] = {
             ...localDB.projects[projectIdx],
             ...body,
@@ -9087,6 +9090,8 @@ async function handleCRUD(
       newRecord.total_members = 1;
     }
     if (collection === "projects") {
+      applyPresentationMediaPatch(newRecord, body, "project");
+      newRecord.timezone = newRecord.timezone || "UTC";
       if (localDB._deleted_project_ids && Array.isArray(localDB._deleted_project_ids)) {
         localDB._deleted_project_ids = localDB._deleted_project_ids.filter(
           (dId: string) => dId !== newRecord.id && dId !== newRecord.identifier
@@ -9508,6 +9513,7 @@ async function handleCRUD(
 
       if (collection === "workspaces") applyPresentationMediaPatch(localDB[collection][idx], body, "workspace");
       if (collection === "users") applyPresentationMediaPatch(localDB[collection][idx], body, "user");
+      if (collection === "projects") applyPresentationMediaPatch(localDB[collection][idx], body, "project");
       localDB[collection][idx] = { ...localDB[collection][idx], ...body, updated_at: new Date().toISOString() };
       if (collection === "issues") {
         if (body.state_id) localDB[collection][idx].state = body.state_id;

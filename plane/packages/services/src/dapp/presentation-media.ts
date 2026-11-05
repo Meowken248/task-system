@@ -13,8 +13,8 @@ export function setPresentationMedia(record: any, slot: MediaSlot, value: string
   for (const field of fields) record[field] = value;
 }
 
-export function preserveNewerPresentationMedia(local: any, shared: any, kind: "user" | "workspace"): void {
-  const selected: MediaSlot[] = kind === "user" ? ["avatar", "cover"] : ["logo"];
+export function preserveNewerPresentationMedia(local: any, shared: any, kind: "user" | "workspace" | "project"): void {
+  const selected: MediaSlot[] = kind === "user" ? ["avatar", "cover"] : kind === "workspace" ? ["logo"] : ["cover"];
   for (const slot of selected) {
     const fields = slots[slot];
     const localVersion = Number(local.media_versions?.[slot]) || 0;
@@ -31,8 +31,8 @@ export function preserveNewerPresentationMedia(local: any, shared: any, kind: "u
   }
 }
 
-export function applyPresentationMediaPatch(record: any, patch: Record<string, any>, kind: "user" | "workspace"): void {
-  const selected: MediaSlot[] = kind === "user" ? ["avatar", "cover"] : ["logo"];
+export function applyPresentationMediaPatch(record: any, patch: Record<string, any>, kind: "user" | "workspace" | "project"): void {
+  const selected: MediaSlot[] = kind === "user" ? ["avatar", "cover"] : kind === "workspace" ? ["logo"] : ["cover"];
   for (const slot of selected) {
     const field = slots[slot].find((key) => Object.hasOwn(patch, key));
     if (field && (typeof patch[field] === "string" || patch[field] === null)) setPresentationMedia(record, slot, patch[field]);

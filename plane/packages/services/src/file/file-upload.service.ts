@@ -107,7 +107,11 @@ export class FileUploadService extends APIService {
     try {
       progress(0);
       if (data.get("storage") === "ipfs") {
-        const result = await pinPresentationImage(file, operation.controller.signal);
+        const presetKey = data.get("preset_key");
+        const assetId = data.get("asset_id");
+        const preset =
+          typeof presetKey === "string" && typeof assetId === "string" ? { assetId, presetKey } : undefined;
+        const result = await pinPresentationImage(file, operation.controller.signal, preset);
         checkCancelled();
         progress(1);
         const id = data.get("asset_id") || data.get("key");

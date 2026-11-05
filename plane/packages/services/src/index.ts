@@ -16,6 +16,7 @@ export * from "./user";
 export * from "./project";
 export * from "./workspace";
 export * from "./file";
+export { getPinnedCoverPresetKey } from "./file/cover-presets";
 export * from "./label";
 export * from "./state";
 export * from "./api.service";

@@ -2375,7 +2375,12 @@ export function applyOffchainDB(ipfsDB: Record<string, any>): void {
             ? new Date(localDB.projects[existingIdx].created_at).getTime()
             : 0;
         if (localUpdated >= ipfsUpdated) {
-          localDB.projects[existingIdx] = { ...localDB.projects[existingIdx], ...p };
+          const sharedProject = localDB.projects[existingIdx];
+          const mergedProject = { ...sharedProject, ...p };
+          preserveNewerPresentationMedia(sharedProject, mergedProject, "project");
+          localDB.projects[existingIdx] = mergedProject;
+        } else {
+          preserveNewerPresentationMedia(p, localDB.projects[existingIdx], "project");
         }
       }
     }

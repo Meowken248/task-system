@@ -241,11 +241,16 @@ const sessions = new Map();
 let mailAccepted = false;
 let mailRequests = 0;
 let mailGate;
-const testPresentationMedia = process.env.PLANE_TEST_PRESENTATION_MEDIA === "1";
+const testProjectCreation = process.env.PLANE_TEST_PROJECT_CREATE === "1";
+const testPresentationMedia = process.env.PLANE_TEST_PRESENTATION_MEDIA === "1" || testProjectCreation;
 const pinnedImages = new Map();
 let failImagePin = false;
 let imageUploadRequests = 0;
 let imageGatewayReads = 0;
+let warmingProjectGateways = false;
+let projectGatewayFailures = 0;
+let blockPresetGateways = false;
+let presetGatewayReads = 0;
 const mediaPixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
 const decodedCover = (url) => `(()=>{const image=document.querySelector('form img.h-44');return image?.src===${JSON.stringify(url)}&&image.complete&&image.naturalWidth>0})()`;
 const decodedAvatar = (url) => `(()=>{const image=document.querySelector('button[aria-label="Change profile picture"] img');return image?.src===${JSON.stringify(url)}&&image.complete&&image.naturalWidth>0})()`;
@@ -281,13 +286,28 @@ async function fulfill(event, sessionId) {
   if (testPresentationMedia && event.request.method === "POST" && String(requestHeaders["content-type"]).startsWith("multipart/form-data")) {
     imageUploadRequests++;
     if (failImagePin) return respond({ code: "STORAGE_TEMPORARY" }, 503);
-    const cid = "Qm" + "2".repeat(44); // All three pickers upload the same pixel: one immutable CID.
+    const jpeg = await evaluate(sessionId, "JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').assets?.filter(a=>!a.is_uploaded).at(-1)?.type==='image/jpeg'");
+    const cid = "Qm" + (jpeg ? "3" : "2").repeat(44);
     pinnedImages.set(cid, mediaPixel);
     return respond({ cid });
   }
   const image = pinnedImages.get(url.pathname.split("/").pop());
   if (image) {
     imageGatewayReads++;
+    if (blockPresetGateways && url.pathname.endsWith("Qm" + "3".repeat(44))) {
+      presetGatewayReads++;
+      return send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: 403,
+        responseHeaders: [{ name: "content-type", value: "text/plain" }], body: Buffer.from("Preset gateway blocked").toString("base64") }, sessionId);
+    }
+    if (warmingProjectGateways && !url.hostname.includes("pinata")) {
+      projectGatewayFailures++;
+      return send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: 403,
+        responseHeaders: [{ name: "content-type", value: "text/plain" }], body: Buffer.from("Gateway unavailable").toString("base64") }, sessionId);
+    }
+    if (warmingProjectGateways && projectGatewayFailures === 0) {
+      projectGatewayFailures++;
+      return respond({ error: "CID is still propagating" }, 503);
+    }
     return send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: 200,
       responseHeaders: headers.map((header) => header.name === "content-type" ? { name: header.name, value: "image/png" } : header), body: image }, sessionId);
   }
@@ -321,7 +341,9 @@ async function fulfill(event, sessionId) {
     });
     return respond({ jsonrpc: "2.0", id: body.id, ...rpc(body) });
   }
-  if (url.pathname.includes("/ipfs/")) return respond(shared);
+  if (url.pathname.includes("/ipfs/")) return respond(
+    sessions.get(sessionId)?.label === "project-create" ? { ...shared, projects: [], issues: [], states: [] } : shared
+  );
   if (url.origin === origin) {
     if (url.pathname.includes("/api/")) {
       issues.push({ type: "unhandled-api", path: url.pathname });
@@ -384,7 +406,7 @@ async function screenshot(sessionId, filename) {
   );
   fs.writeFileSync(path.join(output, filename), Buffer.from(result.data, "base64"));
 }
-async function page(user, wallet, suffix, label, signedOut = false) {
+async function page(user, wallet, suffix, label, signedOut = false, emptyProjects = false) {
   const context = await send("Target.createBrowserContext");
   await send("Browser.setDownloadBehavior", {
     behavior: "allow",
@@ -407,6 +429,11 @@ async function page(user, wallet, suffix, label, signedOut = false) {
   );
   await send("Fetch.enable", { patterns: [{ urlPattern: "*" }] }, sessionId);
   const database = structuredClone(shared);
+  if (emptyProjects) {
+    database.projects = [];
+    database.issues = [];
+    database.states = [];
+  }
   const seed = `(()=>{const user=${JSON.stringify(user)},db=${JSON.stringify(database)},wallet=${JSON.stringify(wallet)},origin=${JSON.stringify(origin)};
     if(!sessionStorage.getItem('wallet_browser_seeded')){localStorage.clear();sessionStorage.clear();localStorage.setItem('plane_dapp_local_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_latest_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_auth_user',user.id);sessionStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_dapp_auth_user',user.id);localStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('wallet_browser_seeded','1');}
     if(${JSON.stringify(signedOut)}){sessionStorage.setItem('plane_dapp_signed_out','1');window.__env__={VITE_MAIL_PROXY_URL:origin+'/__mail_fixture',VITE_EMAIL_SENDER_ADDRESS:'fixture-sender@example.invalid',VITE_EMAIL_SENDER_NAME:'Browser fixture'};}
@@ -676,6 +703,126 @@ try {
     assert.equal(await evaluate(session, "!!document.querySelector('button[aria-label=\"Change profile picture\"] img')"), false);
     cases.push({ name: "Removing an avatar preserves cover/logo with the same CID and remains removed after F5", passed: true });
     fs.writeFileSync(path.join(output, "profile-media-proof.json"), JSON.stringify({ ...logoState, afterAvatarRemoval, imageGatewayReads, simulatedPins: pinnedImages.size, imageUploadRequests }, null, 2));
+  }
+  if (testProjectCreation) {
+    // The reported failure happens in an existing project's settings, which
+    // must work independently of the create-project modal.
+    await send("Page.navigate", { url: `${origin}${mount}/${slug}/settings/projects/${projectId}` }, session);
+    await until(session, "!!document.querySelector('form input#name')", 60000);
+    warmingProjectGateways = true;
+    const uploadsBeforeSettings = imageUploadRequests;
+    await click(session, "Array.from(document.querySelectorAll('button')).find(e=>e.innerText.trim()==='Change cover')");
+    await click(session, "Array.from(document.querySelectorAll('[role=tab]')).find(e=>e.textContent.trim()==='Upload')");
+    await send("Page.setInterceptFileChooserDialog", { enabled: true }, session);
+    await click(session, "Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='Upload image')");
+    const settingsDocument = await send("DOM.getDocument", {}, session);
+    const settingsInput = await send("DOM.querySelector", { nodeId: settingsDocument.root.nodeId, selector: 'body > input[type=file]' }, session);
+    await send("DOM.setFileInputFiles", { nodeId: settingsInput.nodeId, files: [path.resolve(root, "tmp/profile-media-pixel.png")] }, session);
+    await until(session, "(()=>{const img=document.querySelector('form img.h-44');return img?.src.includes('/ipfs/')&&img.naturalWidth>0})()", 60000);
+    assert.equal(imageUploadRequests - uploadsBeforeSettings, 1, "gateway retries must not re-pin the same file");
+    assert(projectGatewayFailures > 1);
+    warmingProjectGateways = false;
+    await click(session, "document.querySelector('form button[type=submit]')");
+    await until(session, `JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').projects?.find(p=>p.id===${JSON.stringify(projectId)})?.cover_image?.includes('/ipfs/')`);
+    await until(session, `JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').projects?.find(p=>p.id===${JSON.stringify(projectId)})?.timezone==='UTC'`);
+    cases.push({ name: "Project settings upload recovers from transient 503 and CORS-blocked fallback gateways without re-uploading", passed: true });
+    await send("Page.reload", { ignoreCache: true }, session);
+    await until(session, "(()=>{const img=document.querySelector('form img.h-44');return img?.src.includes('/ipfs/')&&img.naturalWidth>0})()", 60000);
+    await until(session, `JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').projects?.find(p=>p.id===${JSON.stringify(projectId)})?.timezone==='UTC'`);
+    cases.push({ name: "Project cover renders after F5 and a legacy project missing timezone can save its settings", passed: true });
+    await screenshot(session, "project-settings-cover-after-f5.png");
+    await click(session, "Array.from(document.querySelectorAll('button')).find(e=>e.innerText.trim()==='Change cover')");
+    await click(session, "Array.from(document.querySelectorAll('[role=tab]')).find(e=>e.textContent.trim()==='Images')");
+    const presetSource = await evaluate(session, "document.querySelector('img[alt=\"Cover image 1\"]').src");
+    await click(session, "document.querySelector('img[alt=\"Cover image 1\"]')");
+    blockPresetGateways = true;
+    const pinsBeforePreset = imageUploadRequests;
+    await click(session, "document.querySelector('form button[type=submit]')");
+    await until(session, "JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').assets?.some(a=>a.preset_key==='IMAGE_1'&&a.is_uploaded)");
+    const presetAsset = await evaluate(session, "JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').assets.find(a=>a.preset_key==='IMAGE_1'&&a.is_uploaded)");
+    assert.equal(presetAsset.storage, 'ipfs');
+    assert.equal(presetAsset.ipfs_cid, "Qm" + "3".repeat(44), "the JPEG preset must use the deliberately blocked gateway fixture");
+    assert(presetAsset.ipfs_cid);
+    assert(presetAsset.preset_sha256);
+    assert.equal(presetAsset.base64, undefined);
+    assert.equal(imageUploadRequests-pinsBeforePreset, 1);
+    assert.equal(presetGatewayReads, 0);
+    await until(session, decodedCover(presetSource));
+    await until(session, "document.querySelector('form button[type=submit]')?.textContent.trim()==='Update project'");
+    const savedTimestamp = await evaluate(session, `JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').projects.find(p=>p.id===${JSON.stringify(projectId)}).updated_at`);
+    await click(session, "document.querySelector('form button[type=submit]')");
+    await until(session, `JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').projects.find(p=>p.id===${JSON.stringify(projectId)}).updated_at!==${JSON.stringify(savedTimestamp)}`);
+    assert.equal(imageUploadRequests-pinsBeforePreset, 1, "saving an unchanged preset must not pin it again");
+    cases.push({ name: "Images preset pins the original bundled JPEG and saves despite every preset gateway being blocked", passed: true });
+    await send("Storage.clearDataForOrigin", { origin, storageTypes: "indexeddb,cache_storage" }, session);
+    await send("Page.reload", { ignoreCache: true }, session);
+    await until(session, decodedCover(presetSource), 60000);
+    assert.equal(presetGatewayReads, 0);
+    cases.push({ name: "Images preset renders after F5 without image byte caches or gateway requests while its CID remains stored", passed: true });
+    await screenshot(session, "preset-cover-after-f5.png");
+    blockPresetGateways = false;
+    const projectSession = await page(owner, admin, `${slug}/projects/`, "project-create", false, true);
+    const dbProjects = "JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').projects || []";
+    const openCreate = async (name) => {
+      await click(projectSession, "Array.from(document.querySelectorAll('button')).find(e=>e.getClientRects().length && ['Add Project','Add project','Start your first project'].includes(e.innerText.trim()))");
+      await until(projectSession, "!!document.querySelector('input#name')");
+      await click(projectSession, "document.querySelector('input#name')");
+      await send("Input.insertText", { text: name }, projectSession);
+    };
+    const submitCreate = async () => {
+      await click(projectSession, "document.querySelector('form button[type=submit]')");
+      await until(projectSession, "Array.from(document.querySelectorAll('a')).some(e=>e.textContent.trim()==='Open project')", 60000);
+    };
+    const closeFeatures = () => click(projectSession, "Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='Close')");
+    await until(projectSession, "document.body.innerText.includes('Start your first project') || document.body.innerText.includes('Add Project') || document.body.innerText.includes('Add project')", 60000);
+    await openCreate("Default Cover");
+    await submitCreate();
+    let projects = await evaluate(projectSession, dbProjects);
+    assert.equal(projects.length, 1);
+    assert(projects[0].cover_image?.includes('/ipfs/'));
+    cases.push({ name: "Creating the first project with its default cover succeeds and saves an IPFS URL", passed: true });
+    await closeFeatures();
+
+    await openCreate("Custom Cover");
+    await click(projectSession, "Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='Change cover')");
+    await click(projectSession, "Array.from(document.querySelectorAll('[role=tab]')).find(e=>e.textContent.trim()==='Upload')");
+    await send("Page.setInterceptFileChooserDialog", { enabled: true }, projectSession);
+    const pinsBeforeSelection = imageUploadRequests;
+    await click(projectSession, "Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='Upload image')");
+    const doc = await send("DOM.getDocument", {}, projectSession);
+    const input = await send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'body > input[type=file]' }, projectSession);
+    const coverFile = path.resolve(root, "tmp/project-cover-pixel.png");
+    fs.writeFileSync(coverFile, Buffer.from(mediaPixel, "base64"));
+    await send("DOM.setFileInputFiles", { nodeId: input.nodeId, files: [coverFile] }, projectSession);
+    await until(projectSession, "Array.from(document.querySelectorAll('img')).some(e=>e.src.startsWith('blob:') && e.naturalWidth>0)");
+    assert.equal((await evaluate(projectSession, dbProjects)).length, 1);
+    assert.equal(imageUploadRequests, pinsBeforeSelection, "selecting a cover before creation must not initialize or upload an asset");
+    await submitCreate();
+    projects = await evaluate(projectSession, dbProjects);
+    assert.equal(projects.length, 2);
+    const custom = projects.find(p=>p.name==='Custom Cover');
+    assert(custom.cover_image?.includes('/ipfs/'));
+    const assets = await evaluate(projectSession, "JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').assets || []");
+    assert(assets.some(a=>a.entity_type==='PROJECT_COVER' && a.entity_identifier===custom.id && a.is_uploaded && a.storage==='ipfs'));
+    cases.push({ name: "Custom cover selection previews in memory and only uploads after the new project exists", passed: true });
+    await closeFeatures();
+
+    failImagePin = true;
+    await openCreate("Failed Cover");
+    await submitCreate();
+    assert.equal((await evaluate(projectSession, dbProjects)).length, 3);
+    await until(projectSession, "document.body.innerText.includes('Ảnh bìa chưa lưu được')");
+    cases.push({ name: "A pinning failure clearly warns that the project exists and advances without duplicate creation", passed: true });
+    failImagePin = false;
+    await closeFeatures();
+    await send("Page.reload", { ignoreCache: true }, projectSession);
+    await until(projectSession, `(${dbProjects}).length===3`);
+    projects = await evaluate(projectSession, dbProjects);
+    assert.equal(projects.find(p=>p.name==='Custom Cover').cover_image, custom.cover_image);
+    assert(!JSON.stringify(projects).includes('blob:'));
+    assert.deepEqual(issues, [], "project creation must not produce uncaught errors");
+    cases.push({ name: "Created projects survive reload with their IPFS cover URLs and no stored blob previews", passed: true });
+    await screenshot(projectSession, "projects-after-create.png");
   }
   const authSession = await page(owner, admin, "sign-up", "otp", true);
   await until(authSession, "!!document.getElementById('email')");

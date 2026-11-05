@@ -43,3 +43,29 @@ test("newer name edits do not determine which avatar version wins", () => {
   applyOffchainDB({ users: [{ id: "user-a", email: "a@example.invalid", avatar_url: "remote", media_versions: { avatar: 200 } }], workspaces: [] });
   assert.equal(localDB.users[0].avatar_url, "remote");
 });
+
+test("an old project cover cannot replace a newly uploaded cover even if unrelated metadata is newer", () => {
+  localDB.projects = [{ id: "project-a", name: "Local", updated_at: "2026-01-01T00:00:00Z" }];
+  setPresentationMedia(localDB.projects[0], "cover", "https://ipfs.fixture/ipfs/new-cover");
+  applyOffchainDB({ projects: [{ id: "project-a", name: "Remote", cover_image: "old-cover", cover_image_url: "old-cover", updated_at: "2030-01-01T00:00:00Z" }], users: [], workspaces: [] });
+  assert.equal(localDB.projects[0].cover_image, "https://ipfs.fixture/ipfs/new-cover");
+  assert.equal(localDB.projects[0].cover_image_url, "https://ipfs.fixture/ipfs/new-cover");
+  assert.equal(localDB.projects[0].name, "Remote");
+});
+
+test("a newer shared project cover wins while a newer local name is retained", () => {
+  localDB.projects = [{ id: "project-a", name: "Local name", cover_image: "local", cover_image_url: "local", media_versions: { cover: 100 }, updated_at: "2030-01-01T00:00:00Z" }];
+  applyOffchainDB({ projects: [{ id: "project-a", name: "Old name", cover_image: "remote", cover_image_url: "remote", media_versions: { cover: 200 }, updated_at: "2026-01-01T00:00:00Z" }], users: [], workspaces: [] });
+  assert.equal(localDB.projects[0].name, "Local name");
+  assert.equal(localDB.projects[0].cover_image_url, "remote");
+  assert.equal(localDB.projects[0].cover_image, "remote");
+  assert.equal(localDB.projects[0].media_versions.cover, 200);
+});
+
+test("a removed project cover is not resurrected by an older snapshot", () => {
+  localDB.projects = [{ id: "project-a", updated_at: "2026-01-01T00:00:00Z" }];
+  setPresentationMedia(localDB.projects[0], "cover", null);
+  applyOffchainDB({ projects: [{ id: "project-a", cover_image: "old", cover_image_url: "old", media_versions: { cover: 1 }, updated_at: "2030-01-01T00:00:00Z" }], users: [], workspaces: [] });
+  assert.equal(localDB.projects[0].cover_image, null);
+  assert.equal(localDB.projects[0].cover_image_url, null);
+});

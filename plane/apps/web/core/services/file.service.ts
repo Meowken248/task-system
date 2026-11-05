@@ -108,7 +108,7 @@ export class FileService extends APIService {
 
   async uploadWorkspaceAsset(
     workspaceSlug: string,
-    data: TFileEntityInfo,
+    data: TFileEntityInfo & { preset_key?: string },
     file: File,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TFileSignedURLResponse> {

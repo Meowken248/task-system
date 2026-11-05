@@ -15,10 +15,15 @@ import {
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier.startsWith("@/app/assets/")) return {
-      url: "data:text/javascript," + encodeURIComponent(`export default ${JSON.stringify("/fixture-assets/" + specifier.slice("@/app/assets/".length).split("?")[0])}`),
-      shortCircuit: true,
-    };
+    if (specifier.startsWith("@/app/assets/"))
+      return {
+        url:
+          "data:text/javascript," +
+          encodeURIComponent(
+            `export default ${JSON.stringify("/fixture-assets/" + specifier.slice("@/app/assets/".length).split("?")[0])}`
+          ),
+        shortCircuit: true,
+      };
     if (specifier.startsWith("@/"))
       return nextResolve(new URL(`../../apps/web/core/${specifier.slice(2)}.ts`, import.meta.url).href, context);
     return nextResolve(specifier, context);
@@ -36,7 +41,9 @@ registerHooks({
 });
 const { FileService } = await import("../../apps/web/core/services/file.service.ts");
 const { IssueAttachmentService } = await import("../../apps/web/core/services/issue/issue_attachment.service.ts");
-const { handleCoverImageChange, STATIC_COVER_IMAGES } = await import("../../apps/web/helpers/cover-image.helper.ts");
+const { handleCoverImageChange, STATIC_COVER_IMAGES, getCoverImageDisplayURL } = await import("../../apps/web/helpers/cover-image.helper.ts");
+const { uploadCoverImage } = await import("../../apps/web/helpers/cover-image.helper.ts");
+const { createProjectWithCover } = await import("../../apps/web/ce/components/projects/create/create-with-cover.ts");
 const { EditorAssetStore } = await import("../../apps/web/core/store/editor/asset.store.ts");
 let failWrites = false;
 let failOpen = false;
@@ -264,7 +271,7 @@ test("Full API lifecycle: POST init -> upload ingestion -> PATCH confirm -> GET 
     name: "screenshot.png",
     type: "image/png",
     size: 1024,
-    entity_type: "PROJECT_COVER",
+    entity_type: "ISSUE_DESCRIPTION",
     entity_identifier: "proj-1",
   });
   assert.equal(initRes.status, 200);
@@ -290,14 +297,12 @@ test("Full API lifecycle: POST init -> upload ingestion -> PATCH confirm -> GET 
   assert.ok(inDb);
   assert.equal(inDb.name, "screenshot.png");
 
-  // 3. PATCH confirm upload and bind to project cover
+  // 3. PATCH confirm the local editor image upload
   const patchRes = await handleRoute("patch", `/api/assets/v2/workspaces/test-ws/${assetId}/`, {});
   assert.equal(patchRes.status, 200);
   assert.equal(patchRes.data.is_uploaded, true);
 
-  // Verify project cover_image was updated
-  const project = localDB.projects.find((p) => p.id === "proj-1");
-  assert.ok(project.cover_image.startsWith("data:image/png;base64,"));
+  assert.equal(localDB.projects.find((p) => p.id === "proj-1").cover_image, "");
 
   // 4. GET display asset
   const getRes = await handleRoute("get", `/api/assets/v2/display/${assetId}/`, {});
@@ -409,17 +414,9 @@ test("Work item / Issue attachment syncs attachment_count and issue_attachments 
   assert.equal(attRes.data[0].id, "asset_test_123");
 });
 
-const png = (encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=") =>
-  new File(
-    [
-      Buffer.from(
-        encoded,
-        "base64"
-      ),
-    ],
-    "screenshot.png",
-    { type: "image/png" }
-  );
+const png = (
+  encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII="
+) => new File([Buffer.from(encoded, "base64")], "screenshot.png", { type: "image/png" });
 
 test("the real web FileService uploads an editor image and resolves its saved ID without HTTP", async () => {
   const result = await new FileService().uploadProjectAsset(
@@ -458,11 +455,7 @@ test("missing upload bytes do not produce a fake success URL", async () => {
 test("quota failures reject a local editor upload and never mark metadata as uploaded", async () => {
   failWrites = true;
   await assert.rejects(
-    new FileService().uploadWorkspaceAsset(
-      "test-ws",
-      { entity_type: "PAGE_DESCRIPTION" },
-      png()
-    ),
+    new FileService().uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png()),
     /quota/
   );
   assert.equal(localDB.workspaces[0].logo_url, "");
@@ -560,6 +553,122 @@ test("workspace logo and project cover bind the actual uploaded content", async 
   );
   assert.equal(localDB.workspaces[0].logo_url, logo.asset_url);
   assert.equal(localDB.projects[0].cover_image, cover.asset_url);
+  assert.equal(localDB.projects[0].cover_image_url, cover.asset_url);
+  assert(localDB.projects[0].media_versions.cover > 0);
+});
+
+test("project cover API writes and clears both image fields consistently", async () => {
+  const url = "https://image-gateway.fixture/ipfs/pinned-cover";
+  const saved = await handleRoute("patch", "/api/workspaces/test-ws/projects/proj-1/", { cover_image: url });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.data.cover_image_url, url);
+  assert.equal(saved.data.cover_image, url);
+  const version = saved.data.media_versions.cover;
+  const cleared = await handleRoute("patch", "/api/workspaces/test-ws/projects/proj-1/", { cover_image_url: null });
+  assert.equal(cleared.data.cover_image, null);
+  assert.equal(cleared.data.cover_image_url, null);
+  assert(cleared.data.media_versions.cover > version);
+});
+
+test("legacy project cover_image is exposed through the UI URL field in list and detail APIs", async () => {
+  localDB.projects[0].cover_image = "https://image-gateway.fixture/ipfs/legacy-cover";
+  delete localDB.projects[0].cover_image_url;
+  const detail = await handleRoute("get", "/api/workspaces/test-ws/projects/proj-1/", {});
+  assert.equal(detail.data.cover_image_url, localDB.projects[0].cover_image);
+  const list = await handleRoute("get", "/api/workspaces/test-ws/projects/", {});
+  assert.equal(list.data.find(p => p.id === "proj-1").cover_image_url, localDB.projects[0].cover_image);
+});
+
+test("new project custom cover uses its created scope and confirms actual IPFS bytes", async () => {
+  const file = png();
+  const result = await createProjectWithCover({ name: "New project", cover_image_url: "blob:preview" }, file, {
+    create: async (fields) => {
+      const project = { ...fields, id: "new-project", workspace: "ws-1", network: 2 };
+      localDB.projects.push(project);
+      return project;
+    },
+    uploadCover: (source, id) =>
+      uploadCoverImage(source, {
+        workspaceSlug: "test-ws",
+        entityIdentifier: id,
+        entityType: "PROJECT_COVER",
+      }),
+    saveCover: async (id, url) => {
+      assert.equal(localDB.projects.find((p) => p.id === id).cover_image, url);
+    },
+  });
+  assert.equal(result.coverFailed, false);
+  const asset = localDB.assets.find((a) => a.entity_identifier === result.project.id);
+  assert.equal(asset.storage, "ipfs");
+  assert.equal(asset.is_uploaded, true);
+  assert.ok(asset.ipfs_cid);
+  assert.equal(asset.base64, undefined);
+});
+
+test("Images preset saves a real pin acknowledgement and displays exact bundled bytes when gateways are offline", async () => {
+  const source = STATIC_COVER_IMAGES.IMAGE_1;
+  const bytes = readFileSync(new URL("../../apps/web/app/assets/cover-images/image_1.jpg", import.meta.url));
+  let reads = 0;
+  globalThis.fetch = (url, options) => {
+    if (url === source) return Promise.resolve(new Response(bytes, { headers: { "Content-Type": "image/jpeg" } }));
+    if (String(url).includes("image-gateway.fixture")) { reads++; throw new TypeError("CORS unavailable"); }
+    return ipfs.fetch(url, options);
+  };
+  const payload = await handleCoverImageChange(null, source, {
+    workspaceSlug: "test-ws", entityIdentifier: "proj-1", entityType: "PROJECT_COVER",
+  });
+  assert.equal(ipfs.requests.length, 1);
+  assert.equal(reads, 0);
+  assert(payload.cover_image.startsWith("https://image-gateway.fixture/ipfs/"));
+  const asset = localDB.assets.find(a => a.entity_type === "PROJECT_COVER");
+  assert.equal(asset.is_uploaded, true);
+  assert.equal(asset.storage, "ipfs");
+  assert.equal(asset.preset_key, "IMAGE_1");
+  assert.equal(asset.base64, undefined);
+  assert.equal(mockDB.storage.has(asset.id), false);
+  assert.deepEqual(ipfs.files.get(asset.ipfs_cid).bytes, new Uint8Array(bytes));
+  assert.equal(getCoverImageDisplayURL(payload.cover_image, null), source);
+  const repeat = await handleRoute("patch", `/api/assets/v2/workspaces/test-ws/${asset.id}/`, { ipfs_cid: asset.ipfs_cid });
+  assert.equal(repeat.status, 200, "confirmation is idempotent after the receipt was consumed");
+});
+
+test("preset metadata and an arbitrary CID cannot forge a successful upload", async () => {
+  const init = await handleRoute("post", "/api/assets/v2/workspaces/test-ws/", {
+    entity_type: "PROJECT_COVER", entity_identifier: "proj-1", preset_key: "IMAGE_1", name: "cover.jpg",
+  });
+  const confirm = await handleRoute("patch", `/api/assets/v2/workspaces/test-ws/${init.data.asset_id}/`, { ipfs_cid: "Qm" + "a".repeat(44) });
+  assert.equal(confirm.status, 409);
+  assert.equal(localDB.projects[0].cover_image, "");
+  assert.equal(localDB.assets[0].is_uploaded, false);
+});
+
+test("a failed preset pin keeps the previous project cover", async () => {
+  const bytes = readFileSync(new URL("../../apps/web/app/assets/cover-images/image_1.jpg", import.meta.url));
+  const source = STATIC_COVER_IMAGES.IMAGE_1;
+  globalThis.fetch = (url, options) => url === source
+    ? Promise.resolve(new Response(bytes, { headers: { "Content-Type": "image/jpeg" } }))
+    : ipfs.fetch(url, options);
+  ipfs.failUpload = true;
+  localDB.projects[0].cover_image = "previous";
+  await assert.rejects(handleCoverImageChange("previous", source, {
+    workspaceSlug: "test-ws", entityIdentifier: "proj-1", entityType: "PROJECT_COVER",
+  }));
+  assert.equal(localDB.projects[0].cover_image, "previous");
+  assert.equal(localDB.assets[0].is_uploaded, false);
+});
+
+test("a project cover without an existing owner is still rejected", async () => {
+  await assert.rejects(
+    new FileService().uploadWorkspaceAsset(
+      "test-ws",
+      {
+        entity_identifier: "",
+        entity_type: "PROJECT_COVER",
+      },
+      png()
+    )
+  );
+  assert.equal(localDB.assets.length, 0);
 });
 
 test("a confirmed snapshot can resolve content on a device without the original byte cache", async () => {
@@ -631,7 +740,11 @@ test("direct attachment deletion rejects an asset belonging to another issue", a
 test("attachment API deletion records a tombstone and updates the actual issue count", async () => {
   const result = await new IssueAttachmentService().uploadIssueAttachment("test-ws", "proj-1", "issue-1", png());
   assert.equal(localDB.issues[0].attachment_count, 1);
-  const deleted = await handleRoute("delete", `/api/workspaces/test-ws/projects/proj-1/issues/issue-1/attachments/${result.id}/`, {});
+  const deleted = await handleRoute(
+    "delete",
+    `/api/workspaces/test-ws/projects/proj-1/issues/issue-1/attachments/${result.id}/`,
+    {}
+  );
   assert.equal(deleted.status, 200);
   assert.equal(await getAttachment(result.id), null);
   assert.equal(localDB.issues[0].attachment_count, 0);
@@ -641,7 +754,9 @@ test("attachment API deletion records a tombstone and updates the actual issue c
 test("attachment API storage failure preserves bytes, metadata and issue count", async () => {
   const result = await new IssueAttachmentService().uploadIssueAttachment("test-ws", "proj-1", "issue-1", png());
   failWrites = true;
-  await assert.rejects(handleRoute("delete", `/api/workspaces/test-ws/projects/proj-1/issues/issue-1/attachments/${result.id}/`, {}));
+  await assert.rejects(
+    handleRoute("delete", `/api/workspaces/test-ws/projects/proj-1/issues/issue-1/attachments/${result.id}/`, {})
+  );
   assert.ok(await getAttachment(result.id));
   assert.equal(localDB.attachments.length, 1);
   assert.equal(localDB.issues[0].attachment_count, 1);
@@ -652,15 +767,26 @@ test("avatar, profile cover and workspace logo use real IPFS URLs without storin
   const service = new FileService();
   const avatar = await service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
   const cover = await service.uploadUserAsset({ entity_type: "USER_COVER" }, png());
-  const logo = await service.uploadWorkspaceAsset("test-ws", { entity_type: "WORKSPACE_LOGO", entity_identifier: "ws-1" }, png());
-  for (const result of [avatar, cover, logo]) assert(result.asset_url.startsWith("https://image-gateway.fixture/ipfs/"));
+  const logo = await service.uploadWorkspaceAsset(
+    "test-ws",
+    { entity_type: "WORKSPACE_LOGO", entity_identifier: "ws-1" },
+    png()
+  );
+  for (const result of [avatar, cover, logo])
+    assert(result.asset_url.startsWith("https://image-gateway.fixture/ipfs/"));
   for (const result of [avatar, cover, logo]) assert.equal(mockDB.storage.has(result.asset_id), false);
   for (const [key, value] of mockDB.storage) {
     assert.equal(key.startsWith("plane_att_"), false);
-    assert.equal(String(value).includes("data:image/"), false, "metadata checkpoints contain references, not image bytes");
+    assert.equal(
+      String(value).includes("data:image/"),
+      false,
+      "metadata checkpoints contain references, not image bytes"
+    );
   }
   assert.equal(ipfs.requests.length, 3);
-  assert(localDB.assets.every((asset) => asset.storage === "ipfs" && asset.ipfs_cid && !asset.asset_url.startsWith("data:")));
+  assert(
+    localDB.assets.every((asset) => asset.storage === "ipfs" && asset.ipfs_cid && !asset.asset_url.startsWith("data:"))
+  );
   assert.equal(localDB.users[0].avatar_url, avatar.asset_url);
   assert.equal(localDB.users[0].cover_image_url, cover.asset_url);
   assert.equal(localDB.workspaces[0].logo_url, logo.asset_url);
@@ -693,18 +819,24 @@ test("deleting an IPFS avatar dereferences it without depending on IndexedDB", a
 test("a preset profile cover is pinned even when the MetaNode SDK is present", async () => {
   const jpeg = readFileSync(new URL("../../apps/web/app/assets/cover-images/image_1.jpg", import.meta.url));
   const fixtureFetch = ipfs.fetch;
-  globalThis.fetch = (url, options) => url === STATIC_COVER_IMAGES.IMAGE_1
-    ? Promise.resolve(new Response(jpeg, { headers: { "Content-Type": "image/jpeg" } })) : fixtureFetch(url, options);
+  globalThis.fetch = (url, options) =>
+    url === STATIC_COVER_IMAGES.IMAGE_1
+      ? Promise.resolve(new Response(jpeg, { headers: { "Content-Type": "image/jpeg" } }))
+      : fixtureFetch(url, options);
   window.fiaiSDK = {};
   try {
     const result = await handleCoverImageChange(null, STATIC_COVER_IMAGES.IMAGE_1, {
-      entityIdentifier: "", entityType: "USER_COVER", isUserAsset: true,
+      entityIdentifier: "",
+      entityType: "USER_COVER",
+      isUserAsset: true,
     });
     assert.equal(ipfs.requests.length, 1);
     assert(result.cover_image_url.startsWith("https://image-gateway.fixture/ipfs/"));
     assert.equal(result.cover_image_url, result.cover_image);
     assert.equal(localDB.users[0].cover_image_url, result.cover_image_url);
-  } finally { delete window.fiaiSDK; }
+  } finally {
+    delete window.fiaiSDK;
+  }
 });
 
 test("an implicit user avatar also uses IPFS and its metadata API returns the pinned URL", async () => {
@@ -722,7 +854,12 @@ test("shared IPFS content does not make avatar deletion remove the cover or anot
   const cover = await service.uploadUserAsset({ entity_type: "USER_COVER" }, png());
   const avatar = await service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
   assert.equal(avatar.asset_url, cover.asset_url, "IPFS deduplicates the same file into the same CID");
-  localDB.assets.unshift({ ...localDB.assets[1], id: "foreign-avatar", asset_id: "foreign-avatar", created_by: "other-user" });
+  localDB.assets.unshift({
+    ...localDB.assets[1],
+    id: "foreign-avatar",
+    asset_id: "foreign-avatar",
+    created_by: "other-user",
+  });
   await service.deleteOldUserAsset(avatar.asset_url);
   assert.equal(localDB.users[0].avatar_url, null);
   assert.equal(localDB.users[0].cover_image_url, cover.asset_url);
@@ -730,84 +867,165 @@ test("shared IPFS content does not make avatar deletion remove the cover or anot
   assert(localDB.assets.some((asset) => asset.id === cover.asset_id));
 });
 
-test('REVIEW: deleting a cover through the real user endpoint must survive an older snapshot', async () => {
-  const {applyOffchainDB}=await import('../../packages/services/dist/index.js');
-  await new FileService().uploadUserAsset({entity_type:'USER_COVER'}, png());
-  const previous=structuredClone({users:localDB.users,workspaces:localDB.workspaces});
-  const version=localDB.users[0].media_versions.cover;
-  const result=await handleRoute('patch','/api/users/me/',{cover_image:null,cover_image_url:null});
-  assert.equal(result.status,200);
-  assert.equal(localDB.users[0].cover_image_url,null);
-  const advanced=localDB.users[0].media_versions.cover>version;
+test("REVIEW: deleting a cover through the real user endpoint must survive an older snapshot", async () => {
+  const { applyOffchainDB } = await import("../../packages/services/dist/index.js");
+  await new FileService().uploadUserAsset({ entity_type: "USER_COVER" }, png());
+  const previous = structuredClone({ users: localDB.users, workspaces: localDB.workspaces });
+  const version = localDB.users[0].media_versions.cover;
+  const result = await handleRoute("patch", "/api/users/me/", { cover_image: null, cover_image_url: null });
+  assert.equal(result.status, 200);
+  assert.equal(localDB.users[0].cover_image_url, null);
+  const advanced = localDB.users[0].media_versions.cover > version;
   applyOffchainDB(previous);
-  console.log('REVIEW_COVER',JSON.stringify({versionAdvanced:advanced,restoredCover:localDB.users[0].cover_image_url}));
-  assert.equal(localDB.users[0].cover_image_url,null,'Deleted cover must not return after snapshot restoration');
+  console.log(
+    "REVIEW_COVER",
+    JSON.stringify({ versionAdvanced: advanced, restoredCover: localDB.users[0].cover_image_url })
+  );
+  assert.equal(localDB.users[0].cover_image_url, null, "Deleted cover must not return after snapshot restoration");
 });
 
-test('REVIEW: cancelling while IPFS confirmation is pending must not commit an avatar', async () => {
-  const service=new FileService();let release,entered;
-  const gate=new Promise(resolve=>{release=resolve});
-  const ready=new Promise(resolve=>{entered=resolve});let reads=0;
-  globalThis.fetch=async (url,options)=>{
-    if(String(url).startsWith('https://image-gateway.fixture/')&&++reads===2){entered();await gate;}
-    return ipfs.fetch(url,options);
+test("REVIEW: cancelling while IPFS confirmation is pending must not commit an avatar", async () => {
+  const service = new FileService();
+  let release, entered;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  let reads = 0;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).startsWith("https://image-gateway.fixture/") && ++reads === 2) {
+      entered();
+      await gate;
+    }
+    return ipfs.fetch(url, options);
   };
-  const pending=service.uploadUserAsset({entity_type:'USER_AVATAR'},png());
-  await ready;service.cancelUpload();release();
-  const outcome=await Promise.allSettled([pending]);
-  console.log('REVIEW_CANCEL',JSON.stringify({outcome:outcome[0].status,avatar:localDB.users[0].avatar_url}));
-  assert.equal(localDB.users[0].avatar_url,'','Cancellation must keep the previous avatar');
+  const pending = service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
+  await ready;
+  service.cancelUpload();
+  release();
+  const outcome = await Promise.allSettled([pending]);
+  console.log("REVIEW_CANCEL", JSON.stringify({ outcome: outcome[0].status, avatar: localDB.users[0].avatar_url }));
+  assert.equal(localDB.users[0].avatar_url, "", "Cancellation must keep the previous avatar");
 });
 
-test('REVIEW: deleting an asset during confirmation must prevent it binding to the user later', async () => {
-  const service=new FileService();let release,entered;
-  const gate=new Promise(resolve=>{release=resolve});
-  const ready=new Promise(resolve=>{entered=resolve});let reads=0;
-  globalThis.fetch=async (url,options)=>{
-    if(String(url).startsWith('https://image-gateway.fixture/')&&++reads===2){entered();await gate;}
-    return ipfs.fetch(url,options);
+test("REVIEW: deleting an asset during confirmation must prevent it binding to the user later", async () => {
+  const service = new FileService();
+  let release, entered;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  let reads = 0;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).startsWith("https://image-gateway.fixture/") && ++reads === 2) {
+      entered();
+      await gate;
+    }
+    return ipfs.fetch(url, options);
   };
-  const pending=service.uploadUserAsset({entity_type:'USER_AVATAR'},png());
-  await ready;const id=localDB.assets[0].id;
-  const removed=await handleRoute('delete','/api/assets/v2/user-assets/'+id+'/',{});
-  assert.equal(removed.status,200);release();
-  const outcome=await Promise.allSettled([pending]);
-  console.log('REVIEW_DELETE',JSON.stringify({outcome:outcome[0].status,remainingAssets:localDB.assets.length,avatar:localDB.users[0].avatar_url}));
-  assert.equal(localDB.users[0].avatar_url,'','A deleted asset must not become the avatar');
+  const pending = service.uploadUserAsset({ entity_type: "USER_AVATAR" }, png());
+  await ready;
+  const id = localDB.assets[0].id;
+  const removed = await handleRoute("delete", "/api/assets/v2/user-assets/" + id + "/", {});
+  assert.equal(removed.status, 200);
+  release();
+  const outcome = await Promise.allSettled([pending]);
+  console.log(
+    "REVIEW_DELETE",
+    JSON.stringify({
+      outcome: outcome[0].status,
+      remainingAssets: localDB.assets.length,
+      avatar: localDB.users[0].avatar_url,
+    })
+  );
+  assert.equal(localDB.users[0].avatar_url, "", "A deleted asset must not become the avatar");
 });
 
 async function logoPermissionRace(action) {
-  const wallet='0x1111111111111111111111111111111111111111';
-  sessionStorage.setItem('plane_active_wallet_address',wallet);
-  localDB.users[0].metanode_wallet_address=wallet;
-  process.env.VITE_WORKSPACE_REGISTRY_ADDRESS='0x3333333333333333333333333333333333333333';
-  process.env.VITE_RPC_URL='https://review-permission.fixture';
-  let release,entered;const gate=new Promise(resolve=>{release=resolve});const ready=new Promise(resolve=>{entered=resolve});
-  let reads=0,confirmationReached=false,held=false;
-  globalThis.fetch=async(url,options)=>{
-    if(String(url)==='https://review-permission.fixture') {
-      if(confirmationReached&&!held){held=true;entered();await gate;}
-      return Response.json({jsonrpc:'2.0',id:1,result:'0x'+BigInt(2).toString(16).padStart(64,'0')});
+  const wallet = "0x1111111111111111111111111111111111111111";
+  sessionStorage.setItem("plane_active_wallet_address", wallet);
+  localDB.users[0].metanode_wallet_address = wallet;
+  process.env.VITE_WORKSPACE_REGISTRY_ADDRESS = "0x3333333333333333333333333333333333333333";
+  process.env.VITE_RPC_URL = "https://review-permission.fixture";
+  let release, entered;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  let reads = 0,
+    confirmationReached = false,
+    held = false;
+  globalThis.fetch = async (url, options) => {
+    if (String(url) === "https://review-permission.fixture") {
+      if (confirmationReached && !held) {
+        held = true;
+        entered();
+        await gate;
+      }
+      return Response.json({ jsonrpc: "2.0", id: 1, result: "0x" + BigInt(2).toString(16).padStart(64, "0") });
     }
-    if(String(url).startsWith('https://image-gateway.fixture/')&&++reads===2)confirmationReached=true;
-    return ipfs.fetch(url,options);
+    if (String(url).startsWith("https://image-gateway.fixture/") && ++reads === 2) confirmationReached = true;
+    return ipfs.fetch(url, options);
   };
-  const service=new FileService();
-  const pending=service.uploadWorkspaceAsset('test-ws',{entity_type:'WORKSPACE_LOGO',entity_identifier:'ws-1'},png());
-  await ready;const id=localDB.assets[0].id;
-  if(action==='cancel')service.cancelUpload();
-  else {const removed=await handleRoute('delete','/api/assets/v2/workspaces/test-ws/'+id+'/',{});assert.equal(removed.status,200);}
-  release();const [outcome]=await Promise.allSettled([pending]);
-  console.log('REVIEW2_RPC_RACE',JSON.stringify({action,outcome:outcome.status,logo:localDB.workspaces[0].logo_url,remainingAssets:localDB.assets.length}));
-  assert.equal(localDB.workspaces[0].logo_url,'','No logo may be committed after '+action+' during the final permission check');
+  const service = new FileService();
+  const pending = service.uploadWorkspaceAsset(
+    "test-ws",
+    { entity_type: "WORKSPACE_LOGO", entity_identifier: "ws-1" },
+    png()
+  );
+  await ready;
+  const id = localDB.assets[0].id;
+  if (action === "cancel") service.cancelUpload();
+  else {
+    const removed = await handleRoute("delete", "/api/assets/v2/workspaces/test-ws/" + id + "/", {});
+    assert.equal(removed.status, 200);
+  }
+  release();
+  const [outcome] = await Promise.allSettled([pending]);
+  console.log(
+    "REVIEW2_RPC_RACE",
+    JSON.stringify({
+      action,
+      outcome: outcome.status,
+      logo: localDB.workspaces[0].logo_url,
+      remainingAssets: localDB.assets.length,
+    })
+  );
+  assert.equal(
+    localDB.workspaces[0].logo_url,
+    "",
+    "No logo may be committed after " + action + " during the final permission check"
+  );
 }
 
-test('REVIEW2: cancellation during final chain permission check must keep old workspace logo',{timeout:10000},async()=>{
-  try {await logoPermissionRace('cancel');} finally {process.env.VITE_WORKSPACE_REGISTRY_ADDRESS='';process.env.VITE_RPC_URL='';}
-});
+test(
+  "REVIEW2: cancellation during final chain permission check must keep old workspace logo",
+  { timeout: 10000 },
+  async () => {
+    try {
+      await logoPermissionRace("cancel");
+    } finally {
+      process.env.VITE_WORKSPACE_REGISTRY_ADDRESS = "";
+      process.env.VITE_RPC_URL = "";
+    }
+  }
+);
 
-test('REVIEW2: deletion during final chain permission check must not bind a removed logo',{timeout:10000},async()=>{
-  try {await logoPermissionRace('delete');} finally {process.env.VITE_WORKSPACE_REGISTRY_ADDRESS='';process.env.VITE_RPC_URL='';}
-});
-
-
+test(
+  "REVIEW2: deletion during final chain permission check must not bind a removed logo",
+  { timeout: 10000 },
+  async () => {
+    try {
+      await logoPermissionRace("delete");
+    } finally {
+      process.env.VITE_WORKSPACE_REGISTRY_ADDRESS = "";
+      process.env.VITE_RPC_URL = "";
+    }
+  }
+);

@@ -5,6 +5,7 @@
  */
 
 import type { EFileAssetType } from "@plane/types";
+import { getPinnedCoverPresetKey, localDB } from "@plane/services";
 import { getFileURL } from "@plane/utils";
 
 import CoverImage1 from "@/app/assets/cover-images/image_1.jpg?url";
@@ -144,6 +145,8 @@ export function getCoverImageDisplayURL(
   if (!imageUrl) {
     return fallbackUrl;
   }
+  const presetKey = getPinnedCoverPresetKey(localDB.assets || [], imageUrl);
+  if (presetKey) return STATIC_COVER_IMAGES[presetKey];
 
   const imageType = getCoverImageType(imageUrl);
 
@@ -197,7 +200,7 @@ export const analyzeCoverImageChange = (
  * Uploads selected image bytes through the configured asset storage flow.
  */
 export const uploadCoverImage = async (
-  imageUrl: string,
+  imageUrl: string | File,
   uploadConfig: {
     workspaceSlug?: string;
     entityIdentifier: string;
@@ -207,22 +210,30 @@ export const uploadCoverImage = async (
 ): Promise<string> => {
   const { workspaceSlug, entityIdentifier, entityType, isUserAsset = false } = uploadConfig;
 
-  // Fetch the local image
-  const response = await fetch(imageUrl);
+  let file: File;
+  if (typeof imageUrl !== "string") {
+    file = imageUrl;
+  } else {
+    const response = await fetch(imageUrl);
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch image: ${response.statusText}`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+
+    // Validate it's actually an image
+    if (!blob.type.startsWith("image/")) {
+      throw new Error("Invalid file type. Please select an image.");
+    }
+
+    const fileName = imageUrl.split("/").pop()?.split("?")[0] || "image.jpg";
+    file = new File([blob], fileName, { type: blob.type });
   }
 
-  const blob = await response.blob();
-
-  // Validate it's actually an image
-  if (!blob.type.startsWith("image/")) {
+  if (!file.type.startsWith("image/")) {
     throw new Error("Invalid file type. Please select an image.");
   }
-
-  const fileName = imageUrl.split("/").pop()?.split("?")[0] || "image.jpg";
-  const file = new File([blob], fileName, { type: blob.type });
 
   // Upload based on context
   if (isUserAsset) {
@@ -244,6 +255,9 @@ export const uploadCoverImage = async (
       {
         entity_identifier: entityIdentifier,
         entity_type: entityType,
+        ...(entityType === "PROJECT_COVER" && typeof imageUrl === "string" && isStaticCoverImage(imageUrl)
+          ? { preset_key: Object.entries(STATIC_COVER_IMAGES).find(([, url]) => url === imageUrl)?.[0] }
+          : {}),
       },
       file
     );
@@ -273,10 +287,10 @@ export const handleCoverImageChange = async (
 
   if (analysis.needsUpload) {
     const uploaded = await uploadCoverImage(newImage, uploadConfig);
-    return uploadConfig.isUserAsset ? { cover_image: uploaded, cover_image_url: uploaded } : { cover_image: uploaded };
+    return { cover_image: uploaded, cover_image_url: uploaded };
   }
 
-  return uploadConfig.isUserAsset ? { cover_image: newImage, cover_image_url: newImage } : { cover_image: newImage };
+  return { cover_image: newImage, cover_image_url: newImage };
 };
 
 /**

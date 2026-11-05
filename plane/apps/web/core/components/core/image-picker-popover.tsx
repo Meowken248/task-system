@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import React, { useState, useRef, useCallback, useMemo } from "react";
+import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { observer } from "mobx-react";
 import { useParams } from "next/navigation";
 import { useDropzone } from "react-dropzone";
@@ -43,15 +43,37 @@ type Props = {
   tabIndex?: number;
   isProfileCover?: boolean;
   projectId?: string | null;
+  /** Creation forms keep the file in memory until the owning project exists. */
+  onFileSelect?: (file: File) => void;
 };
 
 // services
 const fileService = new FileService();
 
 export const ImagePickerPopover = observer(function ImagePickerPopover(props: Props) {
-  const { label, value, control, onChange, disabled = false, tabIndex, isProfileCover = false, projectId } = props;
+  const {
+    label,
+    value,
+    control,
+    onChange,
+    disabled = false,
+    tabIndex,
+    isProfileCover = false,
+    projectId,
+    onFileSelect,
+  } = props;
   // states
   const [image, setImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  useEffect(() => {
+    if (!image) {
+      setImagePreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(image);
+    setImagePreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [image]);
   const [isImageUploading, setIsImageUploading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [searchParams, setSearchParams] = useState("");
@@ -123,18 +145,35 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
     setIsOpen(false);
   };
 
-  const handleSubmit = async () => {
-    if (!image) return;
+  const handleSubmit = async (selectedFile: File | null = image) => {
+    if (!selectedFile || disabled || isImageUploading) return;
+    if (
+      !Object.keys(ACCEPTED_COVER_IMAGE_MIME_TYPES_FOR_REACT_DROPZONE).includes(selectedFile.type) ||
+      selectedFile.size > MAX_FILE_SIZE
+    ) {
+      setToast({
+        type: TOAST_TYPE.ERROR,
+        title: "Image not selected",
+        message: "Please select a supported image smaller than 5 MB.",
+      });
+      return;
+    }
     setIsImageUploading(true);
 
     try {
+      if (onFileSelect) {
+        onFileSelect(selectedFile);
+        setImage(null);
+        setIsOpen(false);
+        return;
+      }
       if (isProfileCover) {
         const res = await fileService.uploadUserAsset(
           {
             entity_identifier: "",
             entity_type: EFileAssetType.USER_COVER,
           },
-          image
+          selectedFile
         );
         if (res?.asset_url) {
           handleUploadSuccess(res.asset_url);
@@ -149,7 +188,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
             entity_identifier: projectId?.toString() ?? "",
             entity_type: EFileAssetType.PROJECT_COVER,
           },
-          image
+          selectedFile
         );
         if (res?.asset_url) {
           handleUploadSuccess(res.asset_url);
@@ -300,9 +339,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                 <Tabs.Content value="upload" className="h-full w-full">
                   {fiaiSDK ? (
                     <div className="flex h-full w-full flex-col items-center justify-center gap-y-6 px-4">
-                      <p className="text-center text-14 text-secondary">
-                        Select an image to upload.
-                      </p>
+                      <p className="text-center text-14 text-secondary">Select an image to upload.</p>
                       <Button
                         variant="primary"
                         size="base"
@@ -321,47 +358,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                             }
                             if (!selectedFile) return;
 
-                            setIsImageUploading(true);
-                            try {
-                              if (isProfileCover) {
-                                const res = await fileService.uploadUserAsset(
-                                  {
-                                    entity_identifier: "",
-                                    entity_type: EFileAssetType.USER_COVER,
-                                  },
-                                  selectedFile
-                                );
-                                if (res?.asset_url) {
-                                  handleUploadSuccess(res.asset_url);
-                                } else {
-                                  throw new Error("Could not upload cover image");
-                                }
-                              } else {
-                                const effectiveSlug = (workspaceSlug || "fiai").toString();
-                                const res = await fileService.uploadWorkspaceAsset(
-                                  effectiveSlug,
-                                  {
-                                    entity_identifier: projectId?.toString() ?? "",
-                                    entity_type: EFileAssetType.PROJECT_COVER,
-                                  },
-                                  selectedFile
-                                );
-                                if (res?.asset_url) {
-                                  handleUploadSuccess(res.asset_url);
-                                } else {
-                                  throw new Error("Could not upload cover image");
-                                }
-                              }
-                            } catch (error: any) {
-                              console.error("Metanode upload error:", error);
-                              setToast({
-                                message: error?.message || "Failed to upload file via Metanode",
-                                type: TOAST_TYPE.ERROR,
-                                title: "Image not uploaded",
-                              });
-                            } finally {
-                              setIsImageUploading(false);
-                            }
+                            await handleSubmit(selectedFile);
                           };
 
                           input.click();
@@ -390,7 +387,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                           {image !== null || (value && value !== "") ? (
                             <>
                               <img
-                                src={image ? URL.createObjectURL(image) : getCoverImageDisplayURL(value, "")}
+                                src={imagePreview || getCoverImageDisplayURL(value, "")}
                                 alt="image"
                                 className="h-full w-full rounded-lg object-cover"
                               />
@@ -429,7 +426,7 @@ export const ImagePickerPopover = observer(function ImagePickerPopover(props: Pr
                         <Button
                           variant="primary"
                           className="w-full"
-                          onClick={handleSubmit}
+                          onClick={() => handleSubmit()}
                           disabled={!image}
                           loading={isImageUploading}
                         >

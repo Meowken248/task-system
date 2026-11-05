@@ -5,6 +5,7 @@ import { attachmentDataUrl } from "../file/asset-source";
 import { setPresentationMedia } from "./presentation-media";
 import { isPresentationImageType } from "../file/image-policy";
 import { verifyIpfsImage } from "../file/ipfs-image";
+import { isCoverPresetKey, getPresetPin, forgetPresetPin, getPinnedCoverPresetKey } from "../file/cover-presets";
 import {
   authenticatedResourceUser, requireWorkspaceAccess, requireProjectAccess,
   resourceWorkspace, resourceProject, ResourceAccessError,
@@ -115,7 +116,7 @@ function bindAsset(record: any, url: string, user: any): void {
     const project = (localDB.projects || []).find(
       (candidate: any) => candidate.id === record.entity_identifier || candidate.identifier === record.entity_identifier
     );
-    if (project) project.cover_image = url;
+    if (project) setPresentationMedia(project, "cover", url);
   } else if (record.entity_type === "WORKSPACE_LOGO") {
     const workspace = (localDB.workspaces || []).find(
       (candidate: any) => candidate.id === record.entity_identifier || candidate.slug === record.entity_identifier
@@ -131,7 +132,13 @@ async function confirm(id: string, user: any, body: any = {}, signal?: AbortSign
   if (asset && isPresentationImageType(asset.entity_type)) {
     const cid = body.ipfs_cid || asset.ipfs_cid;
     if (!cid) return fail(409, "Ảnh chưa được xác nhận lưu trên IPFS.");
-    const url = await verifyIpfsImage(cid, signal);
+    if (asset.preset_key && asset.is_uploaded && asset.ipfs_cid === cid &&
+      getPinnedCoverPresetKey([asset], asset.asset_url) === asset.preset_key) {
+      return signal?.aborted ? fail(499, "Đã hủy upload ảnh.") : ok(asset);
+    }
+    const presetReceipt = asset.preset_key ? getPresetPin(id, cid, asset.preset_key) : undefined;
+    if (asset.preset_key && !presetReceipt) return fail(409, "Ảnh mẫu chưa có xác nhận pin IPFS hợp lệ. Hãy tải lại ảnh.");
+    const url = presetReceipt ? presetReceipt.url : await verifyIpfsImage(cid, signal);
     if (signal?.aborted) return fail(499, "Đã hủy upload ảnh.");
     // Recheck the current session/permissions and asset existence after network I/O, before binding.
     const liveAsset = assetRecord(id);
@@ -148,6 +155,10 @@ async function confirm(id: string, user: any, body: any = {}, signal?: AbortSign
     }
     const postAuthUser = authenticatedResourceUser();
     if (postAuthUser.id !== user.id) throw forbidden();
+    if (presetReceipt) {
+      if (getPresetPin(id, cid, postAuthAsset.preset_key) !== presetReceipt) return fail(409, "Xác nhận pin ảnh mẫu đã hết hiệu lực.");
+      postAuthAsset.preset_sha256 = presetReceipt.sha256;
+    }
     postAuthAsset.ipfs_cid = cid;
     postAuthAsset.storage = "ipfs";
     postAuthAsset.asset_url = url;
@@ -155,6 +166,7 @@ async function confirm(id: string, user: any, body: any = {}, signal?: AbortSign
     postAuthAsset.updated_at = new Date().toISOString();
     bindAsset(postAuthAsset, url, user);
     saveDB();
+    if (presetReceipt) forgetPresetPin(id);
     return ok(postAuthAsset);
   }
   const file = await content(id);
@@ -272,12 +284,15 @@ async function handleAuthorizedFileAssetRoute(method: string, url: string, body:
     // never silently create a phantom asset via the generic POST handler.
     if (!/(?:\/user-assets|\/workspaces\/[^/]+(?:\/projects\/[^/]+)?)$/.test(pathname))
       return fail(404, "Thao tác tệp không được hỗ trợ.");
+    if (body?.preset_key !== undefined && (body.entity_type !== "PROJECT_COVER" || !isCoverPresetKey(body.preset_key)))
+      return fail(400, "Ảnh mẫu chỉ được dùng với ảnh bìa dự án hợp lệ.");
     const key = makeId();
     const record = {
       id: key,
       asset_id: key,
       entity_type: body?.entity_type || (pathname.endsWith("/user-assets") ? "USER_AVATAR" : undefined),
       entity_identifier: body?.entity_identifier,
+      ...(body?.preset_key ? { preset_key: body.preset_key } : {}),
       name: body?.name || "attachment",
       size: body?.size || 0,
       type: body?.type || "application/octet-stream",
@@ -304,7 +319,9 @@ async function handleAuthorizedFileAssetRoute(method: string, url: string, body:
     return ok({
       ...record,
       asset_url: "",
-      upload_data: { url: "/api/assets/v2/upload/", fields: { asset_id: key, key, storage: record.storage, "Content-Type": record.type } },
+      upload_data: { url: "/api/assets/v2/upload/", fields: { asset_id: key, key, storage: record.storage, "Content-Type": record.type,
+        ...(record.preset_key ? { preset_key: record.preset_key } : {}),
+      } },
     });
   }
 

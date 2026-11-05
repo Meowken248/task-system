@@ -7,4 +7,4 @@ export function presentationImageMime(bytes: Uint8Array): string | null {
 }
 
 export const isPresentationImageType = (type: unknown): boolean =>
-  ["USER_AVATAR", "USER_COVER", "WORKSPACE_LOGO"].includes(String(type));
+  ["USER_AVATAR", "USER_COVER", "WORKSPACE_LOGO", "PROJECT_COVER"].includes(String(type));
