@@ -1,3 +1,4 @@
+import { belongsToDeployment } from "./deployment-storage";
 /** Race configured replicas; the deadline includes reading and parsing the body. */
 export async function readIPFSSnapshot(
   gateways: string[],
@@ -19,6 +20,7 @@ export async function readIPFSSnapshot(
               const text = await response.text();
               const data = JSON.parse(text);
               if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid snapshot");
+              if (!belongsToDeployment(data)) throw new Error("Snapshot belongs to another deployment");
               return { data, text };
             })(),
             new Promise<never>((_resolve, reject) => {

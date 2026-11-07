@@ -1,4 +1,5 @@
 import { handleFileAssetRoute } from "./file-assets";
+import { flushLocalPersistence, getLocalPersistenceStatus } from "./local-persistence";
 import {
   requireWorkspaceAccess, requireProjectAccess, requireIssueAccess, resourceProject, ResourceAccessError,
   captureResourceRequestIdentity, projectAccessFromWorkspace, type ResourceRequestIdentity,
@@ -1097,10 +1098,21 @@ export async function handleRoute(method: string, url: string, body: Record<stri
     return { status: 400, data: { code: "INVALID_URL", error: "Đường dẫn yêu cầu không hợp lệ." } };
   }
   const management = url.match(/\/api\/workspaces\/([^/?#]+)\/(?:invitations|members)(?:\/|\?|$)/);
+  const persistenceRevision = getLocalPersistenceStatus().revision;
+  let result: RouteResult;
   if (management && !/\/join\/?(?:\?|$)/.test(url) && ["post", "put", "patch", "delete"].includes(method)) {
-    return withInvitationLock(`management:${management[1]}`, () => handleRouteUnlocked(method, url, body, undefined, signal));
+    result = await withInvitationLock(`management:${management[1]}`, () => handleRouteUnlocked(method, url, body, undefined, signal));
+  } else {
+    result = await handleRouteUnlocked(method, url, body, undefined, signal);
   }
-  return handleRouteUnlocked(method, url, body, undefined, signal);
+  if (method !== "get" && result.status < 400 && getLocalPersistenceStatus().revision !== persistenceRevision) {
+    const persisted = await flushLocalPersistence();
+    if (!persisted.durable) return { status: 503, data: {
+      code: "LOCAL_PERSISTENCE_FAILED", updated_in_memory: true,
+      error: "Chưa lưu được dữ liệu trên thiết bị. Dữ liệu vẫn ở trong phiên này; hãy thử lưu lại trước khi đóng trang.",
+    } };
+  }
+  return result;
 }
 
 async function handleRouteUnlocked(

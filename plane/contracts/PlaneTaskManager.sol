@@ -186,6 +186,16 @@ contract PlaneTaskManager {
         _;
     }
 
+    modifier taskWriter(uint256 taskId) {
+        _requireTaskWriter(taskId);
+        _;
+    }
+
+    // V2 remains ABI-compatible. Workspace-aware deployments override these hooks.
+    function _requireTaskWriter(uint256) internal view virtual {}
+    function _requireAssignee(uint256, address) internal view virtual {}
+    function _onChildTaskCreated(uint256, uint256) internal virtual {}
+
     constructor() {
         owner = msg.sender;
         admins[msg.sender] = true;
@@ -193,7 +203,7 @@ contract PlaneTaskManager {
         emit AdminUpdated(msg.sender, true);
     }
 
-    function contractVersion() external pure returns (uint256) {
+    function contractVersion() external pure virtual returns (uint256) {
         return 2;
     }
 
@@ -219,7 +229,7 @@ contract PlaneTaskManager {
         address assignee,
         uint64 dueAt,
         Priority priority
-    ) external returns (uint256 taskId) {
+    ) external virtual returns (uint256 taskId) {
         return _createTask(externalId, metadataHash, assignee, dueAt, priority);
     }
 
@@ -229,7 +239,7 @@ contract PlaneTaskManager {
         address assignee,
         uint64 dueAt,
         Priority priority
-    ) private returns (uint256 taskId) {
+    ) internal returns (uint256 taskId) {
         if (externalId == bytes32(0)) revert InvalidExternalId();
         if (taskIdByExternalIdPlusOne[externalId] != 0) revert DuplicateExternalId();
 
@@ -258,7 +268,7 @@ contract PlaneTaskManager {
         uint256 taskId,
         bytes32 externalId,
         bytes32 metadataHash
-    ) external taskExists(taskId) returns (uint256 subTaskId) {
+    ) external taskExists(taskId) taskWriter(taskId) returns (uint256 subTaskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.creator && msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
         return _createSubTask(taskId, externalId, metadataHash);
@@ -296,10 +306,11 @@ contract PlaneTaskManager {
         Priority priority,
         bytes32 relationshipExternalId,
         bytes32 relationshipMetadataHash
-    ) external taskExists(parentTaskId) returns (uint256 childTaskId, uint256 subTaskId) {
+    ) external taskExists(parentTaskId) taskWriter(parentTaskId) returns (uint256 childTaskId, uint256 subTaskId) {
         Task storage parentTask = tasks[parentTaskId];
         if (msg.sender != parentTask.creator && msg.sender != parentTask.assignee && !admins[msg.sender]) revert Unauthorized();
         childTaskId = _createTask(childExternalId, childMetadataHash, assignee, dueAt, priority);
+        _onChildTaskCreated(parentTaskId, childTaskId);
         subTaskId = _createSubTask(parentTaskId, relationshipExternalId, relationshipMetadataHash);
         childTaskIdBySubTaskPlusOne[parentTaskId][subTaskId] = childTaskId + 1;
     }
@@ -308,7 +319,7 @@ contract PlaneTaskManager {
         uint256 taskId,
         uint256 subTaskId,
         bytes32 metadataHash
-    ) external taskExists(taskId) {
+    ) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         SubTask storage subTask = _getSubTask(taskId, subTaskId);
@@ -320,7 +331,7 @@ contract PlaneTaskManager {
         uint256 taskId,
         uint256 subTaskId,
         SubTaskStatus status
-    ) external taskExists(taskId) {
+    ) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.assignee && msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         if (task.status == Status.Cancelled) revert InvalidStatusTransition();
@@ -339,7 +350,7 @@ contract PlaneTaskManager {
         uint256 taskId,
         uint256 subTaskId,
         uint8 progress
-    ) external taskExists(taskId) {
+    ) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.assignee && msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         if (task.status == Status.Cancelled) revert InvalidStatusTransition();
@@ -357,7 +368,7 @@ contract PlaneTaskManager {
         emit SubTaskStatusUpdated(taskId, subTaskId, subTask.status, msg.sender);
     }
 
-    function deleteSubTask(uint256 taskId, uint256 subTaskId) external taskExists(taskId) {
+    function deleteSubTask(uint256 taskId, uint256 subTaskId) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         _deleteSubTask(taskId, subTaskId);
@@ -371,7 +382,7 @@ contract PlaneTaskManager {
         emit SubTaskDeleted(taskId, subTaskId);
     }
 
-    function updateTaskMetadata(uint256 taskId, bytes32 metadataHash) external taskExists(taskId) {
+    function updateTaskMetadata(uint256 taskId, bytes32 metadataHash) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         task.metadataHash = metadataHash;
@@ -379,7 +390,8 @@ contract PlaneTaskManager {
         emit TaskMetadataUpdated(taskId, metadataHash);
     }
 
-    function assignTask(uint256 taskId, address assignee) external taskExists(taskId) {
+    function assignTask(uint256 taskId, address assignee) external taskExists(taskId) taskWriter(taskId) {
+        _requireAssignee(taskId, assignee);
         Task storage task = tasks[taskId];
         if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         address previousAssignee = task.assignee;
@@ -393,7 +405,7 @@ contract PlaneTaskManager {
         uint256 taskId,
         uint64 dueAt,
         Priority priority
-    ) external taskExists(taskId) {
+    ) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         task.dueAt = dueAt;
@@ -402,7 +414,7 @@ contract PlaneTaskManager {
         emit TaskScheduleUpdated(taskId, dueAt, priority);
     }
 
-    function updateProgress(uint256 taskId, uint8 progress) external taskExists(taskId) {
+    function updateProgress(uint256 taskId, uint8 progress) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
         (uint256 activeCount,,) = _subTaskStats(taskId);
@@ -410,7 +422,7 @@ contract PlaneTaskManager {
         _setProgress(taskId, task, progress);
     }
 
-    function cancelTask(uint256 taskId) external taskExists(taskId) {
+    function cancelTask(uint256 taskId) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         if (task.status == Status.Completed) revert InvalidStatusTransition();
@@ -419,7 +431,7 @@ contract PlaneTaskManager {
         emit TaskProgressUpdated(taskId, task.progress, task.status, msg.sender);
     }
 
-    function deleteTask(uint256 taskId) external taskExists(taskId) {
+    function deleteTask(uint256 taskId) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.creator && !admins[msg.sender]) revert Unauthorized();
         _deleteTask(taskId);
@@ -436,7 +448,7 @@ contract PlaneTaskManager {
         uint256 childTaskId,
         uint256 parentTaskId,
         uint256 subTaskId
-    ) external taskExists(childTaskId) taskExists(parentTaskId) {
+    ) external taskExists(childTaskId) taskWriter(childTaskId) taskExists(parentTaskId) {
         Task storage parentTask = tasks[parentTaskId];
         if (msg.sender != parentTask.creator && !admins[msg.sender]) revert Unauthorized();
         if (childTaskIdBySubTaskPlusOne[parentTaskId][subTaskId] != childTaskId + 1) revert InvalidHierarchy();
@@ -450,7 +462,7 @@ contract PlaneTaskManager {
         bytes32 workHash,
         bytes32 difficultyHash,
         bytes32 evidenceHash
-    ) external taskExists(taskId) returns (uint256 reportId) {
+    ) external taskExists(taskId) taskWriter(taskId) returns (uint256 reportId) {
         return _submitDailyReport(taskId, progress, workHash, difficultyHash, evidenceHash);
     }
 
@@ -498,7 +510,7 @@ contract PlaneTaskManager {
         bytes32 evidenceHash,
         uint256[] calldata parentTaskIds,
         uint256[] calldata subTaskIds
-    ) external taskExists(taskId) returns (uint256 reportId) {
+    ) external taskExists(taskId) taskWriter(taskId) returns (uint256 reportId) {
         if (parentTaskIds.length != subTaskIds.length) revert InvalidHierarchy();
         reportId = _submitDailyReport(taskId, progress, workHash, difficultyHash, evidenceHash);
         uint256 childTaskId = taskId;
@@ -531,7 +543,7 @@ contract PlaneTaskManager {
         uint256 taskId,
         ContentKind kind,
         bytes32 contentHash
-    ) external taskExists(taskId) {
+    ) external taskExists(taskId) taskWriter(taskId) {
         Task storage task = tasks[taskId];
         if (msg.sender != task.assignee && !admins[msg.sender]) revert Unauthorized();
         if (contentHash == bytes32(0)) revert InvalidExternalId();

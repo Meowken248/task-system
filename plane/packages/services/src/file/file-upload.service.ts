@@ -9,6 +9,7 @@ import type { AxiosRequestConfig, AxiosProgressEvent } from "axios";
 import { APIService } from "../api.service";
 import { saveAttachment } from "./attachment-storage";
 import { pinPresentationImage } from "./ipfs-image";
+import { pinSharedFile } from "./ipfs-file";
 
 /**
  * Converts a File object to a Base64 string (without the data URL prefix)
@@ -106,6 +107,12 @@ export class FileUploadService extends APIService {
       } as AxiosProgressEvent);
     try {
       progress(0);
+      if (data.get("storage") === "ipfs-file") {
+        const result = await pinSharedFile(file, operation.controller.signal, progress);
+        checkCancelled();
+        const id = data.get("asset_id") || data.get("key");
+        return { id, asset_id: id, asset_url: `ipfs://${result.cid}`, file_url: `ipfs://${result.cid}`, ipfs_cid: result.cid, content_hash: result.sha256, storage: "ipfs-file" };
+      }
       if (data.get("storage") === "ipfs") {
         const presetKey = data.get("preset_key");
         const assetId = data.get("asset_id");

@@ -1,5 +1,6 @@
 import { localDB } from "../dapp/store";
 import { getAttachment, type StoredAttachment } from "./attachment-storage";
+import { sharedFileDataUrl } from "./ipfs-file";
 
 /** Browser-loadable content; an API metadata URL is never an image source. */
 export function isDirectAssetSource(source: string): boolean {
@@ -29,16 +30,18 @@ export function attachmentDataUrl(file: Pick<StoredAttachment, "base64" | "type"
  */
 export async function resolveAssetSource(source: string): Promise<string> {
   if (!source) return "";
+  if (source.startsWith("ipfs://")) return sharedFileDataUrl(source.slice(7));
   if (isDirectAssetSource(source)) return source;
   const id = getLocalAssetId(source);
   if (!id) throw new Error("Đường dẫn tệp không hợp lệ.");
   if ([...(localDB._deleted_asset_ids || []), ...(localDB._deleted_attachment_ids || [])].includes(id))
     throw new Error("Tệp này đã được xóa.");
-  const stored = await getAttachment(id);
-  if (stored?.base64) return attachmentDataUrl(stored);
   const record = [...(localDB.assets || []), ...(localDB.attachments || [])].find((asset: any) =>
     [asset.id, asset.asset_id, asset.asset].includes(id)
   );
+  if (record?.storage === "ipfs-file" && record.is_uploaded && record.ipfs_cid) return sharedFileDataUrl(record.ipfs_cid, undefined, record.content_hash);
+  const stored = await getAttachment(id);
+  if (stored?.base64) return attachmentDataUrl(stored);
   for (const url of [record?.asset_url, record?.file_url]) {
     if (typeof url === "string" && isDirectAssetSource(url)) return url;
   }

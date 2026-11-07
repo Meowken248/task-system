@@ -119,6 +119,8 @@ scripts/*
 !scripts/sync-space-build.mjs
 !scripts/deployment-env.mjs
 !scripts/deploy-fresh.mjs
+!scripts/deploy-fresh-v3.mjs
+!scripts/task-v3-deployment.mjs
 !scripts/sync-fiai-runtime.mjs
 !scripts/backup-registry-snapshots.mjs
 !scripts/preview-workspace-registry-migration.mjs

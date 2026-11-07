@@ -24,6 +24,7 @@ export function readDeploymentEnv(path = process.env.PLANE_ENV_FILE || resolve(p
     "VITE_DEFAULT_WORKSPACE_SLUG",
     "VITE_DEFAULT_WORKSPACE_NAME",
     "VITE_IPFS_GATEWAYS",
+    "VITE_DAPP_DEPLOYMENT_ID",
   ]);
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
     const match = line.match(/^\s*([A-Z_0-9]+)\s*=\s*(.*?)\s*$/);

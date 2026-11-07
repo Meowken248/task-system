@@ -5,6 +5,14 @@ export function imageIpfsFixture() {
   const state = { failUpload: false, badGateway: false, requests: [], files };
   Object.assign(process.env, { VITE_PINATA_PROXY_URL: "https://media.fixture/", VITE_IPFS_GATEWAYS: "https://image-gateway.fixture/ipfs/", VITE_AUTO_COMMIT_ONCHAIN: "false" });
   state.fetch = async (url, options = {}) => {
+    if (url === "https://media.fixture/" && options.method === "POST" && typeof options.body === "string") {
+      if (state.failUpload) return Response.json({ code: "STORAGE_TEMPORARY" }, { status: 503 });
+      const key = options.body;
+      const cid = byContent.get(key) || "Qm" + alphabet[files.size + 1].repeat(44);
+      byContent.set(key, cid);
+      files.set(cid, { bytes: new TextEncoder().encode(key), type: "application/json" });
+      return Response.json({ cid });
+    }
     if (url === "https://media.fixture/" && options.method === "POST" && options.body instanceof FormData) {
       if (state.failUpload) return Response.json({ code: "STORAGE_TEMPORARY" }, { status: 503 });
       const file = options.body.get("file");

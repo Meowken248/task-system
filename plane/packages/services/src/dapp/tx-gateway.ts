@@ -84,7 +84,7 @@ export function runExclusiveChainTx<T>(label: string, task: () => Promise<T>): P
   queuedCount += 1;
   emit();
 
-  const run = queueTail.then(async () => {
+  const execute = async () => {
     queuedCount = Math.max(0, queuedCount - 1);
     activeLabel = label;
     emit();
@@ -97,6 +97,31 @@ export function runExclusiveChainTx<T>(label: string, task: () => Promise<T>): P
       activeLabel = null;
       emit();
     }
+  };
+  const run = queueTail.then(async () => {
+    // A conservative origin-wide lock also covers wallet selection inside a task.
+    // Web Locks coordinate independent tabs/frames; the module queue alone cannot.
+    if (typeof window === "undefined" || !window.navigator) return execute();
+    const locks = window.navigator.locks;
+    if (!locks) {
+      queuedCount = Math.max(0, queuedCount - 1);
+      emit();
+      throw new Error("Trình duyệt chưa hỗ trợ khóa giao dịch giữa các tab. Hãy dùng trình duyệt mới qua HTTPS hoặc localhost.");
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120_000);
+    let acquired = false;
+    try {
+      return await locks.request("plane-chain-transactions", { mode: "exclusive", signal: controller.signal }, async () => {
+        acquired = true;
+        clearTimeout(timer);
+        return execute();
+      });
+    } catch (error) {
+      if (!acquired) { queuedCount = Math.max(0, queuedCount - 1); emit(); }
+      if (!acquired && controller.signal.aborted) throw new Error("Một tab khác đang xác nhận giao dịch. Hãy chờ tab đó hoàn tất rồi thử lại.");
+      throw error;
+    } finally { clearTimeout(timer); }
   });
 
   queueTail = run.then(

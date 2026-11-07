@@ -1,8 +1,10 @@
 import type { DAppDatabase, DAppWorkspace } from "./types";
 import { getStoredCredentials, setStoredCredential, createUserObject } from "./auth";
 import { saveSnapshotToIDB } from "./indexed-db";
+import { persistLocalSnapshot, getLocalPersistenceStatus } from "./local-persistence";
 import { listWorkspaceMembers } from "./workspace-members";
 import { sanitizeSharedSnapshot } from "./shared-snapshot";
+import { getDeploymentId, initializeDeploymentStorage, belongsToDeployment } from "./deployment-storage";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -37,6 +39,7 @@ export function getPlaneContractAddress(): string {
 export const PLANE_CONTRACT = getPlaneContractAddress();
 
 // ── Default Workspace ────────────────────────────────────────────────────
+initializeDeploymentStorage();
 const defaultWsSlug = getDefaultWorkspaceSlug();
 const defaultWsName = getDefaultWorkspaceName();
 
@@ -61,6 +64,7 @@ export const DEFAULT_WORKSPACE: DAppWorkspace = {
 };
 
 export const defaultDB: DAppDatabase = {
+  ...(getDeploymentId() ? { _deployment_id: getDeploymentId() } : {}),
   users: [],
   workspaces: [DEFAULT_WORKSPACE],
   projects: [],
@@ -190,7 +194,7 @@ export function loadInitialDB(): Record<string, any> {
       const cachedLocal = localStorage.getItem("plane_dapp_local_db");
       if (cachedLocal) {
         const parsed = JSON.parse(cachedLocal);
-        if (parsed && typeof parsed === "object") {
+        if (parsed && typeof parsed === "object" && belongsToDeployment(parsed)) {
           const deletedSet = new Set(parsed._deleted_project_ids || []);
           const deletedIssueSet = new Set(parsed._deleted_issue_ids || []);
           parsed.projects = (parsed.projects || []).filter(
@@ -318,7 +322,7 @@ export function loadInitialDB(): Record<string, any> {
       const cachedSession = sessionStorage.getItem("plane_dapp_latest_db");
       if (cachedSession) {
         const parsed = JSON.parse(cachedSession);
-        if (parsed && typeof parsed === "object") {
+        if (parsed && typeof parsed === "object" && belongsToDeployment(parsed)) {
           const deletedSet = new Set(parsed._deleted_project_ids || []);
           const deletedIssueSet = new Set(parsed._deleted_issue_ids || []);
           parsed.projects = (parsed.projects || []).filter(
@@ -872,36 +876,14 @@ export function registerSaveHook(fn: () => void) {
 }
 
 export function saveDB(options?: { localOnly?: boolean }) {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined") return Promise.resolve({ revision: getLocalPersistenceStatus().revision, durable: false, medium: null });
   syncIssueParentsToTransactions();
   if (localDB.invitations && Array.isArray(localDB.invitations)) {
     saveStoredInvitations(localDB.invitations);
   }
-  try {
-    const snapshot = JSON.stringify(localDB);
-    try {
-      localStorage.setItem("plane_dapp_local_db", snapshot);
-    } catch {
-      // If full DB exceeds localStorage quota (5MB limit in Chrome), save essential lightweight DB to localStorage
-      // Full database with all issue activities and comments is preserved in IndexedDB and sessionStorage!
-      const lightDB = {
-        users: localDB.users,
-        workspaces: localDB.workspaces,
-        workspace_members: localDB.workspace_members,
-        projects: localDB.projects,
-        invitations: localDB.invitations,
-        states: localDB.states,
-        labels: localDB.labels,
-        removed_members: localDB.removed_members,
-        _email_wallet_map: localDB._email_wallet_map,
-        instance: localDB.instance,
-      };
-      localStorage.setItem("plane_dapp_local_db", JSON.stringify(lightDB));
-    }
-    sessionStorage.setItem("plane_dapp_latest_db", snapshot);
-  } catch (err) {
-    console.warn("[DApp Store] localStorage.setItem(plane_dapp_local_db) fallback failed:", err);
-  }
+  let cid: string | undefined;
+  try { cid = localStorage.getItem("plane_dapp_ipfs_cid_local") || undefined; } catch { /* Storage may be unavailable. */ }
+  const persisted = persistLocalSnapshot(localDB, cid);
   try {
     if (localDB.removed_members) {
       localStorage.setItem("plane_dapp_removed_members", JSON.stringify(localDB.removed_members));
@@ -909,10 +891,6 @@ export function saveDB(options?: { localOnly?: boolean }) {
   } catch (err) {
     console.warn("[DApp Store] localStorage.setItem(plane_dapp_removed_members) failed:", err);
   }
-  try {
-    const curCid = (typeof localStorage !== "undefined" ? localStorage.getItem("plane_dapp_ipfs_cid_local") : null);
-    void saveSnapshotToIDB(localDB, curCid || undefined);
-  } catch { }
   syncWorkspacesToCookie();
   try {
     const isSpaceViewer = typeof window !== "undefined" && (
@@ -934,10 +912,11 @@ export function saveDB(options?: { localOnly?: boolean }) {
   if (onSaveHook && !options?.localOnly) {
     onSaveHook();
   }
+  return persisted;
 }
 
 export const dappSyncChannel = typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
-  ? new BroadcastChannel("plane_dapp_sync_channel")
+  ? new BroadcastChannel(`plane_dapp_sync_channel${getDeploymentId() ? `_${getDeploymentId()}` : ""}`)
   : null;
 
 if (dappSyncChannel) {

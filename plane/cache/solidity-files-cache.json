@@ -38,8 +38,8 @@
       ]
     },
     "C:\\task-system\\plane\\contracts\\PlaneTaskManager.sol": {
-      "lastModificationDate": 1789029327773,
-      "contentHash": "91ec4fc16333199fbfccbacd6742a61a",
+      "lastModificationDate": 1794019378905,
+      "contentHash": "d534c6de1d102c911f7e35feac29736f",
       "sourceName": "contracts/PlaneTaskManager.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -144,6 +144,45 @@
       "artifacts": [
         "IPlaneEmailPolicy",
         "PlaneEmailVerification"
+      ]
+    },
+    "C:\\task-system\\plane\\contracts\\PlaneTaskManagerV3.sol": {
+      "lastModificationDate": 1794019379746,
+      "contentHash": "0848811603e678752698139133022a48",
+      "sourceName": "contracts/PlaneTaskManagerV3.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./PlaneTaskManager.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "IPlaneWorkspaceMembership",
+        "PlaneTaskManagerV3"
       ]
     }
   }

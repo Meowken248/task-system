@@ -1,5 +1,6 @@
 import type { AbiItem } from "@metanodejs/mtn-contract";
-import { assertVaultSigningAddress, isVaultSigningError, runExclusiveChainTx } from "@plane/services";
+import { assertVaultSigningAddress, isVaultSigningError, runExclusiveChainTx, localDB } from "@plane/services";
+import { readContractString } from "../../helpers/contract-result";
 import type { TIssue, TIssuePriorities } from "@plane/types";
 import { planeTaskManagerAbi } from "@/contracts/plane-task-manager.abi";
 import { getFiaiSDK, getLatestCapturedWalletTxHash, initFiaiSDK, resetFiaiSDK } from "./fiai-sdk.service";
@@ -67,7 +68,7 @@ export function consumePendingAssignmentWallet(issueId: string): string | undefi
 }
 const contractFunctions = planeTaskManagerAbi as unknown as AbiItem[];
 type InputValue = string | number | number[];
-let atomicHierarchySupport: boolean | undefined;
+const taskContractVersions = new Map<string, number>();
 type HashLike = {
   hash?: unknown;
   txHash?: unknown;
@@ -563,12 +564,28 @@ export function isOnChainTaskSyncAvailable(): boolean {
 }
 
 async function supportsAtomicHierarchy(): Promise<boolean> {
-  if (atomicHierarchySupport !== undefined) return atomicHierarchySupport;
+  return (await taskContractVersion()) >= 2;
+}
+
+async function taskContractVersion(): Promise<number> {
+  const key = readEnv("VITE_RPC_URL") + "|" + readEnv("VITE_CONTRACT_ADDRESS");
+  const cached = taskContractVersions.get(key);
+  if (cached !== undefined) return cached;
   const version = await readContract("contractVersion", {})
     .then(readNumericResult)
     .catch(() => null);
-  atomicHierarchySupport = version !== null && version >= 2;
-  return atomicHierarchySupport;
+  if (version !== null) taskContractVersions.set(key, version);
+  return version ?? 1;
+}
+
+function issueWorkspaceSlug(issue: TIssue): string {
+  const project = (localDB.projects || []).find((p: any) => p.id === issue.project_id || p.id === (issue as any).project);
+  const workspaceKey = (issue as any).workspace_id || (issue as any).workspace || project?.workspace_id || project?.workspace;
+  const workspace = (localDB.workspaces || []).find((w: any) => w.id === workspaceKey || w.slug === workspaceKey);
+  if (!workspace?.slug || !project || ![workspace.id, workspace.slug].includes(project.workspace_id || project.workspace)) {
+    throw new Error("Chưa xác định được không gian làm việc của công việc. Hãy tải lại dự án rồi thử lại.");
+  }
+  return workspace.slug;
 }
 
 export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHash: string; assigneeWallet: string }> {
@@ -590,8 +607,13 @@ export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHa
     priority: priorityValue(issue.priority),
   };
   let createdTransactionHash: string;
-  if (issue.parent_id && (await supportsAtomicHierarchy())) {
+  const version = await taskContractVersion();
+  const slug = version >= 3 ? issueWorkspaceSlug(issue) : undefined;
+  if (issue.parent_id && version >= 2) {
     const parentTaskId = await getIssueTaskId(issue.parent_id);
+    if (slug && readContractString(await readContract("getTaskWorkspace", { taskId: parentTaskId })) !== slug) {
+      throw new Error("Công việc cha không thuộc cùng không gian làm việc.");
+    }
     createdTransactionHash = await sendContractTransaction("createChildTask", {
       parentTaskId,
       childExternalId: commonValues.externalId,
@@ -603,7 +625,7 @@ export async function createIssueOnChain(issue: TIssue): Promise<{ transactionHa
       relationshipMetadataHash: commonValues.metadataHash,
     });
   } else {
-    createdTransactionHash = await sendContractTransaction("createTask", { ...commonValues, assignee });
+    createdTransactionHash = await sendContractTransaction(slug ? "createWorkspaceTask" : "createTask", { ...commonValues, assignee, ...(slug ? { slug } : {}) });
   }
   return { transactionHash: createdTransactionHash, assigneeWallet: assignee };
 }

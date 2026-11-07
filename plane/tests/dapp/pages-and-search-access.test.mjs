@@ -255,15 +255,18 @@ test("positive flow: owner can read and update private page description", async 
   setLoggedInUser("user-owner");
   const getRes = await call("get", `/api/workspaces/${wsA}/projects/${pA1}/pages/page-priv/description/`);
   assert.equal(getRes.status, 200);
-  assert.equal(getRes.data, "<p>Top secret owner content</p>");
+  assert(getRes.data instanceof ArrayBuffer);
+  assert.equal(getRes.data.byteLength, 0, "Legacy HTML is recovered by the editor, not returned as fake binary");
 
   const patchRes = await call("patch", `/api/workspaces/${wsA}/projects/${pA1}/pages/page-priv/description/`, {
     description_html: "<p>Updated secret content</p>",
+    description_binary: "AAECAw==",
   });
   assert.equal(patchRes.status, 200);
 
   const verifyRes = await call("get", `/api/workspaces/${wsA}/projects/${pA1}/pages/page-priv/description/`);
-  assert.equal(verifyRes.data, "<p>Updated secret content</p>");
+  assert.deepEqual([...new Uint8Array(verifyRes.data)], [0, 1, 2, 3]);
+  assert.equal(localDB.pages.find((p) => p.id === "page-priv").description_html, "<p>Updated secret content</p>");
 });
 
 test("admin cannot read or update private page description of another user", async () => {

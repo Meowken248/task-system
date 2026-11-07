@@ -1,5 +1,14 @@
 export const planeTaskManagerAbi = [
   {
+    type: "function", name: "createWorkspaceTask", stateMutability: "nonpayable",
+    inputs: [{ name: "slug", type: "string" }, { name: "externalId", type: "bytes32" }, { name: "metadataHash", type: "bytes32" }, { name: "assignee", type: "address" }, { name: "dueAt", type: "uint64" }, { name: "priority", type: "uint8" }],
+    outputs: [{ name: "taskId", type: "uint256" }],
+  },
+  {
+    type: "function", name: "getTaskWorkspace", stateMutability: "view",
+    inputs: [{ name: "taskId", type: "uint256" }], outputs: [{ name: "", type: "string" }],
+  },
+  {
     type: "function",
     name: "submitDailyReportAndSyncAncestors",
     inputs: [

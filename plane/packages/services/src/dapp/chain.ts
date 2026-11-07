@@ -17,6 +17,8 @@ import {
   isInvitationDeleted,
 } from "./store";
 import { preserveLocalUserAuth, sanitizeSharedSnapshot } from "./shared-snapshot";
+import { getLocalPersistenceStatus } from "./local-persistence";
+import { belongsToDeployment } from "./deployment-storage";
 import { preserveNewerPresentationMedia } from "./presentation-media";
 import { readIPFSSnapshot } from "./ipfs-snapshot";
 import { resolveInvitationWorkspace } from "./invitation-workspace";
@@ -1180,6 +1182,12 @@ export function getDAppSyncStatus(slug?: string): DAppSyncStatus {
     hasUnsavedChanges,
   };
 
+  const persistence = getLocalPersistenceStatus();
+  if (persistence.state === "failed" || persistence.state === "saving") {
+    return { ...base, state: "unsynced", label: persistence.state === "failed" ? "Chưa lưu trên thiết bị" : "Đang lưu trên thiết bị",
+      description: persistence.error || "Đang xác nhận lưu dữ liệu trên thiết bị. Hãy giữ trang mở." };
+  }
+
   if (hasUnsavedChanges) {
     return {
       ...base,
@@ -2150,7 +2158,7 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
       (typeof localStorage !== "undefined" ? localStorage.getItem(`ipfs_${cleanCid}`) : null);
     if (cached) {
       const json = JSON.parse(cached);
-      if (json && typeof json === "object") return json;
+      if (json && typeof json === "object" && belongsToDeployment(json)) return json;
     }
   } catch {}
 
@@ -2168,6 +2176,7 @@ export async function fetchFromIPFS(cid: string): Promise<Record<string, any> | 
 }
 
 export function applyOffchainDB(ipfsDB: Record<string, any>): void {
+  if (!belongsToDeployment(ipfsDB)) return;
   ipfsDB = sanitizeSharedSnapshot(ipfsDB);
 
   const currentWorkspaces = [...(localDB.workspaces || [])];
@@ -3057,7 +3066,7 @@ async function _initDAppDB(): Promise<{ status: string; cid?: string; ipfsDB?: a
       const cached = localStorage.getItem("plane_dapp_local_db") || sessionStorage.getItem("plane_dapp_latest_db");
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (parsed && typeof parsed === "object" && (parsed.workspaces?.length > 0 || parsed.users?.length > 0)) {
+        if (parsed && typeof parsed === "object" && belongsToDeployment(parsed) && (parsed.workspaces?.length > 0 || parsed.users?.length > 0)) {
           applyOffchainDB(parsed);
           hadCachedDB = true;
           console.log("[DApp DB] Nạp DB tức thì từ cache cục bộ thành công (0ms).");
@@ -3387,6 +3396,8 @@ export function syncDAppDBToChain(forcedWallet?: string): Promise<DAppSyncResult
 }
 
 async function runManualDAppSync(forcedWallet?: string): Promise<DAppSyncResult> {
+  const persisted = await saveDB({ localOnly: true });
+  if (!persisted.durable) throw new Error("Chưa lưu được dữ liệu trên thiết bị. Hãy thử lưu lại trước khi xác nhận bằng ví.");
   const requestedWallet = forcedWallet || getStoredWalletAddress();
   if (!requestedWallet) throw new Error("Chưa có ví. Hãy mở “Trung tâm ví” để thêm ví rồi thử lại.");
   // PREFLIGHT BẮT BUỘC: chỉ ký bằng ví thật sự có trong Crypto Vault. Nếu Vault rỗng / không đọc

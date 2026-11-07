@@ -4,7 +4,8 @@
  * and bypasses the 5MB localStorage limit.
  */
 
-const IDB_NAME = "plane_dapp_storage_v1";
+import { deploymentDatabaseName } from "./deployment-storage";
+const IDB_NAME = deploymentDatabaseName("plane_dapp_storage_v1");
 const IDB_VERSION = 1;
 const SNAPSHOT_STORE = "snapshots";
 const METADATA_STORE = "metadata";
@@ -22,6 +23,9 @@ export async function openDAppIDB(): Promise<IDBDatabase | null> {
   if (dbOpenPromise) return dbOpenPromise;
 
   const opening = new Promise<IDBDatabase | null>((resolve) => {
+    let settled = false;
+    const finish = (db: IDBDatabase | null) => { if (!settled) { settled = true; clearTimeout(timer); resolve(db); } };
+    const timer = setTimeout(() => finish(null), 8000);
     try {
       const request = indexedDB.open(IDB_NAME, IDB_VERSION);
 
@@ -37,6 +41,7 @@ export async function openDAppIDB(): Promise<IDBDatabase | null> {
 
       request.addEventListener("success", () => {
         const openedDB = request.result;
+        if (settled) { openedDB.close(); return; }
         dbInstance = openedDB;
         openedDB.addEventListener("versionchange", () => {
           openedDB.close();
@@ -45,16 +50,17 @@ export async function openDAppIDB(): Promise<IDBDatabase | null> {
         openedDB.addEventListener("close", () => {
           if (dbInstance === openedDB) dbInstance = null;
         });
-        resolve(openedDB);
+        finish(openedDB);
       });
 
       request.addEventListener("error", (err) => {
         console.warn("[DApp IDB] Không thể mở IndexedDB:", err);
-        resolve(null);
+        finish(null);
       });
+      request.addEventListener("blocked", () => finish(null));
     } catch (err) {
       console.warn("[DApp IDB] Lỗi khởi tạo IndexedDB:", err);
-      resolve(null);
+      finish(null);
     }
   });
   dbOpenPromise = opening;
@@ -71,8 +77,11 @@ export async function saveSnapshotToIDB(data: Record<string, any>, cid?: string)
     if (!db) return false;
 
     return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (saved: boolean) => { if (timer) clearTimeout(timer); resolve(saved); };
       try {
         const tx = db.transaction([SNAPSHOT_STORE, METADATA_STORE], "readwrite");
+        timer = setTimeout(() => { try { tx.abort(); } catch { /* Already ended. */ } finish(false); }, 8000);
         const snapStore = tx.objectStore(SNAPSHOT_STORE);
         const metaStore = tx.objectStore(METADATA_STORE);
 
@@ -97,11 +106,11 @@ export async function saveSnapshotToIDB(data: Record<string, any>, cid?: string)
           value: Date.now(),
         });
 
-        tx.addEventListener("complete", () => resolve(true));
-        tx.addEventListener("error", () => resolve(false));
-        tx.addEventListener("abort", () => resolve(false));
+        tx.addEventListener("complete", () => finish(true));
+        tx.addEventListener("error", () => finish(false));
+        tx.addEventListener("abort", () => finish(false));
       } catch {
-        resolve(false);
+        finish(false);
       }
     });
   } catch {

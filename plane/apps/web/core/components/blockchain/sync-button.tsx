@@ -8,6 +8,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Wallet } from "lucide-react";
 import {
   getDAppSyncStatus,
+  getLocalPersistenceStatus,
+  flushLocalPersistence,
+  retryLocalPersistence,
   isVaultSigningError,
   localDB,
   syncDAppDBToChain,
@@ -189,6 +192,12 @@ export function SyncToChainButton() {
     syncingRef.current = true;
     setIsSyncing(true);
     try {
+      const localState = getLocalPersistenceStatus();
+      if (localState.state === "failed" || localState.state === "saving") {
+        setSyncStage("Đang lưu trên thiết bị…");
+        const saved = await (localState.state === "failed" ? retryLocalPersistence() : flushLocalPersistence());
+        if (!saved.durable) throw new Error("Chưa lưu được dữ liệu trên thiết bị. Dữ liệu vẫn được giữ trong phiên này; hãy giải phóng dung lượng rồi thử lại.");
+      }
       if (navigator.onLine === false) {
         throw new SnapshotUploadError(
           "OFFLINE",

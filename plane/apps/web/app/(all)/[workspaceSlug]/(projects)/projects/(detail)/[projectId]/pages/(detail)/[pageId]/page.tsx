@@ -82,7 +82,7 @@ function PageDetailsPage({ params }: Route.ComponentProps) {
       fetchAllVersions: async (pageId) =>
         await projectPageVersionService.fetchAllVersions(workspaceSlug, projectId, pageId),
       fetchDescriptionBinary: async () => {
-        if (!id) return;
+        if (!id) throw new Error("Chưa xác định được trang để đọc nội dung.");
         return await projectPageService.fetchDescriptionBinary(workspaceSlug, projectId, id);
       },
       fetchEntity: fetchEntityCallback,

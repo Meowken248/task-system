@@ -10,6 +10,7 @@ import {
 import { getStoredWalletAddress } from "./chain";
 import { isValidScope, nextRecordTimestamp } from "./scope.helper";
 import type { RouteResult } from "./types";
+import { decodePageBinary } from "./page-binary";
 
 export type TPageAction =
   | "read"
@@ -561,13 +562,17 @@ export async function handlePageActionRoute(
       identity.assertCurrent();
       return {
         status: 200,
-        data: access.page.description_html || access.page.description || "",
+        data: decodePageBinary(access.page.description_binary),
       };
     }
     if (lowerMethod === "patch") {
       const access = await requirePageAccess(workspaceSlug, projectId, pageId, "edit_content", body, identity);
       identity.assertCurrent();
       const targetPage = access.page;
+      if (body.description_binary !== undefined) {
+        try { decodePageBinary(body.description_binary); }
+        catch { throw badRequest("Dữ liệu nội dung trang không đúng định dạng binary."); }
+      }
       if (body.description_html !== undefined) targetPage.description_html = body.description_html;
       if (body.description_json !== undefined) targetPage.description_json = body.description_json;
       if (body.description_binary !== undefined) targetPage.description_binary = body.description_binary;

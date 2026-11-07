@@ -45,7 +45,9 @@ const run=async()=>{
  // 1. Owner can fetch private page description
  setLoggedInUser('owner');
  const desc=await page.fetchDescriptionBinary('team','p1','page-priv');
- check(typeof desc==='string'&&desc.includes('Top secret'),'Owner private description');
+ check(desc instanceof ArrayBuffer&&desc.byteLength===0,'Legacy description has empty binary fallback');
+ const privatePage=await page.fetchById('team','p1','page-priv',false);
+ check(privatePage.description_html.includes('Top secret'),'Legacy HTML remains available to the editor');
  checks.push('Owner read private description');
 
  // 2. Non-owner member denied reading private page description

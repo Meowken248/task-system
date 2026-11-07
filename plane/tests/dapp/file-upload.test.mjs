@@ -278,6 +278,8 @@ test("Full API lifecycle: POST init -> upload ingestion -> PATCH confirm -> GET 
   const assetId = initRes.data.asset_id;
   assert.ok(assetId);
   assert.equal(initRes.data.upload_data.url, "/api/assets/v2/upload/");
+  // Existing local attachments retain their API lifecycle.
+  localDB.assets.find((asset) => asset.id === assetId).storage = "local";
 
   // 2. Upload file content to storage
   const sampleBase64 =
@@ -418,22 +420,23 @@ const png = (
   encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII="
 ) => new File([Buffer.from(encoded, "base64")], "screenshot.png", { type: "image/png" });
 
-test("the real web FileService uploads an editor image and resolves its saved ID without HTTP", async () => {
+test("the real web FileService uploads an editor image to IPFS and resolves its saved ID", async () => {
   const result = await new FileService().uploadProjectAsset(
     "test-ws",
     "proj-1",
     { entity_type: "ISSUE_DESCRIPTION", entity_identifier: "issue-1" },
     png()
   );
-  assert(result.asset_url.startsWith("data:image/png;base64,"));
-  assert.equal(await resolveAssetSource(result.asset_id), result.asset_url);
+  assert(result.asset_url.startsWith("ipfs://"));
+  const displayed = await resolveAssetSource(result.asset_id);
+  assert(displayed.startsWith("data:image/png;base64,"));
   assert.equal(
     await resolveAssetSource(`/api/assets/v2/workspaces/test-ws/projects/proj-1/${result.asset_id}/`),
-    result.asset_url
+    displayed
   );
   assert.equal(
     await resolveAssetSource(`http://localhost:3000/api/assets/v2/display/${result.asset_id}/?download=1`),
-    result.asset_url
+    displayed
   );
 });
 
@@ -452,11 +455,11 @@ test("missing upload bytes do not produce a fake success URL", async () => {
   assert.equal(response.data.success, undefined);
 });
 
-test("quota failures reject a local editor upload and never mark metadata as uploaded", async () => {
-  failWrites = true;
+test("failed IPFS upload never marks editor metadata as uploaded", async () => {
+  ipfs.failUpload = true;
   await assert.rejects(
     new FileService().uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png()),
-    /quota/
+    /Chưa lưu được tệp/
   );
   assert.equal(localDB.workspaces[0].logo_url, "");
   assert(localDB.assets.every((asset) => asset.is_uploaded === false));
@@ -465,6 +468,8 @@ test("quota failures reject a local editor upload and never mark metadata as upl
 test("a failed byte deletion keeps the asset metadata and does not report success", async () => {
   const service = new FileService();
   const uploaded = await service.uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png());
+  localDB.assets.find((asset) => asset.id === uploaded.asset_id).storage = "local";
+  await saveAttachment(uploaded.asset_id, { name: "legacy.png", base64: "YQ==", type: "image/png" });
   failWrites = true;
   await assert.rejects(service.deleteWorkspaceAsset("test-ws", uploaded.asset_id));
   assert(localDB.assets.some((asset) => asset.id === uploaded.asset_id));
@@ -507,8 +512,9 @@ test("concurrent uploads retain independent IDs and file bytes", async () => {
     ),
   ]);
   assert.notEqual(first.asset_id, second.asset_id);
-  assert.equal(await resolveAssetSource(first.asset_id), first.asset_url);
-  assert.equal(await resolveAssetSource(second.asset_id), second.asset_url);
+  assert.notEqual(first.asset_url, second.asset_url);
+  assert((await resolveAssetSource(first.asset_id)).startsWith("data:image/png;base64,"));
+  assert.equal(await resolveAssetSource(second.asset_id), `data:text/plain;base64,${Buffer.from("comment bytes").toString("base64")}`);
 });
 
 test("repeated callbacks for one editor block share a single pending upload", async () => {
@@ -524,6 +530,32 @@ test("repeated callbacks for one editor block share a single pending upload", as
   assert.equal(first.asset_id, second.asset_id);
   assert.equal(localDB.assets.length, 1);
   assert.equal(store.assetsUploadStatus[args.blockId], undefined);
+});
+
+test("changing the wallet during a shared editor upload prevents metadata confirmation", async () => {
+  let entered, release;
+  const ready = new Promise((resolve) => { entered = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  globalThis.fetch = async (url, options) => {
+    if (options?.method === "POST" && typeof options.body === "string") { entered(); await gate; }
+    return ipfs.fetch(url, options);
+  };
+  const pending = new FileService().uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png());
+  await ready;
+  sessionStorage.setItem("plane_active_wallet_address", "0x" + "9".repeat(40));
+  release();
+  await assert.rejects(pending, /ví đã thay đổi/);
+  assert(localDB.assets.every((asset) => !asset.is_uploaded));
+});
+
+test("shared attachments can be deleted without a local byte cache", async () => {
+  const service = new IssueAttachmentService();
+  const uploaded = await service.uploadIssueAttachment("test-ws", "proj-1", "issue-1", png());
+  failOpen = true; failWrites = true;
+  await service.deleteIssueAttachment("test-ws", "proj-1", "issue-1", uploaded.id);
+  assert.equal(localDB.attachments.length, 0);
+  assert(localDB._deleted_attachment_ids.includes(uploaded.id));
+  assert.equal(localDB.issues[0].attachment_count, 0);
 });
 
 test("cover upload does not overwrite an existing user avatar", async () => {
@@ -674,14 +706,15 @@ test("a project cover without an existing owner is still rejected", async () => 
 test("a confirmed snapshot can resolve content on a device without the original byte cache", async () => {
   const result = await new FileService().uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png());
   mockDB.storage.clear();
-  assert.equal(await resolveAssetSource(result.asset_id), result.asset_url);
+  const displayed = await resolveAssetSource(result.asset_id);
+  assert(displayed.startsWith("data:image/png;base64,"));
   assert.equal(
     (await handleRoute("get", `/api/assets/v2/display/${result.asset_id}/`, {})).data.asset_url,
-    result.asset_url
+    displayed
   );
 });
 
-test("duplicating an editor asset copies bytes under the new ID and survives removal of the original", async () => {
+test("duplicating an editor asset retains its shared CID and survives removal of the original", async () => {
   const service = new FileService();
   const original = await service.uploadWorkspaceAsset("test-ws", { entity_type: "PAGE_DESCRIPTION" }, png());
   const copy = await service.duplicateAsset("test-ws", original.asset_id, {
@@ -689,9 +722,12 @@ test("duplicating an editor asset copies bytes under the new ID and survives rem
     entity_id: "page-copy",
   });
   assert.notEqual(copy.asset_id, original.asset_id);
-  assert.equal((await getAttachment(copy.asset_id)).key, copy.asset_id);
+  assert.equal(copy.ipfs_cid, localDB.assets.find((asset) => asset.id === original.asset_id).ipfs_cid);
+  assert.equal(copy.base64, undefined);
+  assert.equal(await getAttachment(copy.asset_id), null);
+  const displayed = await resolveAssetSource(original.asset_id);
   await service.deleteWorkspaceAsset("test-ws", original.asset_id);
-  assert.equal(await resolveAssetSource(copy.asset_id), original.asset_url);
+  assert.equal(await resolveAssetSource(copy.asset_id), displayed);
   await assert.rejects(resolveAssetSource(original.asset_id));
 });
 
@@ -713,7 +749,8 @@ test("direct attachment upload and deletion use the authenticated issue scope", 
   const service = new IssueAttachmentService();
   const result = await service.uploadIssueAttachment("test-ws", "proj-1", "issue-1", png());
   assert.equal(result.created_by, "user-1");
-  assert.ok(await getAttachment(result.id));
+  assert((await resolveAssetSource(result.id)).startsWith("data:image/png;base64,"));
+  assert.equal(result.storage, "ipfs-file");
   assert.equal((await service.getIssueAttachments("test-ws", "proj-1", "issue-1")).length, 1);
   await service.deleteIssueAttachment("test-ws", "proj-1", "issue-1", result.id);
   assert.equal(await getAttachment(result.id), null);
@@ -733,7 +770,7 @@ test("direct attachment deletion rejects an asset belonging to another issue", a
   const service = new IssueAttachmentService();
   const result = await service.uploadIssueAttachment("test-ws", "proj-1", "issue-2", png());
   await assert.rejects(service.deleteIssueAttachment("test-ws", "proj-1", "issue-1", result.id), /quyền/);
-  assert.ok(await getAttachment(result.id));
+  assert((await resolveAssetSource(result.id)).startsWith("data:image/png;base64,"));
   assert.equal(localDB.attachments.length, 1);
 });
 
@@ -753,6 +790,9 @@ test("attachment API deletion records a tombstone and updates the actual issue c
 
 test("attachment API storage failure preserves bytes, metadata and issue count", async () => {
   const result = await new IssueAttachmentService().uploadIssueAttachment("test-ws", "proj-1", "issue-1", png());
+  // Legacy bytes still require a successful deletion before removing metadata.
+  localDB.attachments.find((asset) => asset.id === result.id).storage = "local";
+  await saveAttachment(result.id, { name: "legacy.png", base64: "YQ==", type: "image/png" });
   failWrites = true;
   await assert.rejects(
     handleRoute("delete", `/api/workspaces/test-ws/projects/proj-1/issues/issue-1/attachments/${result.id}/`, {})

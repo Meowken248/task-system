@@ -18,6 +18,14 @@ declare module "hardhat/types/runtime" {
       signerOrOptions?: ethers.Signer | FactoryOptions
     ): Promise<Contracts.PlaneWorkspaceRegistry__factory>;
     getContractFactory(
+      name: "PlaneTaskManagerV3",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.PlaneTaskManagerV3__factory>;
+    getContractFactory(
+      name: "IPlaneWorkspaceMembership",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IPlaneWorkspaceMembership__factory>;
+    getContractFactory(
       name: "PlaneTaskManager",
       signerOrOptions?: ethers.Signer | FactoryOptions
     ): Promise<Contracts.PlaneTaskManager__factory>;
@@ -40,6 +48,16 @@ declare module "hardhat/types/runtime" {
       signer?: ethers.Signer
     ): Promise<Contracts.PlaneWorkspaceRegistry>;
     getContractAt(
+      name: "PlaneTaskManagerV3",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.PlaneTaskManagerV3>;
+    getContractAt(
+      name: "IPlaneWorkspaceMembership",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IPlaneWorkspaceMembership>;
+    getContractAt(
       name: "PlaneTaskManager",
       address: string | ethers.Addressable,
       signer?: ethers.Signer
@@ -64,6 +82,14 @@ declare module "hardhat/types/runtime" {
       name: "PlaneWorkspaceRegistry",
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.PlaneWorkspaceRegistry>;
+    deployContract(
+      name: "PlaneTaskManagerV3",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.PlaneTaskManagerV3>;
+    deployContract(
+      name: "IPlaneWorkspaceMembership",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IPlaneWorkspaceMembership>;
     deployContract(
       name: "PlaneTaskManager",
       signerOrOptions?: ethers.Signer | DeployContractOptions
@@ -86,6 +112,16 @@ declare module "hardhat/types/runtime" {
       args: any[],
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.PlaneWorkspaceRegistry>;
+    deployContract(
+      name: "PlaneTaskManagerV3",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.PlaneTaskManagerV3>;
+    deployContract(
+      name: "IPlaneWorkspaceMembership",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IPlaneWorkspaceMembership>;
     deployContract(
       name: "PlaneTaskManager",
       args: any[],

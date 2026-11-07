@@ -7,7 +7,7 @@
 import type { AxiosRequestConfig } from "axios";
 // plane types
 import { API_BASE_URL } from "@plane/constants";
-import { getFileMetaDataForUpload, generateFileUploadPayload, FileUploadService, localDB, getLoggedInUserId } from "@plane/services";
+import { getFileMetaDataForUpload, generateFileUploadPayload, FileUploadService, localDB, getLoggedInUserId, captureResourceRequestIdentity } from "@plane/services";
 import type { EFileAssetType, TFileEntityInfo, TFileSignedURLResponse } from "@plane/types";
 import { getAssetIdFromUrl } from "@plane/utils";
 // helpers
@@ -68,6 +68,7 @@ export class FileService extends APIService {
     onProgress?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<TFileSignedURLResponse> {
     const version = this.cancellationVersion;
+    const identity = captureResourceRequestIdentity();
     const controller = new AbortController();
     this.activeControllers.add(controller);
     const checkCancelled = () => {
@@ -77,9 +78,11 @@ export class FileService extends APIService {
     };
     try {
       const metadata = await getFileMetaDataForUpload(file);
+      identity.assertCurrent();
       const response = await this.post(path, { ...data, ...metadata }, { signal: controller.signal });
       const initialized: TFileSignedURLResponse = response.data;
       checkCancelled();
+      identity.assertCurrent();
       if (!initialized?.asset_id || !initialized.upload_data?.fields)
         throw new Error("Chưa tạo được mã tệp. Hãy thử lại.");
       const content = await this.fileUploadService.uploadFile(
@@ -89,12 +92,14 @@ export class FileService extends APIService {
       );
       if (!content?.asset_url) throw new Error("Chưa lưu được nội dung tệp.");
       checkCancelled();
+      identity.assertCurrent();
       const confirmed = await this.patch(
         `${path}${initialized.asset_id}/`,
-        content.ipfs_cid ? { ipfs_cid: content.ipfs_cid } : undefined,
+        content.ipfs_cid ? { ipfs_cid: content.ipfs_cid, content_hash: content.content_hash } : undefined,
         { signal: controller.signal }
       );
       checkCancelled();
+      identity.assertCurrent();
       if (!confirmed.data?.is_uploaded) throw new Error("Chưa xác nhận được tệp đã lưu.");
       return { ...initialized, asset_url: confirmed.data.asset_url || content.asset_url };
     } catch (error) {

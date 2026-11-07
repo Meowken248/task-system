@@ -5,6 +5,7 @@ import path from "node:path";
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import { AbiCoder, id } from "ethers";
 import { createUserObject } from "../../packages/services/src/dapp/auth.ts";
 
@@ -17,6 +18,8 @@ for (const target of [output, profile]) {
   fs.mkdirSync(target, { recursive: true });
 }
 const html = fs.readFileSync(path.join(built, "index.html"), "utf8");
+const fixtureDeploymentId = process.env.PLANE_TEST_DEPLOYMENT_ID || fs.readFileSync(path.resolve(root, "apps/web/.env.production"), "utf8")
+  .match(/^\s*VITE_DAPP_DEPLOYMENT_ID\s*=\s*["']?([a-zA-Z0-9_-]+)/m)?.[1] || "";
 const mount = (html.match(/(?:src|href)="([^"\s]*?)\/assets\//)?.[1] || "").replace(/\/$/, "");
 const admin = "0x1111111111111111111111111111111111111111";
 const recipient = "0x" + "2".repeat(38) + "ab";
@@ -99,6 +102,7 @@ const workItem = {
   is_draft: false,
 };
 const shared = {
+  ...(fixtureDeploymentId ? { _deployment_id: fixtureDeploymentId } : {}),
   users: [owner],
   workspaces: [workspace],
   workspace_members: [
@@ -198,6 +202,8 @@ const server = http.createServer((request, response) => {
     ".svg": "image/svg+xml",
     ".webp": "image/webp",
     ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
     ".woff2": "font/woff2",
   };
   response.setHeader("Content-Type", types[path.extname(file)] || "application/octet-stream");
@@ -238,12 +244,14 @@ function send(method, params = {}, sessionId) {
   });
 }
 const sessions = new Map();
+const canceledNetworkRequests = new Set();
 let mailAccepted = false;
 let mailRequests = 0;
 let mailGate;
 const testProjectCreation = process.env.PLANE_TEST_PROJECT_CREATE === "1";
 const testPresentationMedia = process.env.PLANE_TEST_PRESENTATION_MEDIA === "1" || testProjectCreation;
 const pinnedImages = new Map();
+const pinnedFiles = new Map();
 let failImagePin = false;
 let imageUploadRequests = 0;
 let imageGatewayReads = 0;
@@ -282,6 +290,13 @@ async function fulfill(event, sessionId) {
     body = null;
   }
   if (event.request.method === "OPTIONS") return respond({});
+  if (event.request.method === "POST" && ["plane-file-v1", "plane-file-chunk-v1"].includes(body?.kind)) {
+    const cid = "Qm" + createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 44).replaceAll("0", "A");
+    pinnedFiles.set(cid, body);
+    return respond({ cid });
+  }
+  const sharedFile = pinnedFiles.get(url.pathname.split("/").pop());
+  if (sharedFile) return respond(sharedFile);
   const requestHeaders = Object.fromEntries(Object.entries(event.request.headers || {}).map(([key, value]) => [key.toLowerCase(), value]));
   if (testPresentationMedia && event.request.method === "POST" && String(requestHeaders["content-type"]).startsWith("multipart/form-data")) {
     imageUploadRequests++;
@@ -435,7 +450,7 @@ async function page(user, wallet, suffix, label, signedOut = false, emptyProject
     database.states = [];
   }
   const seed = `(()=>{const user=${JSON.stringify(user)},db=${JSON.stringify(database)},wallet=${JSON.stringify(wallet)},origin=${JSON.stringify(origin)};
-    if(!sessionStorage.getItem('wallet_browser_seeded')){localStorage.clear();sessionStorage.clear();localStorage.setItem('plane_dapp_local_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_latest_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_auth_user',user.id);sessionStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_dapp_auth_user',user.id);localStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('wallet_browser_seeded','1');}
+    if(!sessionStorage.getItem('wallet_browser_seeded')){localStorage.clear();sessionStorage.clear();if(db._deployment_id){localStorage.setItem('plane_dapp_deployment_id',db._deployment_id);sessionStorage.setItem('plane_dapp_deployment_id',db._deployment_id);}localStorage.setItem('plane_dapp_local_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_latest_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_auth_user',user.id);sessionStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_dapp_auth_user',user.id);localStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('wallet_browser_seeded','1');}
     if(${JSON.stringify(signedOut)}){sessionStorage.setItem('plane_dapp_signed_out','1');window.__env__={VITE_MAIL_PROXY_URL:origin+'/__mail_fixture',VITE_EMAIL_SENDER_ADDRESS:'fixture-sender@example.invalid',VITE_EMAIL_SENDER_NAME:'Browser fixture'};}
     const sdk={interceptors:{request:[],response:[]},emit(){},destroy(){},request:async(action,p={})=>{if(action==='getAllWallets')return[{address:wallet}];if(action==='getVaultStatus')return{isLocked:false,isInitialized:true};if(action.startsWith('getActiveWallet'))return{address:wallet};if(action==='sendTransaction'){if(p.isReadOnly)return{returnValue:-1};throw Error('Fixture blocks signing transactions');}return{};},on(){},off(){},registerHostAction(){},getStatus(){return{'crypto-vault':'ready','blockchain-bridge':'ready'};}};
     Object.defineProperty(window,'fiaiSDK',{configurable:true,get:()=>sdk,set:()=>{}});
@@ -466,7 +481,16 @@ try {
         state: message.params.state,
       });
     else if (message.method === "Fetch.requestPaused")
-      void fulfill(message.params, message.sessionId).catch((error) => {
+      void fulfill(message.params, message.sessionId).catch(async (error) => {
+        // A canceled browser request no longer has an interception ID. Only
+        // classify it as expected when Network confirms that exact request aborted.
+        if (error.message === "Invalid InterceptionId." && message.params.networkId) {
+          await pause(50);
+          if (canceledNetworkRequests.has(`${message.sessionId}:${message.params.networkId}`)) {
+            traces.push({ context: sessions.get(message.sessionId)?.label, canceledInterception: true });
+            return;
+          }
+        }
         issues.push({ type: "interception", message: error.message });
         void send(
           "Fetch.failRequest",
@@ -474,14 +498,17 @@ try {
           message.sessionId
         ).catch(() => {});
       });
-    else if (message.method === "Network.loadingFailed")
+    else if (message.method === "Network.loadingFailed") {
+      if (message.params.canceled || message.params.errorText === "net::ERR_ABORTED")
+        canceledNetworkRequests.add(`${message.sessionId}:${message.params.requestId}`);
       traces.push({
         context: sessions.get(message.sessionId)?.label,
         networkError: message.params.errorText,
         blockedReason: message.params.blockedReason,
         corsError: message.params.corsErrorStatus,
       });
-    else if (message.method === "Runtime.consoleAPICalled" && traces.length < 1000) {
+    }
+    else if (message.method === "Runtime.consoleAPICalled") {
       const value = message.params.args?.map((a) => a.value ?? a.description ?? "").join(" ");
       if (typeof value === "string")
         traces.push({
@@ -545,12 +572,19 @@ try {
     session
   );
   assert(attachmentInput.nodeId, "attachment picker must exist");
+  fs.writeFileSync(path.join(output, "initial-load-metrics.json"), JSON.stringify(await evaluate(session,
+    `(()=>{const n=performance.getEntriesByType('navigation')[0];const r=performance.getEntriesByType('resource');return{environment:'Local static server, no throttling; mocked SDK/RPC; not a production SLA',navigation:n?.toJSON(),paint:performance.getEntriesByType('paint').map(e=>e.toJSON()),resources:r.length,scriptTransferBytes:r.filter(e=>e.initiatorType==='script').reduce((s,e)=>s+e.transferSize,0),scriptDecodedBytes:r.filter(e=>e.initiatorType==='script').reduce((s,e)=>s+e.decodedBodySize,0)}})()`), null, 2));
   await send("DOM.setFileInputFiles", { nodeId: attachmentInput.nodeId, files: [fixturePath] }, session);
   await until(
     session,
     "JSON.parse(localStorage.getItem('plane_dapp_local_db')||'{}').attachments?.some(a=>a.attributes?.name==='upload-fixture.txt')"
   );
-  cases.push({ name: "Actual attachment picker saves file bytes and updates the work item", passed: true });
+  const attachmentMetadata = await evaluate(session, "JSON.parse(localStorage.getItem('plane_dapp_local_db')).attachments.find(a=>a.attributes?.name==='upload-fixture.txt')");
+  assert.equal(attachmentMetadata.storage, "ipfs-file");
+  assert(attachmentMetadata.ipfs_cid && attachmentMetadata.content_hash);
+  assert.equal(attachmentMetadata.base64, undefined);
+  assert(pinnedFiles.has(attachmentMetadata.ipfs_cid), "Attachment bytes are pinned through the simulated JSON proxy");
+  cases.push({ name: "Actual attachment picker verifies IPFS bytes and saves CID/hash metadata", passed: true });
   const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
   const pasteImage = async (index) =>
     evaluate(
@@ -561,7 +595,7 @@ try {
   const goodImages =
     "Array.from(document.querySelectorAll('img.image-component')).filter(e=>e.complete&&e.naturalWidth>0&&e.src.startsWith('data:image/')).length";
   await until(session, goodImages + ">=1", 45000);
-  cases.push({ name: "Pasting into the description uploads and renders decoded image bytes locally", passed: true });
+  cases.push({ name: "Pasting into the description pins and renders decoded IPFS file bytes", passed: true });
   await pasteImage(1);
   await until(session, goodImages + ">=2", 45000);
   await click(session, "Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='Comment')");
@@ -585,7 +619,7 @@ try {
   const expectedIds = [...new Set([...expectedImageBlocks.description, ...expectedImageBlocks.comment])];
   const decodedBlocks = `(${JSON.stringify(expectedIds)}).every(id=>{const e=document.getElementById('editor-image-block-'+id)?.querySelector('img.image-component');return e?.complete&&e.naturalWidth>0&&e.src.startsWith('data:image/')})`;
   await until(session, decodedBlocks, 45000);
-  cases.push({ name: "Comment images use the same local asset resolver and render after submission", passed: true });
+  cases.push({ name: "Comment images use the shared IPFS asset resolver and render after submission", passed: true });
   await pause(2000);
 
   const before = await evaluate(
@@ -867,6 +901,7 @@ try {
         actualIndexedDB: true,
         actualFileInput: true,
         actualImageDecoding: true,
+        simulatedFilePins: pinnedFiles.size,
         assetProxyRequests: 0,
       },
       null,
