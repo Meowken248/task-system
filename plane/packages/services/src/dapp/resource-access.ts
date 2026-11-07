@@ -21,6 +21,27 @@ export class ResourceAccessError extends Error {
 const deny = () => new ResourceAccessError(403, "NOT_AUTHORIZED", "Bạn không có quyền thực hiện thao tác này.");
 const normalized = (value: unknown) => typeof value === "string" ? value.toLowerCase().trim() : "";
 
+export interface ResourceRequestIdentity {
+  readonly userId: string | null;
+  readonly wallet: string;
+  assertCurrent(): void;
+}
+
+/** Capture once per request; assert synchronously after awaits and before applying their results. */
+export function captureResourceRequestIdentity(): ResourceRequestIdentity {
+  const userId = getLoggedInUserId();
+  const wallet = normalized(getStoredWalletAddress());
+  return {
+    userId,
+    wallet,
+    assertCurrent() {
+      if (getLoggedInUserId() !== userId || normalized(getStoredWalletAddress()) !== wallet) {
+        throw new ResourceAccessError(409, "SESSION_OR_WALLET_CHANGED", "Phiên đăng nhập hoặc ví đã thay đổi trong quá trình xử lý.");
+      }
+    },
+  };
+}
+
 export function authenticatedResourceUser(): any {
   const id = getLoggedInUserId();
   if (!id) throw new ResourceAccessError(401, "AUTH_REQUIRED", "Vui lòng đăng nhập.");
@@ -86,6 +107,15 @@ export async function requireWorkspaceAccess(key: string, manage = false): Promi
 
 export async function requireProjectAccess(workspaceKey: string, projectKey: string, write = false) {
   const access = await requireWorkspaceAccess(workspaceKey);
+  return projectAccessFromWorkspace(access, projectKey, write);
+}
+
+/** Re-evaluate project policy using the latest verified workspace role, without another RPC or await. */
+export function projectAccessFromWorkspace(
+  access: Awaited<ReturnType<typeof requireWorkspaceAccess>>,
+  projectKey: string,
+  write = false
+) {
   const project = resourceProject(access.workspace, projectKey);
   const wallet = normalized(getStoredWalletAddress());
   const member = (localDB.project_members || []).find((entry: any) =>

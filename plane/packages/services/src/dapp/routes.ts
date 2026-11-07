@@ -1,5 +1,9 @@
 import { handleFileAssetRoute } from "./file-assets";
-import { requireWorkspaceAccess, requireProjectAccess, requireIssueAccess, resourceProject, ResourceAccessError } from "./resource-access";
+import {
+  requireWorkspaceAccess, requireProjectAccess, requireIssueAccess, resourceProject, ResourceAccessError,
+  captureResourceRequestIdentity, projectAccessFromWorkspace, type ResourceRequestIdentity,
+} from "./resource-access";
+import { handlePageActionRoute, requirePageAccess, getPageOwner, getPageProjectIds } from "./page-access.helper";
 import type { RouteResult } from "./types";
 import { hashPassword, getStoredCredentials, setStoredCredential, createUserObject, verifyOtpCode, clearOtpCode } from "./auth";
 import { requestOtpDelivery } from "./otp-delivery";
@@ -84,6 +88,7 @@ import {
 } from "./planning-resources";
 export { isValidScope, isActiveWorkIssue, ensureIssueTriageMigration } from "./scope.helper";
 export { readWorkspaceSnapshotFromChain, recoverInvitationFromChainSnapshot, findLocalWorkspace, buildWorkspaceFromChainSnapshot, upsertWorkspaceMemberRecord } from "./workspace-invitations";
+const inFlightPageIds = new Set<string>();
 const escapeCsv = (val: any): string => {
   if (val === null || val === undefined) return '""';
   const str = String(val).replace(/"/g, '""');
@@ -585,7 +590,8 @@ export async function handleFavoritesRoute(
   method: string,
   url: string,
   body: any,
-  routeSessionUserId?: string | null
+  routeSessionUserId?: string | null,
+  requestIdentity: ResourceRequestIdentity = captureResourceRequestIdentity()
 ): Promise<RouteResult | null> {
   const normMethod = (method || "get").toLowerCase();
   const isUserFavUrl = /\/api\/workspaces\/[^/]+\/user-favorites(?:\/|\?|$)/.test(url);
@@ -596,6 +602,8 @@ export async function handleFavoritesRoute(
   const wsMatch = url.match(/\/api\/workspaces\/([^/]+)/);
   const wsSlug = wsMatch ? decodeURIComponent(wsMatch[1]).trim() : "";
   const access = await requireWorkspaceAccess(wsSlug);
+  requestIdentity.assertCurrent();
+  const respond = (data: any): RouteResult => { requestIdentity.assertCurrent(); return ok(data); };
   const currentUserId = access.user.id;
   if (routeSessionUserId && routeSessionUserId !== currentUserId) {
     throw new ResourceAccessError(401, "AUTH_REQUIRED", "Phiên đăng nhập đã thay đổi.");
@@ -604,9 +612,11 @@ export async function handleFavoritesRoute(
   const wsId = ws.id;
   const ownsFavorite = (fav: any) => fav.user_id === currentUserId && [ws.id, ws.slug].includes(fav.workspace_id);
   const projectAccess = new Map<string, ReturnType<typeof requireProjectAccess>>();
-  const readProject = (key: string) => {
+  const readProject = async (key: string) => {
     if (!projectAccess.has(key)) projectAccess.set(key, requireProjectAccess(ws.slug, key));
-    return projectAccess.get(key)!;
+    const result = await projectAccess.get(key)!;
+    requestIdentity.assertCurrent();
+    return result;
   };
   const validateTarget = async (type: string, id: string, project?: string | null) => {
     const collections: Record<string, string> = { cycle: "cycles", module: "modules", view: "views", views: "views", page: "pages", pages: "pages", project: "projects", issue: "issues" };
@@ -618,8 +628,9 @@ export async function handleFavoritesRoute(
     const projectKey = type === "project" ? id : project || entity.project_id || entity.project || entity.project_ids?.[0];
     if (!projectKey) throw new ResourceAccessError(404, "NOT_FOUND", "Không xác định được dự án của tài nguyên.");
     const permitted = await readProject(projectKey);
+    requestIdentity.assertCurrent();
     if (!isValidScope(entity, type === "project" ? null : permitted.project.id, ws.id)) throw new ResourceAccessError(404, "NOT_FOUND", "Tài nguyên không thuộc dự án hoặc workspace này.");
-    if ((type === "page" || type === "pages") && entity.access === 1 && entity.created_by !== currentUserId) throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Trang riêng tư chỉ người tạo mới có quyền truy cập.");
+    if ((type === "page" || type === "pages") && entity.access === 1 && getPageOwner(entity) !== currentUserId) throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Trang riêng tư chỉ chủ sở hữu mới có quyền truy cập.");
     return entity;
   };
   const visibleFavorite = async (fav: any): Promise<boolean> => {
@@ -627,6 +638,7 @@ export async function handleFavoritesRoute(
     if (fav.is_folder || fav.entity_type === "folder") return true;
     try {
       await validateTarget(fav.entity_type, fav.entity_identifier || fav.entity_id || fav.entity_data?.id, fav.project_id);
+      requestIdentity.assertCurrent();
       return true;
     } catch (error) {
       if (error instanceof ResourceAccessError && [403, 404].includes(error.status)) return false;
@@ -635,6 +647,7 @@ export async function handleFavoritesRoute(
   };
   const visibleFavorites = async (items: any[]) => {
     const visibility = await Promise.all(items.map(visibleFavorite));
+    requestIdentity.assertCurrent();
     return items.filter((_, index) => visibility[index]);
   };
 
@@ -669,7 +682,7 @@ export async function handleFavoritesRoute(
           fav.user_id === currentUserId &&
           (fav.workspace_id === wsId || fav.workspace_id === wsSlug) && !deletedFavSet.has(fav.id) && !isOrphaned(fav)
       );
-      return ok(await visibleFavorites(userFavorites));
+      return respond(await visibleFavorites(userFavorites));
     }
 
     // 2. GET /api/workspaces/:wsSlug/user-favorites/:favoriteId/group/
@@ -685,7 +698,7 @@ export async function handleFavoritesRoute(
           !deletedFavSet.has(fav.id) &&
           !isOrphaned(fav)
       );
-      return ok(await visibleFavorites(grouped));
+      return respond(await visibleFavorites(grouped));
     }
 
     // 3. POST /api/workspaces/:wsSlug/user-favorites/ (FavoriteService.addFavorite)
@@ -705,6 +718,7 @@ export async function handleFavoritesRoute(
 
       if (entityType && entityType !== "folder") {
         await validateTarget(entityType, targetEntityId, targetProjectId);
+        requestIdentity.assertCurrent();
         let targetEntity: any = null;
         if (entityType === "cycle") {
           targetEntity = (localDB.cycles || []).find((c: any) => c.id === targetEntityId);
@@ -734,8 +748,8 @@ export async function handleFavoritesRoute(
         }
 
         // Private page access check
-        if ((entityType === "page" || entityType === "pages") && targetEntity.access === 1 && targetEntity.created_by !== currentUserId) {
-          return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Trang riêng tư chỉ người tạo mới có quyền truy cập." } };
+        if ((entityType === "page" || entityType === "pages") && targetEntity.access === 1 && getPageOwner(targetEntity) !== currentUserId) {
+          return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Trang riêng tư chỉ chủ sở hữu mới có quyền truy cập." } };
         }
 
         entityName = targetEntity.name || entityName;
@@ -750,7 +764,7 @@ export async function handleFavoritesRoute(
           (f.entity_identifier === targetEntityId || f.entity_id === targetEntityId || f.entity_data?.id === targetEntityId) &&
           !deletedFavSet.has(f.id)
       );
-      if (existing) return ok(existing);
+      if (existing) return respond(existing);
 
       const newId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
       localDB._deleted_favorite_ids = (localDB._deleted_favorite_ids || []).filter((id: string) => id !== newId);
@@ -779,7 +793,7 @@ export async function handleFavoritesRoute(
       };
       localDB.favorites.push(newFav);
       saveDB();
-      return ok(newFav);
+      return respond(newFav);
     }
 
     // 4. PATCH /api/workspaces/:wsSlug/user-favorites/:favoriteId/
@@ -809,7 +823,7 @@ export async function handleFavoritesRoute(
       }
       Object.assign(fav, body, { updated_at: nextRecordTimestamp(fav) });
       saveDB();
-      return ok(fav);
+      return respond(fav);
     }
 
     // 5. DELETE /api/workspaces/:wsSlug/user-favorites/:favoriteId/
@@ -824,7 +838,7 @@ export async function handleFavoritesRoute(
         localDB.favorites = (localDB.favorites || []).filter((f: any) => f.id !== fav.id);
         saveDB();
       }
-      return ok({ message: "Favorite removed" });
+      return respond({ message: "Favorite removed" });
     }
   }
 
@@ -851,13 +865,14 @@ export async function handleFavoritesRoute(
 
       for (const p of candidatePages) {
         if (!userFavPageIds.has(p.id)) continue;
-        if (p.access === 1 && p.created_by !== currentUserId) continue; // Private page privacy!
-        resultPages.push({ ...p, is_favorite: true });
+        if (p.access === 1 && getPageOwner(p) !== currentUserId) continue; // Private page privacy!
+        const { description_html, description_binary, description_json, description, ...favSummary } = p;
+        resultPages.push({ ...favSummary, is_favorite: true });
       }
 
       if (projectId) await readProject(projectId);
       await Promise.all(resultPages.map((page) => validateTarget("page", page.id, projectId)));
-      return ok(resultPages);
+      return respond(resultPages);
     }
 
     // POST /api/workspaces/:wsSlug/projects/:projectId/favorite-pages/:pageId/
@@ -866,6 +881,7 @@ export async function handleFavoritesRoute(
       const pageId = pageIdMatch ? decodeURIComponent(pageIdMatch[1]).trim() : body?.page || body?.id;
       if (!pageId) return { status: 400, data: { error: "Missing page id" } };
       await validateTarget("page", pageId, projectId);
+      requestIdentity.assertCurrent();
 
       const page = (localDB.pages || []).find((p: any) => p.id === pageId);
       if (!page || deletedPageSet.has(page.id)) {
@@ -874,8 +890,8 @@ export async function handleFavoritesRoute(
       if (!isValidScope(page, projectId, wsSlug)) {
         return { status: 404, data: { code: "NOT_FOUND", error: "Trang không thuộc dự án này." } };
       }
-      if (page.access === 1 && page.created_by !== currentUserId) {
-        return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Trang riêng tư chỉ người tạo mới có quyền truy cập." } };
+      if (page.access === 1 && getPageOwner(page) !== currentUserId) {
+        return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Trang riêng tư chỉ chủ sở hữu mới có quyền truy cập." } };
       }
 
       const existing = (localDB.favorites || []).find(
@@ -885,7 +901,7 @@ export async function handleFavoritesRoute(
           (f.entity_identifier === pageId || f.entity_id === pageId || f.entity_data?.id === pageId) &&
           !deletedFavSet.has(f.id)
       );
-      if (existing) return ok(existing);
+      if (existing) return respond(existing);
 
       const newId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
       localDB._deleted_favorite_ids = (localDB._deleted_favorite_ids || []).filter((id: string) => id !== newId);
@@ -909,7 +925,7 @@ export async function handleFavoritesRoute(
       };
       localDB.favorites.push(newFav);
       saveDB();
-      return ok({ message: "Success", data: newFav });
+      return respond({ message: "Success", data: newFav });
     }
 
     // DELETE /api/workspaces/:wsSlug/projects/:projectId/favorite-pages/:pageId/
@@ -917,6 +933,7 @@ export async function handleFavoritesRoute(
       const pageIdMatch = url.match(/\/favorite-pages\/([^/?#]+)\/?(?:\?.*)?$/);
       const pageId = pageIdMatch ? decodeURIComponent(pageIdMatch[1]).trim() : body?.page || body?.id;
       if (projectId) await readProject(projectId);
+      requestIdentity.assertCurrent();
       const fav = (localDB.favorites || []).find(
         (f: any) =>
           ownsFavorite(f) && (!projectId || f.project_id === projectId) &&
@@ -930,7 +947,7 @@ export async function handleFavoritesRoute(
         localDB.favorites = (localDB.favorites || []).filter((f: any) => f.id !== fav.id);
         saveDB();
       }
-      return ok({ message: "Favorite removed" });
+      return respond({ message: "Favorite removed" });
     }
   }
 
@@ -962,7 +979,7 @@ export async function handleFavoritesRoute(
           !isOrphaned(fav)
       );
       if (projectId) await readProject(projectId);
-      return ok(await visibleFavorites(userFavs));
+      return respond(await visibleFavorites(userFavs));
     }
 
     if (normMethod === "post") {
@@ -976,6 +993,7 @@ export async function handleFavoritesRoute(
         body?.entity_identifier ||
         targetIdFromUrl;
       await validateTarget(entityType, targetEntityId, projectId);
+      requestIdentity.assertCurrent();
 
       let entityName = "Favorite";
       let entityLogoProps: any = undefined;
@@ -1010,7 +1028,7 @@ export async function handleFavoritesRoute(
           !deletedFavSet.has(f.id)
       );
       if (existing) {
-        return ok(existing);
+        return respond(existing);
       }
 
       const newId = crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
@@ -1040,12 +1058,13 @@ export async function handleFavoritesRoute(
       };
       localDB.favorites.push(newFav);
       saveDB();
-      return ok(newFav);
+      return respond(newFav);
     }
 
     if (normMethod === "delete") {
       const targetId = targetIdFromUrl || body?.cycle || body?.module || body?.view || body?.page || body?.id;
       if (projectId) await readProject(projectId);
+      requestIdentity.assertCurrent();
       const fav = (localDB.favorites || []).find(
         (f: any) =>
           ownsFavorite(f) && f.entity_type === entityType && (!projectId || f.project_id === projectId) &&
@@ -1058,7 +1077,7 @@ export async function handleFavoritesRoute(
         localDB.favorites = (localDB.favorites || []).filter((f: any) => f.id !== fav.id);
         saveDB();
       }
-      return ok({ message: "Favorite removed" });
+      return respond({ message: "Favorite removed" });
     }
   }
 
@@ -1087,13 +1106,44 @@ export async function handleRoute(method: string, url: string, body: Record<stri
 async function handleRouteUnlocked(
   method: string, url: string, body: Record<string, any>, preserveInvitationId?: string, signal?: AbortSignal
 ): Promise<RouteResult> {
+  const requestIdentity = captureResourceRequestIdentity();
   console.log(`[Dapp interceptor] INTERCEPTED ${method.toUpperCase()} ${url}`);
   // Authorize before migrations, cascades, persistence or tombstone writes.
   try {
-    if (isPlanningAction(url)) return await handlePlanningAction(method, url, body);
-    if (["patch", "put"].includes(method) && Object.hasOwn(body, "access") && /\/pages\/[^/]+\/?$/.test(url.split("?")[0])) {
-      await validatePageVisibilityWrite(url, body);
+    // Page Actions (description, access, lock, archive, duplicate, move)
+    const pageActionRegex = /^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:v2\/)?pages\/([^/]+)\/(description|access|lock|archive|duplicate|move)\/?(?:\?.*)?$/;
+    if (pageActionRegex.test(url.split("?")[0])) {
+      return await handlePageActionRoute(method, url, body, requestIdentity);
     }
+
+    // Archived pages endpoint
+    const archivedPagesMatch = url.split("?")[0].match(/^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/archived-pages\/?$/);
+    if (archivedPagesMatch && method.toLowerCase() === "get") {
+      const wsSlug = decodeURIComponent(archivedPagesMatch[1]);
+      const projId = decodeURIComponent(archivedPagesMatch[2]);
+      const access = await requireProjectAccess(wsSlug, projId, false);
+      requestIdentity.assertCurrent();
+      const targetProjId = access.project.id;
+      const targetProjIdent = access.project.identifier;
+      const deletedPageSet = new Set(localDB._deleted_page_ids || []);
+      const archivedPages = (localDB.pages || [])
+        .filter((p: any) => {
+          if (!p.archived_at || deletedPageSet.has(p.id)) return false;
+          const linkedPids = getPageProjectIds(p);
+          const matchesProj = linkedPids.some((pid) => pid === targetProjId || pid === targetProjIdent);
+          if (!matchesProj) return false;
+          if (p.access === 1 && getPageOwner(p) !== access.user.id) return false;
+          return true;
+        })
+        .map((p: any) => {
+          const { description_html, description_binary, description_json, description, ...summary } = p;
+          return summary;
+        });
+      return ok(archivedPages);
+    }
+
+    if (isPlanningAction(url)) return await handlePlanningAction(method, url, body);
+
     if (["patch", "put"].includes(method) && (body.module_ids !== undefined || body.modules !== undefined)) {
       const issueScope = url.split("?")[0].match(/^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:issues|work-items|epics)\/([^/]+)\/?$/);
       if (issueScope) {
@@ -1119,13 +1169,16 @@ async function handleRouteUnlocked(
         if (!record || !isValidScope(record, access.project.id, access.workspace.id)) {
           throw new ResourceAccessError(404, "NOT_FOUND", "Không tìm thấy tài nguyên trong dự án này.");
         }
-        if (method === "delete" && ["pages", "views"].includes(collection) && access.projectRole < 20 && record.created_by !== access.user.id) {
-          throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Chỉ chủ sở hữu hoặc quản trị viên được xóa tài nguyên này.");
+        if (method === "delete" && ["pages", "views"].includes(collection)) {
+          const ownerId = collection === "pages" ? getPageOwner(record) : record.created_by;
+          if (access.projectRole < 20 && ownerId !== access.user.id) {
+            throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Chỉ chủ sở hữu hoặc quản trị viên được xóa tài nguyên này.");
+          }
         }
       }
     }
     if (/\/(?:user-favorites|user-favorite-(?:cycles|modules|views|pages)|favorite-pages)(?:\/|\?|$)/.test(url)) {
-      const favResult = await handleFavoritesRoute(method, url, body, getLoggedInUserId());
+      const favResult = await handleFavoritesRoute(method, url, body, getLoggedInUserId(), requestIdentity);
       if (favResult) return favResult;
     }
   } catch (error) {
@@ -4301,8 +4354,69 @@ async function handleRouteUnlocked(
   if (method === "get" && url.includes("/entity-search")) {
     const wsMatch = url.match(/\/api\/workspaces\/([^/]+)\/entity-search/);
     const wsSlug = wsMatch ? wsMatch[1] : null;
-    const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
-    const validWsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
+    let wsAccess: any = null;
+    try {
+      wsAccess = await requireWorkspaceAccess(wsSlug || "", false);
+      requestIdentity.assertCurrent();
+    } catch (error) {
+      if (error instanceof ResourceAccessError) {
+        return { status: error.status, data: { code: error.code, error: error.message } };
+      }
+      throw error;
+    }
+
+    const currentWs = wsAccess.workspace;
+    const currentUserId = wsAccess.user.id;
+    const isWsAdmin = wsAccess.role >= 20;
+
+    const deletedProjectIds = new Set(localDB._deleted_project_ids || []);
+    const wsProjects = (localDB.projects || []).filter((p: any) => {
+      if (deletedProjectIds.has(p.id)) return false;
+      return isValidScope(p, null, currentWs.id);
+    });
+
+    const rawWallet = getStoredWalletAddress();
+    const activeWallet = typeof rawWallet === "string" ? rawWallet.toLowerCase().trim() : "";
+
+    const accessibleProjects = wsProjects.filter((p: any) => {
+      if (isWsAdmin) return true;
+      const creator = p.created_by || p.owner?.id || p.owner;
+      const profileMatchesWallet = !activeWallet || (wsAccess.user.metanode_wallet_address || wsAccess.user.wallet_address || "").toLowerCase().trim() === activeWallet;
+      const isCreator = Boolean((activeWallet && (creator || "").toLowerCase().trim() === activeWallet) || (profileMatchesWallet && creator === currentUserId));
+      if (isCreator) return true;
+      if (p.network !== 0 && wsAccess.role >= 5) return true;
+
+      return (localDB.project_members || []).some((entry: any) => {
+        const pidMatches = (entry.project === p.id || entry.project_id === p.id);
+        if (!pidMatches) return false;
+        if (entry.is_active === false || Number(entry.role) === 0) return false;
+        const entryWallet = typeof entry.wallet_address === "string" ? entry.wallet_address.toLowerCase().trim()
+          : typeof entry.member?.metanode_wallet_address === "string" ? entry.member.metanode_wallet_address.toLowerCase().trim()
+          : typeof entry.member === "string" ? entry.member.toLowerCase().trim() : "";
+        const entryMemberId = typeof entry.member === "object" && entry.member !== null ? entry.member.id : entry.member;
+        if (activeWallet) {
+          if (entryWallet && entryWallet === activeWallet) return true;
+          const userWallet = (wsAccess.user.metanode_wallet_address || wsAccess.user.wallet_address || "").toLowerCase().trim();
+          if (entryMemberId === currentUserId && userWallet && userWallet === activeWallet) return true;
+          return false;
+        }
+        return entryMemberId === currentUserId;
+      });
+    });
+    const accessibleProjectKeys = new Set<string>();
+    const entityProjectMap = new Map<string, any>();
+    accessibleProjects.forEach((p: any) => {
+      if (p.id) {
+        accessibleProjectKeys.add(p.id);
+        entityProjectMap.set(p.id, p);
+      }
+      if (p.identifier) {
+        accessibleProjectKeys.add(p.identifier);
+        accessibleProjectKeys.add(p.identifier.toLowerCase());
+        entityProjectMap.set(p.identifier, p);
+        entityProjectMap.set(p.identifier.toLowerCase(), p);
+      }
+    });
 
     let count = 5;
     let queryTypes = ["user_mention"];
@@ -4331,8 +4445,7 @@ async function handleRouteUnlocked(
 
     if (queryTypes.includes("user_mention")) {
       const wsMembers = (localDB.workspace_members || []).filter((wm: any) => {
-        const wmWs = wm.workspace || wm.workspace_id;
-        return !wmWs || validWsKeys.size === 0 || validWsKeys.has(wmWs);
+        return isValidScope(wm, null, currentWs.id);
       });
 
       const memberUsers: Array<{ id: string; display_name: string; avatar_url: string }> = [];
@@ -4357,17 +4470,6 @@ async function handleRouteUnlocked(
         });
       }
 
-      for (const u of localDB.users || []) {
-        if (!seenUserIds.has(u.id)) {
-          seenUserIds.add(u.id);
-          memberUsers.push({
-            id: u.id,
-            display_name: u.display_name || u.first_name || u.email?.split("@")[0] || "User",
-            avatar_url: u.avatar_url || "",
-          });
-        }
-      }
-
       const filtered = memberUsers.filter((u) => {
         if (!searchQuery) return true;
         return (
@@ -4384,27 +4486,47 @@ async function handleRouteUnlocked(
     }
 
     if (queryTypes.includes("issue")) {
+      const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
       const issues = (localDB.issues || []).filter((i: any) => {
-        if (projectId && i.project_id !== projectId && i.project !== projectId) return false;
+        if (deletedIssueSet.has(i.id)) return false;
+        if (i.is_triage) return false;
+        if (i.archived_at) return false;
+
+        const pId = i.project_id || i.project;
+        if (!pId) return false;
+        const proj = accessibleProjects.find(
+          (p: any) =>
+            p.id === pId ||
+            (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(pId).toLowerCase())
+        );
+        if (!searchRecordMatchesWorkspace(i, proj, currentWs)) return false;
+
+        if (projectId && proj.id !== projectId && proj.identifier !== projectId) return false;
         if (!searchQuery) return true;
         return (i.name || "").toLowerCase().includes(searchQuery);
       });
-      response.issue = issues.slice(0, count).map((i: any) => ({
-        id: i.id,
-        name: i.name,
-        sequence_id: i.sequence_id,
-        project_id: i.project_id || i.project,
-        project__identifier: i.project__identifier || "",
-        priority: i.priority,
-        state_id: i.state_id,
-        type_id: i.type_id,
-      }));
+      response.issue = issues.slice(0, count).map((i: any) => {
+        const itemPid = i.project_id || i.project;
+        const proj = accessibleProjects.find(
+          (p: any) =>
+            p.id === itemPid ||
+            (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(itemPid).toLowerCase())
+        );
+        return {
+          id: i.id,
+          name: i.name,
+          sequence_id: i.sequence_id,
+          project_id: proj?.id || itemPid,
+          project__identifier: proj?.identifier || i.project__identifier || "",
+          priority: i.priority,
+          state_id: i.state_id,
+          type_id: i.type_id,
+        };
+      });
     }
 
     if (queryTypes.includes("project")) {
-      const projects = (localDB.projects || []).filter((p: any) => {
-        const pWs = p.workspace || p.workspace_id;
-        if (pWs && validWsKeys.size > 0 && !validWsKeys.has(pWs)) return false;
+      const projects = accessibleProjects.filter((p: any) => {
         if (!searchQuery) return true;
         return (p.name || "").toLowerCase().includes(searchQuery) || (p.identifier || "").toLowerCase().includes(searchQuery);
       });
@@ -6115,84 +6237,9 @@ async function handleRouteUnlocked(
     return ok(archived);
   }
 
-  // ── 3. Views Endpoints ────────────────────────────────────────────────
-  // Page description endpoint (/pages/:id/description/)
-  const pageDescriptionMatch = url.match(/\/pages\/([^/]+)\/description\/?(?:\?.*)?$/);
-  if (pageDescriptionMatch) {
-    const pageId = pageDescriptionMatch[1];
-    const page = (localDB.pages || []).find((p: any) => p.id === pageId);
-    if (method.toLowerCase() === "get") {
-      return ok(page?.description_html || page?.description || "");
-    }
-    if (method.toLowerCase() === "patch") {
-      if (page) {
-        if (body?.description_html !== undefined) page.description_html = body.description_html;
-        if (body?.description_json !== undefined) page.description_json = body.description_json;
-        if (body?.description_binary !== undefined) page.description_binary = body.description_binary;
-        if (body?.description !== undefined) page.description = body.description;
-        page.updated_at = new Date().toISOString();
-        saveDB();
-      }
-      return ok({ message: "Description updated" });
-    }
-  }
-
-  // Page Actions (access, archive, lock, duplicate, move)
-  const pageActionMatch = url.match(/\/pages\/([^/]+)\/(access|archive|lock|duplicate|move)\/?(?:\?.*)?$/);
-  if (pageActionMatch) {
-    const pageId = pageActionMatch[1];
-    const action = pageActionMatch[2];
-    const page = (localDB.pages || []).find((p: any) => p.id === pageId);
-    if (action === "archive") {
-      if (method.toLowerCase() === "post") {
-        if (page) page.archived_at = new Date().toISOString();
-        saveDB();
-        return ok({ archived_at: page?.archived_at || new Date().toISOString() });
-      }
-      if (method.toLowerCase() === "delete") {
-        if (page) page.archived_at = null;
-        saveDB();
-        return ok({ message: "Page restored" });
-      }
-    }
-    if (action === "lock") {
-      if (page) page.is_locked = method.toLowerCase() === "post";
-      saveDB();
-      return ok({ is_locked: page?.is_locked ?? true });
-    }
-    if (action === "duplicate" && method.toLowerCase() === "post") {
-      if (page) {
-        const targetProjId = page.project_id || page.project;
-        const newPage = {
-          ...page,
-          id: crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11),
-          name: `${page.name} (Copy)`,
-          project: targetProjId,
-          project_id: targetProjId,
-          project_ids: Array.isArray(page.project_ids) && page.project_ids.length > 0 ? [...page.project_ids] : (targetProjId ? [targetProjId] : []),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        if (!localDB.pages) localDB.pages = [];
-        localDB.pages.push(newPage);
-        saveDB();
-        return ok(newPage);
-      }
-    }
-    if (action === "move" && method.toLowerCase() === "post") {
-      if (page && body?.new_project_id) {
-        page.project = body.new_project_id;
-        page.project_id = body.new_project_id;
-        page.project_ids = [body.new_project_id];
-        saveDB();
-        return ok(page);
-      }
-    }
-  }
-
-  if (url.includes("/archived-pages") && method.toLowerCase() === "get") {
-    const archivedPages = (localDB.pages || []).filter((p: any) => !!p.archived_at);
-    return ok(archivedPages);
+  // Unscoped / unauthenticated Page access attempts rejected
+  if (url.match(/\/pages\/[^/]+\/(?:description|access|archive|lock|duplicate|move)/) || url.includes("/archived-pages")) {
+    return { status: 404, data: { error: "Không tìm thấy trang trong dự án này." } };
   }
 
   // ── 5. Intake (Inbox) Endpoints ───────────────────────────────────────
@@ -6450,19 +6497,51 @@ async function handleRouteUnlocked(
   const workspaceSearchMatch = url.match(/\/workspaces\/([^/?]+)\/search(?:\/|\?|$)/);
   if (workspaceSearchMatch && method.toLowerCase() === "get") {
     const wsSlug = workspaceSearchMatch[1];
-    return handleWorkspaceGlobalSearch(url, wsSlug);
+    return await handleWorkspaceGlobalSearch(url, wsSlug, requestIdentity);
   }
 
   // search-issues endpoint — delegate to handleCRUD
   if (url.includes("/search-issues") || url.includes("search-issues")) {
-    return handleCRUD(method, url, body, preserveInvitationId);
+    return handleCRUD(method, url, body, preserveInvitationId, requestIdentity);
   }
   // ── Generic CRUD ────────────────────────────────────────────────────
-  return handleCRUD(method, url, body, preserveInvitationId);
+  return handleCRUD(method, url, body, preserveInvitationId, requestIdentity);
 }
 
 // ── Workspace Global Search handler (Power-K command palette) ─────────────
-function handleWorkspaceGlobalSearch(url: string, wsSlug: string): RouteResult {
+/** Validate every workspace claim after resolving a project inside the authorized workspace.
+ * Canonical IDs prevent the shared scope helper from resolving a legacy identifier globally again.
+ */
+function searchRecordMatchesWorkspace(record: any, project: any, workspace: any, linkedPage = false): boolean {
+  if (!project || !isValidScope(project, null, workspace.id)) return false;
+  const keys: string[] = (linkedPage ? getPageProjectIds(record) : [record.project_id, record.project])
+    .filter((key: unknown): key is string => typeof key === "string" && Boolean(key.trim())).map((key: string) => key.trim());
+  if (!keys.length) return false;
+  const matches = (candidate: any, key: string) => candidate.id === key ||
+    (typeof candidate.identifier === "string" && candidate.identifier.toLowerCase() === key.toLowerCase());
+  const hasWorkspace = [record.workspace_id, record.workspace, record.workspace_slug]
+    .some((key) => typeof key === "string" && Boolean(key.trim()));
+  const detail = record.project_detail;
+  const hasDetailWorkspace = detail && [detail.workspace_id, detail.workspace, detail.workspace_slug]
+    .some((key: unknown) => typeof key === "string" && Boolean(key.trim()));
+  for (const key of keys) {
+    if (!linkedPage && !matches(project, key)) return false;
+    if (linkedPage && !(localDB.projects || []).some((candidate: any) =>
+      matches(candidate, key) && isValidScope(candidate, null, workspace.id) &&
+      !(localDB._deleted_project_ids || []).includes(candidate.id))) return false;
+    // A legacy alias without workspace evidence cannot distinguish colliding projects.
+    if (!hasWorkspace && !hasDetailWorkspace && key !== project.id &&
+      (localDB.projects || []).some((candidate: any) => matches(candidate, key) &&
+        !(localDB._deleted_project_ids || []).includes(candidate.id) && !isValidScope(candidate, null, workspace.id))) return false;
+  }
+  const canonical = { project: project.id, project_id: project.id, project_ids: [project.id] };
+  if (!hasWorkspace && hasDetailWorkspace && !isValidScope({ ...detail, ...canonical }, project.id, workspace.id)) return false;
+  return isValidScope({ ...record, ...canonical }, project.id, workspace.id);
+}
+
+async function handleWorkspaceGlobalSearch(
+  url: string, wsSlug: string, requestIdentity: ResourceRequestIdentity = captureResourceRequestIdentity()
+): Promise<RouteResult> {
   let urlObj: URL;
   try {
     urlObj = new URL(url, "http://localhost");
@@ -6497,74 +6576,116 @@ function handleWorkspaceGlobalSearch(url: string, wsSlug: string): RouteResult {
     return ok(emptyResult);
   }
 
-  // 1. Resolve workspace
-  const ws = (localDB.workspaces || []).find(
-    (w: any) =>
-      w.slug === wsSlug ||
-      w.id === wsSlug ||
-      w.slug?.toLowerCase() === wsSlug?.toLowerCase()
-  );
-  const actualWsSlug = ws?.slug || wsSlug;
-  const wsId = ws?.id || wsSlug;
-  const wsKeys = new Set([wsSlug, actualWsSlug, wsId].filter(Boolean));
+  // 1. Authorize workspace
+  let wsAccess: any;
+  try {
+    wsAccess = await requireWorkspaceAccess(wsSlug, false);
+    requestIdentity.assertCurrent();
+  } catch (error) {
+    if (error instanceof ResourceAccessError) {
+      return { status: error.status, data: { code: error.code, error: error.message } };
+    }
+    throw error;
+  }
+  const actualWs = wsAccess.workspace;
+  const currentUserId = wsAccess.user.id;
+  const isWsAdmin = wsAccess.role >= 20;
+
+  const actualWsSlug = actualWs.slug;
 
   // 2. Resolve projects in workspace
-  const deletedWsSlugs = new Set(localDB._deleted_workspace_slugs || []);
-  const deletedWsIds = new Set(localDB._deleted_workspace_ids || []);
-
-  let allProjects = (localDB.projects || []).filter((p: any) => {
-    return wsKeys.has(p.workspace) || wsKeys.has(p.workspace_id);
+  const deletedProjectIds = new Set(localDB._deleted_project_ids || []);
+  const allProjects = (localDB.projects || []).filter((p: any) => {
+    if (deletedProjectIds.has(p.id)) return false;
+    return isValidScope(p, null, actualWs.id);
   });
+
+  // Strict boundary: Never fallback to localDB.projects when workspace has 0 projects!
   if (allProjects.length === 0) {
-    allProjects = localDB.projects || [];
+    return ok(emptyResult);
   }
 
+  // 3. Accessible projects for current user
+  const rawWallet = getStoredWalletAddress();
+  const activeWallet = typeof rawWallet === "string" ? rawWallet.toLowerCase().trim() : "";
+
+  const accessibleProjects = allProjects.filter((p: any) => {
+    if (isWsAdmin) return true;
+    const creator = p.created_by || p.owner?.id || p.owner;
+    const profileMatchesWallet = !activeWallet || (wsAccess.user.metanode_wallet_address || wsAccess.user.wallet_address || "").toLowerCase().trim() === activeWallet;
+    const isCreator = Boolean((activeWallet && (creator || "").toLowerCase().trim() === activeWallet) || (profileMatchesWallet && creator === currentUserId));
+    if (isCreator) return true;
+    if (p.network !== 0 && wsAccess.role >= 5) return true; // public project in workspace
+
+    return (localDB.project_members || []).some((entry: any) => {
+      const pidMatches = (entry.project === p.id || entry.project_id === p.id);
+      if (!pidMatches) return false;
+      if (entry.is_active === false || Number(entry.role) === 0) return false;
+      const entryWallet = typeof entry.wallet_address === "string" ? entry.wallet_address.toLowerCase().trim()
+        : typeof entry.member?.metanode_wallet_address === "string" ? entry.member.metanode_wallet_address.toLowerCase().trim()
+        : typeof entry.member === "string" ? entry.member.toLowerCase().trim() : "";
+      const entryMemberId = typeof entry.member === "object" && entry.member !== null ? entry.member.id : entry.member;
+      if (activeWallet) {
+        if (entryWallet && entryWallet === activeWallet) return true;
+        const userWallet = (wsAccess.user.metanode_wallet_address || wsAccess.user.wallet_address || "").toLowerCase().trim();
+        if (entryMemberId === currentUserId && userWallet && userWallet === activeWallet) return true;
+        return false;
+      }
+      return entryMemberId === currentUserId;
+    });
+  });
+
+  const accessibleProjectKeys = new Set<string>();
   const projectMap = new Map<string, any>();
-  allProjects.forEach((p: any) => {
-    if (p.id) projectMap.set(p.id, p);
+  accessibleProjects.forEach((p: any) => {
+    if (p.id) {
+      accessibleProjectKeys.add(p.id);
+      projectMap.set(p.id, p);
+    }
     if (p.identifier) {
+      accessibleProjectKeys.add(p.identifier);
+      accessibleProjectKeys.add(p.identifier.toLowerCase());
       projectMap.set(p.identifier, p);
       projectMap.set(p.identifier.toLowerCase(), p);
     }
   });
 
   // Target project scope
-  const targetProject = allProjects.find(
-    (p: any) =>
-      p.id === projectIdParam ||
-      p.identifier === projectIdParam ||
-      p.identifier?.toLowerCase() === projectIdParam?.toLowerCase() ||
-      p.name?.toLowerCase() === projectIdParam?.toLowerCase()
-  );
   const matchingProjectIds = new Set<string>();
-  if (targetProject) {
-    if (targetProject.id) matchingProjectIds.add(targetProject.id);
-    if (targetProject.identifier) matchingProjectIds.add(targetProject.identifier);
-  } else if (projectIdParam) {
-    matchingProjectIds.add(projectIdParam);
+  if (projectIdParam) {
+    const targetProject = accessibleProjects.find(
+      (p: any) =>
+        p.id === projectIdParam ||
+        p.identifier === projectIdParam ||
+        p.identifier?.toLowerCase() === projectIdParam?.toLowerCase() ||
+        p.name?.toLowerCase() === projectIdParam?.toLowerCase()
+    );
+    if (targetProject) {
+      if (targetProject.id) matchingProjectIds.add(targetProject.id);
+      if (targetProject.identifier) matchingProjectIds.add(targetProject.identifier);
+    } else {
+      return ok(emptyResult);
+    }
   }
 
   // ── 1. Workspaces ──
   const workspaceResults: any[] = [];
   if (workspaceSearch) {
-    (localDB.workspaces || []).forEach((w: any) => {
-      if (deletedWsSlugs.has(w.slug) || deletedWsIds.has(w.id)) return;
-      const nameMatch = (w.name || "").toLowerCase().includes(searchTerm);
-      const slugMatch = (w.slug || "").toLowerCase().includes(searchTerm);
-      if (nameMatch || slugMatch) {
-        workspaceResults.push({
-          id: w.id,
-          name: w.name || w.slug,
-          slug: w.slug,
-        });
-      }
-    });
+    const nameMatch = (actualWs.name || "").toLowerCase().includes(searchTerm);
+    const slugMatch = (actualWs.slug || "").toLowerCase().includes(searchTerm);
+    if (nameMatch || slugMatch) {
+      workspaceResults.push({
+        id: actualWs.id,
+        name: actualWs.name || actualWs.slug,
+        slug: actualWs.slug,
+      });
+    }
   }
 
   // ── 2. Projects ──
   const projectResults: any[] = [];
   if (workspaceSearch) {
-    allProjects.forEach((p: any) => {
+    accessibleProjects.forEach((p: any) => {
       const nameMatch = (p.name || "").toLowerCase().includes(searchTerm);
       const identifierMatch = (p.identifier || "").toLowerCase().includes(searchTerm);
       if (nameMatch || identifierMatch) {
@@ -6586,30 +6707,27 @@ function handleWorkspaceGlobalSearch(url: string, wsSlug: string): RouteResult {
     if (deletedIssueSet.has(item.id)) return;
     if (item.is_draft) return;
     if (item.archived_at) return;
+    if (item.is_triage) return; // Must exclude triage tasks!
 
     const itemProjId = item.project_id || item.project;
-    const proj = itemProjId ? projectMap.get(itemProjId) : null;
-    const projIdentifier = proj?.identifier || item.project_detail?.identifier || "PROJ";
+    if (!itemProjId) return;
 
-    // Scope check: if workspaceSearch is false, restrict to selected project
+    const proj = accessibleProjects.find(
+      (p: any) =>
+        p.id === itemProjId ||
+        (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(itemProjId).toLowerCase())
+    );
+    if (!searchRecordMatchesWorkspace(item, proj, actualWs)) return;
+
+    const projIdentifier = proj.identifier || "PROJ";
+
     if (!workspaceSearch && matchingProjectIds.size > 0) {
       const belongsToProj =
-        (itemProjId && matchingProjectIds.has(itemProjId)) ||
+        matchingProjectIds.has(proj.id) ||
         matchingProjectIds.has(projIdentifier);
       if (!belongsToProj) return;
-    } else if (workspaceSearch && allProjects.length > 0) {
-      // Must belong to current workspace projects or workspace
-      const belongsToWs =
-        (itemProjId && projectMap.has(itemProjId)) ||
-        wsKeys.has(item.workspace) ||
-        wsKeys.has(item.workspace_id);
-      if (!belongsToWs) return;
     }
 
-    // Match search term against:
-    // - issue name
-    // - sequence_id
-    // - full identifier (e.g. "NET-2")
     const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
     const seqStr = String(item.sequence_id ?? "");
     const seqMatch = seqStr === searchTerm || (seqStr.length > 0 && seqStr.includes(searchTerm));
@@ -6625,7 +6743,7 @@ function handleWorkspaceGlobalSearch(url: string, wsSlug: string): RouteResult {
         id: item.id,
         name: item.name || "",
         project__identifier: projIdentifier,
-        project_id: proj?.id || itemProjId,
+        project_id: proj.id,
         sequence_id: item.sequence_id || 0,
         workspace__slug: actualWsSlug,
         type_id: item.type_id || item.type || "",
@@ -6634,90 +6752,132 @@ function handleWorkspaceGlobalSearch(url: string, wsSlug: string): RouteResult {
   });
 
   // ── 4. Cycles ──
+  const deletedCycleSet = new Set(localDB._deleted_cycle_ids || []);
   const cycleResults: any[] = [];
   (localDB.cycles || []).forEach((item: any) => {
+    if (deletedCycleSet.has(item.id) || item.deleted_at || item.archived_at) return;
     const itemProjId = item.project_id || item.project;
+    if (!itemProjId) return;
+    const proj = accessibleProjects.find(
+      (p: any) =>
+        p.id === itemProjId ||
+        (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(itemProjId).toLowerCase())
+    );
+    if (!searchRecordMatchesWorkspace(item, proj, actualWs)) return;
     if (!workspaceSearch && matchingProjectIds.size > 0) {
-      if (!itemProjId || !matchingProjectIds.has(itemProjId)) return;
+      if (!matchingProjectIds.has(proj.id) && !matchingProjectIds.has(proj.identifier)) return;
     }
     const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
     if (nameMatch) {
-      const proj = itemProjId ? projectMap.get(itemProjId) : null;
       cycleResults.push({
         id: item.id,
         name: item.name || "",
-        project_id: proj?.id || itemProjId,
-        project__identifier: proj?.identifier || "PROJ",
+        project_id: proj.id,
+        project__identifier: proj.identifier || "PROJ",
         workspace__slug: actualWsSlug,
       });
     }
   });
 
   // ── 5. Modules ──
+  const deletedModuleSet = new Set(localDB._deleted_module_ids || []);
   const moduleResults: any[] = [];
   (localDB.modules || []).forEach((item: any) => {
+    if (deletedModuleSet.has(item.id) || item.deleted_at || item.archived_at) return;
     const itemProjId = item.project_id || item.project;
+    if (!itemProjId) return;
+    const proj = accessibleProjects.find(
+      (p: any) =>
+        p.id === itemProjId ||
+        (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(itemProjId).toLowerCase())
+    );
+    if (!searchRecordMatchesWorkspace(item, proj, actualWs)) return;
     if (!workspaceSearch && matchingProjectIds.size > 0) {
-      if (!itemProjId || !matchingProjectIds.has(itemProjId)) return;
+      if (!matchingProjectIds.has(proj.id) && !matchingProjectIds.has(proj.identifier)) return;
     }
     const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
     if (nameMatch) {
-      const proj = itemProjId ? projectMap.get(itemProjId) : null;
       moduleResults.push({
         id: item.id,
         name: item.name || "",
-        project_id: proj?.id || itemProjId,
-        project__identifier: proj?.identifier || "PROJ",
+        project_id: proj.id,
+        project__identifier: proj.identifier || "PROJ",
         workspace__slug: actualWsSlug,
       });
     }
   });
 
   // ── 6. Views ──
+  const deletedViewSet = new Set(localDB._deleted_view_ids || []);
   const viewResults: any[] = [];
   (localDB.views || []).forEach((item: any) => {
+    if (deletedViewSet.has(item.id) || item.deleted_at) return;
     const itemProjId = item.project_id || item.project;
+    if (!itemProjId) return;
+    const proj = accessibleProjects.find(
+      (p: any) =>
+        p.id === itemProjId ||
+        (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(itemProjId).toLowerCase())
+    );
+    if (!searchRecordMatchesWorkspace(item, proj, actualWs)) return;
     if (!workspaceSearch && matchingProjectIds.size > 0) {
-      if (!itemProjId || !matchingProjectIds.has(itemProjId)) return;
+      if (!matchingProjectIds.has(proj.id) && !matchingProjectIds.has(proj.identifier)) return;
     }
+
+    // Access check: EViewAccess.PRIVATE = 0, EViewAccess.PUBLIC = 1
+    const isViewPrivate = item.access === 0 || item.access === "private";
+    const isViewCreator = item.created_by === currentUserId || item.owned_by === currentUserId;
+    if (isViewPrivate && !isViewCreator && !isWsAdmin) return;
+
     const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
     if (nameMatch) {
-      const proj = itemProjId ? projectMap.get(itemProjId) : null;
       viewResults.push({
         id: item.id,
         name: item.name || "",
-        project_id: proj?.id || itemProjId,
-        project__identifier: proj?.identifier || "PROJ",
+        project_id: proj.id,
+        project__identifier: proj.identifier || "PROJ",
         workspace__slug: actualWsSlug,
       });
     }
   });
 
   // ── 7. Pages ──
+  const deletedPageSet = new Set(localDB._deleted_page_ids || []);
   const pageResults: any[] = [];
   (localDB.pages || []).forEach((item: any) => {
-    const itemProjId = item.project_id || item.project;
+    if (deletedPageSet.has(item.id) || item.archived_at || item.deleted_at) return;
+    // Check accessible project
+    const pids = getPageProjectIds(item);
+    const validLinkedProjects = accessibleProjects.filter((p: any) =>
+      pids.some((pid) => pid === p.id || (typeof p.identifier === "string" && p.identifier.toLowerCase() === pid.toLowerCase()))
+    );
+    if (!validLinkedProjects.length || !searchRecordMatchesWorkspace(item, validLinkedProjects[0], actualWs, true)) return;
+
     if (!workspaceSearch && matchingProjectIds.size > 0) {
-      const pids = Array.isArray(item.project_ids)
-        ? item.project_ids
-        : (itemProjId ? [itemProjId] : []);
-      const hasMatch = pids.some((pid: string) => matchingProjectIds.has(pid));
+      const hasMatch = validLinkedProjects.some(
+        (p: any) => matchingProjectIds.has(p.id) || matchingProjectIds.has(p.identifier)
+      );
       if (!hasMatch) return;
     }
+
+    // Access check: Private page ONLY visible to owner!
+    if (item.access === 1 && getPageOwner(item) !== currentUserId) {
+      return;
+    }
+
     const nameMatch = (item.name || "").toLowerCase().includes(searchTerm);
     if (nameMatch) {
-      const proj = itemProjId ? projectMap.get(itemProjId) : null;
-      const project_ids = Array.isArray(item.project_ids)
-        ? item.project_ids
-        : (itemProjId ? [itemProjId] : []);
-      const project__identifiers = Array.isArray(item.project__identifiers)
-        ? item.project__identifiers
-        : (proj?.identifier ? [proj.identifier] : []);
+      const itemProjId = item.project_id || item.project || pids[0];
+      const proj = itemProjId ? (projectMap.get(itemProjId) || (typeof itemProjId === "string" ? projectMap.get(itemProjId.toLowerCase()) : null)) : null;
+      const project_ids = pids;
+      const project__identifiers = pids
+        .map((pid) => projectMap.get(pid)?.identifier)
+        .filter(Boolean);
       pageResults.push({
         id: item.id,
         name: item.name || "",
         project_ids,
-        project__identifiers,
+        project__identifiers: project__identifiers.length > 0 ? project__identifiers : (proj?.identifier ? [proj.identifier] : []),
         workspace__slug: actualWsSlug,
       });
     }
@@ -6786,7 +6946,9 @@ function enrichProjectEntity(collection: string, item: any, defaultProjId?: stri
       : (pId ? [pId] : []);
     enriched.access = enriched.access ?? 0;
     enriched.color = enriched.color || "#3f3f46";
-    enriched.description_html = enriched.description_html || "<p></p>";
+    if (enriched.description_html !== undefined) {
+      enriched.description_html = enriched.description_html || "<p></p>";
+    }
   } else if (collection === "cycles") {
     enriched.status = planningCycleStatus(enriched);
     Object.assign(enriched, planningStats("cycles", enriched));
@@ -6822,7 +6984,8 @@ async function handleCRUD(
   method: string,
   url: string,
   body: Record<string, any>,
-  preserveInvitationId?: string
+  preserveInvitationId?: string,
+  requestIdentity: ResourceRequestIdentity = captureResourceRequestIdentity()
 ): Promise<RouteResult> {
   let { collection, id, isPaginated } = parseApiUrl(url);
   // These resources have dedicated, scoped handlers above. Generic aliases
@@ -6830,6 +6993,19 @@ async function handleCRUD(
   if (["assets", "attachments"].includes(collection) ||
     (method === "delete" && ["workspaces", "projects"].includes(collection)))
     return { status: 404, data: { error: "Đường dẫn tài nguyên không được hỗ trợ." } };
+
+  // Bug A: Generic CRUD must never process unscoped Pages requests
+  if (collection === "pages") {
+    const pageScopeMatch = url.split("?")[0].match(
+      /^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:v2\/)?pages(?:\/([^/]+))?\/?$/
+    );
+    if (!pageScopeMatch) {
+      if (!getLoggedInUserId()) {
+        return { status: 401, data: { code: "AUTH_REQUIRED", error: "Vui lòng đăng nhập." } };
+      }
+      return { status: 400, data: { code: "INVALID_PAGE_SCOPE", error: "Đường dẫn Pages bắt buộc phải có đầy đủ không gian làm việc và dự án." } };
+    }
+  }
   console.log(
     `[DApp CRUD] ${method.toUpperCase()} collection=${collection}, id=${id}, isPaginated=${isPaginated}, url=${url}`
   );
@@ -6838,7 +7014,7 @@ async function handleCRUD(
   if (collection === "search" && method === "get") {
     const wsMatch = url.match(/\/workspaces\/([^/?]+)/);
     const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
-    return handleWorkspaceGlobalSearch(url, wsSlug);
+    return await handleWorkspaceGlobalSearch(url, wsSlug, requestIdentity);
   }
 
   // Handle bulk-delete-issues endpoint
@@ -7079,8 +7255,90 @@ async function handleCRUD(
     const workspaceSearch = urlObj.searchParams.get("workspace_search") === "true";
     const currentIssueId = urlObj.searchParams.get("issue_id");
 
+    const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+    const wsSlug = wsMatch ? wsMatch[1] : (localDB.workspaces?.[0]?.slug || "fiai");
+    let wsAccess: any = null;
+    try {
+      wsAccess = await requireWorkspaceAccess(wsSlug, false);
+      requestIdentity.assertCurrent();
+    } catch (error) {
+      if (error instanceof ResourceAccessError) {
+        return { status: error.status, data: { code: error.code, error: error.message } };
+      }
+      throw error;
+    }
+
+    const currentWs = wsAccess.workspace;
+    const deletedProjectIds = new Set(localDB._deleted_project_ids || []);
+    const wsProjects = (localDB.projects || []).filter((p: any) => {
+      if (deletedProjectIds.has(p.id)) return false;
+      return isValidScope(p, null, currentWs.id);
+    });
+
+    const rawWallet = getStoredWalletAddress();
+    const activeWallet = typeof rawWallet === "string" ? rawWallet.toLowerCase().trim() : "";
+    const isWsAdmin = wsAccess.role >= 20;
+    const currentUserId = wsAccess.user.id;
+
+    const accessibleProjects = wsProjects.filter((p: any) => {
+      if (isWsAdmin) return true;
+      const creator = p.created_by || p.owner?.id || p.owner;
+      const profileMatchesWallet = !activeWallet || (wsAccess.user.metanode_wallet_address || wsAccess.user.wallet_address || "").toLowerCase().trim() === activeWallet;
+      const isCreator = Boolean((activeWallet && (creator || "").toLowerCase().trim() === activeWallet) || (profileMatchesWallet && creator === currentUserId));
+      if (isCreator) return true;
+      if (p.network !== 0 && wsAccess.role >= 5) return true;
+
+      return (localDB.project_members || []).some((entry: any) => {
+        const pidMatches = (entry.project === p.id || entry.project_id === p.id);
+        if (!pidMatches) return false;
+        if (entry.is_active === false || Number(entry.role) === 0) return false;
+        const entryWallet = typeof entry.wallet_address === "string" ? entry.wallet_address.toLowerCase().trim()
+          : typeof entry.member?.metanode_wallet_address === "string" ? entry.member.metanode_wallet_address.toLowerCase().trim()
+          : typeof entry.member === "string" ? entry.member.toLowerCase().trim() : "";
+        const entryMemberId = typeof entry.member === "object" && entry.member !== null ? entry.member.id : entry.member;
+        if (activeWallet) {
+          if (entryWallet && entryWallet === activeWallet) return true;
+          const userWallet = (wsAccess.user.metanode_wallet_address || wsAccess.user.wallet_address || "").toLowerCase().trim();
+          if (entryMemberId === currentUserId && userWallet && userWallet === activeWallet) return true;
+          return false;
+        }
+        return entryMemberId === currentUserId;
+      });
+    });
+
+    const accessibleProjectKeys = new Set<string>();
+    const projectMap = new Map<string, any>();
+    accessibleProjects.forEach((p: any) => {
+      if (p.id) {
+        accessibleProjectKeys.add(p.id);
+        projectMap.set(p.id, p);
+      }
+      if (p.identifier) {
+        accessibleProjectKeys.add(p.identifier);
+        accessibleProjectKeys.add(p.identifier.toLowerCase());
+        projectMap.set(p.identifier, p);
+        projectMap.set(p.identifier.toLowerCase(), p);
+      }
+    });
+
     const deletedIssueSet = new Set(localDB._deleted_issue_ids || []);
-    let list = (localDB.issues || []).filter((item: any) => !deletedIssueSet.has(item.id));
+    let list = (localDB.issues || []).filter((item: any) => {
+      if (deletedIssueSet.has(item.id)) return false;
+      if (item.is_triage) return false;
+      if (item.is_draft) return false;
+      if (item.archived_at) return false;
+
+      const pid = item.project_id || item.project;
+      if (!pid) return false;
+      const proj = accessibleProjects.find(
+        (p: any) =>
+          p.id === pid ||
+          (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(pid).toLowerCase())
+      );
+      if (!searchRecordMatchesWorkspace(item, proj, currentWs)) return false;
+
+      return true;
+    });
     console.log(`[DApp CRUD] search-issues: total issues in DB = ${list.length}`);
 
     // Exclude current issue itself if issue_id is provided
@@ -7093,7 +7351,15 @@ async function handleCRUD(
       const projMatch = url.match(/\/projects\/([^/]+)\//);
       if (projMatch) {
         const projId = projMatch[1];
-        list = list.filter((item: any) => item.project === projId || item.project_id === projId);
+        list = list.filter((item: any) => {
+          const itemPid = item.project_id || item.project;
+          const proj = accessibleProjects.find(
+            (p: any) =>
+              p.id === itemPid ||
+              (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(itemPid).toLowerCase())
+          );
+          return proj && (proj.id === projId || proj.identifier === projId);
+        });
         console.log(`[DApp CRUD] search-issues: after project filter for ${projId} = ${list.length}`);
       }
     }
@@ -7105,22 +7371,26 @@ async function handleCRUD(
 
     // Map to ISearchIssueResponse format
     const results = list.map((item: any) => {
+      const itemPid = item.project_id || item.project;
+      const proj = accessibleProjects.find(
+        (p: any) =>
+          p.id === itemPid ||
+          (typeof p.identifier === "string" && p.identifier.toLowerCase() === String(itemPid).toLowerCase())
+      );
       const stateDetail =
         item.state_detail || (localDB.states || []).find((s: any) => s.id === (item.state_id || item.state));
-      const projectDetail =
-        item.project_detail || (localDB.projects || []).find((p: any) => p.id === (item.project_id || item.project));
       return {
         id: item.id,
         name: item.name || "",
-        project_id: item.project_id || item.project,
-        project__identifier: projectDetail?.identifier || "PROJ",
-        project__name: projectDetail?.name || "Project",
+        project_id: proj?.id || itemPid,
+        project__identifier: proj?.identifier || "PROJ",
+        project__name: proj?.name || "Project",
         sequence_id: item.sequence_id || 0,
         start_date: item.start_date || null,
         state__color: stateDetail?.color || "#a3a3a3",
         state__group: stateDetail?.group || "backlog",
         state__name: stateDetail?.name || "Backlog",
-        workspace__slug: item.workspace || localDB.workspaces?.[0]?.slug || "fiai",
+        workspace__slug: currentWs?.slug || wsSlug,
         type_id: item.type_id || item.type || null,
       };
     });
@@ -7844,6 +8114,20 @@ async function handleCRUD(
 
   if (method === "get") {
     if (id) {
+      if (collection === "pages") {
+        const pageScope = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:v2\/)?pages\/([^/]+)\/?/);
+        if (pageScope) {
+          try {
+            const access = await requirePageAccess(decodeURIComponent(pageScope[1]), decodeURIComponent(pageScope[2]), decodeURIComponent(pageScope[3]), "read", undefined, requestIdentity);
+            requestIdentity.assertCurrent();
+            return ok(access.page);
+          } catch (error) {
+            if (error instanceof ResourceAccessError) return { status: error.status, data: { code: error.code, error: error.message } };
+            throw error;
+          }
+        }
+        return { status: 404, data: { error: "Không tìm thấy trang trong dự án này." } };
+      }
       let item = localDB[collection].find((r: any) => r.id === id || r.slug === id);
 
       if (!item && collection === "states") {
@@ -8110,9 +8394,17 @@ async function handleCRUD(
     if (url.includes("/projects/")) {
       const match = url.match(/\/projects\/([^/]+)\//);
       if (match) {
-        const projId = match[1];
+        const projId = decodeURIComponent(match[1]);
+        const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+        const currentWsSlug = wsMatch ? decodeURIComponent(wsMatch[1]) : undefined;
+        const ws = currentWsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === currentWsSlug || w.id === currentWsSlug) : null;
+        const validWsKeys = new Set([currentWsSlug, ws?.id, ws?.slug].filter(Boolean));
+
         const targetProj = (localDB.projects || []).find(
-          (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+          (p: any) =>
+            (p.id === projId || (typeof p.identifier === "string" && p.identifier.toLowerCase() === projId.toLowerCase())) &&
+            (validWsKeys.size === 0 || validWsKeys.has(p.workspace) || validWsKeys.has(p.workspace_id)) &&
+            !(localDB._deleted_project_ids || []).includes(p.id)
         );
         const matchingProjIds = new Set(
           [projId, targetProj?.id, targetProj?.identifier].filter(Boolean)
@@ -8153,10 +8445,6 @@ async function handleCRUD(
             return false;
           });
 
-          const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
-          const currentWsSlug = wsMatch ? wsMatch[1] : (targetProj.workspace || targetProj.workspace_id);
-          const ws = (localDB.workspaces || []).find((w: any) => w.slug === currentWsSlug || w.id === currentWsSlug);
-          const validWsKeys = new Set([currentWsSlug, ws?.id, ws?.slug, targetProj.workspace, targetProj.workspace_id].filter(Boolean));
           const wsMember = (localDB.workspace_members || []).find(
             (wm: any) =>
               (validWsKeys.has(wm.workspace) || validWsKeys.has(wm.workspace_id)) &&
@@ -8179,6 +8467,9 @@ async function handleCRUD(
           ["issues", "states", "labels", "project-members", "project-roles", "cycles", "modules", "views", "pages", "blockchain-transactions"].includes(collection)
         ) {
           list = list.filter((item: any) => {
+            const itemWs = item.workspace_id || item.workspace;
+            if (validWsKeys.size > 0 && itemWs && !validWsKeys.has(itemWs)) return false;
+
             if (matchingProjIds.has(item.project) || matchingProjIds.has(item.project_id)) return true;
             if (collection === "pages" && Array.isArray(item.project_ids) && item.project_ids.some((pid: string) => matchingProjIds.has(pid))) return true;
             if (collection === "blockchain-transactions" && item.issue_id) {
@@ -8191,6 +8482,31 @@ async function handleCRUD(
             }
             return false;
           });
+          if (collection === "pages") {
+            const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+            const currentWsSlug = wsMatch ? wsMatch[1] : (targetProj?.workspace || targetProj?.workspace_id);
+            try {
+              await requireProjectAccess(currentWsSlug, projId, false);
+              requestIdentity.assertCurrent();
+            } catch (error) {
+              if (error instanceof ResourceAccessError) {
+                return { status: error.status, data: { code: error.code, error: error.message } };
+              }
+              throw error;
+            }
+            const deletedPageSet = new Set(localDB._deleted_page_ids || []);
+            const currentUserId = getLoggedInUserId();
+            list = list
+              .filter((p: any) => {
+                if (deletedPageSet.has(p.id) || p.archived_at) return false;
+                if (p.access === 1 && getPageOwner(p) !== currentUserId) return false;
+                return true;
+              })
+              .map((p: any) => {
+                const { description_html, description_binary, description_json, description, ...summary } = p;
+                return summary;
+              });
+          }
         }
       }
     } else if (url.includes("/workspaces/") && (collection === "labels" || collection === "projects")) {
@@ -8967,14 +9283,20 @@ async function handleCRUD(
 
     if (["cycles", "modules", "views", "pages"].includes(collection)) {
       const match = url.match(/\/projects\/([^/]+)\//);
-      const projId = match ? match[1] : undefined;
+      const projId = match ? decodeURIComponent(match[1]) : undefined;
+      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+      const wsSlug = wsMatch ? decodeURIComponent(wsMatch[1]) : undefined;
+      const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
+      const wsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
       const targetProj = projId
-        ? (localDB.projects || []).find((p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase()))
+        ? (localDB.projects || []).find(
+            (p: any) =>
+              (p.id === projId || (typeof p.identifier === "string" && p.identifier.toLowerCase() === projId.toLowerCase())) &&
+              (wsKeys.size === 0 || wsKeys.has(p.workspace) || wsKeys.has(p.workspace_id)) &&
+              !(localDB._deleted_project_ids || []).includes(p.id)
+          )
         : null;
       const canonicalProjId = targetProj?.id || projId;
-      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
-      const wsSlug = wsMatch ? wsMatch[1] : undefined;
-      const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
       const canonicalWsId = ws?.id || wsSlug;
       list = list.map((item: any) => enrichProjectEntity(collection, item, canonicalProjId, canonicalWsId));
     }
@@ -8997,6 +9319,99 @@ async function handleCRUD(
   }
 
   if (method === "post") {
+    let reservedPageId: string | null = null;
+    try {
+      let validatedPageProjectIds: string[] = [];
+      let latestPageAccess: Awaited<ReturnType<typeof requireProjectAccess>> | undefined;
+      let sourcePageProjectId = "";
+      if (collection === "pages") {
+        const match = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\//);
+        if (match) {
+          const wsSlug = decodeURIComponent(match[1]);
+          const projId = decodeURIComponent(match[2]);
+          let projAccess: any;
+          try {
+            projAccess = await requireProjectAccess(wsSlug, projId, true);
+            requestIdentity.assertCurrent();
+            latestPageAccess = projAccess;
+            sourcePageProjectId = projAccess.project.id;
+            if (projAccess.projectRole < 15) {
+              return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Bạn không có quyền tạo trang trong dự án này." } };
+            }
+          } catch (error) {
+            if (error instanceof ResourceAccessError) {
+              return { status: error.status, data: { code: error.code, error: error.message } };
+            }
+            throw error;
+          }
+
+          const activeUserId = getLoggedInUserId();
+          if (!activeUserId) {
+            return { status: 401, data: { code: "AUTH_REQUIRED", error: "Vui lòng đăng nhập để tạo trang." } };
+          }
+
+          // Bug E & R4: Check duplicate ID and atomically reserve in-flight ID
+          if (body?.id !== undefined) {
+            if (typeof body.id !== "string" || !body.id.trim()) {
+              return { status: 400, data: { code: "INVALID_PAGE_ID", error: "Mã trang không hợp lệ." } };
+            }
+            const trimmedId = body.id.trim();
+            const normalizedTargetId = trimmedId.toLowerCase();
+            const alreadyExists = (localDB.pages || []).some(
+              (p: any) => p.id === trimmedId || (typeof p.id === "string" && p.id.trim().toLowerCase() === normalizedTargetId)
+            );
+            if (alreadyExists || inFlightPageIds.has(normalizedTargetId)) {
+              return { status: 400, data: { code: "DUPLICATE_PAGE_ID", error: "Trang với mã định danh này đã tồn tại." } };
+            }
+            inFlightPageIds.add(normalizedTargetId);
+            reservedPageId = normalizedTargetId;
+          }
+
+        // Bug E: Validate linked project_ids
+        const canonicalProjId = projAccess.project.id;
+        const canonicalWsId = projAccess.workspace.id;
+        validatedPageProjectIds = [canonicalProjId];
+
+        if (body?.project_ids !== undefined) {
+          if (!Array.isArray(body.project_ids)) {
+            return { status: 400, data: { code: "INVALID_PROJECT_IDS", error: "Danh sách dự án liên kết không hợp lệ." } };
+          }
+          for (const rawPid of body.project_ids) {
+            if (typeof rawPid !== "string" || !rawPid.trim()) {
+              return { status: 400, data: { code: "INVALID_PROJECT_IDS", error: "Mã dự án liên kết không hợp lệ." } };
+            }
+            const cleanPid = rawPid.trim();
+            const foundProj = (localDB.projects || []).find(
+              (p: any) =>
+                (p.id === cleanPid || (typeof p.identifier === "string" && p.identifier.toLowerCase() === cleanPid.toLowerCase())) &&
+                (p.workspace === canonicalWsId || p.workspace === projAccess.workspace.slug || p.workspace_id === canonicalWsId) &&
+                !(localDB._deleted_project_ids || []).includes(p.id)
+            );
+            if (!foundProj) {
+              return { status: 400, data: { code: "INVALID_PROJECT_IDS", error: "Dự án liên kết không tồn tại hoặc không thuộc không gian làm việc này." } };
+            }
+            try {
+              const linkedAccess = await requireProjectAccess(wsSlug, foundProj.id, true);
+              requestIdentity.assertCurrent();
+              latestPageAccess = linkedAccess;
+              if (linkedAccess.projectRole < 15) {
+                return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Bạn không có quyền liên kết trang vào dự án này." } };
+              }
+              if (!validatedPageProjectIds.includes(foundProj.id)) {
+                validatedPageProjectIds.push(foundProj.id);
+              }
+            } catch (err) {
+              if (err instanceof ResourceAccessError) {
+                return { status: err.status, data: { code: err.code, error: err.message } };
+              }
+              throw err;
+            }
+          }
+        }
+      } else {
+        return { status: 403, data: { code: "NOT_AUTHORIZED", error: "Thiếu thông tin dự án hoặc không gian làm việc." } };
+      }
+    }
     if (collection === "cycles") {
       const projectKey = url.match(/\/projects\/([^/]+)/)?.[1];
       const project = (localDB.projects || []).find((entry: any) => entry.id === projectKey || entry.identifier === projectKey);
@@ -9723,12 +10138,21 @@ async function handleCRUD(
     }
 
     if (["cycles", "modules", "views", "pages"].includes(collection)) {
+      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
+      const wsSlug = wsMatch ? decodeURIComponent(wsMatch[1]) : undefined;
+      const ws = wsSlug ? (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug) : null;
+      const wsKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean));
+      const canonicalWsId = ws?.id || wsSlug || "";
+
       let canonicalProjId = "";
       const match = url.match(/\/projects\/([^/]+)\//);
       if (match) {
-        const projId = match[1];
+        const projId = decodeURIComponent(match[1]);
         const project = (localDB.projects || []).find(
-          (p: any) => p.id === projId || (p.identifier && p.identifier.toLowerCase() === projId.toLowerCase())
+          (p: any) =>
+            (p.id === projId || (typeof p.identifier === "string" && p.identifier.toLowerCase() === projId.toLowerCase())) &&
+            (wsKeys.size === 0 || wsKeys.has(p.workspace) || wsKeys.has(p.workspace_id)) &&
+            !(localDB._deleted_project_ids || []).includes(p.id)
         );
         canonicalProjId = project?.id || projId;
         newRecord.project = canonicalProjId;
@@ -9737,20 +10161,39 @@ async function handleCRUD(
           newRecord.project_detail = project;
         }
       }
-      let canonicalWsId = "";
-      const wsMatch = url.match(/\/workspaces\/([^/]+)\//);
-      if (wsMatch) {
-        const wsSlug = wsMatch[1];
-        const ws = (localDB.workspaces || []).find((w: any) => w.slug === wsSlug || w.id === wsSlug);
-        canonicalWsId = ws?.id || wsSlug;
-        newRecord.workspace = canonicalWsId;
-        newRecord.workspace_id = canonicalWsId;
-        if (ws) {
-          newRecord.workspace_detail = ws;
-        }
+      newRecord.workspace = canonicalWsId;
+      newRecord.workspace_id = canonicalWsId;
+      if (ws) {
+        newRecord.workspace_detail = ws;
       }
-      newRecord.owned_by = newRecord.owned_by || activeUserId || "user-1";
-      newRecord.created_by = newRecord.created_by || activeUserId || "user-1";
+      if (collection === "pages") {
+        requestIdentity.assertCurrent();
+        if (!latestPageAccess) throw new ResourceAccessError(401, "AUTH_REQUIRED", "Vui lòng đăng nhập.");
+        const sourceAccess = projectAccessFromWorkspace(latestPageAccess, sourcePageProjectId, true);
+        newRecord.owned_by = requestIdentity.userId;
+        newRecord.created_by = requestIdentity.userId;
+        newRecord.is_locked = false;
+        newRecord.archived_at = null;
+        newRecord.access = body.access === 1 ? 1 : 0;
+        newRecord.project = sourceAccess.project.id;
+        newRecord.project_id = sourceAccess.project.id;
+        newRecord.project_ids = validatedPageProjectIds.length > 0 ? validatedPageProjectIds : [canonicalProjId];
+        newRecord.workspace = sourceAccess.workspace.id;
+        newRecord.workspace_id = sourceAccess.workspace.id;
+        newRecord.project_detail = sourceAccess.project;
+        newRecord.workspace_detail = sourceAccess.workspace;
+        newRecord.name = typeof body.name === "string" ? body.name : "Trang không tên";
+        newRecord.color = typeof body.color === "string" ? body.color : "#3f3f46";
+        newRecord.description_html = typeof body.description_html === "string" ? body.description_html : "<p></p>";
+        newRecord.description_json = typeof body.description_json === "object" && body.description_json !== null ? body.description_json : {};
+        newRecord.description_binary = body.description_binary || null;
+        newRecord.label_ids = Array.isArray(body.label_ids) ? body.label_ids : [];
+        newRecord.logo_props = body.logo_props || null;
+        newRecord.is_favorite = false;
+      } else {
+        newRecord.owned_by = newRecord.owned_by || activeUserId || "user-1";
+        newRecord.created_by = newRecord.created_by || activeUserId || "user-1";
+      }
       newRecord = enrichProjectEntity(collection, newRecord, canonicalProjId, canonicalWsId);
     }
 
@@ -9759,6 +10202,22 @@ async function handleCRUD(
     }
 
     if (!localDB[collection]) localDB[collection] = [];
+    if (collection === "pages") {
+      requestIdentity.assertCurrent();
+      if (!latestPageAccess) throw new ResourceAccessError(401, "AUTH_REQUIRED", "Vui lòng đăng nhập.");
+      for (const projectId of validatedPageProjectIds) projectAccessFromWorkspace(latestPageAccess, projectId, true);
+      const targetId = newRecord.id;
+      const alreadyInDB = (localDB.pages || []).some(
+        (p: any) =>
+          p.id === targetId ||
+          (typeof p.id === "string" &&
+            typeof targetId === "string" &&
+            p.id.trim().toLowerCase() === targetId.trim().toLowerCase())
+      );
+      if (alreadyInDB) {
+        return { status: 400, data: { code: "DUPLICATE_PAGE_ID", error: "Trang với mã định danh này đã tồn tại." } };
+      }
+    }
     localDB[collection].push(newRecord);
 
     // Every work item creation is part of its activity timeline (verb: "created")
@@ -9836,6 +10295,16 @@ async function handleCRUD(
     }
 
     return { data: returnedRecord, status: 201 };
+    } catch (error) {
+      if (collection === "pages" && error instanceof ResourceAccessError) {
+        return { status: error.status, data: { code: error.code, error: error.message } };
+      }
+      throw error;
+    } finally {
+      if (reservedPageId) {
+        inFlightPageIds.delete(reservedPageId);
+      }
+    }
   }
 
   if (method === "patch" || method === "put") {
@@ -9893,7 +10362,23 @@ async function handleCRUD(
       }
     }
     if (idx > -1) {
-      const previousRecord = { ...localDB[collection][idx] };
+      let previousRecord = { ...localDB[collection][idx] };
+      if (collection === "pages") {
+        const pageScope = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:v2\/)?pages\/([^/]+)\/?/);
+        if (pageScope) {
+          try {
+            const access = await requirePageAccess(decodeURIComponent(pageScope[1]), decodeURIComponent(pageScope[2]), decodeURIComponent(pageScope[3]), "edit_metadata", body, requestIdentity);
+            requestIdentity.assertCurrent();
+            // A snapshot may have reordered the array while authorization awaited RPC.
+            idx = localDB.pages.indexOf(access.page);
+            if (idx < 0) throw new ResourceAccessError(409, "PAGE_CHANGED", "Trang đã thay đổi. Hãy tải lại rồi thử lại.");
+            previousRecord = { ...access.page };
+          } catch (error) {
+            if (error instanceof ResourceAccessError) return { status: error.status, data: { code: error.code, error: error.message } };
+            throw error;
+          }
+        }
+      }
       if (collection === "cycles" && (Object.hasOwn(body, "start_date") || Object.hasOwn(body, "end_date"))) {
         const checked = checkCycleDates(previousRecord.project_id || previousRecord.project, { ...previousRecord, ...body }, previousRecord.id);
         if (!checked.status) return { status: 400, data: { code: "INVALID_CYCLE_DATES", error: checked.error } };
@@ -10258,6 +10743,18 @@ async function handleCRUD(
       if (!revokedCid || !await commitWorkspaceCID(wsSlugDel, revokedCid, { force: true })) return { status: 503, data: { code: "INVITATION_REVOCATION_PENDING", error: "Đã thu hồi lời mời trên máy nhưng chưa đồng bộ được trạng thái chung. Hãy đồng bộ lại trước khi báo hoàn tất." } };
       return ok({ revoked: true });
     } else if (["cycles", "modules", "views", "pages", "inbox_issues"].includes(collection) && id) {
+      if (collection === "pages") {
+        const pageScope = url.match(/\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(?:v2\/)?pages\/([^/]+)\/?/);
+        if (pageScope) {
+          try {
+            await requirePageAccess(decodeURIComponent(pageScope[1]), decodeURIComponent(pageScope[2]), decodeURIComponent(pageScope[3]), "delete", undefined, requestIdentity);
+            requestIdentity.assertCurrent();
+          } catch (error) {
+            if (error instanceof ResourceAccessError) return { status: error.status, data: { code: error.code, error: error.message } };
+            throw error;
+          }
+        }
+      }
       const targetRecord = (localDB[collection] || []).find((r: any) => r.id === id);
       if (!targetRecord) {
         return { status: 404, data: { error: `Không tìm thấy ${collection}.` } };

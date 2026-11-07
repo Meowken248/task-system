@@ -326,7 +326,7 @@ function requireRecord(collection: string, id: string, project: string, workspac
 }
 
 export function isPlanningAction(url: string): boolean {
-  return /^\/api\/workspaces\/[^/]+\/projects\/[^/]+\/(?:cycles\/[^/]+\/(?:progress|cycle-progress|transfer-issues)|cycles\/[^/]+\/cycle-issues(?:\/[^/]+)?|cycles\/date-check|modules\/[^/]+\/(?:issues|module-issues)(?:\/[^/]+)?|views\/[^/]+\/issues|pages\/[^/]+\/access|(?:issues|work-items|epics)\/[^/]+\/modules)\/?$/.test(
+  return /^\/api\/workspaces\/[^/]+\/projects\/[^/]+\/(?:cycles\/[^/]+\/(?:progress|cycle-progress|transfer-issues)|cycles\/[^/]+\/cycle-issues(?:\/[^/]+)?|cycles\/date-check|modules\/[^/]+\/(?:issues|module-issues)(?:\/[^/]+)?|views\/[^/]+\/issues|(?:issues|work-items|epics)\/[^/]+\/modules)\/?$/.test(
     url.split("?")[0]
   );
 }
@@ -344,16 +344,6 @@ export async function handlePlanningAction(method: string, url: string, body: Re
   if (kind === "cycles" && resourceId === "date-check" && method === "post") {
     if (body.cycle_id) requireRecord("cycles", body.cycle_id, project, workspace);
     return ok(checkCycleDates(project, body, body.cycle_id));
-  }
-  if (kind === "pages" && action === "access" && method === "post") {
-    const page = requireRecord("pages", resourceId, project, workspace);
-    if (page.created_by !== access.user.id && access.projectRole < 20)
-      throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Chỉ chủ sở hữu hoặc quản trị viên được đổi quyền trang.");
-    if (body.access !== 0 && body.access !== 1) throw invalid("Quyền trang phải là 0 hoặc 1.");
-    page.access = body.access;
-    page.updated_at = nextRecordTimestamp(page);
-    saveDB();
-    return ok({ ...page });
   }
   if (kind === "views" && action === "issues" && method === "get") {
     const view = requireRecord("views", resourceId, project, workspace);
@@ -626,7 +616,8 @@ export async function validatePageVisibilityWrite(url: string, body: RecordData)
   if (!match) return;
   const access = await requireProjectAccess(decodeURIComponent(match[1]), decodeURIComponent(match[2]), true);
   const page = requireRecord("pages", decodeURIComponent(match[3]), access.project.id, access.workspace.id);
-  if (page.created_by !== access.user.id && access.projectRole < 20)
+  const pageOwner = page.owned_by || page.created_by;
+  if (pageOwner !== access.user.id && access.projectRole < 20)
     throw new ResourceAccessError(403, "NOT_AUTHORIZED", "Chỉ chủ sở hữu hoặc quản trị viên được đổi quyền trang.");
   if (body.access !== 0 && body.access !== 1) throw invalid("Quyền trang phải là 0 hoặc 1.");
   for (const key of [
