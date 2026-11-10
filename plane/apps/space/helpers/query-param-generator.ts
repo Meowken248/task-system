@@ -23,6 +23,16 @@ export const queryParamGenerator = (queryObject: Record<string, TQueryParamValue
     }
   });
 
+  if (typeof window !== "undefined") {
+    try {
+      const currentParams = new URLSearchParams(window.location.search);
+      const cid = currentParams.get("cid");
+      if (cid && !queryParam.has("cid")) {
+        queryParam.append("cid", cid);
+      }
+    } catch { }
+  }
+
   return {
     query: queryParamObject,
     queryParam: queryParam.toString(),

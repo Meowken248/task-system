@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { mutate } from "swr";
 // types
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
@@ -35,6 +35,7 @@ type CycleModalProps = {
 const cycleService = new CycleService();
 
 export function CycleCreateUpdateModal(props: CycleModalProps) {
+  const dateValidationError = useRef("");
   const { isOpen, handleClose, data, workspaceSlug, projectId } = props;
   // states
   const [activeProject, setActiveProject] = useState<string | null>(null);
@@ -71,8 +72,9 @@ export function CycleCreateUpdateModal(props: CycleModalProps) {
         setToast({
           type: TOAST_TYPE.ERROR,
           title: "Error!",
-          message: err?.detail ?? "Error in creating cycle. Please try again.",
+          message: err?.error ?? err?.detail ?? "Error in creating cycle. Please try again.",
         });
+        throw err;
       });
   };
 
@@ -92,19 +94,21 @@ export function CycleCreateUpdateModal(props: CycleModalProps) {
         setToast({
           type: TOAST_TYPE.ERROR,
           title: "Error!",
-          message: err?.detail ?? "Error in updating cycle. Please try again.",
+          message: err?.error ?? err?.detail ?? "Error in updating cycle. Please try again.",
         });
+        throw err;
       });
   };
 
   const dateChecker = async (projectId: string, payload: CycleDateCheckData) => {
-    let status = false;
-
-    await cycleService.cycleDateCheck(workspaceSlug, projectId, payload).then((res) => {
-      status = res.status;
-    });
-
-    return status;
+    try {
+      const result = await cycleService.cycleDateCheck(workspaceSlug, projectId, payload);
+      dateValidationError.current = result.status ? "" : result.error || "Khoảng ngày Cycle không hợp lệ.";
+      return result.status === true;
+    } catch (error: any) {
+      dateValidationError.current = error?.error || "Chưa kiểm tra được ngày Cycle. Hãy thử lại.";
+      return false;
+    }
   };
 
   const handleFormSubmit = async (formData: Partial<ICycle>) => {
@@ -117,8 +121,9 @@ export function CycleCreateUpdateModal(props: CycleModalProps) {
     };
 
     let isDateValid: boolean = true;
+    const selectedProjectId = payload.project_id ?? projectId;
 
-    if (payload.start_date && payload.end_date) {
+    if (payload.start_date || payload.end_date) {
       if (data?.id) {
         // Update existing cycle - only check dates if they've changed
         const originalStartDate = renderFormattedPayloadDate(data.start_date) ?? null;
@@ -126,34 +131,37 @@ export function CycleCreateUpdateModal(props: CycleModalProps) {
         const hasDateChanged = payload.start_date !== originalStartDate || payload.end_date !== originalEndDate;
 
         if (hasDateChanged) {
-          isDateValid = await dateChecker(projectId, {
-            start_date: payload.start_date,
-            end_date: payload.end_date,
+          isDateValid = await dateChecker(selectedProjectId, {
+            start_date: payload.start_date || "",
+            end_date: payload.end_date || "",
             cycle_id: data.id,
           });
         }
       } else {
         // Create new cycle - always check dates
-        isDateValid = await dateChecker(projectId, {
-          start_date: payload.start_date,
-          end_date: payload.end_date,
+        isDateValid = await dateChecker(selectedProjectId, {
+          start_date: payload.start_date || "",
+          end_date: payload.end_date || "",
         });
       }
     }
 
     if (isDateValid) {
-      if (data?.id) await handleUpdateCycle(data.id, payload);
-      else {
-        await handleCreateCycle(payload).then(() => {
+      try {
+        if (data?.id) await handleUpdateCycle(data.id, payload);
+        else {
+          await handleCreateCycle(payload);
           setCycleTab("all");
-        });
+        }
+        handleClose();
+      } catch {
+        // The operation already shows its error; preserve the form for retry.
       }
-      handleClose();
     } else
       setToast({
         type: TOAST_TYPE.ERROR,
         title: "Error!",
-        message: "You already have a cycle on the given dates, if you want to create a draft cycle, remove the dates.",
+        message: dateValidationError.current || "Khoảng ngày Cycle không hợp lệ.",
       });
   };
 

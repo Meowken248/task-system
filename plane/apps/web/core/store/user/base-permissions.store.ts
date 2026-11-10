@@ -249,6 +249,7 @@ export abstract class BaseUserPermissionStore implements IBaseUserPermissionStor
     } catch (error) {
       console.error("Error fetching user workspace information", error);
       runInAction(() => {
+        unset(this.workspaceUserInfo, workspaceSlug);
         this.loader = false;
       });
       throw error;

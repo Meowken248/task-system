@@ -7,7 +7,7 @@
 import { useCallback } from "react";
 // plane imports
 import type { TFileHandler } from "@plane/editor";
-import { getEditorAssetDownloadSrc, getEditorAssetSrc } from "@plane/utils";
+import { resolveAssetSource, getLocalAssetId, isDirectAssetSource } from "@plane/services";
 // hooks
 import { useEditorAsset } from "@/hooks/store/use-editor-asset";
 // plane web hooks
@@ -27,7 +27,7 @@ type TArgs = {
 
 export const useEditorConfig = () => {
   // store hooks
-  const { assetsUploadPercentage } = useEditorAsset();
+  const { assetsUploadPercentage, cancelEditorAssetUpload } = useEditorAsset();
   // file size
   const { maxFileSize } = useFileSize();
   const { getExtendedEditorFileHandlers } = useExtendedEditorConfig();
@@ -38,58 +38,28 @@ export const useEditorConfig = () => {
 
       return {
         assetsUploadStatus: assetsUploadPercentage,
-        cancel: fileService.cancelUpload,
+        cancel: cancelEditorAssetUpload,
         checkIfAssetExists: async (assetId: string) => {
-          const res = await fileService.checkIfAssetExists(workspaceSlug, assetId);
-          return res?.exists ?? false;
+          try {
+            return Boolean(await resolveAssetSource(assetId));
+          } catch {
+            return false;
+          }
         },
         delete: async (src: string) => {
-          if (src?.startsWith("http")) {
+          if (isDirectAssetSource(src) && !src.startsWith("http")) return;
+          if (isDirectAssetSource(src)) {
             await fileService.deleteOldWorkspaceAsset(workspaceId, src);
           } else {
-            await fileService.deleteNewAsset(
-              getEditorAssetSrc({
-                assetId: src,
-                projectId,
-                workspaceSlug,
-              }) ?? ""
-            );
+            const assetId = getLocalAssetId(src);
+            const prefix = `/api/assets/v2/workspaces/${workspaceSlug}/${projectId ? `projects/${projectId}/` : ""}`;
+            await fileService.deleteNewAsset(`${prefix}${assetId}/`);
           }
         },
-        getAssetDownloadSrc: async (path) => {
-          if (!path) return "";
-          if (path?.startsWith("http")) {
-            return path;
-          } else {
-            return (
-              getEditorAssetDownloadSrc({
-                assetId: path,
-                projectId,
-                workspaceSlug,
-              }) ?? ""
-            );
-          }
-        },
-        getAssetSrc: async (path) => {
-          if (!path) return "";
-          if (path?.startsWith("http")) {
-            return path;
-          } else {
-            return (
-              getEditorAssetSrc({
-                assetId: path,
-                projectId,
-                workspaceSlug,
-              }) ?? ""
-            );
-          }
-        },
+        getAssetDownloadSrc: resolveAssetSource,
+        getAssetSrc: resolveAssetSource,
         restore: async (src: string) => {
-          if (src?.startsWith("http")) {
-            await fileService.restoreOldEditorAsset(workspaceId, src);
-          } else {
-            await fileService.restoreNewAsset(workspaceSlug, src);
-          }
+          await resolveAssetSource(src);
         },
         upload: uploadFile,
         duplicate: duplicateFile,
@@ -99,7 +69,7 @@ export const useEditorConfig = () => {
         ...getExtendedEditorFileHandlers({ projectId, workspaceSlug }),
       };
     },
-    [assetsUploadPercentage, getExtendedEditorFileHandlers, maxFileSize]
+    [assetsUploadPercentage, cancelEditorAssetUpload, getExtendedEditorFileHandlers, maxFileSize]
   );
 
   return {

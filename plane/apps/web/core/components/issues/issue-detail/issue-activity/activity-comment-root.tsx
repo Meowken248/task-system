@@ -4,6 +4,7 @@
  * See the LICENSE file for details.
  */
 
+import { useMemo } from "react";
 import { observer } from "mobx-react";
 // plane imports
 import type { E_SORT_ORDER, TActivityFilters, EActivityFilterType } from "@plane/constants";
@@ -19,6 +20,7 @@ import { IssueActivityWorklog } from "@/plane-web/components/issues/worklog/acti
 // local imports
 import { IssueActivityItem } from "./activity/activity-list";
 import { IssueActivityLoader } from "./loader";
+import type { TActivityTab } from "./root";
 
 type TIssueActivityCommentRoot = {
   workspaceSlug: string;
@@ -26,6 +28,7 @@ type TIssueActivityCommentRoot = {
   isIntakeIssue: boolean;
   issueId: string;
   selectedFilters: TActivityFilters[];
+  activeTab?: TActivityTab;
   activityOperations: TCommentsOperations;
   showAccessSpecifier?: boolean;
   disabled?: boolean;
@@ -38,6 +41,7 @@ export const IssueActivityCommentRoot = observer(function IssueActivityCommentRo
     isIntakeIssue,
     issueId,
     selectedFilters,
+    activeTab = "all",
     activityOperations,
     showAccessSpecifier,
     projectId,
@@ -46,20 +50,70 @@ export const IssueActivityCommentRoot = observer(function IssueActivityCommentRo
   } = props;
   // store hooks
   const {
-    activity: { getActivityAndCommentsByIssueId },
+    activity: { getActivityAndCommentsByIssueId, getActivityById },
     comment: { getCommentById },
   } = useIssueDetail();
   // derived values
   const activityAndComments = getActivityAndCommentsByIssueId(issueId, sortOrder);
 
-  if (!activityAndComments) return <IssueActivityLoader />;
+  const filteredActivityAndComments = useMemo(() => {
+    if (!activityAndComments) return [];
+    const baseFiltered = filterActivityOnSelectedFilters(activityAndComments, selectedFilters);
 
-  console.log("[IssueActivity] activityAndComments:", activityAndComments);
+    if (activeTab === "all") {
+      return baseFiltered;
+    }
+
+    if (activeTab === "comments") {
+      return baseFiltered.filter((item) => item.activity_type === "COMMENT");
+    }
+
+    if (activeTab === "transition") {
+      return baseFiltered.filter((item) => {
+        if (item.activity_type === "COMMENT") return false;
+        const act = getActivityById(item.id);
+        return item.activity_type === "STATE" || act?.field === "state";
+      });
+    }
+
+    if (activeTab === "updates") {
+      return baseFiltered.filter((item) => {
+        if (item.activity_type === "COMMENT") return false;
+        const act = getActivityById(item.id);
+        return act?.field !== null && act?.field !== "state";
+      });
+    }
+
+    if (activeTab === "activity") {
+      return baseFiltered.filter((item) => item.activity_type !== "COMMENT");
+    }
+
+    if (activeTab === "history") {
+      return baseFiltered.filter((item) => item.activity_type !== "COMMENT");
+    }
+
+    return baseFiltered;
+  }, [activityAndComments, selectedFilters, activeTab, getActivityById]);
+
+  if (!activityAndComments) return <IssueActivityLoader />;
 
   if (activityAndComments.length <= 0) return null;
 
-  const filteredActivityAndComments = filterActivityOnSelectedFilters(activityAndComments, selectedFilters);
-  console.log("[IssueActivity] filteredActivityAndComments:", filteredActivityAndComments);
+  if (filteredActivityAndComments.length <= 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-center text-13 text-placeholder">
+        {activeTab === "comments"
+          ? "No comments yet"
+          : activeTab === "transition"
+            ? "No transitions yet"
+            : activeTab === "updates"
+              ? "No updates yet"
+              : activeTab === "history"
+                ? "No history records yet"
+                : "No activity yet"}
+      </div>
+    );
+  }
 
   return (
     <div>

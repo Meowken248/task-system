@@ -13,6 +13,8 @@ import type { TDocumentPayload } from "@plane/types";
 // hooks
 import useAutoSave from "@/hooks/use-auto-save";
 import type { TPageInstance } from "@/store/pages/base-page";
+import { saveFallbackDocument } from "../helpers/page-fallback";
+import { setToast, TOAST_TYPE } from "@plane/propel/toast";
 
 type TArgs = {
   editorRef: React.RefObject<EditorRefApi>;
@@ -25,16 +27,38 @@ type TArgs = {
 export const usePageFallback = (args: TArgs) => {
   const { editorRef, fetchPageDescription, collaborationState, updatePageDescription, page } = args;
   const hasShownFallbackToast = useRef(false);
+  const revision = useRef(0);
+  const hydrated = useRef(false);
+  const mounted = useRef(true);
+  const context = useRef({ pageId: page.id, generation: 0 });
+  const flight = useRef<{ pageId: string; promise: Promise<void> } | null>(null);
+  const lastError = useRef("");
+  if (context.current.pageId !== page.id) {
+    context.current = { pageId: page.id, generation: context.current.generation + 1 };
+    revision.current = 0; hydrated.current = false; lastError.current = "";
+  }
 
   const [isFetchingFallbackBinary, setIsFetchingFallbackBinary] = useState(false);
 
   // Derive connection failure from collaboration state
   const hasConnectionFailed = collaborationState?.stage.kind === "disconnected";
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  useEffect(() => editorRef.current?.onDocumentInfoChange(() => { revision.current++; }),
+    [editorRef, page.id, collaborationState?.stage.kind]);
+
   const handleUpdateDescription = useCallback(async () => {
-    if (!hasConnectionFailed) return;
+    const pageId = page.id;
+    if (!pageId || !hasConnectionFailed || !page.isContentEditable) return;
     const editor = editorRef.current;
     if (!editor) return;
+    const currentFlight = flight.current;
+    if (currentFlight && currentFlight.pageId === page.id) return currentFlight.promise;
+    const generation = context.current.generation;
+    const isCurrent = () => mounted.current && context.current.generation === generation && editorRef.current === editor && page.isContentEditable;
 
     // Show toast notification when fallback mechanism kicks in (only once)
     if (!hasShownFallbackToast.current) {
@@ -42,37 +66,25 @@ export const usePageFallback = (args: TArgs) => {
       hasShownFallbackToast.current = true;
     }
 
-    try {
-      setIsFetchingFallbackBinary(true);
-
-      const latestEncodedDescription = await fetchPageDescription();
-      let latestDecodedDescription: Uint8Array;
-      if (latestEncodedDescription && latestEncodedDescription.byteLength > 0) {
-        latestDecodedDescription = new Uint8Array(latestEncodedDescription);
-      } else {
-        const pageDescriptionHtml = page.description_html;
-        latestDecodedDescription = getBinaryDataFromDocumentEditorHTMLString(
-          pageDescriptionHtml ?? "<p></p>",
-          page.name
-        );
-      }
-
-      editor.setProviderDocument(latestDecodedDescription);
-      const { binary, html, json } = editor.getDocument();
-      if (!binary || !json) return;
-      const encodedBinary = convertBinaryDataToBase64String(binary);
-
-      await updatePageDescription({
-        description_binary: encodedBinary,
-        description_html: html,
-        description_json: json,
+    if (!hydrated.current) setIsFetchingFallbackBinary(true);
+    const promise = saveFallbackDocument({
+      editor, knownHtml: page.description_html ?? "<p></p>", hydrate: !hydrated.current,
+      revision: () => revision.current, isCurrent, fetchBinary: fetchPageDescription,
+      fromHtml: () => getBinaryDataFromDocumentEditorHTMLString(page.description_html ?? "<p></p>", page.name ?? ""),
+      encode: convertBinaryDataToBase64String, save: updatePageDescription,
+    }).then(() => { if (isCurrent()) { hydrated.current = true; lastError.current = ""; } })
+      .catch((error) => {
+        if (!isCurrent()) return;
+        const message = error?.response?.data?.error || error?.message || "Nội dung vẫn được giữ trong trình soạn thảo. Hãy thử lưu lại.";
+        if (lastError.current !== message) setToast({ type: TOAST_TYPE.ERROR, title: "Chưa lưu được nội dung trang", message });
+        lastError.current = message;
+      }).finally(() => {
+        if (flight.current?.promise === promise) flight.current = null;
+        if (isCurrent()) setIsFetchingFallbackBinary(false);
       });
-    } catch (error: any) {
-      console.error(error);
-    } finally {
-      setIsFetchingFallbackBinary(false);
-    }
-  }, [editorRef, fetchPageDescription, hasConnectionFailed, updatePageDescription, page.description_html, page.name]);
+    flight.current = { pageId, promise };
+    return promise;
+  }, [editorRef, fetchPageDescription, hasConnectionFailed, updatePageDescription, page, page.id, page.description_html, page.name]);
 
   useEffect(() => {
     if (hasConnectionFailed) {

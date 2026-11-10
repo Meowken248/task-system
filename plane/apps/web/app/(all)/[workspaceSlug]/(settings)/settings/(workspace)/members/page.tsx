@@ -12,7 +12,7 @@ import { useTranslation } from "@plane/i18n";
 import { Button } from "@plane/propel/button";
 import { SearchIcon } from "@plane/propel/icons";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
-import type { IWorkspaceBulkInviteFormData } from "@plane/types";
+import type { IWorkspaceWalletMemberInput } from "@plane/types";
 import { cn } from "@plane/utils";
 // components
 import { NotAuthorizedView } from "@/components/auth-screens/not-authorized-view";
@@ -20,13 +20,14 @@ import { CountChip } from "@/components/common/count-chip";
 import { PageHead } from "@/components/core/page-title";
 import { MemberListFiltersDropdown } from "@/components/project/dropdowns/filters/member-list";
 import { WorkspaceMembersList } from "@/components/workspace/settings/members-list";
+import { AddWalletMemberModal } from "@/components/workspace/add-wallet-member-modal";
 // hooks
 import { useMember } from "@/hooks/store/use-member";
 import { useWorkspace } from "@/hooks/store/use-workspace";
 import { useUserPermissions } from "@/hooks/store/user";
 // plane web components
 import { BillingActionsButton } from "@/plane-web/components/workspace/billing/billing-actions-button";
-import { SendWorkspaceInvitationModal, MembersActivityButton } from "@/plane-web/components/workspace/members";
+import { MembersActivityButton } from "@/plane-web/components/workspace/members";
 import { SettingsContentWrapper } from "@/components/settings/content-wrapper";
 // local imports
 import type { Route } from "./+types/page";
@@ -41,7 +42,7 @@ const WorkspaceMembersSettingsPage = observer(function WorkspaceMembersSettingsP
   // store hooks
   const { workspaceUserInfo, allowPermissions } = useUserPermissions();
   const {
-    workspace: { workspaceMemberIds, inviteMembersToWorkspace, filtersStore },
+    workspace: { workspaceMemberIds, addWalletMember, filtersStore },
   } = useMember();
   const { currentWorkspace } = useWorkspace();
   const { t } = useTranslation();
@@ -53,31 +54,17 @@ const WorkspaceMembersSettingsPage = observer(function WorkspaceMembersSettingsP
     EUserPermissionsLevel.WORKSPACE
   );
 
-  const handleWorkspaceInvite = async (data: IWorkspaceBulkInviteFormData) => {
-    try {
-      await inviteMembersToWorkspace(workspaceSlug, data);
-
-      setInviteModal(false);
-
-      setToast({
-        type: TOAST_TYPE.SUCCESS,
-        title: "Success!",
-        message: t("workspace_settings.settings.members.invitations_sent_successfully"),
-      });
-    } catch (error: unknown) {
-      let message = undefined;
-      if (error instanceof Error) {
-        const err = error as Error & { error?: string };
-        message = err.error;
-      }
-      setToast({
-        type: TOAST_TYPE.ERROR,
-        title: "Error!",
-        message: `${message ?? t("something_went_wrong_please_try_again")}`,
-      });
-
-      throw error;
-    }
+  const handleAddWalletMember = async (data: IWorkspaceWalletMemberInput) => {
+    const result = await addWalletMember(workspaceSlug, data);
+    if (!result?.chain_confirmed) throw new Error("Chưa xác nhận được quyền thành viên trên chain.");
+    setToast({
+      type: TOAST_TYPE.SUCCESS,
+      title: result.already_member ? "Ví đã là thành viên" : "Đã thêm thành viên",
+      message: result.already_member
+        ? "Quyền hiện tại của ví được giữ nguyên."
+        : "Ví đã được cấp quyền. Thành viên có thể dùng đúng ví để mở workspace.",
+    });
+    return result;
   };
 
   // Handler for role filter updates
@@ -103,10 +90,10 @@ const WorkspaceMembersSettingsPage = observer(function WorkspaceMembersSettingsP
   return (
     <SettingsContentWrapper header={<MembersWorkspaceSettingsHeader />} hugging>
       <PageHead title={pageTitle} />
-      <SendWorkspaceInvitationModal
+      <AddWalletMemberModal
         isOpen={inviteModal}
         onClose={() => setInviteModal(false)}
-        onSubmit={handleWorkspaceInvite}
+        onSubmit={handleAddWalletMember}
       />
       <section
         className={cn("size-full", {
@@ -140,7 +127,7 @@ const WorkspaceMembersSettingsPage = observer(function WorkspaceMembersSettingsP
             <MembersActivityButton workspaceSlug={workspaceSlug} />
             {canPerformWorkspaceAdminActions && (
               <Button variant="primary" size="lg" onClick={() => setInviteModal(true)}>
-                {t("workspace_settings.settings.members.add_member")}
+                Thêm bằng ví
               </Button>
             )}
             <BillingActionsButton canPerformWorkspaceAdminActions={canPerformWorkspaceAdminActions} />

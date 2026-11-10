@@ -28,7 +28,7 @@ import { DeleteIssueModal } from "../../delete-issue-modal";
 import { CreateUpdateIssueModal } from "../../issue-modal/modal";
 import type { IQuickActionProps } from "../list/list-view-types";
 import type { MenuItemFactoryProps } from "./helper";
-import { useWorkItemDetailMenuItems } from "./helper";
+import { useWorkItemDetailMenuItems, getDuplicateIssuePayload } from "./helper";
 import { IconButton } from "@plane/propel/icon-button";
 
 type TWorkItemDetailQuickActionProps = IQuickActionProps & {
@@ -96,14 +96,7 @@ export const WorkItemDetailQuickActions = observer(function WorkItemDetailQuickA
       issue.project_id ?? undefined
     ) && !readOnly;
 
-  const duplicateIssuePayload = omit(
-    {
-      ...issue,
-      name: `${issue.name} (copy)`,
-      sourceIssueId: issue.id,
-    },
-    ["id"]
-  );
+  const duplicateIssuePayload = getDuplicateIssuePayload(issue);
 
   const customEditAction = () => {
     setCreateUpdateIssueModal(true);

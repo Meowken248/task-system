@@ -235,7 +235,7 @@ export class IssueRootStore implements IIssueRootStore {
       });
     });
 
-    this.issues = new IssueStore();
+    this.issues = new IssueStore(this.rootStore);
 
     this.issueDetail = new IssueDetail(this, EIssueServiceType.ISSUES);
     this.epicDetail = new IssueDetail(this, EIssueServiceType.EPICS);

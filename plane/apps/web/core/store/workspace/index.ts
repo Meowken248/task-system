@@ -138,7 +138,14 @@ export abstract class BaseWorkspaceRootStore implements IWorkspaceRootStore {
       (workspace) => workspace.slug === currentWorkspaceSlug
     );
 
-    if (isCurrentWorkspaceValid >= 0) redirectionRoute = `/${currentWorkspaceSlug}`;
+    if (isCurrentWorkspaceValid >= 0) {
+      redirectionRoute = `/${currentWorkspaceSlug}`;
+    } else {
+      const availableWorkspaces = Object.values(this.workspaces || {});
+      if (availableWorkspaces.length > 0 && availableWorkspaces[0]?.slug) {
+        redirectionRoute = `/${availableWorkspaces[0].slug}`;
+      }
+    }
     return redirectionRoute;
   };
 
@@ -180,21 +187,28 @@ export abstract class BaseWorkspaceRootStore implements IWorkspaceRootStore {
    * fetch user workspaces from API
    */
   fetchWorkspaces = async () => {
-    runInAction(() => {
-      this.loader = true;
-    });
+    const hasExistingWorkspaces = Object.keys(this.workspaces || {}).length > 0;
+    if (!hasExistingWorkspaces) {
+      runInAction(() => {
+        this.loader = true;
+      });
+    }
     try {
       const workspaceResponse = await this.workspaceService.userWorkspaces();
       runInAction(() => {
-        workspaceResponse.forEach((workspace) => {
-          set(this.workspaces, [workspace.id], workspace);
+        const nextWorkspaces: { [workspaceId: string]: IWorkspace } = {};
+        (workspaceResponse || []).forEach((workspace) => {
+          nextWorkspaces[workspace.id] = workspace;
         });
+        this.workspaces = nextWorkspaces;
       });
       return workspaceResponse;
     } finally {
-      runInAction(() => {
-        this.loader = false;
-      });
+      if (!hasExistingWorkspaces) {
+        runInAction(() => {
+          this.loader = false;
+        });
+      }
     }
   };
 
@@ -249,14 +263,22 @@ export abstract class BaseWorkspaceRootStore implements IWorkspaceRootStore {
   deleteWorkspace = async (workspaceSlug: string) => {
     try {
       await this.workspaceService.deleteWorkspace(workspaceSlug);
-      const updatedWorkspacesList = this.workspaces;
       const workspaceId = this.getWorkspaceBySlug(workspaceSlug)?.id;
-      delete updatedWorkspacesList[`${workspaceId}`];
       runInAction(() => {
-        this.workspaces = updatedWorkspacesList;
+        const nextWorkspaces = { ...this.workspaces };
+        if (workspaceId && nextWorkspaces[workspaceId]) {
+          delete nextWorkspaces[workspaceId];
+        }
+        for (const [id, ws] of Object.entries(nextWorkspaces)) {
+          if (ws?.slug === workspaceSlug) {
+            delete nextWorkspaces[id];
+          }
+        }
+        this.workspaces = nextWorkspaces;
       });
     } catch (error) {
       console.error("Failed to delete workspace:", error);
+      throw error;
     }
   };
 

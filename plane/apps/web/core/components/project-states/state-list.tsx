@@ -34,7 +34,7 @@ export const StateList = observer(function StateList(props: TStateList) {
     <>
       {states.map((state: IState) => (
         <StateItem
-          key={state?.name}
+          key={state?.id || state?.name}
           groupKey={groupKey}
           groupedStates={groupedStates}
           totalStates={states.length || 0}

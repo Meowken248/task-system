@@ -209,11 +209,73 @@ const getModuleColumns = (): IGroupByColumn[] | undefined => {
 };
 
 const getStateColumns = ({ projectId }: TGetColumns): IGroupByColumn[] | undefined => {
-  const { getProjectStates, projectStates } = store.state;
-  const _states = projectId ? getProjectStates(projectId) : projectStates;
-  if (!_states) return;
+  const { getProjectStates, projectStates, stateMap } = store.state;
+  const resolvedProjectId = projectId || store.projectRoot.project.currentProjectDetails?.id;
+  let _states = resolvedProjectId ? getProjectStates(resolvedProjectId) : projectStates;
+  if (!_states || _states.length === 0) {
+    const allStates = Object.values(stateMap || {});
+    _states = allStates.filter((s) => (s.project_id || (s as any).project) === resolvedProjectId);
+    if (!_states || _states.length === 0) {
+      _states = allStates;
+    }
+  }
+  const statesToUse = _states && _states.length > 0 ? _states : projectStates;
+  if (!statesToUse || statesToUse.length === 0) {
+    return [
+      {
+        id: "Backlog",
+        name: "Backlog",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="backlog" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+      {
+        id: "Unstarted",
+        name: "Unstarted",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="unstarted" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+      {
+        id: "Started",
+        name: "Started",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="started" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+      {
+        id: "Completed",
+        name: "Completed",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="completed" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+      {
+        id: "Cancelled",
+        name: "Cancelled",
+        icon: (
+          <div className="size-4 rounded-full">
+            <StateGroupIcon stateGroup="cancelled" size={EIconSize.LG} />
+          </div>
+        ),
+        payload: {},
+      },
+    ];
+  }
   // map project states to group by columns
-  return _states.map((state) => ({
+  return statesToUse.map((state) => ({
     id: state.id,
     name: state.name,
     icon: (
@@ -269,48 +331,60 @@ const getLabelsColumns = ({ isWorkspaceLevel }: TGetColumns): IGroupByColumn[] =
   }));
 };
 
-const getAssigneeColumns = ({ isWorkspaceLevel, projectId }: TGetColumns): IGroupByColumn[] | undefined => {
+const getAssigneeColumns = ({ isWorkspaceLevel, projectId }: TGetColumns): IGroupByColumn[] => {
   // store values
   const { getUserDetails } = store.memberRoot;
   // derived values
-  const { memberIds, includeNone } = getScopeMemberIds({ isWorkspaceLevel, projectId });
+  const { memberIds } = getScopeMemberIds({ isWorkspaceLevel, projectId });
   const assigneeColumns: IGroupByColumn[] = [];
 
-  if (!memberIds) return [];
-
-  memberIds.forEach((memberId) => {
-    const member = getUserDetails(memberId);
-    if (!member) return;
-    assigneeColumns.push({
-      id: memberId,
-      name: member?.display_name || "",
-      icon: <Avatar name={member?.display_name} src={getFileURL(member?.avatar_url ?? "")} size="md" />,
-      payload: { assignee_ids: [memberId] },
+  if (memberIds && memberIds.length > 0) {
+    memberIds.forEach((memberId) => {
+      const member = getUserDetails(memberId);
+      if (!member) return;
+      assigneeColumns.push({
+        id: memberId,
+        name: member?.display_name || member?.first_name || "",
+        icon: <Avatar name={member?.display_name || member?.first_name} src={getFileURL(member?.avatar_url ?? "")} size="md" />,
+        payload: { assignee_ids: [memberId] },
+      });
     });
-  });
-  if (includeNone) {
-    assigneeColumns.push({ id: "None", name: "None", icon: <Avatar size="md" />, payload: {} });
   }
+  assigneeColumns.push({ id: "None", name: "None", icon: <Avatar size="md" />, payload: {} });
 
   return assigneeColumns;
 };
 
-const getCreatedByColumns = (): IGroupByColumn[] | undefined => {
+const getCreatedByColumns = ({ isWorkspaceLevel, projectId }: TGetColumns): IGroupByColumn[] => {
   const {
     project: { projectMemberIds },
+    workspace: { workspaceMemberIds },
     getUserDetails,
   } = store.memberRoot;
-  if (!projectMemberIds) return;
-  // Map project member ids to group by created by columns
-  return projectMemberIds.map((memberId) => {
+  const { memberIds } = getScopeMemberIds({ isWorkspaceLevel, projectId });
+  const ids =
+    projectMemberIds && projectMemberIds.length > 0
+      ? projectMemberIds
+      : memberIds && memberIds.length > 0
+        ? memberIds
+        : workspaceMemberIds || [];
+
+  const createdByColumns: IGroupByColumn[] = [];
+
+  ids.forEach((memberId) => {
     const member = getUserDetails(memberId);
-    return {
+    if (!member) return;
+    createdByColumns.push({
       id: memberId,
-      name: member?.display_name || "",
-      icon: <Avatar name={member?.display_name} src={getFileURL(member?.avatar_url ?? "")} size="md" />,
+      name: member?.display_name || member?.first_name || "",
+      icon: <Avatar name={member?.display_name || member?.first_name} src={getFileURL(member?.avatar_url ?? "")} size="md" />,
       payload: {},
-    };
+    });
   });
+
+  createdByColumns.push({ id: "None", name: "None", icon: <Avatar size="md" />, payload: {} });
+
+  return createdByColumns;
 };
 
 export const getDisplayPropertiesCount = (
@@ -617,10 +691,11 @@ export const isSubGrouped = (groupedIssueIds: TGroupedIssues) => {
  * @returns
  */
 export const isIssueNew = (issue: TIssue) => {
+  if (!issue || !issue.created_at) return false;
   const createdDate = new Date(issue.created_at);
   const currentDate = new Date();
   const diff = currentDate.getTime() - createdDate.getTime();
-  return diff < 30000;
+  return !isNaN(diff) && diff < 30000;
 };
 
 /**

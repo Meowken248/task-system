@@ -12,7 +12,7 @@ import { Button } from "@plane/propel/button";
 import { Input, Spinner } from "@plane/ui";
 // constants
 // helpers
-import { EAuthModes } from "@/helpers/authentication.helper";
+import { EAuthModes, EAuthSteps } from "@/helpers/authentication.helper";
 // hooks
 import useTimer from "@/hooks/use-timer";
 // services
@@ -28,6 +28,7 @@ type TAuthUniqueCodeForm = {
   handleEmailClear: () => void;
   generateEmailUniqueCode: (email: string) => Promise<{ code: string } | undefined>;
   nextPath: string | undefined;
+  handleAuthStep?: (step: EAuthSteps) => void;
 };
 
 type TUniqueCodeFormValues = {
@@ -41,7 +42,7 @@ const defaultValues: TUniqueCodeFormValues = {
 };
 
 export function AuthUniqueCodeForm(props: TAuthUniqueCodeForm) {
-  const { mode, email, handleEmailClear, generateEmailUniqueCode, nextPath } = props;
+  const { mode, email, handleEmailClear, generateEmailUniqueCode, nextPath, handleAuthStep } = props;
   // derived values
   const defaultResetTimerValue = 5;
   // states
@@ -164,13 +165,24 @@ export function AuthUniqueCodeForm(props: TAuthUniqueCodeForm) {
       <div className="space-y-2.5">
         <Button type="submit" variant="primary" className="w-full" size="xl" disabled={isButtonDisabled}>
           {isRequestingNewCode ? (
-            t("auth.common.unique_code.sending_code")
+            <span>{t("auth.common.unique_code.sending_code")}</span>
           ) : isSubmitting ? (
             <Spinner height="20px" width="20px" />
           ) : (
-            t("common.continue")
+            <span>{t("common.continue")}</span>
           )}
         </Button>
+        {handleAuthStep && (
+          <Button
+            type="button"
+            onClick={() => handleAuthStep(EAuthSteps.PASSWORD)}
+            variant="secondary"
+            className="w-full"
+            size="xl"
+          >
+            {mode === EAuthModes.SIGN_UP ? "Tạo tài khoản bằng mật khẩu" : "Đăng nhập bằng mật khẩu"}
+          </Button>
+        )}
       </div>
     </form>
   );

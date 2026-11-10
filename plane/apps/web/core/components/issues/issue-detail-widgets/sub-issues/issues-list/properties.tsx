@@ -11,7 +11,7 @@ import { observer } from "mobx-react";
 import { useTranslation } from "@plane/i18n";
 import { StartDatePropertyIcon, DueDatePropertyIcon } from "@plane/propel/icons";
 import type { IIssueDisplayProperties, TIssue } from "@plane/types";
-import { getDate, renderFormattedPayloadDate, shouldHighlightIssueDueDate } from "@plane/utils";
+import { getDate, renderFormattedPayloadDate, getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@plane/utils";
 // components
 import { DateDropdown } from "@/components/dropdowns/date";
 import { DateRangeDropdown } from "@/components/dropdowns/date-range";
@@ -51,9 +51,15 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
 
   const handleStartDate = (date: Date | null) => {
     if (issue.project_id) {
-      updateSubIssue(workspaceSlug, issue.project_id, parentIssueId, issueId, {
-        start_date: date ? renderFormattedPayloadDate(date) : null,
-      });
+      const newStartDateStr = date ? renderFormattedPayloadDate(date) : null;
+      const payload: Partial<TIssue> = { start_date: newStartDateStr };
+      if (date && issue.target_date) {
+        const currentTargetDate = getDate(issue.target_date);
+        if (currentTargetDate && currentTargetDate < date) {
+          payload.target_date = newStartDateStr;
+        }
+      }
+      updateSubIssue(workspaceSlug, issue.project_id, parentIssueId, issueId, payload);
     }
   };
 
@@ -67,16 +73,23 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
 
   //derived values
   const stateDetails = useMemo(() => getStateById(issue.state_id), [getStateById, issue.state_id]);
+  const highlightClass = useMemo(
+    () => getIssueDueDateHighlightClass(issue.target_date || issue.start_date, stateDetails?.group),
+    [issue.target_date, issue.start_date, stateDetails?.group]
+  );
   const shouldHighlight = useMemo(
     () => shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group),
     [issue.target_date, stateDetails?.group]
   );
-  // date range is enabled only when both dates are available and both dates are enabled
+  // date range is enable d only when both dates are available and both dates are enabled
   const isDateRangeEnabled: boolean = Boolean(
     issue.start_date && issue.target_date && displayProperties?.start_date && displayProperties?.due_date
   );
 
   if (!displayProperties) return <></>;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   const maxDate = getDate(issue.target_date);
   const minDate = getDate(issue.start_date);
@@ -150,7 +163,7 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
             isClearable
             mergeDates
             buttonVariant={issue.start_date || issue.target_date ? "border-with-text" : "border-without-text"}
-            buttonClassName={shouldHighlight ? "text-danger-primary" : ""}
+            buttonClassName={highlightClass}
             disabled={!canEdit}
             showTooltip
             customTooltipHeading="Date Range"
@@ -170,7 +183,7 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
           <DateDropdown
             value={issue.start_date ?? null}
             onChange={handleStartDate}
-            maxDate={maxDate}
+            minDate={today}
             placeholder={t("common.order_by.start_date")}
             icon={<StartDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
             buttonVariant={issue.start_date ? "border-with-text" : "border-without-text"}
@@ -191,11 +204,11 @@ export const SubIssuesListItemProperties = observer(function SubIssuesListItemPr
           <DateDropdown
             value={issue?.target_date ?? null}
             onChange={handleTargetDate}
-            minDate={minDate}
+            minDate={minDate ?? today}
             placeholder={t("common.order_by.due_date")}
             icon={<DueDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
             buttonVariant={issue.target_date ? "border-with-text" : "border-without-text"}
-            buttonClassName={shouldHighlight ? "text-danger-primary" : ""}
+            buttonClassName={highlightClass}
             clearIconClassName="text-primary"
             optionsClassName="z-30"
             disabled={!canEdit}

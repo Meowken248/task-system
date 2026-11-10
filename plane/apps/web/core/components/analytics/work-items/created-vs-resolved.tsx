@@ -53,7 +53,7 @@ const CreatedVsResolved = observer(function CreatedVsResolved() {
       )
   );
   const parsedData: TChartData<string, string>[] = useMemo(() => {
-    if (!createdVsResolvedData?.data) return [];
+    if (!createdVsResolvedData?.data || !Array.isArray(createdVsResolvedData.data)) return [];
     return createdVsResolvedData.data.map((datum) => ({
       ...datum,
       [datum.key]: datum.count,

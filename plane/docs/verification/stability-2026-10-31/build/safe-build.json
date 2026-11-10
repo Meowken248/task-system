@@ -1,0 +1,12 @@
+{
+  "clientDate": "2026-10-31",
+  "isolatedBuild": true,
+  "sourceEnvironmentFilesChanged": false,
+  "publicSecretGuardEnabled": true,
+  "signingSecretOverrideUsed": false,
+  "matchingSecretValues": 0,
+  "scannedFiles": 685,
+  "buildDirectory": "C:\\task-system\\plane\\tmp\\upload-safe-build-1793412676836\\apps\\web\\build\\client",
+  "sourceConfigSha256": "896da997b03354b5471d58c87032b6f5883504acbc5892cee73937e58d29bc85",
+  "temporaryBuildRemoved": true
+}

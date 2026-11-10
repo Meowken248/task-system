@@ -31,6 +31,8 @@ export default defineConfig(() => ({
       // Next.js compatibility shims used within admin
       "next/link": path.resolve(__dirname, "app/compat/next/link.tsx"),
       "next/navigation": path.resolve(__dirname, "app/compat/next/navigation.ts"),
+      // Runtime enums must remain available while workspace builds regenerate dist.
+      "@plane/types": path.resolve(__dirname, "../../packages/types/src/index.ts"),
       "@plane/services": path.resolve(__dirname, "../../packages/services/src/index.ts"),
     },
     dedupe: ["react", "react-dom"],

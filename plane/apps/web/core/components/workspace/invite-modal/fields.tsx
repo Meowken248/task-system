@@ -81,6 +81,35 @@ export const InvitationFields = observer(function InvitationFields(props: TInvit
                 </>
               )}
             />
+            <Controller
+              control={control}
+              name={`emails.${index}.wallet_address`}
+              rules={{
+                validate: (value) =>
+                  !value ||
+                  (/^0x[a-f0-9]{40}$/i.test(value.trim()) && !/^0x0{40}$/i.test(value.trim())) ||
+                  "Địa chỉ ví không hợp lệ.",
+              }}
+              render={({ field: walletField }) => (
+                <div className="mt-2">
+                  <Input
+                    {...walletField}
+                    value={walletField.value || ""}
+                    placeholder="Ví người nhận: 0x... (nếu đã biết)"
+                    className="w-full"
+                    hasError={Boolean(errors.emails?.[index]?.wallet_address)}
+                  />
+                  <p className="mt-1 text-caption-sm-regular text-secondary">
+                    Cần xác nhận ví người nhận trước khi cấp quyền tham gia.
+                  </p>
+                  {errors.emails?.[index]?.wallet_address && (
+                    <p className="text-caption-sm-regular text-danger-primary">
+                      {errors.emails[index]?.wallet_address?.message}
+                    </p>
+                  )}
+                </div>
+              )}
+            />
           </div>
           <div className="flex shrink-0 items-center justify-between gap-2">
             <div className="flex flex-col gap-1">
@@ -96,14 +125,16 @@ export const InvitationFields = observer(function InvitationFields(props: TInvit
                     className="w-24 flex-grow"
                     input
                   >
-                    {Object.entries(ROLE).map(([key, value]) => {
-                      if (currentWorkspaceRole && currentWorkspaceRole >= parseInt(key))
-                        return (
-                          <CustomSelect.Option key={key} value={parseInt(key)}>
-                            {value}
-                          </CustomSelect.Option>
-                        );
-                    })}
+                    {Object.entries(ROLE)
+                      .filter(([key]) => [15, 20].includes(Number(key)))
+                      .map(([key, value]) => {
+                        if (currentWorkspaceRole && currentWorkspaceRole >= parseInt(key))
+                          return (
+                            <CustomSelect.Option key={key} value={parseInt(key)}>
+                              {value}
+                            </CustomSelect.Option>
+                          );
+                      })}
                   </CustomSelect>
                 )}
               />

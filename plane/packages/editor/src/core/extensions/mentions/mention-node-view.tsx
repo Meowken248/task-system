@@ -24,10 +24,15 @@ export function MentionNodeView(props: MentionNodeViewProps) {
     node: { attrs },
   } = props;
 
+  const entityIdentifier =
+    attrs[EMentionComponentAttributeNames.ENTITY_IDENTIFIER] ||
+    attrs[EMentionComponentAttributeNames.ID] ||
+    "";
+
   return (
     <NodeViewWrapper key={attrs[EMentionComponentAttributeNames.ID]} className="mention-component inline w-fit">
       {(extension.options as TMentionExtensionOptions).renderComponent({
-        entity_identifier: attrs[EMentionComponentAttributeNames.ENTITY_IDENTIFIER] ?? "",
+        entity_identifier: entityIdentifier,
         entity_name: attrs[EMentionComponentAttributeNames.ENTITY_NAME] ?? "user_mention",
       })}
     </NodeViewWrapper>

@@ -101,7 +101,9 @@ export function OnChainTaskPanel({
         evidence,
       });
       await onReportRecorded({ progress, transactionHash: "", recordedAt: new Date(), work, difficulty, evidence });
-      setStatus(message);
+      setStatus(
+        `${message} Báo cáo ${progress}% mới được lưu local, chưa xác nhận trên blockchain; tiến độ contract chưa thay đổi.`
+      );
       setWork("");
       setDifficulty("");
       setEvidence("");

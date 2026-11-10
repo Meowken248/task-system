@@ -14,6 +14,8 @@ import type {
   IWorkspaceSearchResults,
   IProductUpdateResponse,
   IWorkspaceBulkInviteFormData,
+  IWorkspaceWalletMemberInput,
+  IWorkspaceWalletMemberResult,
   IWorkspaceViewProps,
   IUserProjectsRole,
   IWorkspaceView,
@@ -71,7 +73,7 @@ export class WorkspaceService extends APIService {
     return this.delete(`/api/workspaces/${workspaceSlug}/`)
       .then((response) => response?.data)
       .catch((error) => {
-        throw error?.response?.data;
+        throw error?.response?.data || error;
       });
   }
 
@@ -80,6 +82,17 @@ export class WorkspaceService extends APIService {
       .then((response) => response?.data)
       .catch((error) => {
         throw error?.response?.data;
+      });
+  }
+
+  async addWalletMember(
+    workspaceSlug: string,
+    data: IWorkspaceWalletMemberInput
+  ): Promise<IWorkspaceWalletMemberResult> {
+    return this.post(`/api/workspaces/${workspaceSlug}/members/`, data)
+      .then((response) => response.data)
+      .catch((error) => {
+        throw error?.response?.data || error;
       });
   }
 
@@ -153,8 +166,10 @@ export class WorkspaceService extends APIService {
       });
   }
 
-  async deleteWorkspaceMember(workspaceSlug: string, memberId: string): Promise<any> {
-    return this.delete(`/api/workspaces/${workspaceSlug}/members/${memberId}/`)
+  async deleteWorkspaceMember(workspaceSlug: string, memberId: string, walletAddress?: string): Promise<any> {
+    return this.delete(`/api/workspaces/${workspaceSlug}/members/${memberId}/`, {
+      params: walletAddress ? { wallet_address: walletAddress } : undefined,
+    })
       .then((response) => response?.data)
       .catch((error) => {
         throw error?.response?.data;
@@ -169,8 +184,14 @@ export class WorkspaceService extends APIService {
       });
   }
 
-  async getWorkspaceInvitation(workspaceSlug: string, invitationId: string): Promise<IWorkspaceMemberInvitation> {
-    return this.get(`/api/workspaces/${workspaceSlug}/invitations/${invitationId}/join/`, { headers: {} })
+  async getWorkspaceInvitation(
+    workspaceSlug: string,
+    invitationId: string,
+    token?: string
+  ): Promise<IWorkspaceMemberInvitation> {
+    return this.get(`/api/workspaces/${workspaceSlug}/invitations/${invitationId}/join/`, {
+      params: token ? { token } : undefined,
+    })
       .then((response) => response?.data)
       .catch((error) => {
         throw error?.response?.data;
@@ -180,7 +201,7 @@ export class WorkspaceService extends APIService {
   async updateWorkspaceInvitation(
     workspaceSlug: string,
     invitationId: string,
-    data: Partial<IWorkspaceMember>
+    data: Partial<IWorkspaceMemberInvitation>
   ): Promise<any> {
     return this.patch(`/api/workspaces/${workspaceSlug}/invitations/${invitationId}/`, data)
       .then((response) => response?.data)

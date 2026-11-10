@@ -12,10 +12,11 @@ import { EditorUserMention } from "./user";
 
 export function EditorMentionsRoot(props: TEditorMentionComponentProps) {
   const { entity_identifier, entity_name } = props;
+  const id = entity_identifier || (props as any).id || (props as any)["entity-identifier"] || "";
 
   switch (entity_name) {
     case "user_mention":
-      return <EditorUserMention id={entity_identifier} />;
+      return <EditorUserMention id={id} />;
     default:
       return <EditorAdditionalMentionsRoot {...props} />;
   }

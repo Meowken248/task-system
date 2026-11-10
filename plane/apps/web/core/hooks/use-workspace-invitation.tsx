@@ -13,6 +13,7 @@ import { EUserPermissions } from "@plane/constants";
 type EmailRole = {
   email: string;
   role: EUserPermissions;
+  wallet_address?: string;
 };
 
 export type InvitationFormValues = {

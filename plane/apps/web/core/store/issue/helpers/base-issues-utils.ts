@@ -16,7 +16,6 @@ import type {
   TIssueOrderByOptions,
 } from "@plane/types";
 import { checkDateCriteria, convertToISODateString, parseDateFilter } from "@plane/utils";
-import { store } from "@/lib/store-context";
 import { EIssueGroupedAction, ISSUE_GROUP_BY_KEY } from "./base-issues.store";
 
 /**
@@ -221,14 +220,16 @@ export const checkIssueDateFilter = (
 /**
  * Helper method to get previous issues state
  * @param issues - The array of issues to get the previous state for.
+ * @param issuesMap - Optional map of issues to extract previous state from.
  * @returns The previous state of the issues.
  */
-export const getPreviousIssuesState = (issues: TIssue[]) => {
+export const getPreviousIssuesState = (issues: TIssue[], issuesMap?: Record<string, TIssue>) => {
   const issueIds = issues.map((issue) => issue.id);
   const issuesPreviousState: Record<string, TIssue> = {};
+  if (!issuesMap) return issuesPreviousState;
   issueIds.forEach((issueId) => {
-    if (store.issue.issues.issuesMap[issueId]) {
-      issuesPreviousState[issueId] = cloneDeep(store.issue.issues.issuesMap[issueId]);
+    if (issuesMap[issueId]) {
+      issuesPreviousState[issueId] = cloneDeep(issuesMap[issueId]);
     }
   });
   return issuesPreviousState;

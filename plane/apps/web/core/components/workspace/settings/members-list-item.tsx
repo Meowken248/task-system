@@ -64,13 +64,33 @@ export const WorkspaceMembersListItem = observer(function WorkspaceMembersListIt
     if (!workspaceSlug || !memberId) return;
 
     try {
-      await removeMemberFromWorkspace(workspaceSlug.toString(), memberId);
+      setToast({
+        type: TOAST_TYPE.INFO,
+        title: "Xác thực ví MetaNode",
+        message: "Đang kết nối ví MetaNode để xác thực quyền quản trị xóa thành viên on-chain...",
+      });
+
+      let adminWallet: string | undefined;
+      try {
+        const { resolveMetanodeWalletAddress } = await import("@/services/blockchain/metanode-wallet.service");
+        adminWallet = await resolveMetanodeWalletAddress();
+      } catch (wErr) {
+        console.warn("Wallet prompt skipped or cancelled:", wErr);
+      }
+
+      await removeMemberFromWorkspace(workspaceSlug.toString(), memberId, adminWallet);
+
+      setToast({
+        type: TOAST_TYPE.SUCCESS,
+        title: "Thành công",
+        message: "Đã xóa thành viên khỏi không gian làm việc thành công.",
+      });
     } catch (err: unknown) {
-      const error = err as { error?: string };
+      const error = err as { error?: string; message?: string };
       setToast({
         type: TOAST_TYPE.ERROR,
-        title: "Error!",
-        message: error?.error || t("something_went_wrong_please_try_again"),
+        title: "Lỗi xóa thành viên",
+        message: error?.error || error?.message || t("something_went_wrong_please_try_again"),
       });
     }
   };
@@ -94,21 +114,21 @@ export const WorkspaceMembersListItem = observer(function WorkspaceMembersListIt
     <div className="grid border-t border-subtle">
       {removeMemberModal && (
         <ConfirmWorkspaceMemberRemove
-          isOpen={removeMemberModal.member.id.length > 0}
+          isOpen={Boolean(removeMemberModal?.member?.id)}
           onClose={() => setRemoveMemberModal(null)}
           userDetails={{
-            id: removeMemberModal.member.id,
-            display_name: removeMemberModal.member.display_name || "",
+            id: removeMemberModal.member?.id || "",
+            display_name: removeMemberModal.member?.display_name || "",
           }}
-          onSubmit={() => handleRemove(removeMemberModal.member.id)}
+          onSubmit={() => handleRemove(removeMemberModal.member?.id || "")}
         />
       )}
       <Table<RowData>
         columns={columns ?? []}
         data={
-          (memberDetails?.filter((member): member is IWorkspaceMember => member !== null) ?? []) as unknown as RowData[]
+          (memberDetails?.filter((member): member is IWorkspaceMember => member !== null && Boolean(member?.member)) ?? []) as unknown as RowData[]
         }
-        keyExtractor={(rowData) => rowData?.member.id ?? ""}
+        keyExtractor={(rowData) => rowData?.member?.id ?? (rowData as any)?.id ?? ""}
         tHeadClassName="border-b border-subtle"
         thClassName="text-left font-medium divide-x-0 text-placeholder"
         tBodyClassName="divide-y-0"

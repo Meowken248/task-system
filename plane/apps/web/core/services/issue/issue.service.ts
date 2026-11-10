@@ -22,6 +22,7 @@ import type {
 import { APIService } from "@/services/api.service";
 import { blockchainTrackingService } from "@/services/blockchain/blockchain-tracking.service";
 import { isWalletAddress } from "@/services/blockchain/metanode-wallet.service";
+import { notifyVaultProblem } from "@/services/blockchain/vault-notice";
 import {
   assignIssueByIssueIdOnChain,
   cancelIssueByIssueIdOnChain,
@@ -29,6 +30,8 @@ import {
   createIssueOnChain,
   deleteIssueByIssueIdOnChain,
   getIssueSubTaskStats,
+  getIssueTaskId,
+  isMissingOnChainRecordError,
   isOnChainTaskSyncAvailable,
   issueExistsOnChain,
   updateIssueMetadataByIssueIdOnChain,
@@ -52,6 +55,8 @@ const assertStartDateIsNotInPast = (startDate: string | null | undefined) => {
 
 export class IssueService extends APIService {
   private serviceType: TIssueServiceType;
+  // Chống gọi lặp (self-heal tạo task on-chain) cho cùng một issue trong 1 phiên.
+  private onChainBackfillInFlight = new Set<string>();
 
   constructor(serviceType: TIssueServiceType = EIssueServiceType.ISSUES) {
     super(API_BASE_URL);
@@ -65,11 +70,23 @@ export class IssueService extends APIService {
     stateId: string,
     currentIssue: TIssue
   ): Promise<void> {
-    const state = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/states/${stateId}/`).then(
-      (response) => response?.data
-    );
-    const group = state?.group as string | undefined;
-    if (!group) throw new Error("Không thể xác định trạng thái để đồng bộ on-chain.");
+    const state = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/states/${stateId}/`)
+      .then((response) => response?.data)
+      .catch(() => null);
+    let group = state?.group as string | undefined;
+
+    if (!group) {
+      const allStates = await this.get(`/api/workspaces/${workspaceSlug}/projects/${projectId}/states/`)
+        .then((response) => (Array.isArray(response?.data) ? response.data : []))
+        .catch(() => []);
+      const found = allStates.find((s: any) => s.id === stateId);
+      group = found?.group;
+    }
+
+    if (!group) {
+      console.warn("Không thể xác định trạng thái để đồng bộ on-chain cho stateId:", stateId);
+      return;
+    }
 
     let progress = group === "completed" ? 100 : group === "started" ? 50 : 0;
     let subTaskStatus: 0 | 1 | 2 | 3 = group === "cancelled" ? 3 : progress === 100 ? 2 : progress > 0 ? 1 : 0;
@@ -77,32 +94,82 @@ export class IssueService extends APIService {
     if (group === "cancelled") {
       await cancelIssueByIssueIdOnChain(issueId);
     } else {
-      const stats = await getIssueSubTaskStats(issueId);
-      if (stats.activeCount === 0) {
+      const stats = await getIssueSubTaskStats(issueId).catch(() => null);
+      if (stats && stats.activeCount === 0) {
         await updateIssueProgressByIssueIdOnChain(issueId, progress);
-      } else if (progress !== stats.progress) {
-        throw new Error("Task cha có task con nên tiến độ phải được tính tự động từ các task con.");
+      } else if (stats && progress !== stats.progress) {
+        console.warn("Task cha có task con nên tiến độ phải được tính tự động từ các task con.");
+      } else if (!stats) {
+        await updateIssueProgressByIssueIdOnChain(issueId, progress).catch((err) => {
+          notifyVaultProblem(err);
+          console.warn("Không cập nhật được progress on-chain:", err);
+        });
       }
     }
 
     let childIssueId = issueId;
     let parentIssueId = currentIssue.parent_id;
     while (parentIssueId) {
-      // Each parent update is a separate wallet-confirmed transaction.
-      const syncTransaction =
-        subTaskStatus === 3
-          ? updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus)
-          : updateIssueSubTaskProgressOnChain(parentIssueId, childIssueId, progress);
-      // eslint-disable-next-line no-await-in-loop
-      await syncTransaction;
-      // eslint-disable-next-line no-await-in-loop
-      const parentStats = await getIssueSubTaskStats(parentIssueId);
-      progress = parentStats.progress;
-      subTaskStatus = progress === 100 ? 2 : progress > 0 ? 1 : 0;
-      childIssueId = parentIssueId;
-      // eslint-disable-next-line no-await-in-loop
-      const parentIssue = await this.retrieve(workspaceSlug, projectId, parentIssueId);
-      parentIssueId = parentIssue.parent_id;
+      try {
+        const syncTransaction =
+          subTaskStatus === 3
+            ? updateIssueSubTaskStatusOnChain(parentIssueId, childIssueId, subTaskStatus)
+            : updateIssueSubTaskProgressOnChain(parentIssueId, childIssueId, progress);
+        await syncTransaction;
+        const parentStats = await getIssueSubTaskStats(parentIssueId);
+        progress = parentStats.progress;
+        subTaskStatus = progress === 100 ? 2 : progress > 0 ? 1 : 0;
+        childIssueId = parentIssueId;
+        const parentIssue = await this.retrieve(workspaceSlug, projectId, parentIssueId);
+        parentIssueId = parentIssue.parent_id;
+      } catch (parentSyncError) {
+        console.warn("Đồng bộ task cha on-chain không thành công:", parentSyncError);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Issue được tạo trước khi contract hiện tại được deploy (hoặc giao dịch tạo task bị thất bại)
+   * sẽ không tồn tại on-chain → trước đây mọi cập nhật sau đó bị bỏ qua hoàn toàn.
+   * Hàm này tạo lại (self-heal) task on-chain để các bước cập nhật/giao việc tiếp theo có taskId hợp lệ.
+   */
+  private async ensureIssueOnChain(workspaceSlug: string, projectId: string, issue: TIssue): Promise<boolean> {
+    if (!issue?.id || !isOnChainTaskSyncAvailable()) return false;
+    if (this.onChainBackfillInFlight.has(issue.id)) return false;
+    this.onChainBackfillInFlight.add(issue.id);
+    try {
+      // Kiểm tra lại chính xác: chỉ tạo mới khi contract trả về "task không tồn tại".
+      // (Tránh tạo trùng khi RPC/bridge lỗi tạm thời.)
+      try {
+        await getIssueTaskId(issue.id);
+        return true;
+      } catch (probeError) {
+        if (!isMissingOnChainRecordError(probeError)) throw probeError;
+      }
+      const chainResult = await createIssueOnChain(issue);
+      void blockchainTrackingService
+        .recordTaskCreation(workspaceSlug, projectId, {
+          issueId: issue.id,
+          issueName: issue.name,
+          parentIssueId: issue.parent_id,
+          targetDate: issue.target_date,
+          priority: issue.priority,
+          assigneeWallet: chainResult.assigneeWallet,
+          assigneeId: issue.assignee_ids?.[0],
+          transactionHash: chainResult.transactionHash,
+        })
+        .catch((trackingError) => {
+          console.warn("Task đã được tạo lại on-chain; audit đang chờ tự đồng bộ.", trackingError);
+        });
+      console.info(`Đã tạo lại task on-chain cho issue ${issue.id} (trước đó chưa tồn tại trên contract).`);
+      return true;
+    } catch (chainError) {
+      notifyVaultProblem(chainError);
+      console.warn("Không thể tạo lại task on-chain cho issue; dữ liệu off-chain vẫn được lưu:", chainError);
+      return false;
+    } finally {
+      this.onChainBackfillInFlight.delete(issue.id);
     }
   }
 
@@ -120,35 +187,31 @@ export class IssueService extends APIService {
       throw error?.response?.data ?? error;
     }
 
-    if (!isOnChainTaskSyncAvailable()) {
-      throw new Error("Không thể kết nối với hệ thống Blockchain. Không thể tạo Task.");
-    }
+    if (isOnChainTaskSyncAvailable()) {
+      try {
+        const chainResult = await createIssueOnChain(issue);
+        const transactionHash = chainResult.transactionHash;
+        const assigneeWallet = chainResult.assigneeWallet;
 
-    let transactionHash: string;
-    let assigneeWallet: string;
-    try {
-      const chainResult = await createIssueOnChain(issue);
-      transactionHash = chainResult.transactionHash;
-      assigneeWallet = chainResult.assigneeWallet;
-    } catch (chainError) {
-      const message = chainError instanceof Error ? chainError.message : "Giao dịch blockchain bị hủy hoặc thất bại.";
-      throw { error: message, isChainError: true };
+        void blockchainTrackingService
+          .recordTaskCreation(workspaceSlug, projectId, {
+            issueId: issue.id,
+            issueName: issue.name,
+            parentIssueId: issue.parent_id,
+            targetDate: issue.target_date,
+            priority: issue.priority,
+            assigneeWallet,
+            assigneeId: issue.assignee_ids?.[0],
+            transactionHash,
+          })
+          .catch((trackingError) => {
+            console.warn("Task đã được tạo on-chain; audit đang chờ tự đồng bộ.", trackingError);
+          });
+      } catch (chainError) {
+        notifyVaultProblem(chainError);
+        console.warn("Tạo task on-chain không thành công; nội dung vẫn được lưu:", chainError);
+      }
     }
-
-    void blockchainTrackingService
-      .recordTaskCreation(workspaceSlug, projectId, {
-        issueId: issue.id,
-        issueName: issue.name,
-        parentIssueId: issue.parent_id,
-        targetDate: issue.target_date,
-        priority: issue.priority,
-        assigneeWallet,
-        assigneeId: issue.assignee_ids?.[0],
-        transactionHash,
-      })
-      .catch((trackingError) => {
-        console.warn("Task đã được tạo on-chain; audit đang chờ tự đồng bộ.", trackingError);
-      });
 
     return issue;
   }
@@ -353,27 +416,36 @@ export class IssueService extends APIService {
 
     if (isOnChainTaskSyncAvailable()) {
       try {
-        const metadataFields = [
-          "name",
-          "description_html",
-          "description_json",
-          "description_stripped",
-          "description_binary",
-        ];
-
-        if (data.state_id) {
-          await this.syncIssueStateOnChain(workspaceSlug, projectId, issueId, data.state_id, updatedIssue);
+        let existsOnChain = await issueExistsOnChain(issueId).catch(() => false);
+        // Task có thể chưa tồn tại on-chain (issue tạo trước khi contract hiện tại được deploy,
+        // hoặc giao dịch tạo task trước đó thất bại) → tạo lại để không mất cập nhật.
+        if (!existsOnChain) {
+          existsOnChain = await this.ensureIssueOnChain(workspaceSlug, projectId, updatedIssue as TIssue);
         }
+        if (existsOnChain) {
+          const metadataFields = [
+            "name",
+            "description_html",
+            "description_json",
+            "description_stripped",
+            "description_binary",
+          ];
 
-        if ("priority" in data || "target_date" in data) {
-          await updateIssueScheduleByIssueIdOnChain(issueId, updatedIssue.target_date, updatedIssue.priority);
-        }
+          if (data.state_id) {
+            await this.syncIssueStateOnChain(workspaceSlug, projectId, issueId, data.state_id, updatedIssue);
+          }
 
-        if (metadataFields.some((field) => field in data)) {
-          await updateIssueMetadataByIssueIdOnChain(updatedIssue as TIssue);
+          if ("priority" in data || "target_date" in data) {
+            await updateIssueScheduleByIssueIdOnChain(issueId, updatedIssue.target_date, updatedIssue.priority);
+          }
+
+          if (metadataFields.some((field) => field in data)) {
+            await updateIssueMetadataByIssueIdOnChain(updatedIssue as TIssue);
+          }
         }
       } catch (chainError) {
-        throw { error: chainError instanceof Error ? chainError.message : "Cập nhật on-chain thất bại.", isChainError: true };
+        notifyVaultProblem(chainError);
+        console.warn("Cập nhật on-chain không thành công; nội dung vẫn được lưu:", chainError);
       }
     }
 
@@ -386,21 +458,28 @@ export class IssueService extends APIService {
       const assigneeWallet = consumePendingAssignmentWallet(issueId) || storedWallet;
       if (isWalletAddress(assigneeWallet)) {
         try {
-          const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet);
-          void blockchainTrackingService
-            .recordTaskAssignment(workspaceSlug, projectId, {
-              issueId,
-              issueName: updatedIssue.name || issueId,
-              transactionHash,
-              assigneeWallet,
-              assigneeId,
-              assigneeName: "",
-            })
-            .catch((trackingError) => {
-              console.warn("Giao task đã thành công; audit đang chờ tự đồng bộ.", trackingError);
-            });
+          let existsOnChain = await issueExistsOnChain(issueId).catch(() => false);
+          if (!existsOnChain) {
+            existsOnChain = await this.ensureIssueOnChain(workspaceSlug, projectId, updatedIssue as TIssue);
+          }
+          if (existsOnChain) {
+            const transactionHash = await assignIssueByIssueIdOnChain(issueId, assigneeWallet);
+            void blockchainTrackingService
+              .recordTaskAssignment(workspaceSlug, projectId, {
+                issueId,
+                issueName: updatedIssue.name || issueId,
+                transactionHash,
+                assigneeWallet,
+                assigneeId,
+                assigneeName: "",
+              })
+              .catch((trackingError) => {
+                console.warn("Giao task đã thành công; audit đang chờ tự đồng bộ.", trackingError);
+              });
+          }
         } catch (chainError) {
-          throw { error: chainError instanceof Error ? chainError.message : "Giao task on-chain thất bại.", isChainError: true };
+          notifyVaultProblem(chainError);
+          console.warn("Giao task on-chain không thành công; nội dung vẫn được lưu:", chainError);
         }
       }
     }
@@ -441,6 +520,7 @@ export class IssueService extends APIService {
           });
       }
     } catch (chainError) {
+      notifyVaultProblem(chainError);
       console.warn("Không xóa được task on-chain; vẫn tiếp tục xóa task trên Plane.", chainError);
     }
 

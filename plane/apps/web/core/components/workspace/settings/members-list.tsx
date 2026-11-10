@@ -4,12 +4,13 @@
  * See the LICENSE file for details.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { observer } from "mobx-react";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
 import { Disclosure } from "@headlessui/react";
 // plane imports
+import type { IWorkspaceMember } from "@plane/types";
 import { useTranslation } from "@plane/i18n";
 import { ChevronDownIcon } from "@plane/propel/icons";
 import { Collapsible } from "@plane/ui";
@@ -53,8 +54,31 @@ export const WorkspaceMembersList = observer(function WorkspaceMembersList(props
           await fetchWorkspaceMemberInvitations(workspaceSlug.toString());
           await fetchWorkspaceMembers(workspaceSlug.toString());
         }
-      : null
+      : null,
+    {
+      revalidateOnFocus: true,
+      refreshInterval: 15000,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      dedupingInterval: 5000,
+    }
   );
+
+  useEffect(() => {
+    if (!workspaceSlug) return;
+    const handleSync = async (event: Event) => {
+      const changedWorkspace = (event as CustomEvent)?.detail?.workspaceSlug;
+      if (changedWorkspace && changedWorkspace !== workspaceSlug.toString()) return;
+      try {
+        await fetchWorkspaceMemberInvitations(workspaceSlug.toString());
+        await fetchWorkspaceMembers(workspaceSlug.toString());
+      } catch {}
+    };
+    window.addEventListener("plane_dapp_members_synced", handleSync);
+    return () => {
+      window.removeEventListener("plane_dapp_members_synced", handleSync);
+    };
+  }, [workspaceSlug, fetchWorkspaceMemberInvitations, fetchWorkspaceMembers]);
 
   if (!workspaceMemberIds && !workspaceMemberInvitationIds) return <MembersSettingsLoader />;
 
@@ -64,6 +88,7 @@ export const WorkspaceMembersList = observer(function WorkspaceMembersList(props
   const searchedInvitationsIds = getSearchedWorkspaceInvitationIds(searchQuery);
   const memberDetails = searchedMemberIds
     ?.map((memberId) => getWorkspaceMemberDetails(memberId))
+    .filter((member): member is IWorkspaceMember => member !== null && Boolean(member?.member))
     .sort((a, b) => {
       if (a?.is_active && !b?.is_active) return -1;
       if (!a?.is_active && b?.is_active) return 1;

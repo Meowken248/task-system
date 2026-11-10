@@ -25,7 +25,7 @@ import { DeleteIssueModal } from "../../delete-issue-modal";
 import { CreateUpdateIssueModal } from "../../issue-modal/modal";
 import type { IQuickActionProps } from "../list/list-view-types";
 import type { MenuItemFactoryProps } from "./helper";
-import { useAllIssueMenuItems } from "./helper";
+import { useAllIssueMenuItems, getDuplicateIssuePayload } from "./helper";
 
 export const AllIssueQuickActions = observer(function AllIssueQuickActions(props: IQuickActionProps) {
   const {
@@ -57,14 +57,7 @@ export const AllIssueQuickActions = observer(function AllIssueQuickActions(props
   const isArchivingAllowed = handleArchive && isEditingAllowed;
   const isInArchivableGroup = !!stateDetails && ARCHIVABLE_STATE_GROUPS.includes(stateDetails?.group);
 
-  const duplicateIssuePayload = omit(
-    {
-      ...issue,
-      name: `${issue.name} (copy)`,
-      sourceIssueId: issue.id,
-    },
-    ["id"]
-  );
+  const duplicateIssuePayload = getDuplicateIssuePayload(issue);
 
   // Menu items and modals using helper
   const menuItemProps: MenuItemFactoryProps = {

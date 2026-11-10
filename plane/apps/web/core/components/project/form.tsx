@@ -64,6 +64,7 @@ export function ProjectDetailsForm(props: IProjectDetailsForm) {
     defaultValues: {
       ...project,
       workspace: (project.workspace as IWorkspace).id,
+      timezone: project.timezone || "UTC",
     },
   });
   // derived values
@@ -75,6 +76,7 @@ export function ProjectDetailsForm(props: IProjectDetailsForm) {
       reset({
         ...project,
         workspace: (project.workspace as IWorkspace).id,
+        timezone: project.timezone || "UTC",
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,6 +94,9 @@ export function ProjectDetailsForm(props: IProjectDetailsForm) {
     if (!workspaceSlug || !project) return;
     return updateProject(workspaceSlug.toString(), project.id, payload)
       .then(() => {
+        if (Object.hasOwn(payload, "cover_image_url")) {
+          setValue("cover_image_url", payload.cover_image_url ?? "", { shouldDirty: false });
+        }
         setToast({
           type: TOAST_TYPE.SUCCESS,
           title: t("toast.success"),

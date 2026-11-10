@@ -41,7 +41,15 @@ export function FiltersDropdown(props: Props) {
   const [popperElement, setPopperElement] = useState<HTMLDivElement | null>(null);
 
   const { styles, attributes } = usePopper(referenceElement, popperElement, {
-    placement: placement ?? "auto",
+    placement: placement ?? "bottom-end",
+    modifiers: [
+      {
+        name: "preventOverflow",
+        options: {
+          padding: 12,
+        },
+      },
+    ],
   });
 
   return (
@@ -54,38 +62,28 @@ export function FiltersDropdown(props: Props) {
                 {menuButton}
               </button>
             ) : (
-              <div ref={setReferenceElement}>
-                <div className="hidden @4xl:flex">
-                  <Button
-                    disabled={disabled}
-                    variant="secondary"
-                    prependIcon={icon}
-                    tabIndex={tabIndex}
-                    className="relative"
-                    size="lg"
-                  >
-                    <>
-                      <div className={`${open ? "text-primary" : "text-secondary"}`}>
-                        <span>{title}</span>
-                      </div>
-                      {isFiltersApplied && (
-                        <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-accent-primary" />
-                      )}
-                    </>
-                  </Button>
+              <Button
+                ref={setReferenceElement}
+                disabled={disabled}
+                variant="secondary"
+                prependIcon={icon}
+                tabIndex={tabIndex}
+                className="relative"
+                size="lg"
+              >
+                <div className="hidden items-center gap-1.5 @4xl:flex">
+                  <span className={open ? "text-primary" : "text-secondary"}>{title}</span>
+                  {isFiltersApplied && (
+                    <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-accent-primary" />
+                  )}
                 </div>
-                <div className="flex @4xl:hidden">
-                  <Button
-                    disabled={disabled}
-                    ref={setReferenceElement}
-                    variant="secondary"
-                    tabIndex={tabIndex}
-                    size="lg"
-                  >
-                    {miniIcon || title}
-                  </Button>
+                <div className="flex items-center gap-1.5 @4xl:hidden">
+                  {miniIcon || title}
+                  {isFiltersApplied && (
+                    <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-accent-primary" />
+                  )}
                 </div>
-              </div>
+              </Button>
             )}
           </Popover.Button>
           <Transition
@@ -97,8 +95,7 @@ export function FiltersDropdown(props: Props) {
             leaveFrom="opacity-100 translate-y-0"
             leaveTo="opacity-0 translate-y-1"
           >
-            {/** translate-y-0 is a hack to create new stacking context. Required for safari  */}
-            <Popover.Panel className="fixed z-10 translate-y-0">
+            <Popover.Panel className="fixed z-50">
               <div
                 className="my-1 overflow-hidden rounded-sm border border-subtle bg-surface-1 shadow-raised-100"
                 ref={setPopperElement}

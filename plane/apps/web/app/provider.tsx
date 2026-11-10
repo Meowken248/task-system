@@ -6,6 +6,7 @@
 
 import { lazy, Suspense } from "react";
 import { useTheme } from "next-themes";
+import { usePathname } from "next/navigation";
 import { SWRConfig } from "swr";
 // Plane Imports
 import { WEB_SWR_CONFIG } from "@plane/constants";
@@ -13,11 +14,13 @@ import { TranslationProvider } from "@plane/i18n";
 import { Toast } from "@plane/propel/toast";
 // helpers
 import { resolveGeneralTheme } from "@plane/utils";
+import { isAccountEntryPath } from "@/helpers/invitation-navigation";
 // mobx store provider
 import { StoreProvider } from "@/lib/store-context";
 import { MetanodeBootstrap } from "@/components/blockchain/metanode-bootstrap";
 import { DbBootstrap } from "@/components/blockchain/db-bootstrap";
 import { SyncToChainButton } from "@/components/blockchain/sync-button";
+import { WalletCenter } from "@/components/blockchain/wallet-center";
 
 // lazy imports
 const AppProgressBar = lazy(function AppProgressBar() {
@@ -40,12 +43,14 @@ export function AppProvider(props: IAppProvider) {
   const { children } = props;
   // themes
   const { resolvedTheme } = useTheme();
+  const pathname = usePathname();
+  const nonBlockingBootstrap = isAccountEntryPath(pathname, process.env.VITE_ROUTER_BASENAME || "");
 
   return (
     <StoreProvider>
       <>
         <MetanodeBootstrap />
-        <DbBootstrap />
+        <DbBootstrap nonBlocking={nonBlockingBootstrap} />
         <AppProgressBar />
         <TranslationProvider>
           <Toast theme={resolveGeneralTheme(resolvedTheme)} />
@@ -58,6 +63,7 @@ export function AppProvider(props: IAppProvider) {
           </StoreWrapper>
         </TranslationProvider>
         <SyncToChainButton />
+        <WalletCenter />
       </>
     </StoreProvider>
   );

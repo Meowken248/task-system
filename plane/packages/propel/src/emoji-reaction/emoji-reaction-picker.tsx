@@ -76,7 +76,7 @@ export function EmojiReactionPicker(props: EmojiReactionPickerProps) {
         sideOffset={8}
         data-prevent-outside-click="true"
       >
-        <div className="h-80 overflow-hidden overflow-y-auto">
+        <div className="h-80 overflow-hidden flex flex-col">
           <EmojiRoot
             onChange={handleEmojiChange}
             searchPlaceholder={searchPlaceholder}

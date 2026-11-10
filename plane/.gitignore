@@ -109,11 +109,38 @@ build/
 build/
 .react-router/
 temp/
-scripts/
+scripts/*
+!scripts/app-env.mjs
+!scripts/app-env.d.mts
+!scripts/workspace-source-aliases.mjs
+!scripts/workspace-source-aliases.d.mts
+!scripts/build-plane.mjs
+!scripts/check-public-env-secrets.mjs
+!scripts/sync-space-build.mjs
+!scripts/deployment-env.mjs
+!scripts/deploy-fresh.mjs
+!scripts/deploy-fresh-v3.mjs
+!scripts/task-v3-deployment.mjs
+!scripts/sync-fiai-runtime.mjs
+!scripts/fiai-artifacts.mjs
+!scripts/backup-registry-snapshots.mjs
+!scripts/preview-workspace-registry-migration.mjs
+!scripts/restore-workspace-registry.mjs
+!scripts/restore-workspace-registry.d.mts
 .pnpm-store/
-
+docs/
 # Go build/test artifacts
 apps/go-api/.gocache/
 apps/go-api/bin/
 apps/go-api/api.exe
 *.codegraph
+*.zip
+# ── Environment files (secrets) ──────────────────────────────────────────────
+# Real .env files hold deployment secrets: mail API keys, signing keys and private
+# RPC endpoints. They must never be committed. Only *.example templates are tracked.
+.env
+.env.*
+!.env.example
+!**/.env.example
+!.env.production.example
+!**/.env.production.example

@@ -32,6 +32,8 @@ const ActiveProjects = observer(function ActiveProjects() {
           })
       : null
   );
+  const projectList = Array.isArray(projectAnalyticsCount) ? projectAnalyticsCount : [];
+
   return (
     <AnalyticsSectionWrapper
       title={`${t("workspace_analytics.active_projects")}`}
@@ -42,7 +44,7 @@ const ActiveProjects = observer(function ActiveProjects() {
         {isProjectAnalyticsCountLoading &&
           Array.from({ length: 5 }).map((_, index) => <Loader.Item key={index} height="40px" width="100%" />)}
         {!isProjectAnalyticsCountLoading &&
-          projectAnalyticsCount?.map((project) => <ActiveProjectItem key={project.id} project={project} />)}
+          projectList.map((project) => <ActiveProjectItem key={project.id} project={project} />)}
       </div>
     </AnalyticsSectionWrapper>
   );

@@ -23,17 +23,26 @@ type Props = {
 
 export const SpreadsheetStartDateColumn = observer(function SpreadsheetStartDateColumn(props: Props) {
   const { issue, onChange, disabled, onClose } = props;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   return (
     <div className="h-11 border-b-[0.5px] border-subtle">
       <DateDropdown
         value={issue.start_date}
-        maxDate={getDate(issue.target_date)}
+        minDate={today}
         onChange={(data) => {
           const startDate = data ? renderFormattedPayloadDate(data) : null;
+          const updates: Partial<TIssue> = { start_date: startDate };
+          if (data && issue.target_date) {
+            const currentTargetDate = getDate(issue.target_date);
+            if (currentTargetDate && currentTargetDate < data) {
+              updates.target_date = startDate;
+            }
+          }
           onChange(
             issue,
-            { start_date: startDate },
+            updates,
             {
               changed_property: "start_date",
               change_details: startDate,

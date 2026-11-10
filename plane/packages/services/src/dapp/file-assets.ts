@@ -1,0 +1,433 @@
+import type { RouteResult } from "./types";
+import { localDB, saveDB } from "./store";
+import { saveAttachment, getAttachment, deleteAttachment, type StoredAttachment } from "../file/attachment-storage";
+import { attachmentDataUrl } from "../file/asset-source";
+import { setPresentationMedia } from "./presentation-media";
+import { isPresentationImageType } from "../file/image-policy";
+import { verifyIpfsImage } from "../file/ipfs-image";
+import { readSharedFile, sharedFileDataUrl } from "../file/ipfs-file";
+import { isCoverPresetKey, getPresetPin, forgetPresetPin, getPinnedCoverPresetKey } from "../file/cover-presets";
+import {
+  authenticatedResourceUser, requireWorkspaceAccess, requireProjectAccess,
+  resourceWorkspace, resourceProject, ResourceAccessError,
+  captureResourceRequestIdentity, type ResourceRequestIdentity,
+} from "./resource-access";
+import { requirePageAccess } from "./page-access.helper";
+
+const ok = (data: any): RouteResult => ({ status: 200, data });
+const fail = (status: number, error: string): RouteResult => ({ status, data: { error } });
+const assetRecord = (id: string) =>
+  (localDB.assets || []).find((asset: any) => asset.id === id || asset.asset_id === id);
+const attachmentRecord = (id: string) =>
+  (localDB.attachments || []).find((asset: any) => asset.id === id || asset.asset_id === id);
+const makeId = () =>
+  `asset_${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+
+const forbidden = () => new ResourceAccessError(403, "NOT_AUTHORIZED", "Bạn không có quyền truy cập tệp này.");
+
+function inferScope(record: any): { workspace?: string; project?: string } {
+  let workspace = record.workspace || record.workspace_id;
+  let project = record.project || record.project_id;
+  const entity = record.entity_identifier || record.issue_id || record.issue;
+  if (record.entity_type === "WORKSPACE_LOGO") workspace ||= entity;
+  if (record.entity_type === "PROJECT_COVER") project ||= entity;
+  const issue = (localDB.issues || []).find((entry: any) => entry.id === entity);
+  const page = (localDB.pages || []).find((entry: any) => entry.id === entity);
+  const comment = (localDB.comments || []).find((entry: any) => entry.id === entity);
+  project ||= issue?.project || issue?.project_id || page?.project || page?.project_id || comment?.project || comment?.project_id;
+  if (project) {
+    const parent = (localDB.projects || []).find((entry: any) => entry.id === project || entry.identifier === project);
+    workspace ||= parent?.workspace || parent?.workspace_id;
+  }
+  return { workspace, project };
+}
+
+async function authorizeScope(record: any, pathname: string, write: boolean, user: any) {
+  const wsPath = pathname.match(/\/workspaces\/([^/]+)/)?.[1];
+  const projectPath = pathname.match(/\/projects\/([^/]+)/)?.[1];
+  const userAsset = record.user_asset || ["USER_AVATAR", "USER_COVER"].includes(record.entity_type);
+  if (userAsset) {
+    if (wsPath || projectPath || (record.created_by || record.entity_identifier) !== user.id) throw forbidden();
+    return { role: 20, workspace: undefined, project: undefined };
+  }
+  const scope = inferScope(record);
+  if (!scope.workspace) throw forbidden(); // Never guess the owner of unscoped legacy bytes.
+  const workspace = resourceWorkspace(scope.workspace);
+  if (wsPath && resourceWorkspace(decodeURIComponent(wsPath)).id !== workspace.id) throw forbidden();
+  const project = scope.project ? resourceProject(workspace, scope.project) : undefined;
+  if (projectPath && (!project || resourceProject(workspace, decodeURIComponent(projectPath)).id !== project.id)) throw forbidden();
+  // Workspace settings never inherit the administrator role of a project.
+  if (record.entity_type === "WORKSPACE_LOGO" && project) throw forbidden();
+  const role = project
+    ? (await requireProjectAccess(workspace.slug, project.id, write)).projectRole
+    : (await requireWorkspaceAccess(workspace.slug)).role;
+  if (write && role < 15) throw forbidden();
+  if (write && ["WORKSPACE_LOGO", "PROJECT_COVER"].includes(record.entity_type) && role < 20) throw forbidden();
+  // Existing entities may not be rebound to a project/workspace supplied by the caller.
+  const entity = record.entity_identifier;
+  if (record.entity_type === "WORKSPACE_LOGO" && resourceWorkspace(entity).id !== workspace.id) throw forbidden();
+  if (record.entity_type === "PROJECT_COVER" && resourceProject(workspace, entity).id !== project?.id) throw forbidden();
+  const issue = (localDB.issues || []).find((entry: any) => entry.id === entity);
+  const page = (localDB.pages || []).find((entry: any) => entry.id === entity);
+  const comment = (localDB.comments || []).find((entry: any) => entry.id === entity);
+  const commentIssue = comment && (localDB.issues || []).find((entry: any) => entry.id === (comment.issue || comment.issue_id));
+  for (const parent of [issue, page, comment, commentIssue].filter(Boolean)) {
+    const parentProject = parent.project || parent.project_id;
+    if (parentProject && resourceProject(workspace, parentProject).id !== project?.id) throw forbidden();
+  }
+  if (page && project) await requirePageAccess(workspace.slug, project.id, page.id, write ? "edit_content" : "read_content");
+  return { role, workspace: workspace.id, project: project?.id };
+}
+
+async function authorizeAsset(id: string, pathname: string, method: string, user: any) {
+  const record = assetRecord(id) || attachmentRecord(id);
+  if (!record) throw new ResourceAccessError(404, "NOT_FOUND", "Không tìm thấy thông tin tệp.");
+  const access = await authorizeScope(record, pathname, method !== "get", user);
+  if (method === "delete" && access.role < 20 && record.created_by !== user.id) throw forbidden();
+  return record;
+}
+
+async function content(id: string): Promise<StoredAttachment | null> {
+  if ([...(localDB._deleted_asset_ids || []), ...(localDB._deleted_attachment_ids || [])].includes(id)) return null;
+  const shared = assetRecord(id) || attachmentRecord(id);
+  if (shared?.storage === "ipfs-file" && shared.is_uploaded && shared.ipfs_cid) {
+    const file = await readSharedFile(shared.ipfs_cid, undefined, shared.content_hash);
+    const url = await sharedFileDataUrl(shared.ipfs_cid, undefined, shared.content_hash);
+    return { key: id, name: file.name, type: file.type, size: file.size, base64: url.slice(url.indexOf(",") + 1) };
+  }
+  const cached = await getAttachment(id);
+  if (cached?.base64) return cached;
+  const record = assetRecord(id) || attachmentRecord(id);
+  const url = record?.asset_url;
+  // Recover content embedded in a previously confirmed shared snapshot.
+  if (record?.is_uploaded !== false && typeof url === "string" && /^data:[^;,]+;base64,/.test(url)) {
+    return {
+      key: id,
+      name: record.name || record.attributes?.name || "attachment",
+      type: url.slice(5, url.indexOf(";")),
+      base64: url.slice(url.indexOf(",") + 1),
+      size: record.size || record.attributes?.size,
+    };
+  }
+  return null;
+}
+
+function bindAsset(record: any, url: string, user: any): void {
+  const profile = (localDB.users || []).find((candidate: any) => candidate.id === user?.id);
+  if (record.entity_type === "USER_COVER") {
+    if (profile) {
+      setPresentationMedia(profile, "cover", url);
+    }
+  } else if (record.entity_type === "USER_AVATAR" || (record.user_asset && !record.entity_type)) {
+    if (profile) {
+      setPresentationMedia(profile, "avatar", url);
+    }
+  } else if (record.entity_type === "PROJECT_COVER") {
+    const project = (localDB.projects || []).find(
+      (candidate: any) => candidate.id === record.entity_identifier || candidate.identifier === record.entity_identifier
+    );
+    if (project) setPresentationMedia(project, "cover", url);
+  } else if (record.entity_type === "WORKSPACE_LOGO") {
+    const workspace = (localDB.workspaces || []).find(
+      (candidate: any) => candidate.id === record.entity_identifier || candidate.slug === record.entity_identifier
+    );
+    if (workspace) setPresentationMedia(workspace, "logo", url);
+  }
+}
+
+async function confirm(id: string, user: any, body: any = {}, signal?: AbortSignal, identity = captureResourceRequestIdentity()): Promise<RouteResult> {
+  identity.assertCurrent();
+  if (identity.userId !== user.id) throw new ResourceAccessError(409, "SESSION_OR_WALLET_CHANGED", "Phiên đăng nhập đã thay đổi.");
+  const asset = assetRecord(id);
+  const attachment = attachmentRecord(id);
+  if (!asset && !attachment) return fail(404, "Không tìm thấy mã tệp để xác nhận.");
+  if ((asset || attachment).storage === "ipfs-file") {
+    const cid = body.ipfs_cid || asset?.ipfs_cid || attachment?.ipfs_cid;
+    if (!cid) return fail(409, "Tệp chưa được xác nhận lưu dùng chung.");
+    const file = await readSharedFile(cid, signal, body.content_hash);
+    identity.assertCurrent();
+    await authorizeAsset(id, "", "patch", user);
+    identity.assertCurrent();
+    const expectedSize = asset?.size || attachment?.attributes?.size;
+    if (expectedSize && expectedSize !== file.size) return fail(400, "Tệp xác nhận không khớp kích thước đã chọn.");
+    if (signal?.aborted) return fail(499, "Đã hủy upload tệp.");
+    for (const record of [assetRecord(id), attachmentRecord(id)].filter(Boolean)) {
+      record.storage = "ipfs-file"; record.ipfs_cid = cid; record.content_hash = file.sha256;
+      record.asset_url = `ipfs://${cid}`; record.file_url = `ipfs://${cid}`;
+      record.size = file.size; record.type = file.type; record.is_uploaded = true; record.updated_at = new Date().toISOString();
+      delete record.base64;
+    }
+    saveDB();
+    return ok(assetRecord(id) || attachmentRecord(id));
+  }
+  if (asset && isPresentationImageType(asset.entity_type)) {
+    const cid = body.ipfs_cid || asset.ipfs_cid;
+    if (!cid) return fail(409, "Ảnh chưa được xác nhận lưu trên IPFS.");
+    if (asset.preset_key && asset.is_uploaded && asset.ipfs_cid === cid &&
+      getPinnedCoverPresetKey([asset], asset.asset_url) === asset.preset_key) {
+      return signal?.aborted ? fail(499, "Đã hủy upload ảnh.") : ok(asset);
+    }
+    const presetReceipt = asset.preset_key ? getPresetPin(id, cid, asset.preset_key) : undefined;
+    if (asset.preset_key && !presetReceipt) return fail(409, "Ảnh mẫu chưa có xác nhận pin IPFS hợp lệ. Hãy tải lại ảnh.");
+    const url = presetReceipt ? presetReceipt.url : await verifyIpfsImage(cid, signal);
+    identity.assertCurrent();
+    if (signal?.aborted) return fail(499, "Đã hủy upload ảnh.");
+    // Recheck the current session/permissions and asset existence after network I/O, before binding.
+    const liveAsset = assetRecord(id);
+    if (!liveAsset || (localDB._deleted_asset_ids || []).includes(id)) {
+      return fail(404, "Không tìm thấy mã tệp để xác nhận.");
+    }
+    const current = authenticatedResourceUser();
+    if (current.id !== user.id) throw forbidden();
+    await authorizeScope(liveAsset, "/api/assets/v2/display/" + id, true, current);
+    identity.assertCurrent();
+    if (signal?.aborted) return fail(499, "Đã hủy upload ảnh.");
+    const postAuthAsset = assetRecord(id);
+    if (!postAuthAsset || (localDB._deleted_asset_ids || []).includes(id)) {
+      return fail(404, "Không tìm thấy mã tệp để xác nhận.");
+    }
+    const postAuthUser = authenticatedResourceUser();
+    if (postAuthUser.id !== user.id) throw forbidden();
+    if (presetReceipt) {
+      if (getPresetPin(id, cid, postAuthAsset.preset_key) !== presetReceipt) return fail(409, "Xác nhận pin ảnh mẫu đã hết hiệu lực.");
+      postAuthAsset.preset_sha256 = presetReceipt.sha256;
+    }
+    postAuthAsset.ipfs_cid = cid;
+    postAuthAsset.storage = "ipfs";
+    postAuthAsset.asset_url = url;
+    postAuthAsset.is_uploaded = true;
+    postAuthAsset.updated_at = new Date().toISOString();
+    bindAsset(postAuthAsset, url, user);
+    saveDB();
+    if (presetReceipt) forgetPresetPin(id);
+    return ok(postAuthAsset);
+  }
+  const file = await content(id);
+  identity.assertCurrent();
+  await authorizeAsset(id, "", "patch", user);
+  identity.assertCurrent();
+  if (!file) return fail(409, "Chưa lưu được nội dung tệp. Không xác nhận upload thành công.");
+  if (signal?.aborted) return fail(499, "Đã hủy upload tệp.");
+  const liveAsset = assetRecord(id);
+  const liveAttachment = attachmentRecord(id);
+  if (!liveAsset && !liveAttachment) return fail(404, "Không tìm thấy mã tệp để xác nhận.");
+  const url = attachmentDataUrl(file);
+  for (const record of [liveAsset, liveAttachment].filter(Boolean)) {
+    record.is_uploaded = true;
+    record.asset_url = url;
+    record.updated_at = new Date().toISOString();
+  }
+  if (liveAsset) bindAsset(liveAsset, url, user);
+  saveDB();
+  return ok(liveAsset || liveAttachment);
+}
+
+/** Metadata API stays in the DApp adapter. Renderers resolve content locally. */
+export async function handleFileAssetRoute(method: string, url: string, body: any, signal?: AbortSignal): Promise<RouteResult> {
+  const identity = captureResourceRequestIdentity();
+  try {
+    const result = await handleAuthorizedFileAssetRoute(method, url, body, authenticatedResourceUser(), signal, identity);
+    identity.assertCurrent();
+    return result;
+  } catch (error) {
+    if (!(error instanceof ResourceAccessError)) throw error;
+    return { status: error.status, data: { code: error.code, error: error.message } };
+  }
+}
+
+async function handleAuthorizedFileAssetRoute(method: string, url: string, body: any, user: any, signal: AbortSignal | undefined, identity: ResourceRequestIdentity): Promise<RouteResult> {
+  const pathname = url.split("?")[0].replace(/\/+$/, "");
+  const segments = pathname.split("/").filter(Boolean);
+  const id = decodeURIComponent(segments[segments.length - 1] || "");
+
+  if (method === "post" && pathname.endsWith("/upload")) {
+    const key = body?.asset_id || body?.id || body?.key;
+    if (!key || typeof body?.base64 !== "string" || !body.base64)
+      return fail(400, "Thiếu mã tệp hoặc nội dung upload.");
+    await authorizeAsset(key, pathname, method, user);
+    identity.assertCurrent();
+    if (isPresentationImageType(assetRecord(key)?.entity_type)) return fail(400, "Ảnh profile/workspace phải upload trực tiếp lên IPFS.");
+    await saveAttachment(key, {
+      name: body.name || "attachment",
+      base64: body.base64,
+      type: body.type || "application/octet-stream",
+      size: body.size,
+    });
+    const file = await getAttachment(key);
+    if (!file) return fail(503, "Chưa đọc lại được tệp vừa lưu.");
+    return ok({
+      id: key,
+      asset_id: key,
+      asset_url: attachmentDataUrl(file),
+      file_url: attachmentDataUrl(file),
+      success: true,
+    });
+  }
+
+  if (method === "post" && pathname.endsWith("/bulk")) {
+    const ids = [...new Set<string>(Array.isArray(body?.asset_ids) ? body.asset_ids : [])];
+    // Authorize the complete batch before confirming any record.
+    await Promise.all(ids.map((key) => authorizeAsset(key, pathname, method, user)));
+    const files = await Promise.all(ids.map(content));
+    if (files.some((file) => !file)) return fail(409, "Một số tệp chưa có nội dung; chưa xác nhận upload.");
+    const results = await Promise.all(ids.map((key) => confirm(key, user, {}, signal, identity)));
+    const failed = results.find((result) => result.status >= 400);
+    return failed || ok({ success: true, asset_ids: ids });
+  }
+
+  if (method === "get" && pathname.includes("/check/")) {
+    if (!assetRecord(id) && !attachmentRecord(id)) return ok({ exists: false });
+    await authorizeAsset(id, pathname, method, user);
+    return ok({ exists: Boolean(await content(id)) });
+  }
+  if (method === "post" && pathname.includes("/restore/")) {
+    await authorizeAsset(id, pathname, method, user);
+    const file = await content(id);
+    return file
+      ? ok({ id, asset_id: id, asset_url: attachmentDataUrl(file), is_uploaded: true })
+      : fail(404, "Không còn nội dung tệp để khôi phục.");
+  }
+
+  if (method === "post" && pathname.includes("/duplicate-assets/")) {
+    const original = await authorizeAsset(id, pathname, method, user);
+    const destination = {
+      ...original,
+      entity_type: body?.entity_type || original.entity_type,
+      entity_identifier: body?.entity_id,
+      created_by: user.id,
+    };
+    await authorizeScope(destination, pathname, true, user);
+    identity.assertCurrent();
+    if (original.storage === "ipfs-file" && original.is_uploaded && original.ipfs_cid) {
+      const clone = { ...destination, id: makeId(), created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      clone.asset_id = clone.id;
+      clone.asset_url = `ipfs://${original.ipfs_cid}`;
+      clone.file_url = clone.asset_url;
+      delete clone.base64;
+      localDB.assets ||= [];
+      localDB.assets.push(clone);
+      saveDB();
+      return ok(clone);
+    }
+    const source = await content(id);
+    identity.assertCurrent();
+    if (!source) return fail(404, "Không có nội dung tệp gốc để sao chép.");
+    const key = makeId();
+    await saveAttachment(key, source);
+    await authorizeAsset(id, pathname, method, user);
+    await authorizeScope(destination, pathname, true, user);
+    identity.assertCurrent();
+    const clone = {
+      ...destination,
+      id: key,
+      asset_id: key,
+      name: source.name,
+      entity_type: body?.entity_type || original?.entity_type,
+      entity_identifier: body?.entity_id,
+      asset_url: attachmentDataUrl(source),
+      is_uploaded: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (!localDB.assets) localDB.assets = [];
+    localDB.assets.push(clone);
+    saveDB();
+    return ok(clone);
+  }
+
+  if (method === "post") {
+    // Only collection URLs can initialize metadata. Restore/other actions must
+    // never silently create a phantom asset via the generic POST handler.
+    if (!/(?:\/user-assets|\/workspaces\/[^/]+(?:\/projects\/[^/]+)?)$/.test(pathname))
+      return fail(404, "Thao tác tệp không được hỗ trợ.");
+    if (body?.preset_key !== undefined && (body.entity_type !== "PROJECT_COVER" || !isCoverPresetKey(body.preset_key)))
+      return fail(400, "Ảnh mẫu chỉ được dùng với ảnh bìa dự án hợp lệ.");
+    const key = makeId();
+    const record = {
+      id: key,
+      asset_id: key,
+      entity_type: body?.entity_type || (pathname.endsWith("/user-assets") ? "USER_AVATAR" : undefined),
+      entity_identifier: body?.entity_identifier,
+      ...(body?.preset_key ? { preset_key: body.preset_key } : {}),
+      name: body?.name || "attachment",
+      size: body?.size || 0,
+      type: body?.type || "application/octet-stream",
+      storage: isPresentationImageType(body?.entity_type || (pathname.endsWith("/user-assets") ? "USER_AVATAR" : undefined)) ? "ipfs" : "ipfs-file",
+      user_asset: pathname.endsWith("/user-assets"),
+      workspace: pathname.match(/\/workspaces\/([^/]+)/)?.[1],
+      project: pathname.match(/\/projects\/([^/]+)/)?.[1],
+      created_by: user.id,
+      is_uploaded: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (record.user_asset) {
+      if (record.entity_type && !["USER_AVATAR", "USER_COVER"].includes(record.entity_type)) throw forbidden();
+      if (record.entity_identifier && record.entity_identifier !== user.id) throw forbidden();
+      record.entity_identifier = user.id;
+    } else if (["USER_AVATAR", "USER_COVER"].includes(record.entity_type)) throw forbidden();
+    const scope = await authorizeScope(record, pathname, true, user);
+    identity.assertCurrent();
+    record.workspace = scope.workspace;
+    record.project = scope.project;
+    if (!localDB.assets) localDB.assets = [];
+    localDB.assets.push(record);
+    saveDB({ localOnly: true });
+    return ok({
+      ...record,
+      asset_url: "",
+      upload_data: { url: "/api/assets/v2/upload/", fields: { asset_id: key, key, storage: record.storage, "Content-Type": record.type,
+        ...(record.preset_key ? { preset_key: record.preset_key } : {}),
+      } },
+    });
+  }
+
+  if (["get", "patch", "delete"].includes(method)) await authorizeAsset(id, pathname, method, user);
+  identity.assertCurrent();
+  if (method === "patch") return confirm(id, user, body, signal, identity);
+
+  if (method === "get") {
+    const record = assetRecord(id);
+    if (record?.storage === "ipfs" && record.is_uploaded && record.ipfs_cid) return ok({ ...record, file_url: record.asset_url });
+    const file = await content(id);
+    if (!file) return fail(404, "Không tìm thấy nội dung tệp trên thiết bị hoặc snapshot đã đồng bộ.");
+    return ok({
+      id,
+      asset_id: id,
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      base64: file.base64,
+      asset_url: attachmentDataUrl(file),
+      file_url: attachmentDataUrl(file),
+      is_uploaded: true,
+    });
+  }
+
+  if (method === "delete") {
+    const removedAttachments = (localDB.attachments || []).filter((asset: any) => asset.id === id || asset.asset_id === id);
+    const record = assetRecord(id);
+    if (!["ipfs", "ipfs-file"].includes((record || attachmentRecord(id))?.storage)) await deleteAttachment(id);
+    await authorizeAsset(id, pathname, method, user);
+    identity.assertCurrent();
+    if (record && isPresentationImageType(record.entity_type)) {
+      const userProfile = (localDB.users || []).find((entry: any) => entry.id === user.id);
+      if (record.entity_type === "USER_AVATAR" && userProfile?.avatar_url === record.asset_url) setPresentationMedia(userProfile, "avatar", null);
+      if (record.entity_type === "USER_COVER" && userProfile?.cover_image_url === record.asset_url) setPresentationMedia(userProfile, "cover", null);
+      const workspace = (localDB.workspaces || []).find((entry: any) => entry.id === record.workspace);
+      if (record.entity_type === "WORKSPACE_LOGO" && workspace?.logo_url === record.asset_url) setPresentationMedia(workspace, "logo", null);
+    }
+    localDB._deleted_asset_ids = [...new Set([...(localDB._deleted_asset_ids || []), id])];
+    if (removedAttachments.length)
+      localDB._deleted_attachment_ids = [...new Set([...(localDB._deleted_attachment_ids || []), id, ...removedAttachments.map((asset: any) => asset.id)])];
+    localDB.assets = (localDB.assets || []).filter((asset: any) => asset.id !== id && asset.asset_id !== id);
+    localDB.attachments = (localDB.attachments || []).filter((asset: any) => asset.id !== id && asset.asset_id !== id);
+    const affectedIssues = new Set(removedAttachments.map((asset: any) => asset.issue || asset.issue_id));
+    for (const issue of localDB.issues || []) {
+      if (affectedIssues.has(issue.id)) issue.attachment_count = localDB.attachments.filter((asset: any) => (asset.issue || asset.issue_id) === issue.id).length;
+    }
+    saveDB();
+    return ok({ success: true, deleted: id });
+  }
+  return fail(405, "Thao tác tệp không được hỗ trợ.");
+}

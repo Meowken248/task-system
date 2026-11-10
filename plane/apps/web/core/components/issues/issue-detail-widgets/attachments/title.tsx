@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import React, { useMemo } from "react";
+import React from "react";
 import { observer } from "mobx-react";
 import { useTranslation } from "@plane/i18n";
 import type { TIssueServiceType } from "@plane/types";
@@ -30,20 +30,19 @@ export const IssueAttachmentsCollapsibleTitle = observer(function IssueAttachmen
   // store hooks
   const {
     issue: { getIssueById },
+    attachment: { getAttachmentsCountByIssueId },
   } = useIssueDetail(issueServiceType);
 
   // derived values
   const issue = getIssueById(issueId);
-  const attachmentCount = issue?.attachment_count ?? 0;
+  const realCount = getAttachmentsCountByIssueId(issueId);
+  const attachmentCount = realCount > 0 ? realCount : (issue?.attachment_count ?? 0);
 
   // indicator element
-  const indicatorElement = useMemo(
-    () => (
-      <span className="flex items-center justify-center">
-        <p className="text-14 !leading-3 text-tertiary">{attachmentCount}</p>
-      </span>
-    ),
-    [attachmentCount]
+  const indicatorElement = (
+    <span className="flex items-center justify-center">
+      <p className="text-14 !leading-3 text-tertiary">{attachmentCount}</p>
+    </span>
   );
 
   return (

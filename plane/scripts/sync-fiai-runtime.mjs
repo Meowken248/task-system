@@ -1,0 +1,11 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { syncFiaiArtifacts } from "./fiai-artifacts.mjs";
+const planeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const app = path.join(planeRoot, "apps/web");
+const spec = JSON.parse(fs.readFileSync(path.join(app, "package.json"), "utf8")).dependencies["@metanodejs/fiai-sdk"];
+if (!spec?.startsWith("file:")) throw Error("Expected the existing local FIAI SDK dependency");
+const sdk = path.resolve(app, spec.slice(5));
+const manifest = syncFiaiArtifacts(planeRoot, sdk, { refresh: process.argv.includes("--refresh") });
+console.log(JSON.stringify({ ...manifest, installedMatchesSourceArtifact: true }, null, 2));

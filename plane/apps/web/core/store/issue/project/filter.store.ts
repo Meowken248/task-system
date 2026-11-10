@@ -84,14 +84,14 @@ export class ProjectIssuesFilter extends IssueFilterHelperStore implements IProj
   }
 
   get issueFilters() {
-    const projectId = this.rootIssueStore.projectId;
+    const projectId = this.rootIssueStore.projectId || Object.keys(this.filters)[0];
     if (!projectId) return undefined;
 
     return this.getIssueFilters(projectId);
   }
 
   get appliedFilters() {
-    const projectId = this.rootIssueStore.projectId;
+    const projectId = this.rootIssueStore.projectId || Object.keys(this.filters)[0];
     if (!projectId) return undefined;
 
     return this.getAppliedFilters(projectId);
@@ -135,35 +135,47 @@ export class ProjectIssuesFilter extends IssueFilterHelperStore implements IProj
   );
 
   fetchFilters = async (workspaceSlug: string, projectId: string) => {
-    const _filters = await this.projectService.getProjectUserProperties(workspaceSlug, projectId);
+    try {
+      const _filters = await this.projectService.getProjectUserProperties(workspaceSlug, projectId);
 
-    const richFilters = _filters?.rich_filters;
-    const displayFilters = this.computedDisplayFilters(_filters?.display_filters);
-    const displayProperties = this.computedDisplayProperties(_filters?.display_properties);
+      const richFilters = _filters?.rich_filters;
+      const displayFilters = this.computedDisplayFilters(_filters?.display_filters);
+      const displayProperties = this.computedDisplayProperties(_filters?.display_properties);
 
-    // fetching the kanban toggle helpers in the local storage
-    const kanbanFilters = {
-      group_by: [],
-      sub_group_by: [],
-    };
-    const currentUserId = this.rootIssueStore.currentUserId;
-    if (currentUserId) {
-      const _kanbanFilters = this.handleIssuesLocalFilters.get(
-        EIssuesStoreType.PROJECT,
-        workspaceSlug,
-        projectId,
-        currentUserId
-      );
-      kanbanFilters.group_by = _kanbanFilters?.kanban_filters?.group_by || [];
-      kanbanFilters.sub_group_by = _kanbanFilters?.kanban_filters?.sub_group_by || [];
+      // fetching the kanban toggle helpers in the local storage
+      const kanbanFilters = {
+        group_by: [],
+        sub_group_by: [],
+      };
+      const currentUserId = this.rootIssueStore.currentUserId;
+      if (currentUserId) {
+        const _kanbanFilters = this.handleIssuesLocalFilters.get(
+          EIssuesStoreType.PROJECT,
+          workspaceSlug,
+          projectId,
+          currentUserId
+        );
+        kanbanFilters.group_by = _kanbanFilters?.kanban_filters?.group_by || [];
+        kanbanFilters.sub_group_by = _kanbanFilters?.kanban_filters?.sub_group_by || [];
+      }
+
+      runInAction(() => {
+        set(this.filters, [projectId, "richFilters"], richFilters);
+        set(this.filters, [projectId, "displayFilters"], displayFilters);
+        set(this.filters, [projectId, "displayProperties"], displayProperties);
+        set(this.filters, [projectId, "kanbanFilters"], kanbanFilters);
+      });
+    } catch (error) {
+      console.error("fetchFilters error, falling back to defaults:", error);
+      const defaultDisplayFilters = this.computedDisplayFilters({});
+      const defaultDisplayProperties = this.computedDisplayProperties({});
+      runInAction(() => {
+        set(this.filters, [projectId, "richFilters"], {});
+        set(this.filters, [projectId, "displayFilters"], defaultDisplayFilters);
+        set(this.filters, [projectId, "displayProperties"], defaultDisplayProperties);
+        set(this.filters, [projectId, "kanbanFilters"], { group_by: [], sub_group_by: [] });
+      });
     }
-
-    runInAction(() => {
-      set(this.filters, [projectId, "richFilters"], richFilters);
-      set(this.filters, [projectId, "displayFilters"], displayFilters);
-      set(this.filters, [projectId, "displayProperties"], displayProperties);
-      set(this.filters, [projectId, "kanbanFilters"], kanbanFilters);
-    });
   };
 
   /**
@@ -193,13 +205,22 @@ export class ProjectIssuesFilter extends IssueFilterHelperStore implements IProj
 
   updateFilters: IProjectIssuesFilter["updateFilters"] = async (workspaceSlug, projectId, type, filters) => {
     try {
-      if (isEmpty(this.filters) || isEmpty(this.filters[projectId])) return;
+      if (!this.filters[projectId] || isEmpty(this.filters[projectId])) {
+        const defaultDisplayFilters = this.computedDisplayFilters({});
+        const defaultDisplayProperties = this.computedDisplayProperties({});
+        runInAction(() => {
+          set(this.filters, [projectId, "richFilters"], {});
+          set(this.filters, [projectId, "displayFilters"], defaultDisplayFilters);
+          set(this.filters, [projectId, "displayProperties"], defaultDisplayProperties);
+          set(this.filters, [projectId, "kanbanFilters"], { group_by: [], sub_group_by: [] });
+        });
+      }
 
       const _filters = {
-        richFilters: this.filters[projectId].richFilters,
-        displayFilters: this.filters[projectId].displayFilters as IIssueDisplayFilterOptions,
-        displayProperties: this.filters[projectId].displayProperties as IIssueDisplayProperties,
-        kanbanFilters: this.filters[projectId].kanbanFilters as TIssueKanbanFilters,
+        richFilters: this.filters[projectId]?.richFilters || {},
+        displayFilters: (this.filters[projectId]?.displayFilters as IIssueDisplayFilterOptions) || this.computedDisplayFilters({}),
+        displayProperties: (this.filters[projectId]?.displayProperties as IIssueDisplayProperties) || this.computedDisplayProperties({}),
+        kanbanFilters: (this.filters[projectId]?.kanbanFilters as TIssueKanbanFilters) || { group_by: [], sub_group_by: [] },
       };
 
       switch (type) {
@@ -225,6 +246,18 @@ export class ProjectIssuesFilter extends IssueFilterHelperStore implements IProj
             _filters.displayFilters.group_by = "state";
             updatedDisplayFilters.group_by = "state";
           }
+          // reset group_by if switched to list, spreadsheet, or gantt and group_by wasn't explicitly set
+          if (
+            (updatedDisplayFilters.layout === "list" ||
+              updatedDisplayFilters.layout === "spreadsheet" ||
+              updatedDisplayFilters.layout === "gantt") &&
+            updatedDisplayFilters.group_by === undefined
+          ) {
+            _filters.displayFilters.group_by = null;
+            updatedDisplayFilters.group_by = null;
+            _filters.displayFilters.sub_group_by = null;
+            updatedDisplayFilters.sub_group_by = null;
+          }
 
           runInAction(() => {
             Object.keys(updatedDisplayFilters).forEach((_key) => {
@@ -240,7 +273,12 @@ export class ProjectIssuesFilter extends IssueFilterHelperStore implements IProj
             this.rootIssueStore.projectIssues.clear(true); // clear issues for local store when some filters like layout changes
           }
 
-          if (this.getShouldReFetchIssues(updatedDisplayFilters)) {
+          if (
+            this.getShouldReFetchIssues(updatedDisplayFilters) ||
+            this.getShouldClearIssues(updatedDisplayFilters) ||
+            updatedDisplayFilters.layout !== undefined ||
+            updatedDisplayFilters.group_by !== undefined
+          ) {
             this.rootIssueStore.projectIssues.fetchIssuesWithExistingPagination(workspaceSlug, projectId, "mutation");
           }
 
@@ -296,8 +334,7 @@ export class ProjectIssuesFilter extends IssueFilterHelperStore implements IProj
           break;
       }
     } catch (error) {
-      this.fetchFilters(workspaceSlug, projectId);
-      throw error;
+      console.error("Failed to update project filters:", error);
     }
   };
 }

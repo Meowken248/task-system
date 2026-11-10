@@ -40,6 +40,8 @@ export const clientLoader = async ({ params, request }: Route.ClientLoaderArgs) 
     const urlParams = new URLSearchParams();
     if (board) urlParams.append("board", String(board));
     if (peekId) urlParams.append("peekId", String(peekId));
+    const cid = url.searchParams.get("cid") || (response as any)?.cid;
+    if (cid) urlParams.append("cid", cid);
     if (urlParams.toString()) redirectUrl += `?${urlParams.toString()}`;
 
     throw redirect(redirectUrl);

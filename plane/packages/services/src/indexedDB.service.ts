@@ -18,18 +18,18 @@ export abstract class IndexedDBService {
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(this.dbName, this.version);
 
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
+      request.addEventListener("error", () => reject(request.error));
+      request.addEventListener("success", () => {
         this.db = request.result;
         resolve();
-      };
+      });
 
-      request.onupgradeneeded = (event) => {
+      request.addEventListener("upgradeneeded", (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (!db.objectStoreNames.contains("workspaces")) {
           db.createObjectStore("workspaces", { keyPath: "id" });
         }
-      };
+      });
     });
   }
 
@@ -48,8 +48,8 @@ export abstract class IndexedDBService {
         store.add(workspace);
       });
 
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
+      transaction.addEventListener("complete", () => resolve());
+      transaction.addEventListener("error", () => reject(transaction.error));
     });
   }
 
@@ -61,8 +61,8 @@ export abstract class IndexedDBService {
 
     return new Promise((resolve, reject) => {
       const request = store.getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+      request.addEventListener("success", () => resolve(request.result));
+      request.addEventListener("error", () => reject(request.error));
     });
   }
 }

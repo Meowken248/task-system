@@ -5,6 +5,7 @@
  */
 
 import { observer } from "mobx-react";
+import { downloadAsset } from "@/helpers/download-asset";
 
 import { useTranslation } from "@plane/i18n";
 import { TrashIcon } from "@plane/propel/icons";
@@ -14,16 +15,7 @@ import type { TIssueServiceType } from "@plane/types";
 import { EIssueServiceType } from "@plane/types";
 // ui
 import { CustomMenu } from "@plane/ui";
-import {
-  convertBytesToSize,
-  downloadBase64File,
-  downloadBlob,
-  getAttachmentFromStorage,
-  getFileExtension,
-  getFileName,
-  getFileURL,
-  renderFormattedDate,
-} from "@plane/utils";
+import { convertBytesToSize, getFileExtension, getFileName, renderFormattedDate } from "@plane/utils";
 // components
 //
 import { ButtonAvatars } from "@/components/dropdowns/member/avatar";
@@ -55,7 +47,6 @@ export const IssueAttachmentsListItem = observer(function IssueAttachmentsListIt
   const fileName = getFileName(attachment?.attributes.name ?? "");
   const fileExtension = getFileExtension(attachment?.attributes.name ?? "");
   const fileIcon = getFileIcon(fileExtension, 18);
-  const fileURL = getFileURL(attachment?.asset_url ?? "");
   // hooks
   const { isMobile } = usePlatformOS();
 
@@ -67,72 +58,23 @@ export const IssueAttachmentsListItem = observer(function IssueAttachmentsListIt
         onClick={async (e) => {
           e.preventDefault();
           e.stopPropagation();
-          const fullName = `${fileName}.${fileExtension}`;
-          const rawUrl = attachment?.asset_url ?? "";
-
-          // 1. Direct Data URL (base64)
-          if (rawUrl.startsWith("data:")) {
-            const mimeType = rawUrl.substring(5, rawUrl.indexOf(";")) || "application/octet-stream";
-            downloadBase64File(rawUrl, fullName, mimeType);
+          try {
+            await downloadAsset(
+              [
+                attachment.asset_url,
+                attachment.id,
+                (attachment as any).asset_id || "",
+                (attachment as any).asset || "",
+              ],
+              attachment.attributes.name || "attachment"
+            );
+          } catch (error) {
             setToast({
-              type: TOAST_TYPE.SUCCESS,
-              title: "Tải xuống",
-              message: `Đang tải tệp ${fullName}...`,
+              type: TOAST_TYPE.WARNING,
+              title: "Không mở được tệp",
+              message: error instanceof Error ? error.message : "Không đọc được nội dung tệp đã lưu.",
             });
-            return;
           }
-
-          // 2. Direct HTTP URL
-          if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
-            const link = document.createElement("a");
-            link.href = rawUrl;
-            link.download = fullName;
-            link.target = "_blank";
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            return;
-          }
-
-          // 3. Search storage by hash / attachment id
-          const keysToTry = [rawUrl, attachment.id, (attachment as any).asset].filter(Boolean);
-          let cachedFile: any = null;
-          for (const k of keysToTry) {
-            cachedFile = await getAttachmentFromStorage(k);
-            if (cachedFile?.base64) break;
-          }
-
-          if (cachedFile?.base64) {
-            downloadBase64File(cachedFile.base64, fullName, cachedFile.type || "application/octet-stream");
-            setToast({
-              type: TOAST_TYPE.SUCCESS,
-              title: "Tải xuống",
-              message: `Đang tải tệp ${fullName}...`,
-            });
-            return;
-          }
-
-          // 4. Fallback if not found in storage: create blockchain proof export
-          const proofContent = JSON.stringify(
-            {
-              fileName: fullName,
-              fileSize: attachment.attributes?.size,
-              blockchainHash: rawUrl || attachment.id,
-              issueId: attachment.issue_id,
-              uploadedAt: attachment.updated_at,
-              status: "Verified On-Chain",
-              notice: "Tệp này được lưu trữ xác thực trên blockchain.",
-            },
-            null,
-            2
-          );
-          const proofBlob = new Blob([proofContent], { type: "application/json" });
-          downloadBlob(proofBlob, `${fullName}.blockchain-proof.json`);
-          setToast({
-            type: TOAST_TYPE.INFO,
-            title: "Chứng thực Blockchain",
-            message: `Đã tải tệp chứng thực On-Chain cho ${fullName}.`,
-          });
         }}
       >
         <div className="group flex h-11 items-center justify-between gap-3 pr-2 pl-9 hover:bg-surface-2">

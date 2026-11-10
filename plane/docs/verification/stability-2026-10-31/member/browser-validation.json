@@ -1,0 +1,50 @@
+{
+  "isolatedBrowserContexts": 2,
+  "realTransactionsSent": 0,
+  "sdkAndRpcSimulated": true,
+  "sharedBrowserStorage": false,
+  "cases": [
+    {
+      "name": "Admin sees wallet entry action",
+      "passed": true
+    },
+    {
+      "name": "Invalid wallet retains form and sends no transaction",
+      "passed": true
+    },
+    {
+      "name": "Admin grants once and sees confirmed success",
+      "passed": true
+    },
+    {
+      "name": "Isolated logged-in Member discovers access without invitation or a signature",
+      "passed": true
+    },
+    {
+      "name": "Member refresh preserves access without another transaction",
+      "passed": true
+    },
+    {
+      "name": "Member can view the member list but cannot see the Admin provisioning action",
+      "passed": true
+    },
+    {
+      "name": "RPC outage shows a recoverable state and retry restores access without a signature",
+      "passed": true
+    },
+    {
+      "name": "Revoked chain access rejects a stale local member cache without a transaction",
+      "passed": true
+    }
+  ],
+  "transactions": [
+    {
+      "sender": "0x1111111111111111111111111111111111111111",
+      "functionName": "addMember",
+      "recipient": "0x22222222222222222222222222222222222222ab",
+      "role": 1,
+      "simulated": true
+    }
+  ],
+  "issues": []
+}

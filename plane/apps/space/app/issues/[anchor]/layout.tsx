@@ -28,8 +28,8 @@ interface IssueMetadata {
   cover_image?: string;
 }
 
-// Loader function runs on the server and fetches metadata
-export async function loader({ params }: Route.LoaderArgs) {
+// Client loader function fetches metadata
+export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { anchor } = params;
 
   // Validate anchor before using in request (only allow alphanumeric, -, _)
@@ -39,7 +39,11 @@ export async function loader({ params }: Route.LoaderArgs) {
   }
 
   try {
-    const response = await fetch(`${process.env.VITE_API_BASE_URL}/api/public/anchor/${anchor}/meta/`);
+    const apiBase = process.env.VITE_API_BASE_URL;
+    if (!apiBase) {
+      return { metadata: null };
+    }
+    const response = await fetch(`${apiBase}/api/public/anchor/${anchor}/meta/`);
 
     if (!response.ok) {
       return { metadata: null };
@@ -54,8 +58,8 @@ export async function loader({ params }: Route.LoaderArgs) {
 }
 
 // Meta function uses the loader data to generate metadata
-export function meta({ loaderData }: Route.MetaArgs) {
-  const metadata = loaderData?.metadata;
+export function meta({ loaderData, data }: any) {
+  const metadata = (data ?? loaderData)?.metadata;
 
   const title = metadata?.name || DEFAULT_TITLE;
   const description = metadata?.description || DEFAULT_DESCRIPTION;

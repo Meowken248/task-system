@@ -43,12 +43,14 @@ export const DescriptionVersionsRoot = observer(function DescriptionVersionsRoot
   // fetch versions list
   const { data: versionsListResponse } = useSWR(
     entityId ? `DESCRIPTION_VERSIONS_LIST_${entityId}` : null,
-    entityId ? () => fetchHandlers.listDescriptionVersions(entityId) : null
+    entityId ? () => fetchHandlers.listDescriptionVersions(entityId) : null,
+    { revalidateIfStale: false, revalidateOnFocus: false }
   );
   // fetch active version details
   const { data: activeVersionResponse } = useSWR(
     entityId && activeVersionId ? `DESCRIPTION_VERSION_DETAILS_${activeVersionId}` : null,
-    entityId && activeVersionId ? () => fetchHandlers.retrieveDescriptionVersion(entityId, activeVersionId) : null
+    entityId && activeVersionId ? () => fetchHandlers.retrieveDescriptionVersion(entityId, activeVersionId) : null,
+    { revalidateIfStale: false, revalidateOnFocus: false }
   );
   const versions = versionsListResponse?.results;
   const versionsCount = versions?.length ?? 0;

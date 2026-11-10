@@ -1,0 +1,107 @@
+{
+  "clientDate": "2026-10-31",
+  "functionalHead": "88afcd6b5c1755113505ba454860a7382b3060cc",
+  "native": {
+    "tests": 297,
+    "passed": 297,
+    "failed": 0,
+    "skipped": 0
+  },
+  "types": {
+    "services": 0,
+    "worker": 0,
+    "web": 0
+  },
+  "workerBundle": {
+    "tests": 13,
+    "passed": 13,
+    "sha256": "f0378a7fc220b889e7033fd02ec656b32d7e6098e9296d49f60ef5ce87571563",
+    "credentialsEmbedded": false,
+    "deployed": false
+  },
+  "webBuild": {
+    "exitCode": 0,
+    "isolated": true,
+    "sourceEnvironmentChanged": false,
+    "publicSecretGuardEnabled": true,
+    "scannedFiles": 685,
+    "secretMatches": 0,
+    "appSourceCopiesVerified": 6,
+    "wholeMonorepo": false,
+    "temporaryBuildRemoved": true
+  },
+  "browser": {
+    "uploadProfileOtp": {
+      "tests": 14,
+      "passed": 14,
+      "javascriptExceptions": 0,
+      "assetProxyRequests": 0
+    },
+    "members": {
+      "tests": 8,
+      "passed": 8,
+      "javascriptExceptions": 0,
+      "isolatedContexts": 2
+    },
+    "sdkRpcAndStorageSimulated": true,
+    "realTransactions": 0
+  },
+  "liveProxy": {
+    "requestType": "multipart-image",
+    "status": 500,
+    "validCid": false,
+    "realPinVerified": false
+  },
+  "liveJsonProxy": {
+    "requestType": "json-snapshot",
+    "status": 200,
+    "validCid": true,
+    "responseKeys": [
+      "cid"
+    ]
+  },
+  "cloudflare": {
+    "cliExitCode": 1,
+    "ready": false,
+    "loginCachePresent": true,
+    "cachedAccessExpired": true,
+    "networkOrCertificateFailure": false,
+    "credentialsPrinted": false,
+    "workerDeployed": false
+  },
+  "sourceHashes": {
+    "apps/web/core/components/core/image-picker-popover.tsx": "81f3fe0239dbde28357e13b38c1b9c4f4627662e7ad26da79a72ef5f788d0932",
+    "apps/web/core/components/core/modals/user-image-upload-modal.tsx": "9ab790024779ffa01192eec1b8cdb53c87b9373bfbe6d52cd2b231807c56b166",
+    "apps/web/core/components/settings/profile/content/pages/general/form.tsx": "64514fc00da84a0334d80c476f2fe497d9c20353edabbbd3a573b2bec57633fe",
+    "apps/web/core/components/workspace/settings/workspace-details.tsx": "19389b6695467aff18f18805e43e719e77d6e4f34794ae0d4fdd80398a91ef40",
+    "apps/web/core/services/file.service.ts": "061e45e80ae76cfdff8816d75bfbf6ca5e72c7781447a2ad13eca17053f1bbfd",
+    "apps/web/helpers/cover-image.helper.ts": "f7c31602d6bfa01f6ad3071c5e2c630c3e8c863f9d2b6526ab0d960983fae845",
+    "packages/services/src/dapp/chain.ts": "138a3da2e26d6fc1a7809e777c952728b3da6d2962eb31a64f2bbbd150dd6e55",
+    "packages/services/src/dapp/file-assets.ts": "06257abad3596a078263181cebce884728b228f8f7c2ed41a93e6618de34acc2",
+    "packages/services/src/dapp/presentation-media.ts": "5b248545afda6b1820181bb9b3d566656720142da7f864b521a4f85e200b55a2",
+    "packages/services/src/dapp/routes.ts": "84213532390c84431a3892fb5039e3e25da32b3bf19e62138207aa64ef32e1c1",
+    "packages/services/src/file/file-upload.service.ts": "2f85c9ddd30d246921cb0b8a5a1e5df9513bddc56df9244e4d63f5cf1e44dd83",
+    "packages/services/src/file/image-policy.ts": "c18a911524dbbc624eea7385cdd6c1d3ac1df83df3907c19c65476d1e3bce746",
+    "packages/services/src/file/ipfs-image.ts": "2ab00e00eee62f5d1a02ec38dfaae7e1b11d4093fab4c4989fd0450a60af0bb1",
+    "pinata-worker.ts": "7ff1e91a3d4bf05f1be7b998952646a295ff3cfb71229fbc6d1c5772f70c1962",
+    "tests/browser/uploads.mjs": "0536cae295745bb352859ebc6a413e79616ab559a571a94a8854121f60c15362",
+    "tests/dapp/file-upload.test.mjs": "a69ebc0ca0b570536516d0b4eaf7a660a2bbefa6e99cd2355ba4486813f23f76",
+    "tests/dapp/ipfs-image-fixture.mjs": "902d728a01d5946cfed4ccebe1f687bb7bde1d6191091624988d19fd2a3d9a2b",
+    "tests/dapp/ipfs-image.test.mjs": "021f13f611dce3a241a659ed7b4d18589df384a27f474a2809c15f6265c8d69c",
+    "tests/dapp/presentation-media.test.mjs": "9f2f8aa945ff89bf85cbfc27e569f5b2e09f1202c485fac21388ca46087fbdce",
+    "tests/dapp/storage-worker.test.mjs": "8bb8e5c9fa451e6c8282534b1524daf617af62de790654bec02f34a6d7b491e1"
+  },
+  "servicesBundleSha256": "5be41c80632005aaa7df5915c7a88f6f654471ffd6c8e9814285fccdcaf2e678",
+  "userPreexistingDeletionsPreserved": [
+    "KE_HOACH_HOAN_THIEN_LUONG_MEMBER_2026-10-29.md",
+    "MEMBER_FLOW_IMPLEMENTATION.md"
+  ],
+  "cleanup": {
+    "temporaryBuildsRemoved": 4,
+    "browserProfilesRemoved": 5,
+    "temporaryLogsRemoved": 10,
+    "oldEvidencePreserved": true,
+    "dependenciesPreserved": true,
+    "deploymentBundlePreserved": true
+  }
+}

@@ -12,10 +12,19 @@ type EmojiRootProps = {
   onChange: (value: string) => void;
   searchPlaceholder?: string;
   searchDisabled?: boolean;
+  emojibaseUrl?: string;
 };
 
+function getEmojibaseUrl(): string {
+  if (typeof window !== "undefined") {
+    const pathPrefix = window.location.pathname.startsWith("/plane") ? "/plane" : "";
+    return `${window.location.origin}${pathPrefix}/emojibase`;
+  }
+  return "/emojibase";
+}
+
 export function EmojiRoot(props: EmojiRootProps) {
-  const { onChange, searchPlaceholder = "Search", searchDisabled = false } = props;
+  const { onChange, searchPlaceholder = "Search", searchDisabled = false, emojibaseUrl } = props;
   const searchWrapperRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const focusInput = () => {
@@ -36,6 +45,7 @@ export function EmojiRoot(props: EmojiRootProps) {
       data-slot="emoji-picker"
       className="isolate flex h-full w-full flex-col rounded-md border-none p-2"
       onEmojiSelect={(val) => onChange(val.emoji)}
+      emojibaseUrl={emojibaseUrl ?? getEmojibaseUrl()}
     >
       <div className="sticky top-0 z-10 flex items-center justify-between gap-2 bg-surface-1 px-1.5 py-2 [&>[data-slot='emoji-picker-search-wrapper']]:flex-grow [&>[data-slot='emoji-picker-search-wrapper']]:p-0">
         <div ref={searchWrapperRef} data-slot="emoji-picker-search-wrapper" className="p-2">

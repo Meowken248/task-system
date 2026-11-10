@@ -10,6 +10,8 @@ import { observer } from "mobx-react";
 // i18n
 import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
+// types
+import type { TIssue } from "@plane/types";
 // ui
 import {
   CycleIcon,
@@ -24,7 +26,7 @@ import {
   EstimatePropertyIcon,
   ParentPropertyIcon,
 } from "@plane/propel/icons";
-import { cn, getDate, renderFormattedPayloadDate, shouldHighlightIssueDueDate } from "@plane/utils";
+import { cn, getDate, renderFormattedPayloadDate, getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@plane/utils";
 // components
 import { DateDropdown } from "@/components/dropdowns/date";
 import { EstimateDropdown } from "@/components/dropdowns/estimate";
@@ -249,13 +251,20 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
               <DateDropdown
                 placeholder={t("issue.add.start_date")}
                 value={issue.start_date}
-                onChange={(val) =>
-                  issueOperations.update(workspaceSlug, projectId, issueId, {
-                    start_date: val ? renderFormattedPayloadDate(val) : null,
-                  })
-                }
+                onChange={(val) => {
+                  const newStartDateStr = val ? renderFormattedPayloadDate(val) : null;
+                  const payload: Partial<TIssue> = {
+                    start_date: newStartDateStr,
+                  };
+                  if (val && issue.target_date) {
+                    const currentTargetDate = getDate(issue.target_date);
+                    if (currentTargetDate && currentTargetDate < val) {
+                      payload.target_date = newStartDateStr;
+                    }
+                  }
+                  issueOperations.update(workspaceSlug, projectId, issueId, payload);
+                }}
                 minDate={today}
-                maxDate={maxDate ?? undefined}
                 disabled={!isEditable || !isAdmin}
                 buttonVariant="transparent-with-text"
                 className="group w-full grow"
@@ -276,15 +285,18 @@ export const IssueDetailsSidebar = observer(function IssueDetailsSidebar(props: 
                       target_date: val ? renderFormattedPayloadDate(val) : null,
                     })
                   }
-                  minDate={minDate ?? undefined}
+                  minDate={minDate ?? today}
                   disabled={!isEditable || !isAdmin}
                   buttonVariant="transparent-with-text"
                   className="group w-full grow"
                   buttonContainerClassName="w-full text-left h-7.5"
-                  buttonClassName={cn("text-body-xs-regular", {
-                    "text-placeholder": !issue.target_date,
-                    "text-danger-primary": shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group),
-                  })}
+                  buttonClassName={cn(
+                    "text-body-xs-regular",
+                    {
+                      "text-placeholder": !issue.target_date,
+                    },
+                    getIssueDueDateHighlightClass(issue.target_date, stateDetails?.group)
+                  )}
                   hideIcon
                   clearIconClassName="h-3 w-3 hidden group-hover:inline text-primary"
                 />

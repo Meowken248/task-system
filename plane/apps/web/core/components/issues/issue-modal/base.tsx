@@ -204,33 +204,49 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
           payload.cycle_id !== "" &&
           (payload.cycle_id !== cycleId || storeType !== EIssuesStoreType.CYCLE)
         ) {
-          await addIssueToCycle(response, payload.cycle_id);
+          try {
+            await addIssueToCycle(response, payload.cycle_id);
+          } catch (err) {
+            console.warn("Failed to add issue to cycle:", err);
+          }
         }
         if (
           payload.module_ids &&
           payload.module_ids.length > 0 &&
           (!payload.module_ids.includes(moduleId?.toString()) || storeType !== EIssuesStoreType.MODULE)
         ) {
-          await addIssueToModule(response, payload.module_ids);
+          try {
+            await addIssueToModule(response, payload.module_ids);
+          } catch (err) {
+            console.warn("Failed to add issue to module:", err);
+          }
         }
       }
 
       // add other property values
       if (response.id && response.project_id) {
-        await handleCreateUpdatePropertyValues({
-          issueId: response.id,
-          issueTypeId: response.type_id,
-          projectId: response.project_id,
-          workspaceSlug: workspaceSlug?.toString(),
-          isDraft: is_draft_issue,
-        });
+        try {
+          await handleCreateUpdatePropertyValues({
+            issueId: response.id,
+            issueTypeId: response.type_id,
+            projectId: response.project_id,
+            workspaceSlug: workspaceSlug?.toString(),
+            isDraft: is_draft_issue,
+          });
+        } catch (err) {
+          console.warn("Failed to update property values:", err);
+        }
 
         // create sub work item
-        await handleCreateSubWorkItem({
-          workspaceSlug: workspaceSlug?.toString(),
-          projectId: response.project_id,
-          parentId: response.id,
-        });
+        try {
+          await handleCreateSubWorkItem({
+            workspaceSlug: workspaceSlug?.toString(),
+            projectId: response.project_id,
+            parentId: response.id,
+          });
+        } catch (err) {
+          console.warn("Failed to create sub work item:", err);
+        }
       }
 
       setToast({

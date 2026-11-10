@@ -20,7 +20,7 @@ import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 import { cn, getIssuePriorityFilters } from "@plane/utils";
 // helpers
 import { renderFormattedDate } from "@/helpers/date-time.helper";
-import { shouldHighlightIssueDueDate } from "@/helpers/issue.helper";
+import { getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@/helpers/issue.helper";
 import { copyTextToClipboard, addSpaceIfCamelCase } from "@/helpers/string.helper";
 // hooks
 import { usePublish } from "@/hooks/store/publish";
@@ -119,9 +119,10 @@ export const PeekOverviewIssueProperties = observer(function PeekOverviewIssuePr
           <div>
             {issueDetails.target_date ? (
               <div
-                className={cn("flex items-center gap-1.5 rounded-sm py-0.5 text-11 text-primary", {
-                  "text-danger-primary": shouldHighlightIssueDueDate(issueDetails.target_date, state?.group),
-                })}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-sm py-0.5 text-11 text-primary",
+                  getIssueDueDateHighlightClass(issueDetails.target_date, state?.group)
+                )}
               >
                 <DueDatePropertyIcon className="size-3" />
                 {renderFormattedDate(issueDetails.target_date)}

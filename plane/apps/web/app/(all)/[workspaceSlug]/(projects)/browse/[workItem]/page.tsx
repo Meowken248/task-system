@@ -52,7 +52,11 @@ export const IssueDetailsPage = observer(function IssueDetailsPage({ params }: R
   // fetching issue details
   const { data, isLoading, error } = useSWR<TIssue, Error>(
     `ISSUE_DETAIL_${workspaceSlug}_${projectIdentifier}_${sequence_id}`,
-    () => fetchIssueWithIdentifier(workspaceSlug.toString(), projectIdentifier, sequence_id)
+    () => fetchIssueWithIdentifier(workspaceSlug.toString(), projectIdentifier, sequence_id),
+    {
+      revalidateIfStale: false,
+      revalidateOnFocus: false,
+    }
   );
 
   // derived values
@@ -61,7 +65,7 @@ export const IssueDetailsPage = observer(function IssueDetailsPage({ params }: R
   const projectId = data?.project_id ?? projectDetails?.id ?? "";
   const issue = getIssueById(issueId?.toString() || "") || undefined;
   const project = (issue?.project_id && getProjectById(issue?.project_id)) || undefined;
-  const issueLoader = !issue || isLoading;
+  const issueLoader = (!issue && !data) || (!issue && isLoading);
   const pageTitle = project && issue ? `${project?.identifier}-${issue?.sequence_id} ${issue?.name}` : undefined;
 
   console.log(

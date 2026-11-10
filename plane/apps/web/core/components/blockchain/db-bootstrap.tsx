@@ -1,15 +1,22 @@
 import { useEffect, useState } from "react";
 import { initDAppDB, resolveDBConflict } from "@plane/services";
+import { WALLET_CHANGED_EVENT } from "../../services/blockchain/wallet-center-events";
 
-export function DbBootstrap() {
+export function DbBootstrap({ nonBlocking = false }: { nonBlocking?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ cid: string, ipfsDB: any } | null>(null);
 
   useEffect(() => {
+    let disposed = false;
+    let requestVersion = 0;
     const bootstrap = async () => {
+      const version = ++requestVersion;
+      if (!disposed) setError(null);
       try {
         const res = await initDAppDB();
+        if (disposed || version !== requestVersion) return;
+        setConflict(null);
         if (res?.status === "CONFLICT") {
           setConflict({ cid: res.cid ?? "", ipfsDB: res.ipfsDB });
         } else if (res?.status === "NO_WALLET") {
@@ -20,34 +27,26 @@ export function DbBootstrap() {
           setLoading(false);
         }
       } catch (err: any) {
+        if (disposed || version !== requestVersion) return;
         console.error("DB Bootstrap error:", err);
         setError(err.message || "Lỗi tải cơ sở dữ liệu từ mạng lưới.");
       }
     };
     bootstrap();
 
-    // Lắng nghe sự kiện đổi ví từ MetaNode — chỉ đăng ký nếu SDK đã sẵn sàng
-    let bridgeInstance: any = null;
+    // Plane emits this only after linking the confirmed Vault wallet. This
+    // subscription survives SDK resets and is removed with the component.
     const handleWalletChanged = () => {
+      if (disposed) return;
       setLoading(true);
       bootstrap();
     };
 
-    // Defer Bridge init — don't block page load
-    const timer = setTimeout(() => {
-      import("../../services/blockchain/fiai-sdk.service").then(async ({ initFiaiSDK, getFiaiSDK }) => {
-        bridgeInstance = (await initFiaiSDK().catch(() => null)) ?? getFiaiSDK();
-        if (bridgeInstance) {
-          bridgeInstance.on("wallet-changed", handleWalletChanged);
-        }
-      });
-    }, 3000); // Delay 3s so page loads first
+    window.addEventListener(WALLET_CHANGED_EVENT, handleWalletChanged);
 
     return () => {
-      clearTimeout(timer);
-      if (bridgeInstance) {
-        bridgeInstance.off?.("wallet-changed", handleWalletChanged);
-      }
+      disposed = true;
+      window.removeEventListener(WALLET_CHANGED_EVENT, handleWalletChanged);
     };
   }, []);
 
@@ -58,6 +57,11 @@ export function DbBootstrap() {
       setLoading(false);
     }
   };
+
+  // Account entry and invitation pages handle their own loading/retry states.
+  // Continue recovery in the background without blocking forms with a workspace
+  // database overlay. Keep conflict choices explicit when opening a workspace.
+  if (nonBlocking) return null;
 
   if (error) {
     return (

@@ -1,0 +1,90 @@
+{
+  "clientDate": "2026-10-31",
+  "functionalHead": "18b75689559fcbec550adab6ba3b8bb7fc7f13b1",
+  "branch": "Fix_bug_ver1.0",
+  "native": {
+    "tests": 279,
+    "passed": 279,
+    "failed": 0,
+    "skipped": 0
+  },
+  "types": {
+    "services": 0,
+    "web": 0
+  },
+  "servicesBuildExitCode": 0,
+  "webBuild": {
+    "exitCode": 0,
+    "isolated": true,
+    "scannedFiles": 685,
+    "secretMatches": 0,
+    "temporaryBuildRemoved": true,
+    "spaceBuildVerified": false
+  },
+  "lint": {
+    "targetFiles": 13,
+    "exitCode": 0,
+    "wholeRepository": false
+  },
+  "browser": {
+    "uploadAndOtp": {
+      "tests": 9,
+      "passed": 9,
+      "javascriptIssues": 0,
+      "assetProxyRequests": 0
+    },
+    "members": {
+      "tests": 8,
+      "passed": 8,
+      "isolatedContexts": 2,
+      "simulatedTransactions": 1,
+      "javascriptIssues": 0
+    },
+    "realTransactions": 0,
+    "realEmails": 0,
+    "realIpfsPins": 0
+  },
+  "rpc": {
+    "readOnly": true,
+    "chainId": 991,
+    "registryBytecodePresent": true,
+    "workspacePolicyVersion": 2,
+    "transactionsSent": 0
+  },
+  "productionGuard": {
+    "exitCode": 1,
+    "overrideUsed": false,
+    "blockingKeys": [
+      "VITE_BLS_PRIVATE_KEY",
+      "VITE_BREVO_API_KEY"
+    ],
+    "normalProductionBuildVerified": false
+  },
+  "cleanup": {
+    "buildCopiesRemoved": 4,
+    "browserProfilesRemoved": 7,
+    "temporaryLogsRemoved": 20,
+    "archivedLogs": 11,
+    "sourceDependenciesPreserved": true,
+    "oldEvidenceRemoved": false
+  },
+  "sourceHashes": {
+    "apps/web/core/components/account/auth-forms/form-root.tsx": "ae4f5cae6af4d0cb61b7c4bb1678e2b5e3c5a4a4be12aa68c65b5214eb9c4b1d",
+    "apps/web/core/services/issue/issue_attachment.service.ts": "b0af5fbf078a42da942a7ee8e480a3440abc56c074bdf4f6ccf59eaef2a9ef91",
+    "packages/services/src/dapp/auth.ts": "1fb69a47ffaf805f964a7b85476bdb46827656c94cf4e5ef3ff8d46c9dba2147",
+    "packages/services/src/dapp/file-assets.ts": "d5352c0be23d284bf2db12e35e2fa0d49f1c680325b98ff8ca80f5c8aa66d895",
+    "packages/services/src/dapp/mail.ts": "26aa426232c2bb596dcdd021597b642c88e3b9baf60bd46669cd9dfef845c1f3",
+    "packages/services/src/dapp/otp-delivery.ts": "360d810ca32e8c63965cf90d80809d435051452e16052ccec52c5bdecc4b9bfe",
+    "packages/services/src/dapp/resource-access.ts": "4f4570d5a458b0d656b901a98c0a42de4424fd386235c816888d097a7231def5",
+    "packages/services/src/dapp/routes.ts": "e5eefcac8c47a7e48a310838ab8b33ba38e671e6a43cc3b62b016345d0b22d04",
+    "packages/services/src/index.ts": "c57645cde86ddf898a97aa2354044dc2b846a4be9aeffbabbb970112210a4670",
+    "tests/browser/build-upload-fixture.mjs": "bf2f2f7cad8949866e6eedaddffd7e897cf805b8f3f669992e5ae3931aa2844c",
+    "tests/browser/uploads.mjs": "f8fe7a0898f63b8518b897861bf30b711069ba52798cca3afb65650b1d8b98f6",
+    "tests/browser/wallet-members.mjs": "115fa7689f599b9e9dd5450604f35509e376e45497b4c18ce1888a48a9fd3041",
+    "tests/dapp/analytics.test.mjs": "5eee44bd2b64d2731e44032b3b10e073db631b4f1ebed9b0da6fa7a5cf6d3910",
+    "tests/dapp/file-upload.test.mjs": "36ae92ee4541b8f80505a3bb6e36283f3d5ed9f7b6c4ddc6d5832582c2ae924e",
+    "tests/dapp/otp-delivery.test.mjs": "8aa7ff2e720cecf28882859a27d8079e53579524ee6f999c966c5e50c79e4c34",
+    "tests/dapp/resource-access.test.mjs": "77aeb71f035cd577d2631dcc2f6b231e49b0dbb37406f59504affb47690678d5"
+  },
+  "servicesBundleSha256": "ce191f272d4b126acd63a62cb74e4121c97319019f0ef4526f37cf4a907e0c09"
+}

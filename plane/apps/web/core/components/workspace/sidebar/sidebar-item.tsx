@@ -51,6 +51,9 @@ export const SidebarItemBase = observer(function SidebarItemBase({
     "home",
     "pi_chat",
     "projects",
+    "views",
+    "analytics",
+    "archives",
     "your_work",
     "stickies",
     "drafts",
@@ -67,12 +70,19 @@ export const SidebarItemBase = observer(function SidebarItemBase({
     item.key === "your_work" && data?.id ? joinUrlPath(slug, item.href, data?.id) : joinUrlPath(slug, item.href);
   const icon = getSidebarNavigationItemIcon(item.key);
 
+  const label =
+    t(item.labelTranslationKey) !== item.labelTranslationKey
+      ? t(item.labelTranslationKey)
+      : t(`sidebar.${item.labelTranslationKey}`) !== `sidebar.${item.labelTranslationKey}`
+        ? t(`sidebar.${item.labelTranslationKey}`)
+        : item.labelTranslationKey.charAt(0).toUpperCase() + item.labelTranslationKey.slice(1);
+
   return (
     <Link href={itemHref} onClick={handleLinkClick}>
       <SidebarNavItem isActive={item.highlight(pathname, itemHref)}>
         <div className="flex items-center gap-1.5 py-[1px]">
           {icon}
-          <p className="text-13 leading-5 font-medium">{t(item.labelTranslationKey)}</p>
+          <p className="text-13 leading-5 font-medium">{label}</p>
         </div>
         {additionalRender?.(item.key, slug)}
       </SidebarNavItem>

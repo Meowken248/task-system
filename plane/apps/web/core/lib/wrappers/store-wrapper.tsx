@@ -73,8 +73,10 @@ function StoreWrapper(props: TStoreWrapper) {
       return; // Skip if already initialized or no profile data
     }
 
-    // Apply theme from server profile (one-time only)
-    setTheme(userProfile?.theme?.theme || "system");
+    // Apply theme from local storage or server profile (one-time only)
+    const localTheme = typeof window !== "undefined" ? localStorage.getItem("theme") : null;
+    const resolvedTheme = (localTheme && localTheme !== "system") ? localTheme : (userProfile?.theme?.theme || "system");
+    setTheme(resolvedTheme);
 
     // Mark as initialized - prevents future syncs from server
     hasInitializedThemeRef.current = true;

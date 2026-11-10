@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { observer } from "mobx-react";
 import { FormProvider, useForm } from "react-hook-form";
 // plane imports
@@ -23,6 +23,7 @@ import { usePlatformOS } from "@/hooks/use-platform-os";
 import type { TProject } from "@/plane-web/types/projects";
 import { ProjectAttributes } from "./attributes";
 import { getProjectFormValues } from "./utils";
+import { createProjectWithCover } from "./create-with-cover";
 
 export type TCreateProjectFormProps = {
   setToFavorite?: boolean;
@@ -41,12 +42,20 @@ export const CreateProjectForm = observer(function CreateProjectForm(props: TCre
   const { addProjectToFavorites, createProject, updateProject } = useProject();
   // states
   const [shouldAutoSyncIdentifier, setShouldAutoSyncIdentifier] = useState(true);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const submitting = useRef(false);
   // form info
   const methods = useForm<TProject>({
     defaultValues: { ...getProjectFormValues(), ...data },
     reValidateMode: "onChange",
   });
   const { handleSubmit, reset, setValue } = methods;
+  useEffect(() => {
+    if (!coverFile) return;
+    const preview = URL.createObjectURL(coverFile);
+    setValue("cover_image_url", preview, { shouldDirty: true });
+    return () => URL.revokeObjectURL(preview);
+  }, [coverFile, setValue]);
   const { isMobile } = usePlatformOS();
   const handleAddToFavorites = (projectId: string) => {
     if (!workspaceSlug) return;
@@ -61,107 +70,87 @@ export const CreateProjectForm = observer(function CreateProjectForm(props: TCre
   };
 
   const onSubmit = async (formData: Partial<TProject>) => {
-    // Upper case identifier
-    formData.identifier = formData.identifier?.toUpperCase();
-    const coverImage = formData.cover_image_url;
-    let uploadedAssetUrl: string | null = null;
-
-    if (coverImage) {
-      const imageType = getCoverImageType(coverImage);
-
-      if (imageType === "local_static") {
-        try {
-          uploadedAssetUrl = await uploadCoverImage(coverImage, {
-            workspaceSlug: workspaceSlug.toString(),
-            entityIdentifier: "",
+    if (submitting.current) return;
+    submitting.current = true;
+    try {
+      const result = await createProjectWithCover(formData, coverFile, {
+        create: (fields) => createProject(workspaceSlug, fields),
+        uploadCover: (source, projectId) => {
+          if (typeof source === "string" && getCoverImageType(source) === "uploaded_asset") {
+            return Promise.resolve(source);
+          }
+          return uploadCoverImage(source, {
+            workspaceSlug,
+            entityIdentifier: projectId,
             entityType: EFileAssetType.PROJECT_COVER,
             isUserAsset: false,
           });
-        } catch (error) {
-          console.error("Error uploading cover image:", error);
-          setToast({
-            type: TOAST_TYPE.ERROR,
-            title: t("toast.error"),
-            message: error instanceof Error ? error.message : "Failed to upload cover image",
-          });
-          return Promise.reject(error);
-        }
-      } else {
-        formData.cover_image = coverImage;
-        formData.cover_image_asset = null;
-      }
-    }
-
-    return createProject(workspaceSlug.toString(), formData)
-      .then(async (res) => {
-        try {
-          if (uploadedAssetUrl) {
-            await updateCoverImageStatus(res.id, uploadedAssetUrl);
-            await updateProject(workspaceSlug.toString(), res.id, { cover_image_url: uploadedAssetUrl });
-          } else if (coverImage && coverImage.startsWith("http")) {
-            await updateCoverImageStatus(res.id, coverImage);
-            await updateProject(workspaceSlug.toString(), res.id, { cover_image_url: coverImage });
-          }
-        } catch (coverErr) {
-          console.warn("Non-fatal error updating cover image post-creation:", coverErr);
-        }
-
+        },
+        saveCover: async (projectId, url) => {
+          await updateCoverImageStatus(projectId, url);
+          await updateProject(workspaceSlug, projectId, { cover_image_url: url });
+        },
+      });
+      if (result.coverFailed) {
+        console.warn("Project created but its cover could not be saved:", result.coverError);
         setToast({
-          type: TOAST_TYPE.SUCCESS,
-          title: t("success"),
-          message: t("project_created_successfully"),
+          type: TOAST_TYPE.WARNING,
+          title: t("project_created_successfully"),
+          message: "Ảnh bìa chưa lưu được. Bạn có thể tải lại ảnh trong phần cài đặt dự án.",
         });
+      } else {
+        setToast({ type: TOAST_TYPE.SUCCESS, title: t("success"), message: t("project_created_successfully") });
+      }
+      if (setToFavorite) handleAddToFavorites(result.project.id);
+      handleNextStep(result.project.id);
+    } catch (err: any) {
+      try {
+        // Handle the new error format where codes are nested in arrays under field names
+        const errorData = err?.data ?? {};
 
-        if (setToFavorite) {
-          handleAddToFavorites(res.id);
-        }
-        handleNextStep(res.id);
-      })
-      .catch((err) => {
-        try {
-          // Handle the new error format where codes are nested in arrays under field names
-          const errorData = err?.data ?? {};
+        const nameError = errorData.name?.includes("PROJECT_NAME_ALREADY_EXIST");
+        const identifierError = errorData?.identifier?.includes("PROJECT_IDENTIFIER_ALREADY_EXIST");
 
-          const nameError = errorData.name?.includes("PROJECT_NAME_ALREADY_EXIST");
-          const identifierError = errorData?.identifier?.includes("PROJECT_IDENTIFIER_ALREADY_EXIST");
-
-          if (nameError || identifierError) {
-            if (nameError) {
-              setToast({
-                type: TOAST_TYPE.ERROR,
-                title: t("toast.error"),
-                message: t("project_name_already_taken"),
-              });
-            }
-
-            if (identifierError) {
-              setToast({
-                type: TOAST_TYPE.ERROR,
-                title: t("toast.error"),
-                message: t("project_identifier_already_taken"),
-              });
-            }
-          } else {
+        if (nameError || identifierError) {
+          if (nameError) {
             setToast({
               type: TOAST_TYPE.ERROR,
               title: t("toast.error"),
-              message: t("something_went_wrong"),
+              message: t("project_name_already_taken"),
             });
           }
-        } catch (error) {
-          // Fallback error handling if the error processing fails
-          console.error("Error processing API error:", error);
+
+          if (identifierError) {
+            setToast({
+              type: TOAST_TYPE.ERROR,
+              title: t("toast.error"),
+              message: t("project_identifier_already_taken"),
+            });
+          }
+        } else {
           setToast({
             type: TOAST_TYPE.ERROR,
             title: t("toast.error"),
             message: t("something_went_wrong"),
           });
         }
-      });
+      } catch (error) {
+        // Fallback error handling if the error processing fails
+        console.error("Error processing API error:", error);
+        setToast({
+          type: TOAST_TYPE.ERROR,
+          title: t("toast.error"),
+          message: t("something_went_wrong"),
+        });
+      }
+    } finally {
+      submitting.current = false;
+    }
   };
 
   const handleClose = () => {
     onClose();
+    setCoverFile(null);
     setShouldAutoSyncIdentifier(true);
     setTimeout(() => {
       reset();
@@ -170,7 +159,12 @@ export const CreateProjectForm = observer(function CreateProjectForm(props: TCre
 
   return (
     <FormProvider {...methods}>
-      <ProjectCreateHeader handleClose={handleClose} isMobile={isMobile} />
+      <ProjectCreateHeader
+        handleClose={handleClose}
+        isMobile={isMobile}
+        onCoverFileSelect={setCoverFile}
+        onCoverChange={() => setCoverFile(null)}
+      />
 
       <form onSubmit={handleSubmit(onSubmit)} className="px-3">
         <div className="mt-9 space-y-6 pb-5">

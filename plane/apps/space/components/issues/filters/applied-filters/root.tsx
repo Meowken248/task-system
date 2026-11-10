@@ -56,8 +56,12 @@ export const IssueAppliedFilters = observer(function IssueAppliedFilters(props: 
       if (state.length > 0) params.states = state.join(",");
       if (labels.length > 0) params.labels = labels.join(",");
 
-      const qs = new URLSearchParams(params).toString();
-      router.push(`/issues/${anchor}?${qs}`);
+      const urlParams = new URLSearchParams(params);
+      if (typeof window !== "undefined") {
+        const curCid = new URLSearchParams(window.location.search).get("cid");
+        if (curCid && !urlParams.has("cid")) urlParams.append("cid", curCid);
+      }
+      router.push(`/issues/${anchor}?${urlParams.toString()}`);
     },
     [activeLayout, anchor, issueFilters, router]
   );
@@ -89,7 +93,12 @@ export const IssueAppliedFilters = observer(function IssueAppliedFilters(props: 
       true
     );
 
-    router.push(`/issues/${anchor}?${`board=${activeLayout || "list"}`}`);
+    const resetParams = new URLSearchParams({ board: activeLayout || "list" });
+    if (typeof window !== "undefined") {
+      const curCid = new URLSearchParams(window.location.search).get("cid");
+      if (curCid) resetParams.append("cid", curCid);
+    }
+    router.push(`/issues/${anchor}?${resetParams.toString()}`);
   };
 
   if (Object.keys(appliedFilters).length === 0) return null;

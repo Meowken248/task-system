@@ -9,7 +9,13 @@ import { action, computed, makeObservable, observable, runInAction } from "mobx"
 import { computedFn } from "mobx-utils";
 // types
 import type { EUserPermissions } from "@plane/constants";
-import type { IWorkspaceBulkInviteFormData, IWorkspaceMember, IWorkspaceMemberInvitation } from "@plane/types";
+import type {
+  IWorkspaceBulkInviteFormData,
+  IWorkspaceMember,
+  IWorkspaceMemberInvitation,
+  IWorkspaceWalletMemberInput,
+  IWorkspaceWalletMemberResult,
+} from "@plane/types";
 // plane-web constants
 // services
 import { WorkspaceService } from "@/services/workspace.service";
@@ -51,9 +57,10 @@ export interface IWorkspaceMemberStore {
   fetchWorkspaceMemberInvitations: (workspaceSlug: string) => Promise<IWorkspaceMemberInvitation[]>;
   // crud actions
   updateMember: (workspaceSlug: string, userId: string, data: { role: EUserPermissions }) => Promise<void>;
-  removeMemberFromWorkspace: (workspaceSlug: string, userId: string) => Promise<void>;
+  removeMemberFromWorkspace: (workspaceSlug: string, userId: string, adminWallet?: string) => Promise<void>;
   // invite actions
-  inviteMembersToWorkspace: (workspaceSlug: string, data: IWorkspaceBulkInviteFormData) => Promise<void>;
+  inviteMembersToWorkspace: (workspaceSlug: string, data: IWorkspaceBulkInviteFormData) => Promise<any>;
+  addWalletMember: (workspaceSlug: string, data: IWorkspaceWalletMemberInput) => Promise<IWorkspaceWalletMemberResult>;
   updateMemberInvitation: (
     workspaceSlug: string,
     invitationId: string,
@@ -75,6 +82,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   routerStore: IRouterStore;
   userStore: IUserStore;
   memberRoot: IMemberRootStore;
+  rootStore: RootStore;
   // services
   workspaceService;
 
@@ -98,6 +106,7 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
     // initialize filters store
     this.filtersStore = new WorkspaceMemberFiltersStore();
     // root store
+    this.rootStore = _rootStore;
     this.routerStore = _rootStore.router;
     this.userStore = _rootStore.user;
     this.memberRoot = _memberRoot;
@@ -134,7 +143,14 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
       (m) => this.memberRoot?.memberMap?.[m.member]?.display_name?.toLowerCase(),
     ]);
     //filter out bots
-    const memberIds = members.filter((m) => !this.memberRoot?.memberMap?.[m.member]?.is_bot).map((m) => m.member);
+    const memberIds = members
+      .filter(
+        (m) =>
+          m.is_active !== false &&
+          Boolean(this.memberRoot?.memberMap?.[m.member]) &&
+          !this.memberRoot.memberMap[m.member].is_bot
+      )
+      .map((m) => m.member);
     return memberIds;
   });
 
@@ -145,7 +161,12 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   getFilteredWorkspaceMemberIds = computedFn((workspaceSlug: string) => {
     let members = Object.values(this.workspaceMemberMap?.[workspaceSlug] ?? {});
     //filter out bots and inactive members
-    members = members.filter((m) => !this.memberRoot?.memberMap?.[m.member]?.is_bot);
+    members = members.filter(
+      (m) =>
+        m.is_active !== false &&
+        Boolean(this.memberRoot?.memberMap?.[m.member]) &&
+        !this.memberRoot.memberMap[m.member].is_bot
+    );
 
     // Use filters store to get filtered member ids
     const memberIds = this.filtersStore.getFilteredMemberIds(
@@ -203,12 +224,13 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
     const workspaceSlug = this.routerStore.workspaceSlug;
     if (!workspaceSlug) return null;
     const workspaceMember = this.workspaceMemberMap?.[workspaceSlug]?.[userId];
-    if (!workspaceMember) return null;
+    const userDetails = this.memberRoot?.memberMap?.[workspaceMember?.member];
+    if (!workspaceMember || !userDetails) return null;
 
     const memberDetails: IWorkspaceMember = {
       id: workspaceMember.id,
       role: workspaceMember.role,
-      member: this.memberRoot?.memberMap?.[workspaceMember.member],
+      member: userDetails,
       is_active: workspaceMember.is_active,
     };
     return memberDetails;
@@ -236,6 +258,15 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
   fetchWorkspaceMembers = async (workspaceSlug: string) =>
     await this.workspaceService.fetchWorkspaceMembers(workspaceSlug).then((response) => {
       runInAction(() => {
+        if (!this.workspaceMemberMap[workspaceSlug]) set(this.workspaceMemberMap, workspaceSlug, {});
+        const activeUserIds = new Set(response.map((m) => m.member.id));
+        if (this.workspaceMemberMap[workspaceSlug]) {
+          Object.keys(this.workspaceMemberMap[workspaceSlug]).forEach((userId) => {
+            if (!activeUserIds.has(userId)) {
+              delete this.workspaceMemberMap[workspaceSlug][userId];
+            }
+          });
+        }
         response.forEach((member) => {
           set(this.memberRoot?.memberMap, member.member.id, { ...member.member, joining_date: member.created_at });
           set(this.workspaceMemberMap, [workspaceSlug, member.member.id], {
@@ -245,6 +276,12 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
             is_active: member.is_active,
           });
         });
+        const targetWs = Object.values(this.rootStore?.workspaceRoot?.workspaces ?? {}).find(
+          (w) => w.slug === workspaceSlug || w.id === workspaceSlug
+        );
+        if (targetWs) {
+          set(targetWs, "total_members", this.getWorkspaceMemberIds(workspaceSlug).length);
+        }
       });
       return response;
     });
@@ -279,13 +316,30 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
    * @param workspaceSlug
    * @param userId
    */
-  removeMemberFromWorkspace = async (workspaceSlug: string, userId: string) => {
+  removeMemberFromWorkspace = async (workspaceSlug: string, userId: string, adminWallet?: string) => {
     const memberDetails = this.getWorkspaceMemberDetails(userId);
-    if (!memberDetails) throw new Error("Member not found");
-    await this.workspaceService.deleteWorkspaceMember(workspaceSlug, memberDetails?.id).then(() => {
+    const targetMemberId = memberDetails?.id || userId;
+    await this.workspaceService.deleteWorkspaceMember(workspaceSlug, targetMemberId, adminWallet).then(async () => {
       runInAction(() => {
-        set(this.workspaceMemberMap, [workspaceSlug, userId, "is_active"], false);
+        if (this.workspaceMemberMap[workspaceSlug]) {
+          delete this.workspaceMemberMap[workspaceSlug][userId];
+          if (memberDetails?.member?.id) {
+            delete this.workspaceMemberMap[workspaceSlug][memberDetails.member.id];
+          }
+          if (memberDetails?.id) {
+            delete this.workspaceMemberMap[workspaceSlug][memberDetails.id];
+          }
+          const remainingCount = Object.keys(this.workspaceMemberMap[workspaceSlug]).length;
+          const targetWs = Object.values(this.rootStore?.workspaceRoot?.workspaces ?? {}).find(
+            (w) => w.slug === workspaceSlug || w.id === workspaceSlug
+          );
+          if (targetWs) {
+            set(targetWs, "total_members", remainingCount);
+          }
+        }
       });
+      await this.fetchWorkspaceMembers(workspaceSlug);
+      await this.fetchWorkspaceMemberInvitations(workspaceSlug);
     });
   };
 
@@ -312,6 +366,29 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
     return response;
   };
 
+  addWalletMember = async (workspaceSlug: string, data: IWorkspaceWalletMemberInput) => {
+    const result = await this.workspaceService.addWalletMember(workspaceSlug, data);
+    if (result?.chain_confirmed && result.member?.member?.id) {
+      const member = result.member;
+      runInAction(() => {
+        set(this.memberRoot.memberMap, member.member.id, { ...member.member, joining_date: member.created_at });
+        set(this.workspaceMemberMap, [workspaceSlug, member.member.id], {
+          id: member.id,
+          member: member.member.id,
+          role: member.role,
+          is_active: true,
+        });
+      });
+    }
+    // A failed list refresh must not turn an already confirmed grant into a
+    // reported transaction failure or cause another signature on retry.
+    void Promise.allSettled([
+      this.fetchWorkspaceMembers(workspaceSlug),
+      this.fetchWorkspaceMemberInvitations(workspaceSlug),
+    ]);
+    return result;
+  };
+
   /**
    * @description update the role of a member invitation
    * @param workspaceSlug
@@ -333,7 +410,16 @@ export class WorkspaceMemberStore implements IWorkspaceMemberStore {
       runInAction(() => {
         set(this.workspaceMemberInvitations, workspaceSlug, memberInvitations);
       });
-      await this.workspaceService.updateWorkspaceInvitation(workspaceSlug, invitationId, data);
+      const updated = await this.workspaceService.updateWorkspaceInvitation(workspaceSlug, invitationId, data);
+      runInAction(() => {
+        set(
+          this.workspaceMemberInvitations,
+          workspaceSlug,
+          memberInvitations.map((invitation) =>
+            invitation.id === invitationId ? { ...invitation, ...updated } : invitation
+          )
+        );
+      });
     } catch (error) {
       // revert back to original members in case of error
       runInAction(() => {

@@ -148,7 +148,7 @@ export const WorkspaceDetails = observer(function WorkspaceDetails() {
       <div className={cn("flex w-full flex-col gap-y-7", { "opacity-60": !isAdmin })}>
         <div className="flex items-center gap-5">
           <div className="flex shrink-0 flex-col gap-1">
-            <button type="button" onClick={() => setIsImageUploadModalOpen(true)} disabled={!isAdmin}>
+            <button type="button" aria-label="Change workspace logo" onClick={() => setIsImageUploadModalOpen(true)} disabled={!isAdmin}>
               {workspaceLogo && workspaceLogo !== "" ? (
                 <div className="relative flex size-14">
                   <img

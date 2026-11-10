@@ -312,6 +312,7 @@ export class CycleIssues extends BaseIssuesStore implements ICycleIssues {
   ) => {
     // call API call to transfer issues
     const response = await this.cycleService.transferIssues(workspaceSlug, projectId, cycleId, payload);
+    await this.refreshPlanningStats(workspaceSlug, projectId, [cycleId, payload.new_cycle_id]);
     // call fetch issues
     if (this.paginationOptions) {
       await this.fetchIssues(workspaceSlug, projectId, "mutation", this.paginationOptions, cycleId);

@@ -89,6 +89,7 @@ export const IssueRelationSelect = observer(function IssueRelationSelect(props: 
         searchParams={{ issue_relation: true, issue_id: issueId }}
         handleOnSubmit={onSubmit}
         workspaceLevelToggle
+        shouldHideIssue={(issue) => issue.id === issueId}
       />
 
       <button

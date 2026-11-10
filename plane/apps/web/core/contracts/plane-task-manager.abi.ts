@@ -1,5 +1,14 @@
 export const planeTaskManagerAbi = [
   {
+    type: "function", name: "createWorkspaceTask", stateMutability: "nonpayable",
+    inputs: [{ name: "slug", type: "string" }, { name: "externalId", type: "bytes32" }, { name: "metadataHash", type: "bytes32" }, { name: "assignee", type: "address" }, { name: "dueAt", type: "uint64" }, { name: "priority", type: "uint8" }],
+    outputs: [{ name: "taskId", type: "uint256" }],
+  },
+  {
+    type: "function", name: "getTaskWorkspace", stateMutability: "view",
+    inputs: [{ name: "taskId", type: "uint256" }], outputs: [{ name: "", type: "string" }],
+  },
+  {
     type: "function",
     name: "submitDailyReportAndSyncAncestors",
     inputs: [
@@ -271,6 +280,36 @@ export const planeTaskManagerAbi = [
           { name: "overdue", type: "uint256" },
           { name: "progressSum", type: "uint256" },
           { name: "averageProgress", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getReportCount",
+    inputs: [{ name: "taskId", type: "uint256", internalType: "uint256" }],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getDailyReport",
+    inputs: [
+      { name: "taskId", type: "uint256", internalType: "uint256" },
+      { name: "reportId", type: "uint256", internalType: "uint256" },
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        internalType: "struct PlaneTaskManager.DailyReport",
+        components: [
+          { name: "reportedAt", type: "uint64" },
+          { name: "progress", type: "uint8" },
+          { name: "workHash", type: "bytes32" },
+          { name: "difficultyHash", type: "bytes32" },
+          { name: "evidenceHash", type: "bytes32" },
         ],
       },
     ],

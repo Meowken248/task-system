@@ -22,6 +22,7 @@ import {
   getDate,
   renderFormattedPayloadDate,
   generateWorkItemLink,
+  getIssueDueDateHighlightClass,
   shouldHighlightIssueDueDate,
 } from "@plane/utils";
 // components
@@ -125,13 +126,14 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
 
   const handleModule = useCallback(
     (moduleIds: string[] | null) => {
-      if (!issue || !issue.module_ids || !moduleIds) return;
+      if (!issue || !moduleIds) return;
 
-      const updatedModuleIds = xor(issue.module_ids, moduleIds);
+      const currentModuleIds = Array.isArray(issue.module_ids) ? issue.module_ids : [];
+      const updatedModuleIds = xor(currentModuleIds, moduleIds);
       const modulesToAdd: string[] = [];
       const modulesToRemove: string[] = [];
       for (const moduleId of updatedModuleIds)
-        if (issue.module_ids.includes(moduleId)) modulesToRemove.push(moduleId);
+        if (currentModuleIds.includes(moduleId)) modulesToRemove.push(moduleId);
         else modulesToAdd.push(moduleId);
       if (modulesToAdd.length > 0) issueOperations.addModulesToIssue(modulesToAdd);
       if (modulesToRemove.length > 0) issueOperations.removeModulesFromIssue(modulesToRemove);
@@ -149,8 +151,17 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
   );
 
   const handleStartDate = async (date: Date | null) => {
-    if (updateIssue)
-      await updateIssue(issue.project_id, issue.id, { start_date: date ? renderFormattedPayloadDate(date) : null });
+    if (updateIssue) {
+      const newStartDateStr = date ? renderFormattedPayloadDate(date) : null;
+      const payload: Partial<TIssue> = { start_date: newStartDateStr };
+      if (date && issue.target_date) {
+        const currentTargetDate = getDate(issue.target_date);
+        if (currentTargetDate && currentTargetDate < date) {
+          payload.target_date = newStartDateStr;
+        }
+      }
+      await updateIssue(issue.project_id, issue.id, payload);
+    }
   };
 
   const handleTargetDate = async (date: Date | null) => {
@@ -201,6 +212,9 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
   );
 
   const defaultLabelOptions = issue?.label_ids?.map((id) => labelMap[id]) || [];
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   const minDate = getDate(issue.start_date);
   const maxDate = getDate(issue.target_date);
@@ -265,9 +279,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
             isClearable
             mergeDates
             buttonVariant={issue.start_date || issue.target_date ? "border-with-text" : "border-without-text"}
-            buttonClassName={
-              shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group) ? "text-danger-primary" : ""
-            }
+            buttonClassName={getIssueDueDateHighlightClass(issue.target_date || issue.start_date, stateDetails?.group)}
             clearIconClassName="text-primary!"
             disabled={isReadOnly}
             renderByDefault={isMobile}
@@ -288,7 +300,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
           <DateDropdown
             value={issue.start_date ?? null}
             onChange={handleStartDate}
-            maxDate={maxDate}
+            minDate={today}
             placeholder={t("common.order_by.start_date")}
             icon={<StartDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
             buttonVariant={issue.start_date ? "border-with-text" : "border-without-text"}
@@ -311,13 +323,11 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
           <DateDropdown
             value={issue?.target_date ?? null}
             onChange={handleTargetDate}
-            minDate={minDate}
+            minDate={minDate ?? today}
             placeholder={t("common.order_by.due_date")}
             icon={<DueDatePropertyIcon className="h-3 w-3 shrink-0" />}
             buttonVariant={issue.target_date ? "border-with-text" : "border-without-text"}
-            buttonClassName={
-              shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group) ? "text-danger-primary" : ""
-            }
+            buttonClassName={getIssueDueDateHighlightClass(issue.target_date, stateDetails?.group)}
             clearIconClassName="text-primary!"
             optionsClassName="z-10"
             disabled={isReadOnly}
@@ -335,7 +345,7 @@ export const IssueProperties = observer(function IssueProperties(props: IIssuePr
             projectId={issue?.project_id}
             value={issue?.assignee_ids}
             onChange={handleAssignee}
-            disabled
+            disabled={isReadOnly}
             multiple
             buttonVariant={issue.assignee_ids?.length > 0 ? "transparent-without-text" : "border-without-text"}
             buttonClassName={issue.assignee_ids?.length > 0 ? "hover:bg-transparent px-0" : ""}

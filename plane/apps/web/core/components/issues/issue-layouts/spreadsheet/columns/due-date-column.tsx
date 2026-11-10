@@ -9,7 +9,7 @@ import { observer } from "mobx-react";
 import { DueDatePropertyIcon } from "@plane/propel/icons";
 // types
 import type { TIssue } from "@plane/types";
-import { cn, getDate, renderFormattedPayloadDate, shouldHighlightIssueDueDate } from "@plane/utils";
+import { cn, getDate, renderFormattedPayloadDate, getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@plane/utils";
 // components
 import { DateDropdown } from "@/components/dropdowns/date";
 // helpers
@@ -53,9 +53,7 @@ export const SpreadsheetDueDateColumn = observer(function SpreadsheetDueDateColu
         buttonContainerClassName="w-full"
         buttonClassName={cn(
           "rounded-none px-page-x text-left group-[.selected-issue-row]:bg-accent-primary/5 group-[.selected-issue-row]:hover:bg-accent-primary/10",
-          {
-            "text-danger-primary": shouldHighlightIssueDueDate(issue.target_date, stateDetails?.group),
-          }
+          getIssueDueDateHighlightClass(issue.target_date, stateDetails?.group)
         )}
         optionsClassName="z-[9]"
         clearIconClassName="!text-primary"

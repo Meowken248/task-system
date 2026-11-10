@@ -19,6 +19,9 @@ import { getAssetIdFromUrl, getFileURL, checkURLValidity } from "@plane/utils";
 import { FileService } from "@/services/file.service";
 const fileService = new FileService();
 
+let uploadCounter = 0;
+let activeUploadId: number | null = null;
+
 type Props = {
   handleRemove: () => Promise<void>;
   isOpen: boolean;
@@ -44,6 +47,10 @@ export const UserImageUploadModal = observer(function UserImageUploadModal(props
   });
 
   const handleClose = () => {
+    if (isImageUploading || activeUploadId !== null) {
+      fileService.cancelUpload();
+      activeUploadId = null;
+    }
     setImage(null);
     setIsImageUploading(false);
     onClose();
@@ -51,6 +58,8 @@ export const UserImageUploadModal = observer(function UserImageUploadModal(props
 
   const handleSubmit = async () => {
     if (!image) return;
+    const operationId = ++uploadCounter;
+    activeUploadId = operationId;
     setIsImageUploading(true);
 
     try {
@@ -61,17 +70,21 @@ export const UserImageUploadModal = observer(function UserImageUploadModal(props
         },
         image
       );
+      if (operationId !== activeUploadId) return;
       onSuccess(asset_url);
       setImage(null);
     } catch (error) {
+      if (operationId !== activeUploadId) return;
       setToast({
         type: TOAST_TYPE.ERROR,
         title: "Error!",
-        message: error?.toString() ?? "Something went wrong. Please try again.",
+        message: error instanceof Error ? error.message : (error as { error?: string } | null)?.error || "Không lưu được ảnh. Vui lòng thử lại.",
       });
-      throw new Error("Error in uploading file.");
     } finally {
-      setIsImageUploading(false);
+      if (operationId === activeUploadId) {
+        activeUploadId = null;
+        setIsImageUploading(false);
+      }
     }
   };
 
@@ -117,7 +130,7 @@ export const UserImageUploadModal = observer(function UserImageUploadModal(props
                   </button>
                   <img
                     src={image ? URL.createObjectURL(image) : value ? getFileURL(value) : ""}
-                    alt="image"
+                    alt="Avatar preview"
                     className="absolute top-0 left-0 h-full w-full rounded-md object-cover"
                   />
                 </>

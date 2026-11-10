@@ -27,7 +27,7 @@ import { DeleteIssueModal } from "../../delete-issue-modal";
 import { CreateUpdateIssueModal } from "../../issue-modal/modal";
 import type { IQuickActionProps } from "../list/list-view-types";
 import type { MenuItemFactoryProps } from "./helper";
-import { useProjectIssueMenuItems } from "./helper";
+import { useProjectIssueMenuItems, getDuplicateIssuePayload } from "./helper";
 
 export const ProjectIssueQuickActions = observer(function ProjectIssueQuickActions(props: IQuickActionProps) {
   const {
@@ -76,14 +76,7 @@ export const ProjectIssueQuickActions = observer(function ProjectIssueQuickActio
       issue.project_id ?? undefined
     ) && !readOnly;
 
-  const duplicateIssuePayload = omit(
-    {
-      ...issue,
-      name: `${issue.name} (copy)`,
-      sourceIssueId: issue.id,
-    },
-    ["id"]
-  );
+  const duplicateIssuePayload = getDuplicateIssuePayload(issue);
 
   // Menu items and modals using helper
   const menuItemProps: MenuItemFactoryProps = {

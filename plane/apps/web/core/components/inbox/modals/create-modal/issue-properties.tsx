@@ -47,6 +47,9 @@ export const InboxIssueProperties = observer(function InboxIssueProperties(props
   const startDate = data?.start_date;
   const targetDate = data?.target_date;
 
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
   const minDate = getDate(startDate);
   minDate?.setDate(minDate.getDate());
 
@@ -106,9 +109,18 @@ export const InboxIssueProperties = observer(function InboxIssueProperties(props
         <div className="h-7">
           <DateDropdown
             value={data?.start_date || null}
-            onChange={(date) => handleData("start_date", date ? renderFormattedPayloadDate(date) : "")}
+            onChange={(date) => {
+              const formattedDate = date ? renderFormattedPayloadDate(date) : "";
+              handleData("start_date", formattedDate);
+              if (date && data?.target_date) {
+                const currentTarget = getDate(data.target_date);
+                if (currentTarget && currentTarget < date) {
+                  handleData("target_date", formattedDate);
+                }
+              }
+            }}
             buttonVariant="border-with-text"
-            minDate={minDate ?? undefined}
+            minDate={today}
             placeholder="Start date"
             tabIndex={getIndex("start_date")}
           />
@@ -121,7 +133,7 @@ export const InboxIssueProperties = observer(function InboxIssueProperties(props
           value={data?.target_date || null}
           onChange={(date) => handleData("target_date", date ? renderFormattedPayloadDate(date) : "")}
           buttonVariant="border-with-text"
-          minDate={minDate ?? undefined}
+          minDate={minDate ?? today}
           placeholder="Due date"
           tabIndex={getIndex("target_date")}
         />

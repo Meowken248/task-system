@@ -1,0 +1,106 @@
+{
+  "cases": [
+    {
+      "name": "UUID work item URL redirects to the correct browse URL",
+      "passed": true
+    },
+    {
+      "name": "Actual attachment picker saves file bytes and updates the work item",
+      "passed": true
+    },
+    {
+      "name": "Pasting into the description uploads and renders decoded image bytes locally",
+      "passed": true
+    },
+    {
+      "name": "Comment images use the same local asset resolver and render after submission",
+      "passed": true
+    },
+    {
+      "name": "Description and comment image IDs survive a full page reload",
+      "passed": true
+    },
+    {
+      "name": "Downloading the attachment after reload returns the original file contents",
+      "passed": true
+    },
+    {
+      "name": "Avatar uploaded through the real modal remains a decoded IPFS image after F5",
+      "passed": true
+    },
+    {
+      "name": "Profile cover is saved as an IPFS URL and renders after F5",
+      "passed": true
+    },
+    {
+      "name": "Workspace logo survives F5 with IndexedDB cleared and is read from IPFS",
+      "passed": true
+    },
+    {
+      "name": "An IPFS upload error keeps the previous avatar and does not throw an uncaught UI error",
+      "passed": true
+    },
+    {
+      "name": "Removing an avatar preserves cover/logo with the same CID and remains removed after F5",
+      "passed": true
+    },
+    {
+      "name": "OTP form waits for provider acceptance before opening the code step",
+      "passed": true
+    },
+    {
+      "name": "OTP delivery failure shows a retryable message and retains the email form",
+      "passed": true
+    },
+    {
+      "name": "Retry after mail recovers opens the OTP step with a stored code hash",
+      "passed": true
+    }
+  ],
+  "expectedImageBlocks": {
+    "description": [
+      "4946816d-87b5-4016-b05d-69e85430cfae"
+    ],
+    "comment": [
+      "d53dec6d-5422-4c88-9a3b-08002603e67c"
+    ]
+  },
+  "issues": [],
+  "realTransactionsSent": 0,
+  "sdkAndRpcSimulated": true,
+  "screenshotDiagnostics": [],
+  "downloads": [
+    {
+      "event": "Browser.downloadWillBegin",
+      "filename": "upload-fixture.txt"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "completed"
+    }
+  ],
+  "actualIndexedDB": true,
+  "actualFileInput": true,
+  "actualImageDecoding": true,
+  "assetProxyRequests": 0
+}

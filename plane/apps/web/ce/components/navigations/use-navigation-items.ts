@@ -10,6 +10,7 @@ import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
 import { WorkItemsIcon } from "@plane/propel/icons";
 import type { EUserProjectRoles, IPartialProject } from "@plane/types";
 import type { TNavigationItem } from "@/components/navigation/tab-navigation-root";
+import { getProjectFeatureNavigation } from "../projects/navigation/helper";
 
 type UseNavigationItemsProps = {
   workspaceSlug: string;
@@ -31,18 +32,23 @@ export const useNavigationItems = ({
 }: UseNavigationItemsProps): TNavigationItem[] => {
   // Base navigation items
   const baseNavigation = useCallback(
-    (workspaceSlug: string, projectId: string): TNavigationItem[] => [
-      {
-        i18n_key: "sidebar.work_items",
-        key: "work_items",
-        name: "Work items",
-        href: `/${workspaceSlug}/projects/${projectId}/issues`,
-        icon: WorkItemsIcon,
-        access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
-        shouldRender: true,
-        sortOrder: 1,
-      },
-    ],
+    (workspaceSlug: string, projectId: string): TNavigationItem[] => {
+      if (project) {
+        return getProjectFeatureNavigation(workspaceSlug, projectId, project);
+      }
+      return [
+        {
+          i18n_key: "sidebar.work_items",
+          key: "work_items",
+          name: "Work items",
+          href: `/${workspaceSlug}/projects/${projectId}/issues`,
+          icon: WorkItemsIcon,
+          access: [EUserPermissions.ADMIN, EUserPermissions.MEMBER, EUserPermissions.GUEST],
+          shouldRender: true,
+          sortOrder: 1,
+        },
+      ];
+    },
     [project]
   );
 

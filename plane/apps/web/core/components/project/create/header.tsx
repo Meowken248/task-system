@@ -28,6 +28,8 @@ type Props = {
   isClosable?: boolean;
   handleTemplateSelect?: () => void;
   showActionButtons?: boolean;
+  onCoverFileSelect?: (file: File) => void;
+  onCoverChange?: () => void;
 };
 
 function ProjectCreateHeader(props: Props) {
@@ -38,8 +40,15 @@ function ProjectCreateHeader(props: Props) {
     isClosable = true,
     handleTemplateSelect,
     showActionButtons = true,
+    onCoverFileSelect,
+    onCoverChange,
   } = props;
-  const { watch, control, setValue } = useFormContext<IProject>();
+  const {
+    watch,
+    control,
+    setValue,
+    formState: { isSubmitting },
+  } = useFormContext<IProject>();
   const { t } = useTranslation();
   // derived values
   const coverImage = watch("cover_image_url");
@@ -61,7 +70,7 @@ function ProjectCreateHeader(props: Props) {
       )}
       {isClosable && (
         <div className="absolute top-2 right-2 p-2">
-          <button type="button" onClick={handleClose} tabIndex={getIndex("close")}>
+          <button type="button" onClick={handleClose} disabled={isSubmitting} tabIndex={getIndex("close")}>
             <CloseIcon className="h-5 w-5 text-on-color" />
           </button>
         </div>
@@ -74,10 +83,13 @@ function ProjectCreateHeader(props: Props) {
             <ImagePickerPopover
               label={t("change_cover")}
               onChange={(data) => {
+                onCoverChange?.();
                 onChange(data);
                 handleFormOnChange?.();
               }}
               control={control}
+              onFileSelect={onCoverFileSelect}
+              disabled={isSubmitting}
               value={value ?? null}
               tabIndex={getIndex("cover_image")}
             />

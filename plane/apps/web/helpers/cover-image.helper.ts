@@ -5,6 +5,7 @@
  */
 
 import type { EFileAssetType } from "@plane/types";
+import { getPinnedCoverPresetKey, localDB } from "@plane/services";
 import { getFileURL } from "@plane/utils";
 
 import CoverImage1 from "@/app/assets/cover-images/image_1.jpg?url";
@@ -144,6 +145,8 @@ export function getCoverImageDisplayURL(
   if (!imageUrl) {
     return fallbackUrl;
   }
+  const presetKey = getPinnedCoverPresetKey(localDB.assets || [], imageUrl);
+  if (presetKey) return STATIC_COVER_IMAGES[presetKey];
 
   const imageType = getCoverImageType(imageUrl);
 
@@ -194,10 +197,10 @@ export const analyzeCoverImageChange = (
 };
 
 /**
- * Uploads a local static image to S3
+ * Uploads selected image bytes through the configured asset storage flow.
  */
 export const uploadCoverImage = async (
-  imageUrl: string,
+  imageUrl: string | File,
   uploadConfig: {
     workspaceSlug?: string;
     entityIdentifier: string;
@@ -205,30 +208,32 @@ export const uploadCoverImage = async (
     isUserAsset?: boolean;
   }
 ): Promise<string> => {
-  // If we are in Metanode environment, we can just return the local static or unsplash URL directly,
-  // bypassing the need to upload it to the File Processor, which currently has a bug with large base64 chunks.
-  if (typeof window !== "undefined" && (window as any).fiaiSDK) {
-    return imageUrl;
-  }
-
   const { workspaceSlug, entityIdentifier, entityType, isUserAsset = false } = uploadConfig;
 
-  // Fetch the local image
-  const response = await fetch(imageUrl);
+  let file: File;
+  if (typeof imageUrl !== "string") {
+    file = imageUrl;
+  } else {
+    const response = await fetch(imageUrl);
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch image: ${response.statusText}`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+
+    // Validate it's actually an image
+    if (!blob.type.startsWith("image/")) {
+      throw new Error("Invalid file type. Please select an image.");
+    }
+
+    const fileName = imageUrl.split("/").pop()?.split("?")[0] || "image.jpg";
+    file = new File([blob], fileName, { type: blob.type });
   }
 
-  const blob = await response.blob();
-
-  // Validate it's actually an image
-  if (!blob.type.startsWith("image/")) {
+  if (!file.type.startsWith("image/")) {
     throw new Error("Invalid file type. Please select an image.");
   }
-
-  const fileName = imageUrl.split("/").pop()?.split("?")[0] || "image.jpg";
-  const file = new File([blob], fileName, { type: blob.type });
 
   // Upload based on context
   if (isUserAsset) {
@@ -250,6 +255,9 @@ export const uploadCoverImage = async (
       {
         entity_identifier: entityIdentifier,
         entity_type: entityType,
+        ...(entityType === "PROJECT_COVER" && typeof imageUrl === "string" && isStaticCoverImage(imageUrl)
+          ? { preset_key: Object.entries(STATIC_COVER_IMAGES).find(([, url]) => url === imageUrl)?.[0] }
+          : {}),
       },
       file
     );
@@ -278,11 +286,11 @@ export const handleCoverImageChange = async (
   }
 
   if (analysis.needsUpload) {
-    await uploadCoverImage(newImage, uploadConfig);
-    return;
+    const uploaded = await uploadCoverImage(newImage, uploadConfig);
+    return { cover_image: uploaded, cover_image_url: uploaded };
   }
 
-  return { cover_image: newImage };
+  return { cover_image: newImage, cover_image_url: newImage };
 };
 
 /**

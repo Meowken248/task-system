@@ -11,15 +11,21 @@ export const MetanodeBootstrap = observer(function MetanodeBootstrap() {
   }, [currentUser?.id, currentUser?.metanode_wallet_address]);
 
   useEffect(() => {
+    let disposed = false;
     // Defer Bridge iframe init — don't block page load with heavy wasm/manifest downloads
     const timer = setTimeout(async () => {
-      const { initFiaiSDK } = await import("@/services/blockchain/fiai-sdk.service");
-      const { preloadMetanodeWallet } = await import("@/services/blockchain/metanode-wallet.service");
-      await initFiaiSDK();
-      await preloadMetanodeWallet();
+      try {
+        const { initFiaiSDK } = await import("@/services/blockchain/fiai-sdk.service");
+        const { preloadMetanodeWallet } = await import("@/services/blockchain/metanode-wallet.service");
+        if (disposed) return;
+        await initFiaiSDK();
+        if (!disposed) await preloadMetanodeWallet();
+      } catch (error) {
+        console.warn("[MetaNode] Chưa kết nối được dịch vụ ví. Có thể thử lại từ Trung tâm ví.", error);
+      }
     }, 5000); // Load Bridge 5s after page render
 
-    return () => clearTimeout(timer);
+    return () => { disposed = true; clearTimeout(timer); };
   }, []);
 
   return null;

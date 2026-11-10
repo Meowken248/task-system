@@ -180,8 +180,11 @@ export class ProjectIssues extends BaseIssuesStore implements IProjectIssues {
     projectId: string,
     loadType: TLoader = "mutation"
   ) => {
-    if (!this.paginationOptions) return;
-    return await this.fetchIssues(workspaceSlug, projectId, loadType, this.paginationOptions, true);
+    const options: IssuePaginationOptions = this.paginationOptions || {
+      canGroup: true,
+      perPageCount: 100,
+    };
+    return await this.fetchIssues(workspaceSlug, projectId, loadType, options, true);
   };
 
   /**

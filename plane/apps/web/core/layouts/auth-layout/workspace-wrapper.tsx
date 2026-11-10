@@ -4,11 +4,11 @@
  * See the LICENSE file for details.
  */
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { observer } from "mobx-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import useSWR from "swr";
+import useSWR, { mutate } from "swr";
 // ui
 import { LogOut } from "lucide-react";
 import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
@@ -57,7 +57,8 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
   const {
     workspace: { fetchWorkspaceMembers },
   } = useMember();
-  const { workspaces, fetchSidebarNavigationPreferences, fetchProjectNavigationPreferences } = useWorkspace();
+  const { workspaces, fetchWorkspaces, fetchSidebarNavigationPreferences, fetchProjectNavigationPreferences } =
+    useWorkspace();
   const { isMobile } = usePlatformOS();
   const { loader, workspaceInfoBySlug, fetchUserWorkspaceInfo, fetchUserProjectPermissions, allowPermissions } =
     useUserPermissions();
@@ -72,11 +73,77 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
     (allWorkspaces && allWorkspaces.find((workspace) => workspace?.slug === workspaceSlug)) || undefined;
   const currentWorkspaceInfo = workspaceSlug && workspaceInfoBySlug(workspaceSlug.toString());
 
+  // real-time kick out listener when member is removed by admin
+  useEffect(() => {
+    const handleKickedOut = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const detail = customEvent?.detail;
+      if (detail && (!detail.workspaceSlug || detail.workspaceSlug === workspaceSlug)) {
+        setToast({
+          type: TOAST_TYPE.ERROR,
+          title: "Truy cập bị từ chối",
+          message: "Bạn đã bị xóa khỏi không gian làm việc này.",
+        });
+        window.location.href = "/";
+      }
+    };
+    window.addEventListener("plane_member_kicked_out", handleKickedOut);
+    return () => {
+      window.removeEventListener("plane_member_kicked_out", handleKickedOut);
+    };
+  }, [workspaceSlug]);
+
+  // Reactive DB reload listener: triggers SWR revalidation and MobX store update when background sync finishes
+  useEffect(() => {
+    const handleDbReloaded = () => {
+      console.log("[WorkspaceWrapper] Nhận tín hiệu plane_dapp_db_reloaded. Đang đồng bộ lại dữ liệu UI...");
+      const refreshes: Promise<unknown>[] = [fetchWorkspaces()];
+      if (workspaceSlug) {
+        const slug = workspaceSlug.toString();
+        refreshes.push(
+          fetchWorkspaceMembers(slug),
+          fetchPartialProjects(slug),
+          fetchUserWorkspaceInfo(slug),
+          fetchWorkspaceStates(slug)
+        );
+        // Mutate all SWR keys associated with current workspace and general user info without clearing cache
+        refreshes.push(
+          mutate(
+            (key) =>
+              typeof key === "string" &&
+              (key.includes(slug) ||
+                key.startsWith("WORKSPACE_") ||
+                key.startsWith("PROJECT_") ||
+                key === "USER_INFORMATION")
+          )
+        );
+      }
+      // A failed background refresh must not create an unhandled rejection.
+      // SWR retains the error for the access/retry screen above.
+      void Promise.allSettled(refreshes);
+    };
+    window.addEventListener("plane_dapp_db_reloaded", handleDbReloaded);
+    return () => {
+      window.removeEventListener("plane_dapp_db_reloaded", handleDbReloaded);
+    };
+  }, [
+    workspaceSlug,
+    fetchWorkspaces,
+    fetchWorkspaceMembers,
+    fetchPartialProjects,
+    fetchUserWorkspaceInfo,
+    fetchWorkspaceStates,
+  ]);
+
   // fetching user workspace information
-  useSWR(
-    workspaceSlug && currentWorkspace ? WORKSPACE_MEMBER_ME_INFORMATION(workspaceSlug.toString()) : null,
-    workspaceSlug && currentWorkspace ? () => fetchUserWorkspaceInfo(workspaceSlug.toString()) : null,
-    { revalidateIfStale: false, revalidateOnFocus: false }
+  const {
+    error: membershipError,
+    isLoading: membershipLoading,
+    mutate: retryMembership,
+  } = useSWR(
+    workspaceSlug ? WORKSPACE_MEMBER_ME_INFORMATION(workspaceSlug.toString()) : null,
+    workspaceSlug ? () => fetchUserWorkspaceInfo(workspaceSlug.toString()) : null,
+    { revalidateIfStale: false, revalidateOnFocus: true }
   );
   useSWR(
     workspaceSlug && currentWorkspace ? WORKSPACE_PROJECTS_ROLES_INFORMATION(workspaceSlug.toString()) : null,
@@ -94,7 +161,7 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
   useSWR(
     workspaceSlug && currentWorkspace ? WORKSPACE_MEMBERS(workspaceSlug.toString()) : null,
     workspaceSlug && currentWorkspace ? () => fetchWorkspaceMembers(workspaceSlug.toString()) : null,
-    { revalidateIfStale: false, revalidateOnFocus: false }
+    { revalidateIfStale: false, revalidateOnFocus: true }
   );
   // fetch workspace favorite
   useSWR(
@@ -138,11 +205,58 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
   };
 
   // if list of workspaces are not there then we have to render the spinner
-  if (isParentLoading || allWorkspaces === undefined || loader) {
+  if (isParentLoading || allWorkspaces === undefined || (loader && allWorkspaces.length === 0) || (membershipLoading && !currentWorkspaceInfo)) {
     return (
       <div className="grid h-full place-items-center rounded-lg border border-subtle p-4">
         <div className="flex flex-col items-center gap-3 text-center">
           <LogoSpinner />
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentWorkspaceInfo && membershipError && ![401, 403, 404].includes(Number(membershipError.status))) {
+    return (
+      <div className="grid h-screen place-items-center bg-surface-1 p-6">
+        <div className="max-w-md space-y-4 text-center">
+          <h3 className="text-16 font-semibold text-primary">Chưa kiểm tra được quyền truy cập</h3>
+          <p className="text-13 text-secondary">
+            Kết nối tới hệ thống đang gián đoạn. Hãy thử lại; bạn chưa cần xin cấp quyền hoặc tạo workspace mới.
+          </p>
+          <Button variant="primary" onClick={() => void retryMembership().catch(() => undefined)}>
+            Kiểm tra lại
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // while user does not have access to view that workspace
+  if (currentWorkspaceInfo === undefined) {
+    return (
+      <div className={`h-screen w-full overflow-hidden bg-surface-1`}>
+        <div className="grid h-full place-items-center p-4">
+          <div className="space-y-8 text-center">
+            <div className="space-y-2">
+              <h3 className="text-16 font-semibold">Not Authorized!</h3>
+              <p className="mx-auto w-1/2 text-13 text-secondary">
+                You{"'"}re not a member of this workspace. Please contact the workspace admin to get an invitation or
+                check your pending invitations.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2">
+              <Link href="/invitations">
+                <span>
+                  <Button variant="secondary">Check pending invites</Button>
+                </span>
+              </Link>
+              <Link href="/create-workspace">
+                <span>
+                  <Button variant="primary">Create new workspace</Button>
+                </span>
+              </Link>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -202,36 +316,37 @@ export const WorkspaceAuthWrapper = observer(function WorkspaceAuthWrapper(props
     );
   }
 
-  // while user does not have access to view that workspace
-  if (currentWorkspaceInfo === undefined) {
-    return (
-      <div className={`h-screen w-full overflow-hidden bg-surface-1`}>
-        <div className="grid h-full place-items-center p-4">
-          <div className="space-y-8 text-center">
-            <div className="space-y-2">
-              <h3 className="text-16 font-semibold">Not Authorized!</h3>
-              <p className="mx-auto w-1/2 text-13 text-secondary">
-                You{"'"}re not a member of this workspace. Please contact the workspace admin to get an invitation or
-                check your pending invitations.
-              </p>
-            </div>
-            <div className="flex items-center justify-center gap-2">
-              <Link href="/invitations">
-                <span>
-                  <Button variant="secondary">Check pending invites</Button>
-                </span>
-              </Link>
-              <Link href="/create-workspace">
-                <span>
-                  <Button variant="primary">Create new workspace</Button>
-                </span>
-              </Link>
-            </div>
-          </div>
+  return (
+    <>
+      {currentWorkspace?.is_snapshot_available === false && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 border-b border-subtle bg-layer-1 px-4 py-2 text-body-xs-regular text-secondary"
+        >
+          <span>
+            Bạn đã có quyền vào workspace. Dữ liệu tạm thời chưa tải được; hãy thử lại, không cần xin cấp quyền thêm.
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={async () => {
+              try {
+                await fetchWorkspaces();
+                if (workspaceSlug) await fetchPartialProjects(workspaceSlug.toString());
+              } catch {
+                setToast({
+                  type: TOAST_TYPE.ERROR,
+                  title: "Chưa tải được dữ liệu",
+                  message: "Quyền thành viên vẫn được giữ. Hãy thử lại khi kết nối phục hồi.",
+                });
+              }
+            }}
+          >
+            Thử lại
+          </Button>
         </div>
-      </div>
-    );
-  }
-
-  return <>{children}</>;
+      )}
+      {children}
+    </>
+  );
 });

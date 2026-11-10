@@ -14,6 +14,7 @@ import {
   EUserPermissionsLevel,
   SPACE_BASE_PATH,
   SPACE_BASE_URL,
+  getSpaceAppUrl,
   WORK_ITEM_TRACKER_ELEMENTS,
 } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
@@ -55,8 +56,8 @@ export const IssuesHeader = observer(function IssuesHeader() {
   const { allowPermissions } = useUserPermissions();
   const { isMobile } = usePlatformOS();
 
-  const SPACE_APP_URL = (SPACE_BASE_URL.trim() === "" ? window.location.origin : SPACE_BASE_URL) + SPACE_BASE_PATH;
-  const publishedURL = `${SPACE_APP_URL}/issues/${currentProjectDetails?.anchor}`;
+  const spaceAppUrl = getSpaceAppUrl();
+  const publishedURL = `${spaceAppUrl}/?anchor=${currentProjectDetails?.anchor}`;
 
   const issuesCount = getGroupIssueCount(undefined, undefined, false);
   const canUserCreateIssue = allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.PROJECT);

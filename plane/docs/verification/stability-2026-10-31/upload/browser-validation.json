@@ -1,0 +1,86 @@
+{
+  "cases": [
+    {
+      "name": "UUID work item URL redirects to the correct browse URL",
+      "passed": true
+    },
+    {
+      "name": "Actual attachment picker saves file bytes and updates the work item",
+      "passed": true
+    },
+    {
+      "name": "Pasting into the description uploads and renders decoded image bytes locally",
+      "passed": true
+    },
+    {
+      "name": "Comment images use the same local asset resolver and render after submission",
+      "passed": true
+    },
+    {
+      "name": "Description and comment image IDs survive a full page reload",
+      "passed": true
+    },
+    {
+      "name": "Downloading the attachment after reload returns the original file contents",
+      "passed": true
+    },
+    {
+      "name": "OTP form waits for provider acceptance before opening the code step",
+      "passed": true
+    },
+    {
+      "name": "OTP delivery failure shows a retryable message and retains the email form",
+      "passed": true
+    },
+    {
+      "name": "Retry after mail recovers opens the OTP step with a stored code hash",
+      "passed": true
+    }
+  ],
+  "expectedImageBlocks": {
+    "description": [
+      "818f33cd-d046-4def-8a16-308479476d22"
+    ],
+    "comment": [
+      "b080805c-b8a6-492f-ad78-6b51e3522631"
+    ]
+  },
+  "issues": [],
+  "realTransactionsSent": 0,
+  "sdkAndRpcSimulated": true,
+  "screenshotDiagnostics": [],
+  "downloads": [
+    {
+      "event": "Browser.downloadWillBegin",
+      "filename": "upload-fixture.txt"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "inProgress"
+    },
+    {
+      "event": "Browser.downloadProgress",
+      "state": "completed"
+    }
+  ],
+  "actualIndexedDB": true,
+  "actualFileInput": true,
+  "actualImageDecoding": true,
+  "assetProxyRequests": 0
+}

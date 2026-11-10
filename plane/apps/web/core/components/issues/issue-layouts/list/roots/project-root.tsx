@@ -23,7 +23,12 @@ export const ListLayout = observer(function ListLayout() {
   if (!workspaceSlug) return null;
 
   const canEditPropertiesBasedOnProject = (projectId: string) =>
-    allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.PROJECT, workspaceSlug.toString(), projectId);
+    allowPermissions(
+      [EUserPermissions.ADMIN, EUserPermissions.MEMBER],
+      EUserPermissionsLevel.PROJECT,
+      workspaceSlug.toString(),
+      projectId
+    );
 
   return (
     <BaseListRoot

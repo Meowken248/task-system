@@ -97,6 +97,11 @@ export const BASE_NOTIFICATION_CONTENT_MAP: TNotificationContentMap = {
     value: "the work item and assigned it to you.",
     showConnector: false,
   }),
+  daily_report: ({ newValue }) => ({
+    action: "đã gửi báo cáo tiến độ",
+    value: newValue,
+    showConnector: true,
+  }),
   // Fields below only define value - action falls through to default handler
   attachment: () => ({
     action: null,

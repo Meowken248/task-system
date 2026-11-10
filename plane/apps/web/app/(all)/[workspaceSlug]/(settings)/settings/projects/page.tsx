@@ -4,23 +4,29 @@
  * See the LICENSE file for details.
  */
 
+import { useState } from "react";
 import { observer } from "mobx-react";
-import Link from "next/link";
 import { useTheme } from "next-themes";
+import { useParams } from "next/navigation";
 // plane imports
 import { PROJECT_TRACKER_ELEMENTS } from "@plane/constants";
-import { Button, getButtonStyling } from "@plane/propel/button";
-import { cn } from "@plane/utils";
+import { Button } from "@plane/propel/button";
 // assets
 import ProjectDarkEmptyState from "@/app/assets/empty-state/project-settings/no-projects-dark.png?url";
 import ProjectLightEmptyState from "@/app/assets/empty-state/project-settings/no-projects-light.png?url";
+// components
+import { CreateProjectModal } from "@/components/project/create-project-modal";
 // hooks
-import { useCommandPalette } from "@/hooks/store/use-command-palette";
+import { useWorkspace } from "@/hooks/store/use-workspace";
 
 function ProjectSettingsPage() {
+  const [isModalOpen, setIsModalOpen] = useState(false);
   // store hooks
   const { resolvedTheme } = useTheme();
-  const { toggleCreateProjectModal } = useCommandPalette();
+  const params = useParams();
+  const { currentWorkspace } = useWorkspace();
+  const workspaceSlug = (params?.workspaceSlug as string) || currentWorkspace?.slug || "fiai";
+
   // derived values
   const resolvedPath = resolvedTheme === "dark" ? ProjectDarkEmptyState : ProjectLightEmptyState;
   return (
@@ -32,16 +38,19 @@ function ProjectSettingsPage() {
         need to get things done.
       </div>
       <div className="flex gap-2">
-        <Link href="https://plane.so/" target="_blank" className={cn(getButtonStyling("secondary", "base"))}>
-          Learn more about projects
-        </Link>
         <Button
-          onClick={() => toggleCreateProjectModal(true)}
+          onClick={() => setIsModalOpen(true)}
           data-ph-element={PROJECT_TRACKER_ELEMENTS.EMPTY_STATE_CREATE_PROJECT_BUTTON}
         >
           Start your first project
         </Button>
       </div>
+
+      <CreateProjectModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        workspaceSlug={workspaceSlug}
+      />
     </div>
   );
 }

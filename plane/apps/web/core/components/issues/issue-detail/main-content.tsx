@@ -240,7 +240,7 @@ export const IssueMainContent = observer(function IssueMainContent(props: Props)
             .filter(Boolean)
             .join("");
           await createComment(workspaceSlug, projectId, issueId, {
-            comment_html: `<p>Báo cáo ngày thành công lúc <strong>${time}</strong>, ngày <strong>${date}</strong>. Tiến độ: <strong>${progress}%</strong>.${transactionText}</p>${reportDetails}`,
+            comment_html: `<p>${transactionHash ? "Đã gửi báo cáo on-chain" : "Đã lưu báo cáo local, chưa xác nhận trên blockchain"} lúc <strong>${time}</strong>, ngày <strong>${date}</strong>. Tiến độ báo cáo: <strong>${progress}%</strong>.${transactionText}</p>${reportDetails}`,
             external_source: "blockchain-daily-report",
           });
         }}

@@ -11,7 +11,7 @@ import { computedFn } from "mobx-utils";
 import type { TIssue } from "@plane/types";
 // helpers
 import { getCurrentDateTimeInISO } from "@plane/utils";
-import { rootStore } from "@/lib/store-context";
+import type { RootStore } from "@/plane-web/store/root.store";
 // services
 import { IssueService } from "@/services/issue";
 
@@ -37,8 +37,10 @@ export class IssueStore implements IIssueStore {
   issuesIdentifierMap: { [issue_identifier: string]: string } = {};
   // service
   issueService;
+  rootStore?: RootStore;
 
-  constructor() {
+  constructor(rootStore?: RootStore) {
+    this.rootStore = rootStore;
     makeObservable(this, {
       // observable
       issuesMap: observable,
@@ -62,8 +64,14 @@ export class IssueStore implements IIssueStore {
     if (issues && issues.length <= 0) return;
     runInAction(() => {
       issues.forEach((issue) => {
+        if (!issue.created_at) {
+          (issue as any).created_at = (issue as any).created_on || new Date().toISOString();
+        }
+        if (!issue.updated_at) {
+          (issue as any).updated_at = (issue as any).updated_on || issue.created_at || new Date().toISOString();
+        }
         // add issue identifier to the issuesIdentifierMap
-        const projectIdentifier = rootStore.projectRoot.project.getProjectIdentifierById(issue?.project_id);
+        const projectIdentifier = this.rootStore?.projectRoot?.project?.getProjectIdentifierById(issue?.project_id);
         const workItemSequenceId = issue?.sequence_id;
         const issueIdentifier = `${projectIdentifier}-${workItemSequenceId}`;
         set(this.issuesIdentifierMap, issueIdentifier, issue.id);
@@ -108,10 +116,15 @@ export class IssueStore implements IIssueStore {
   updateIssue = (issueId: string, issue: Partial<TIssue>) => {
     if (!issue || !issueId || !this.issuesMap[issueId]) return;
     runInAction(() => {
-      set(this.issuesMap, [issueId, "updated_at"], getCurrentDateTimeInISO());
-      Object.keys(issue).forEach((key) => {
-        set(this.issuesMap, [issueId, key], issue[key as keyof TIssue]);
-      });
+      const currentIssue = this.issuesMap[issueId];
+      this.issuesMap = {
+        ...this.issuesMap,
+        [issueId]: {
+          ...currentIssue,
+          ...issue,
+          updated_at: getCurrentDateTimeInISO(),
+        },
+      };
     });
   };
 
@@ -123,7 +136,9 @@ export class IssueStore implements IIssueStore {
   removeIssue = (issueId: string) => {
     if (!issueId || !this.issuesMap[issueId]) return;
     runInAction(() => {
-      delete this.issuesMap[issueId];
+      const nextMap = { ...this.issuesMap };
+      delete nextMap[issueId];
+      this.issuesMap = nextMap;
     });
   };
 

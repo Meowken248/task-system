@@ -657,6 +657,7 @@ export default {
     },
     actions: {
       edit: "Edit",
+      reply: "Reply",
       make_a_copy: "Make a copy",
       open_in_new_tab: "Open in new tab",
       copy_link: "Copy link",

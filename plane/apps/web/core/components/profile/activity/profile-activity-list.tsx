@@ -51,10 +51,10 @@ export const ProfileActivityListPage = observer(function ProfileActivityListPage
     if (!userProfileActivity) return;
 
     // if no results found then show empty state
-    if (userProfileActivity.total_results === 0) updateEmptyState(true);
+    if (userProfileActivity.total_results === 0 || !userProfileActivity.results?.length) updateEmptyState(true);
 
-    updateTotalPages(userProfileActivity.total_pages);
-    updateResultsCount(userProfileActivity.results.length);
+    updateTotalPages(userProfileActivity.total_pages || 1);
+    updateResultsCount(userProfileActivity.results?.length || 0);
   }, [updateResultsCount, updateTotalPages, userProfileActivity, updateEmptyState]);
 
   // TODO: refactor this component
@@ -62,7 +62,7 @@ export const ProfileActivityListPage = observer(function ProfileActivityListPage
     <>
       {userProfileActivity ? (
         <ul role="list">
-          {userProfileActivity.results.map((activityItem: any) => {
+          {(userProfileActivity.results || []).map((activityItem: any) => {
             if (activityItem.field === "comment")
               return (
                 <div key={activityItem.id} className="mt-2">

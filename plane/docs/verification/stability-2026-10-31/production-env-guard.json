@@ -1,0 +1,9 @@
+{
+  "exitCode": 1,
+  "overrideUsed": false,
+  "blockingKeys": [
+    "VITE_BLS_PRIVATE_KEY",
+    "VITE_BREVO_API_KEY"
+  ],
+  "normalProductionBuildVerified": false
+}

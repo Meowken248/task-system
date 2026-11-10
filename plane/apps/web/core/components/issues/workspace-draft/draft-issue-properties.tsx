@@ -11,7 +11,7 @@ import { useParams } from "next/navigation";
 import { DueDatePropertyIcon, StartDatePropertyIcon } from "@plane/propel/icons";
 // types
 import type { TIssuePriorities, TWorkspaceDraftIssue } from "@plane/types";
-import { getDate, renderFormattedPayloadDate, shouldHighlightIssueDueDate } from "@plane/utils";
+import { getDate, renderFormattedPayloadDate, getIssueDueDateHighlightClass, shouldHighlightIssueDueDate } from "@plane/utils";
 // components
 import { CycleDropdown } from "@/components/dropdowns/cycle";
 import { DateDropdown } from "@/components/dropdowns/date";
@@ -103,12 +103,18 @@ export const DraftIssueProperties = observer(function DraftIssueProperties(props
     [issue, issueOperations]
   );
 
-  const handleStartDate = (date: Date | null) =>
-    issue?.project_id &&
-    updateIssue &&
-    updateIssue(issue.project_id, issue.id, {
-      start_date: date ? (renderFormattedPayloadDate(date) ?? undefined) : undefined,
-    });
+  const handleStartDate = (date: Date | null) => {
+    if (!issue?.project_id || !updateIssue) return;
+    const newStartDateStr = date ? (renderFormattedPayloadDate(date) ?? undefined) : undefined;
+    const payload: Partial<TWorkspaceDraftIssue> = { start_date: newStartDateStr };
+    if (date && issue.target_date) {
+      const currentTarget = getDate(issue.target_date);
+      if (currentTarget && currentTarget < date) {
+        payload.target_date = newStartDateStr;
+      }
+    }
+    updateIssue(issue.project_id, issue.id, payload);
+  };
 
   const handleTargetDate = (date: Date | null) =>
     issue?.project_id &&
@@ -123,6 +129,9 @@ export const DraftIssueProperties = observer(function DraftIssueProperties(props
   if (!issue.project_id) return null;
 
   const defaultLabelOptions = issue?.label_ids?.map((id) => labelMap[id]) || [];
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   const minDate = getDate(issue.start_date);
   minDate?.setDate(minDate.getDate());
@@ -179,7 +188,7 @@ export const DraftIssueProperties = observer(function DraftIssueProperties(props
         <DateDropdown
           value={issue.start_date ?? null}
           onChange={handleStartDate}
-          maxDate={maxDate}
+          minDate={today}
           placeholder="Start date"
           icon={<StartDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
           buttonVariant={issue.start_date ? "border-with-text" : "border-without-text"}
@@ -194,13 +203,11 @@ export const DraftIssueProperties = observer(function DraftIssueProperties(props
         <DateDropdown
           value={issue?.target_date ?? null}
           onChange={handleTargetDate}
-          minDate={minDate}
+          minDate={minDate ?? today}
           placeholder="Due date"
           icon={<DueDatePropertyIcon className="h-3 w-3 flex-shrink-0" />}
           buttonVariant={issue.target_date ? "border-with-text" : "border-without-text"}
-          buttonClassName={
-            shouldHighlightIssueDueDate(issue?.target_date || null, stateDetails?.group) ? "text-danger-primary" : ""
-          }
+          buttonClassName={getIssueDueDateHighlightClass(issue?.target_date || null, stateDetails?.group)}
           clearIconClassName="!text-primary"
           optionsClassName="z-10"
           renderByDefault={isMobile}
