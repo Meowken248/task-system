@@ -42,6 +42,13 @@ let queuedCount = 0;
 let activeLabel: string | null = null;
 let lastError: unknown = null;
 const listeners = new Set<Listener>();
+let signingPreflight: (() => Promise<void>) | null = null;
+
+/** Web supplies frame readiness without making shared services depend on the SDK UI. */
+export function registerChainSigningPreflight(check: () => Promise<void>): () => void {
+  signingPreflight = check;
+  return () => { if (signingPreflight === check) signingPreflight = null; };
+}
 
 function snapshot(): ChainTxState {
   return { queued: queuedCount, active: activeLabel, lastError };
@@ -89,6 +96,7 @@ export function runExclusiveChainTx<T>(label: string, task: () => Promise<T>): P
     activeLabel = label;
     emit();
     try {
+      await signingPreflight?.();
       return await task();
     } catch (error) {
       lastError = error;

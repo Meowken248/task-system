@@ -38,7 +38,7 @@ await Promise.all(
   })
 );
 
-// Verify the installed SDK before copying its worker. Do not rebuild or modify the SDK.
+// Verify source maps, installed SDK and actual wallet mode. Never build/write the SDK.
 await run(process.execPath, [path.join(root, "scripts/sync-fiai-runtime.mjs")]);
 // Spaces must finish before Web's post-build copies its output. Force fresh output
 // because the existing external file: SDK dist is outside Turbo's source hashes.
@@ -48,11 +48,15 @@ await run(process.execPath, [pnpm, "exec", "turbo", "run", "build", "--filter=we
 const client = path.join(root, "apps/web/build/client");
 const spaces = path.join(root, "apps/space/build/client");
 const hash = (file) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-for (const relative of ["index.html", "spaces/index.html", "wallet-runtime-sw.js"]) {
+for (const relative of ["index.html", "spaces/index.html", "fiai-sdk-build.json"]) {
   if (!fs.statSync(path.join(client, relative)).isFile()) throw new Error(`Build output missing: ${relative}`);
 }
-if (hash(path.join(client, "wallet-runtime-sw.js")) !== hash(path.join(root, "apps/web/public/wallet-runtime-sw.js"))) {
-  throw new Error("Built wallet worker differs from the verified SDK worker");
+const sdkManifest = JSON.parse(fs.readFileSync(path.join(client, "fiai-sdk-build.json"), "utf8"));
+if (hash(path.join(client, "fiai-sdk-build.json")) !== hash(path.join(root, "apps/web/public/fiai-sdk-build.json"))) throw new Error("Built SDK manifest differs");
+if (sdkManifest.walletMode === "runtime") {
+  if (hash(path.join(client, "wallet-runtime-sw.js")) !== sdkManifest.hashes["wallet-runtime-sw.js"]) throw new Error("Built wallet worker differs from verified SDK");
+} else if (fs.existsSync(path.join(client, "wallet-runtime-sw.js"))) {
+  throw new Error("URL wallet build contains a stale runtime worker");
 }
 let spaceFiles = 0;
 function verifySpaces(dir, relative = "") {
@@ -68,5 +72,5 @@ function verifySpaces(dir, relative = "") {
   }
 }
 verifySpaces(spaces);
-console.log(`[build-plane] Verified: Web HTML, wallet worker hash and ${spaceFiles} matching Spaces files.`);
+console.log(`[build-plane] Verified: Web HTML, SDK manifest (${sdkManifest.walletMode} wallet) and ${spaceFiles} matching Spaces files.`);
 console.log("[build-plane] Finished: apps/web/build/client (including fresh spaces bundle).");

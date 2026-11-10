@@ -547,7 +547,9 @@ export function removeStoredInvitation(id: string, email?: string, workspaceSlug
     const matchesWorkspace = (i: any): boolean => {
       if (!effectiveWs) return true;
       const keys = getInvitationWorkspaceKeys(i);
-      return keys.length === 0 || keys.includes(effectiveWs);
+      const workspace = (localDB.workspaces || []).find((entry: any) => [entry.id, entry.slug].includes(effectiveWs));
+      const scope = new Set([effectiveWs, workspace?.id, workspace?.slug].filter(Boolean).map((key) => String(key).toLowerCase()));
+      return keys.some((key) => scope.has(key));
     };
 
     const idCandidates = new Set<string>();
@@ -649,9 +651,8 @@ export function removeStoredInvitation(id: string, email?: string, workspaceSlug
       localDB.notifications = localDB.notifications.filter((n: any) => {
         const nMail = (n.recipient_email || n.recipient || "").toLowerCase().trim();
         const nInvId = String(n.data?.invitation_id || "").toLowerCase().trim();
-        const nWs = String(n.workspace_slug || n.data?.workspace_slug || "").toLowerCase().trim();
-        const sameWs = !effectiveWs || !nWs || nWs === effectiveWs;
-        if (nInvId && idCandidates.has(nInvId)) return false;
+        const sameWs = !effectiveWs || matchesWorkspace(n) || matchesWorkspace(n.data);
+        if (nInvId && idCandidates.has(nInvId) && sameWs) return false;
         if (cleanMail && nMail === cleanMail && sameWs) return false;
         return true;
       });
@@ -666,27 +667,12 @@ export function getStoredInvitations(): any[] {
   try {
     const deletedSet = readInvitationTombstones();
 
-    // Active member emails to auto-resolve accepted status
-    const activeMemberEmails = new Set(
-      (localDB.workspace_members || [])
-        .filter((m: any) => m.is_active !== false)
-        .map((m: any) => (m.email || "").toLowerCase().trim())
-        .filter(Boolean)
-    );
-
     const list: any[] = [];
     const idSet = new Set<string>();
 
-    // Identity resolution is exact-match only. The former "email prefix >= 6
-    // characters" heuristic marked unrelated invitations as accepted (and even
-    // created phantom memberships), e.g. `nguyen@corp.com` vs `nguyenthi@corp.com`.
-    const isMemberMatch = (targetMail: string) => {
-      if (!targetMail) return false;
-      return activeMemberEmails.has(targetMail.toLowerCase().trim());
-    };
-
-    const addInv = (inv: any) => {
-      if (!inv || !inv.id) return;
+    const addInv = (source: any) => {
+      if (!source || !source.id) return;
+      const inv = { ...source }; // Reading invitations must not mutate the source snapshot.
       if (isInvitationDeleted(inv, deletedSet)) return;
       const invMail = (inv.email || "").toLowerCase().trim();
       const invWs = inv.workspace?.slug || inv.workspace_slug || inv.workspace?.id || inv.workspace;
@@ -695,9 +681,6 @@ export function getStoredInvitations(): any[] {
           (r: string) => r.toLowerCase().trim() === invMail || r.toLowerCase().trim() === inv.id
         );
         if (isRemoved) return;
-      }
-      if (invMail && isMemberMatch(invMail)) {
-        inv.accepted = true;
       }
       if (!idSet.has(inv.id)) {
         idSet.add(inv.id);
@@ -782,19 +765,11 @@ export function saveStoredInvitations(invites: any[]): void {
   try {
     const deletedSet = readInvitationTombstones();
 
-    // Active member emails to auto-resolve accepted status
-    const activeMemberEmails = new Set(
-      (localDB.workspace_members || [])
-        .filter((m: any) => m.is_active !== false)
-        .map((m: any) => (m.email || "").toLowerCase().trim())
-        .filter(Boolean)
-    );
-
     const existing = getStoredInvitations();
     const map = new Map<string, any>();
     for (const inv of existing) {
       if (inv && inv.id && !isInvitationDeleted(inv, deletedSet)) {
-        map.set(inv.id, inv);
+        map.set(inv.id, { ...inv });
       }
     }
     for (const inv of invites) {
@@ -803,36 +778,24 @@ export function saveStoredInvitations(invites: any[]): void {
         if (prev && prev.accepted && !inv.accepted) {
           map.set(inv.id, { ...inv, accepted: true });
         } else {
-          map.set(inv.id, inv);
+          map.set(inv.id, { ...inv });
         }
       }
     }
-    const merged = Array.from(map.values()).filter((i: any) => !isInvitationDeleted(i, deletedSet));
+    let merged = Array.from(map.values()).filter((i: any) => !isInvitationDeleted(i, deletedSet));
 
-    // Exact-match only: see the note in `getStoredInvitations`.
-    const isMemberMatch = (targetMail: string) => {
-      if (!targetMail) return false;
-      return activeMemberEmails.has(targetMail.toLowerCase().trim());
-    };
-
-    // Auto-mark invites as accepted if user is already an active member of that workspace
-    merged.forEach((i: any) => {
-      const mail = (i.email || "").toLowerCase().trim();
-      if (mail && isMemberMatch(mail)) {
-        i.accepted = true;
-      }
-    });
-
-    // Deduplicate pending invites by email + workspace (keep newest pending, mark older duplicates accepted or discard)
+    // Accepted is an explicit join/chain result, never inferred from an email cache.
+    // Keep the latest pending invite per workspace/email without inventing acceptance.
     const seenPending = new Map<string, any>();
     for (let idx = merged.length - 1; idx >= 0; idx--) {
       const inv = merged[idx];
       if (!inv.accepted && inv.email) {
-        const wsKey = inv.workspace?.slug || inv.workspace?.id || inv.workspace_slug || inv.workspace_id || "default";
+        const keys = getInvitationWorkspaceKeys(inv);
+        const workspace = (localDB.workspaces || []).find((entry: any) => keys.includes(String(entry.id).toLowerCase()) || keys.includes(String(entry.slug).toLowerCase()));
+        const wsKey = workspace?.id || keys[0] || inv.id;
         const key = `${inv.email.toLowerCase().trim()}::${wsKey}`;
         if (seenPending.has(key)) {
-          // A newer pending invite exists; mark this older duplicate accepted
-          inv.accepted = true;
+          merged.splice(idx, 1);
         } else {
           seenPending.set(key, inv);
         }

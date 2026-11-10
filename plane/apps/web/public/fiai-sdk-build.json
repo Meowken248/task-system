@@ -1,0 +1,12 @@
+{
+  "sdkVersion": "2.1.1",
+  "walletMode": "url",
+  "hashes": {
+    "index.mjs": "19a4ea8d3b0c0c4f0d4f35d5b4979f78d6955e7bd17968b27b8cf50405f01a73",
+    "index.cjs": "46989b1c38318e84c8f5043b55d9f13d97c20b5e57b02f192337aa3beda8776f",
+    "index.d.ts": "b4a146a16958cb83563088765b338effe63ad20692df399cd199e127e705f692",
+    "index.d.mts": "b4a146a16958cb83563088765b338effe63ad20692df399cd199e127e705f692",
+    "index.mjs.map": "60f7fe1377d8c3ea0d7a24ac1b2a79fe04483b91142d252e59cef4c76f56b539",
+    "index.cjs.map": "c9993cd326ef369706c0ffcb6ad443192bba894ea7819bf0d917537c3a26b193"
+  }
+}

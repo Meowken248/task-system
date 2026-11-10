@@ -3615,10 +3615,21 @@ async function handleRouteUnlocked(
       const shouldSyncOnChain = getEnvVar("VITE_ONCHAIN_MEMBERSHIP_SYNC") !== "false";
       if (shouldSyncOnChain && wsSlug) {
         try {
-          const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug, true);
-          if (onChainMembers && onChainMembers.length > 0) {
+          // Prune only after a complete, successful read. A failed role/owner read
+          // must never masquerade as an empty member list.
+          const onChainMembers = await fetchWorkspaceMembersOnChain(wsSlug, true, true);
+          if (onChainMembers) {
             const beforeOnChainSync = JSON.stringify(localDB);
             if (!localDB.workspace_members) localDB.workspace_members = [];
+            const activeWallets = new Set(onChainMembers.map((address) => address.toLowerCase()));
+            const membershipKeys = new Set([wsSlug, ws?.id, ws?.slug, `workspace-${wsSlug}`].filter(Boolean));
+            localDB.workspace_members = localDB.workspace_members.filter((member: any) => {
+              if (!membershipKeys.has(member.workspace) && !membershipKeys.has(member.workspace_id)) return true;
+              const profile = (localDB.users || []).find((user: any) => user.id === member.member);
+              const wallet = extractEthAddress(member.wallet_address || member.member?.metanode_wallet_address ||
+                member.member?.wallet_address || profile?.metanode_wallet_address || member.member);
+              return !wallet || activeWallets.has(wallet.toLowerCase());
+            });
             const ownerEth = getWorkspaceOwnerEth(ws, wsSlug);
 
             // Cleanup any locally cached members that were truly marked as removed or illegal owner duplicates
@@ -3965,6 +3976,10 @@ async function handleRouteUnlocked(
       }
 
       const cleanMemberId = String(memberId || "").trim();
+      const memberWorkspaceKeys = new Set([wsSlug, ws?.id, ws?.slug].filter(Boolean).map((key) => String(key).toLowerCase().trim()));
+      const legacyKey = `workspace-${wsSlug}`;
+      if (!(localDB.workspaces || []).some((entry: any) => entry.id === legacyKey && entry.slug !== wsSlug)) memberWorkspaceKeys.add(legacyKey);
+      const inMemberWorkspace = (entry: any) => getInvitationWorkspaceKeys(entry).some((key) => memberWorkspaceKeys.has(key));
       const rawMemberId = cleanMemberId
         .replace(/^ws-member-/, "")
         .replace(/^member-/, "")
@@ -3984,11 +3999,7 @@ async function handleRouteUnlocked(
 
       // 1. Initial match against workspace_members, invitations, and users
       const matchedMembers = (localDB.workspace_members || []).filter((m: any) => {
-        const mWs = String(m.workspace || m.workspace_id || "").toLowerCase().trim();
-        const allowedWs = [wsSlug, ws?.id, ws?.slug]
-          .filter(Boolean)
-          .map((x: any) => String(x).toLowerCase().trim());
-        if (mWs && !allowedWs.includes(mWs)) return false; // never touch another workspace
+        if (!inMemberWorkspace(m)) return false;
         const mId = String(m.id || "").toLowerCase().trim();
         const mMem = String(m.member || "").toLowerCase().trim();
         const mWallet = (m.wallet_address || "").toLowerCase().trim();
@@ -4004,11 +4015,7 @@ async function handleRouteUnlocked(
       });
 
       const matchedInvs = (localDB.invitations || []).filter((i: any) => {
-        const iWsKeys = getInvitationWorkspaceKeys(i);
-        const allowedInvWs = new Set([wsSlug, ws?.id, ws?.slug]
-          .filter(Boolean)
-          .map((x: any) => String(x).toLowerCase().trim()));
-        if (iWsKeys.length > 0 && !iWsKeys.some((k: string) => allowedInvWs.has(k))) return false;
+        if (!inMemberWorkspace(i)) return false;
         const iId = String(i.id || "").toLowerCase().trim();
         const iMail = (i.email || "").toLowerCase().trim();
         const iWallet = (i.wallet_address || "").toLowerCase().trim();
@@ -4107,6 +4114,7 @@ async function handleRouteUnlocked(
 
       // 4. Secondary cross-resolution: find any remaining members/invitations/users matching resolved emails or wallets
       (localDB.workspace_members || []).forEach((m: any) => {
+        if (!inMemberWorkspace(m)) return;
         const mMail = (m.email || m.member_email || m.member_detail?.email || "").toLowerCase().trim();
         const mEth = extractEthAddress(m.wallet_address || m.member || m.email);
         if ((mMail && resolvedEmails.has(mMail)) || (mEth && resolvedWallets.has(mEth.toLowerCase()))) {
@@ -4118,6 +4126,7 @@ async function handleRouteUnlocked(
       });
 
       (localDB.invitations || []).forEach((i: any) => {
+        if (!inMemberWorkspace(i)) return;
         const iMail = (i.email || "").toLowerCase().trim();
         const iEth = extractEthAddress(i.wallet_address);
         if ((iMail && resolvedEmails.has(iMail)) || (iEth && resolvedWallets.has(iEth.toLowerCase()))) {
@@ -4146,6 +4155,7 @@ async function handleRouteUnlocked(
       try {
         const stored = getStoredInvitations();
         for (const si of stored) {
+          if (!inMemberWorkspace(si)) continue;
           const sMail = (si.email || "").toLowerCase().trim();
           const sEth = extractEthAddress(si.wallet_address);
           const sId = String(si.id || "").toLowerCase().trim();
@@ -4223,6 +4233,7 @@ async function handleRouteUnlocked(
       // 6. Filter localDB.workspace_members
       if (localDB.workspace_members && Array.isArray(localDB.workspace_members)) {
         localDB.workspace_members = localDB.workspace_members.filter((m: any) => {
+          if (!inMemberWorkspace(m)) return true;
           const mId = String(m.id || "").toLowerCase().trim();
           const mMem = String(m.member || "").toLowerCase().trim();
           const mMail = (m.email || m.member_email || m.member_detail?.email || "").toLowerCase().trim();
@@ -4252,7 +4263,7 @@ async function handleRouteUnlocked(
         );
         localDB.project_members = localDB.project_members.filter((pm: any) => {
           const pmProject = String(pm.project || pm.project_id || "");
-          if (removedProjectIds.size > 0 && !removedProjectIds.has(pmProject)) return true;
+          if (!removedProjectIds.has(pmProject)) return true;
           const pmMember = String(typeof pm.member === "object" && pm.member?.id ? pm.member.id : (pm.member || pm.id || ""))
             .toLowerCase()
             .trim();
@@ -4275,8 +4286,7 @@ async function handleRouteUnlocked(
       // 8. Permanently remove any invitations matching this member (workspace scoped)
       if (localDB.invitations && Array.isArray(localDB.invitations)) {
         const invsToRemove = localDB.invitations.filter((i: any) => {
-          const iWs = i.workspace?.slug || i.workspace_slug || i.workspace?.id || i.workspace;
-          if (iWs && iWs !== wsSlug && (!ws?.id || iWs !== ws.id)) return false;
+          if (!inMemberWorkspace(i)) return false;
           const iMail = (i.email || "").toLowerCase().trim();
           const iId = String(i.id || "").toLowerCase().trim();
           const iEth = extractEthAddress(i.wallet_address);
@@ -4293,13 +4303,13 @@ async function handleRouteUnlocked(
       for (const email of Array.from(resolvedEmails)) {
         removeStoredInvitation(`inv-${wsSlug}-${email}`, email, wsSlug);
       }
-      for (const id of Array.from(allTargetIdentifiers)) {
-        removeStoredInvitation(id, undefined, wsSlug);
-      }
+      // User IDs, email and wallet are shared identities, not invitation IDs.
+      // Tombstoning them as global IDs would also hide invitations in other workspaces.
 
       // 9. Purge notifications
       if (localDB.notifications && Array.isArray(localDB.notifications)) {
         localDB.notifications = localDB.notifications.filter((n: any) => {
+          if (!inMemberWorkspace(n) && !inMemberWorkspace(n.data)) return true;
           const nMail = (n.recipient_email || n.recipient || "").toLowerCase().trim();
           const nInvId = String(n.data?.invitation_id || "").toLowerCase().trim();
           if (nMail && resolvedEmails.has(nMail)) return false;

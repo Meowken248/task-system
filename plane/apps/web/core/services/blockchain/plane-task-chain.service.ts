@@ -3,7 +3,7 @@ import { assertVaultSigningAddress, isVaultSigningError, runExclusiveChainTx, lo
 import { readContractString } from "../../helpers/contract-result";
 import type { TIssue, TIssuePriorities } from "@plane/types";
 import { planeTaskManagerAbi } from "@/contracts/plane-task-manager.abi";
-import { getFiaiSDK, getLatestCapturedWalletTxHash, initFiaiSDK, resetFiaiSDK } from "./fiai-sdk.service";
+import { ensureFiaiFramesReady, getFiaiSDK, getLatestCapturedWalletTxHash, initFiaiSDK, resetFiaiSDK } from "./fiai-sdk.service";
 import { isMissingTaskContractError } from "./contract-errors";
 import {
   isMetanodeWalletRuntimeSupported,
@@ -397,6 +397,7 @@ export class ChainTransactionLandedError extends Error {
  * hành vi cũ — để bước ký báo lỗi chính xác thay vì chặn một giao dịch có thể vẫn ký được.
  */
 async function confirmSigningWallet(candidate: string): Promise<string> {
+  await ensureFiaiFramesReady();
   try {
     // `refresh: false` = dùng danh sách ví vừa đọc khi chọn ví, không gọi lại cầu nối ví.
     const address = await assertVaultSigningAddress(candidate, { refresh: false });

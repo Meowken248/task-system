@@ -17,6 +17,9 @@ for (const target of [output, profile]) {
   fs.mkdirSync(target, { recursive: true });
 }
 const html = fs.readFileSync(path.join(built, "index.html"), "utf8");
+const deploymentId = process.env.PLANE_TEST_DEPLOYMENT_ID ||
+  fs.readFileSync(path.resolve(root, "apps/web/.env.production"), "utf8")
+    .match(/^VITE_DAPP_DEPLOYMENT_ID\s*=\s*["']?([a-zA-Z0-9_-]+)/m)?.[1] || "";
 const mount = (html.match(/(?:src|href)="([^"\s]*?)\/assets\//)?.[1] || "").replace(/\/$/, "");
 const admin = "0x1111111111111111111111111111111111111111";
 const recipient = "0x" + "2".repeat(38) + "ab";
@@ -50,6 +53,7 @@ const instance = {
   is_telemetry_enabled: false,
 };
 const shared = {
+  _deployment_id: deploymentId,
   users: [owner],
   workspaces: [workspace],
   workspace_members: [],
@@ -301,6 +305,7 @@ async function page(user, wallet, suffix, label) {
   );
   await send("Fetch.enable", { patterns: [{ urlPattern: "*" }] }, sessionId);
   const database = {
+    _deployment_id: deploymentId,
     users: [user],
     workspaces: wallet === admin ? [workspace] : [],
     projects: [],
@@ -309,9 +314,10 @@ async function page(user, wallet, suffix, label) {
     removed_members: {},
     instance,
   };
-  const seed = `(()=>{const user=${JSON.stringify(user)},db=${JSON.stringify(database)},wallet=${JSON.stringify(wallet)},origin=${JSON.stringify(origin)};
+  const seed = `(()=>{const user=${JSON.stringify(user)},db=${JSON.stringify(database)},wallet=${JSON.stringify(wallet)},origin=${JSON.stringify(origin)},deploymentId=${JSON.stringify(deploymentId)};
     if(!sessionStorage.getItem('wallet_browser_seeded')){localStorage.clear();sessionStorage.clear();localStorage.setItem('plane_dapp_local_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_latest_db',JSON.stringify(db));sessionStorage.setItem('plane_dapp_auth_user',user.id);sessionStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_dapp_auth_user',user.id);localStorage.setItem('plane_dapp_auth_email',user.email);localStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('plane_active_wallet_address',wallet);sessionStorage.setItem('wallet_browser_seeded','1');}
-    const sdk={interceptors:{request:[],response:[]},emit(){},destroy(){},request:async(action,p={})=>{if(action==='getAllWallets')return[{address:wallet}];if(action==='getVaultStatus')return{isLocked:false,isInitialized:true};if(action.startsWith('getActiveWallet'))return{address:wallet};if(action==='sendTransaction')return fetch(origin+'/__wallet_fixture',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({from:p.from,functionName:p.functionName,inputs:p.inputArray})}).then(r=>r.json());return{};},on(){},off(){},registerHostAction(){},getStatus(){return{'crypto-vault':'ready','blockchain-bridge':'ready'};}};
+    if(deploymentId){localStorage.setItem('plane_dapp_deployment_id',deploymentId);sessionStorage.setItem('plane_dapp_deployment_id',deploymentId);}
+    const sdk={interceptors:{request:[],response:[]},emit(){},destroy(){},request:async(action,p={})=>{if(action==='getAllWallets')return[{address:wallet}];if(action==='getVaultStatus')return{isLocked:false,isInitialized:true};if(action.startsWith('getActiveWallet'))return{address:wallet};if(action==='sendTransaction')return fetch(origin+'/__wallet_fixture',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({from:p.from,functionName:p.functionName,inputs:p.inputArray})}).then(r=>r.json());return{};},on(){return()=>{};},registerHostAction(){},getStatus(){return{'crypto-vault':'ready','blockchain-bridge':'ready'};}};
     Object.defineProperty(window,'fiaiSDK',{configurable:true,get:()=>sdk,set:()=>{}});
   })();`;
   await send("Page.addScriptToEvaluateOnNewDocument", { source: seed }, sessionId);

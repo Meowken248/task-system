@@ -41,6 +41,7 @@ registerHooks({ resolve(specifier, context, next) {
     }};
     export const getFiaiSDK=()=>sdk;
     export const initFiaiSDK=async()=>sdk;
+    export const ensureFiaiFramesReady=async()=>{if(f.framesReady===false)throw Error('fixture signing frames unavailable');return sdk;};
     export const resetFiaiSDK=async()=>sdk;
     export const getLatestCapturedWalletTxHash=()=>null;
   `);
@@ -50,6 +51,7 @@ registerHooks({ resolve(specifier, context, next) {
 const { createIssueOnChain } = await import("../../apps/web/core/services/blockchain/plane-task-chain.service.ts");
 let serial = 0;
 beforeEach(() => {
+  fixture.framesReady = true;
   fixture.sends = []; fixture.reads = []; fixture.version = 3; fixture.parentWorkspace = "team";
   Object.assign(fixture.db, { projects: [{ id: "p1", workspace: "ws" }], workspaces: [{ id: "ws", slug: "team" }] });
   process.env.VITE_CONTRACT_ADDRESS = "0x" + (++serial).toString(16).padStart(40, "0");
@@ -70,6 +72,12 @@ test("V3 creates a root with its real local workspace and signing assignee", asy
   assert.equal(fixture.sends[0].functionName, "createWorkspaceTask");
   assert.equal(values(fixture.sends[0]).slug, "team");
   assert.equal(values(fixture.sends[0]).assignee, wallet);
+});
+
+test("unavailable signing frames prevent task creation before requesting any signature", async () => {
+  fixture.framesReady = false;
+  await assert.rejects(createIssueOnChain(issue), /signing frames unavailable/);
+  assert.equal(fixture.sends.length, 0);
 });
 test("V3 child unwraps a decoded SDK workspace response and links to its parent", async () => {
   await createIssueOnChain({ ...issue, parent_id: "parent" });

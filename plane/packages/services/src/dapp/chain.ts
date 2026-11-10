@@ -378,11 +378,14 @@ export async function fetchMemberRoleOnChain(slug: string, memberAddress: string
   }
 }
 
-export async function fetchWorkspaceMembersOnChain(slug: string, forceRefresh = false): Promise<string[]> {
+export async function fetchWorkspaceMembersOnChain(slug: string, forceRefresh = false, requireComplete = false): Promise<string[]> {
   const wsRegistryAddr = getWorkspaceRegistryAddress();
-  if (!wsRegistryAddr || !slug) return [];
+  if (!wsRegistryAddr || !slug) {
+    if (requireComplete) throw new Error("Workspace registry chưa được cấu hình.");
+    return [];
+  }
 
-  if (!forceRefresh) {
+  if (!forceRefresh && !requireComplete) {
     const cached = membersOnChainCache.get(slug);
     if (cached && Date.now() - cached.timestamp < 10000) {
       return cached.addresses;
@@ -398,9 +401,20 @@ export async function fetchWorkspaceMembersOnChain(slug: string, forceRefresh = 
       const calldata = abiEncodeGetWorkspaceMembers(slug);
       const hex = await directRpcRead(wsRegistryAddr, calldata, 6000);
       const allAddresses = decodeAbiAddressArray(hex);
-      if (!allAddresses || allAddresses.length === 0) {
-        membersOnChainCache.set(slug, { addresses: [], timestamp: Date.now() });
-        return [];
+      if (!allAddresses) throw new Error("Invalid workspace member list");
+      if (requireComplete) {
+        // The legacy decoder intentionally returns [] for malformed data. That
+        // fallback is unsafe when this list will be used to prune cached access.
+        if (!/^0x[0-9a-fA-F]+$/.test(hex) || hex.length < 130) throw new Error("Invalid workspace member list response");
+        const data = hex.slice(2);
+        const offset = BigInt(`0x${data.slice(0, 64)}`);
+        const count = BigInt(`0x${data.slice(64, 128)}`);
+        if (offset !== 32n || count > 500n || data.length !== 128 + Number(count) * 64 || allAddresses.length !== Number(count)) {
+          throw new Error("Incomplete workspace member list response");
+        }
+        for (let index = 0; index < Number(count); index++) {
+          if (!/^0{24}[0-9a-fA-F]{40}$/.test(data.slice(128 + index * 64, 192 + index * 64))) throw new Error("Invalid member address response");
+        }
       }
 
       // Filter by on-chain role (Role.None = 0, Member = 1, Admin = 2, Owner = 3)
@@ -414,7 +428,9 @@ export async function fetchWorkspaceMembersOnChain(slug: string, forceRefresh = 
           try {
             const roleCalldata = abiEncodeGetMemberRole(slug, addr);
             const roleHex = await directRpcRead(wsRegistryAddr, roleCalldata, 4000);
+            if (requireComplete && (!/^0x[0-9a-fA-F]{64}$/.test(roleHex) || BigInt(roleHex) > 3n)) throw new Error("Invalid member role response");
             const role = decodeAbiUint8(roleHex);
+            if (requireComplete && (role < 0 || role > 3)) throw new Error("Invalid member role");
             const normalized = String(addr || "").toLowerCase();
             if (role >= 1) {
               if (!seenAddresses.has(normalized)) {
@@ -427,6 +443,7 @@ export async function fetchWorkspaceMembersOnChain(slug: string, forceRefresh = 
               );
             }
           } catch (roleErr) {
+            if (requireComplete) throw roleErr;
             console.warn(`[DApp Chain] Error checking role for ${addr}:`, roleErr);
           }
         })
@@ -442,14 +459,16 @@ export async function fetchWorkspaceMembersOnChain(slug: string, forceRefresh = 
             seenAddresses.add(ownerAddress);
             activeAddresses.unshift(workspaceInfo!.owner);
           }
-        }
+        } else if (requireComplete) throw new Error("Invalid workspace owner response");
       } catch (ownerErr) {
+        if (requireComplete) throw ownerErr;
         console.warn(`[DApp Chain] Không đọc được owner on-chain của workspace "${slug}":`, ownerErr);
       }
 
       membersOnChainCache.set(slug, { addresses: activeAddresses, timestamp: Date.now() });
       return activeAddresses;
     } catch (err) {
+      if (requireComplete) throw err;
       console.warn(`[DApp DB] fetchWorkspaceMembersOnChain("${slug}") error:`, err);
       return [];
     } finally {

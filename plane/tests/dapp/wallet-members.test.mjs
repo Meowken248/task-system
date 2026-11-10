@@ -10,6 +10,8 @@ import {
   registerSaveHook,
   getUserWorkspaces,
   getUserProfile,
+  getStoredInvitations,
+  saveStoredInvitations,
 } from "../../packages/services/src/dapp/store.ts";
 import { handleRoute } from "../../packages/services/src/dapp/routes.ts";
 import { invalidateVaultWalletCache } from "../../packages/services/src/dapp/chain.ts";
@@ -172,6 +174,99 @@ beforeEach(() => {
 });
 const add = (body = {}) =>
   handleRoute("post", `/api/workspaces/${slug}/members/`, { wallet_address: recipient, role: 15, ...body });
+
+for (const legacy of [false, true]) test(`member removal stays in its workspace (${legacy ? "legacy email" : "wallet"})`, async () => {
+  const email = "member@example.invalid";
+  const member = { id: "member-a", workspace: workspace.id, member: "recipient-profile", email, role: 15,
+    ...(legacy ? {} : { wallet_address: recipient }) };
+  localDB.workspace_members = [member, { ...member, id: "member-b", workspace: "workspace-other" }];
+  localDB.projects = [{ id: "other-project", workspace: "workspace-other" }];
+  localDB.project_members = [{ id: "project-member-b", project: "other-project", member: "recipient-profile", email }];
+  localDB.invitations = [{ id: "invite-b", workspace: "workspace-other", email, accepted: false }];
+  localDB.notifications = [{ id: "notice-b", workspace: { slug: "workspace-other" }, recipient_email: email }];
+  roles.set(recipient, 1);
+  const originalRequest = window.fiaiSDK.request;
+  window.fiaiSDK.request = async (action, params) => {
+    if (action !== "sendTransaction") return originalRequest(action, params);
+    assert.equal(params.functionName, "removeMember");
+    assert.equal(params.inputArray.find((input) => input.name === "slug").value, slug);
+    roles.set(recipient, 0);
+    return { txHash: "0x" + "8".repeat(64) };
+  };
+  const result = await handleRoute("delete", `/api/workspaces/${slug}/members/member-a/`, {});
+  assert.equal(result.status, 200);
+  assert.deepEqual(localDB.workspace_members.map((row) => row.id), ["member-b"]);
+  assert.equal(localDB.project_members.length, 1, "no projects in A must not delete project members of B");
+  assert.equal(localDB.invitations[0]?.id, "invite-b");
+  assert(getStoredInvitations().some((invitation) => invitation.id === "invite-b"), "foreign invitation is not hidden by a global email tombstone");
+  assert.equal(localDB.notifications[0]?.id, "notice-b");
+});
+
+for (const operation of ["read", "save"]) test(`invitation ${operation} never infers acceptance from membership in another workspace`, () => {
+  const invitation = { id: "invite-a", workspace: workspace.id, email: "same@example.invalid", accepted: false };
+  localDB.invitations = [invitation];
+  localDB.workspace_members = [{ id: "other-team", workspace: "other-workspace", email: invitation.email, role: 15, is_active: true }];
+  if (operation === "save") saveStoredInvitations(localDB.invitations);
+  const result = getStoredInvitations();
+  assert.equal(result[0].accepted, false);
+  assert.equal(invitation.accepted, false, "source snapshot is unchanged");
+  result[0].accepted = true;
+  assert.equal(invitation.accepted, false, "returned records are copies");
+});
+
+test("duplicate pending invitations are deduplicated without inventing Accepted", () => {
+  saveStoredInvitations([
+    { id: "old", workspace_slug: slug, email: "same@example.invalid", accepted: false },
+    { id: "new", workspace_slug: slug, email: "same@example.invalid", accepted: false },
+  ]);
+  const stored = JSON.parse(localStorage.getItem("plane_dapp_all_invitations"));
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].id, "new");
+  assert.equal(stored[0].accepted, false);
+});
+
+test("pending invitations with string workspace IDs remain independent", () => {
+  saveStoredInvitations([
+    { id: "a", workspace: "team-a", email: "same@example.invalid", accepted: false },
+    { id: "b", workspace: "team-b", email: "same@example.invalid", accepted: false },
+  ]);
+  assert.deepEqual(getStoredInvitations().map((invitation) => invitation.id).sort(), ["a", "b"]);
+});
+
+test("successful complete chain read removes remotely revoked member from list and count", async () => {
+  assert.equal((await add()).status, 200);
+  const revoked = localDB.workspace_members.find((row) => row.wallet_address === recipient);
+  localDB.workspace_members.push({ ...revoked, id: "other-team", workspace: "other-workspace", workspace_id: "other-workspace" });
+  roles.set(recipient, 0);
+  process.env.VITE_ONCHAIN_MEMBERSHIP_SYNC = "true";
+  const result = await handleRoute("get", `/api/workspaces/${slug}/members/`, {});
+  assert.equal(result.status, 200);
+  assert(!result.data.some((row) => row.wallet_address === recipient));
+  assert.equal(localDB.workspaces[0].total_members, 1);
+  assert(localDB.workspace_members.some((row) => row.id === "other-team"));
+});
+
+for (const outage of ["all-rpc", "one-role", "malformed-list", "malformed-role"]) test(`incomplete ${outage} chain read preserves cached memberships`, async () => {
+  assert.equal((await add()).status, 200);
+  const before = structuredClone(localDB.workspace_members);
+  const fetchComplete = globalThis.fetch;
+  if (outage === "all-rpc") failRpc = true;
+  else globalThis.fetch = async (url, options) => {
+    const rpc = JSON.parse(options?.body || "{}");
+    if (outage === "malformed-list" && rpc.params?.[0]?.data?.startsWith(id("getWorkspaceMembers(string)").slice(0, 10))) return Response.json({ result: "0x" });
+    if (rpc.params?.[0]?.data?.startsWith(id("getMemberRole(string,address)").slice(0, 10))) {
+      const [, address] = abi.decode(["string", "address"], "0x" + rpc.params[0].data.slice(10));
+      if (address.toLowerCase() === recipient) {
+        if (outage === "malformed-role") return Response.json({ result: "0x" + "f".repeat(64) });
+        if (outage === "one-role") throw new Error("fixture role timeout");
+      }
+    }
+    return fetchComplete(url, options);
+  };
+  process.env.VITE_ONCHAIN_MEMBERSHIP_SYNC = "true";
+  await handleRoute("get", `/api/workspaces/${slug}/members/`, {});
+  assert.deepEqual(localDB.workspace_members, before);
+});
 
 test("a default local workspace does not onboard a fresh wallet before its chain grant", async () => {
   resetLocal(recipient);

@@ -2,6 +2,19 @@ import "./browser.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+test("signing preflight runs inside the shared queue before any transaction body and releases it on failure", async () => {
+  const { registerChainSigningPreflight, runExclusiveChainTx, getChainTxState } = await import("../../packages/services/src/dapp/tx-gateway.ts");
+  let sent = false;
+  const unsubscribe = registerChainSigningPreflight(async () => { throw Error("fixture frames unavailable"); });
+  try {
+    await assert.rejects(runExclusiveChainTx("blocked", async () => { sent = true; }), /frames unavailable/);
+    assert.equal(sent, false);
+    assert.equal(getChainTxState().active, null);
+    assert.equal(getChainTxState().queued, 0);
+  } finally { unsubscribe(); }
+  assert.equal(await runExclusiveChainTx("recovered", async () => "ok"), "ok");
+});
+
 test("independent module queues coordinate through the browser origin lock", async () => {
   const first = await import("../../packages/services/src/dapp/tx-gateway.ts?tab=first");
   const second = await import("../../packages/services/src/dapp/tx-gateway.ts?tab=second");
